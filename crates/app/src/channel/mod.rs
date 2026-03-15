@@ -1232,7 +1232,9 @@ pub(super) async fn process_inbound_with_provider(
             &message.text,
             ProviderErrorMode::Propagate,
             &acp_options,
-            kernel_ctx,
+            crate::conversation::ConversationRuntimeBinding::from_optional_kernel_context(
+                kernel_ctx,
+            ),
         )
         .await
 }
