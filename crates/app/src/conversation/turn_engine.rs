@@ -21,6 +21,7 @@ use crate::tools::{
 };
 
 use super::runtime::SessionContext;
+use super::runtime_binding::ConversationRuntimeBinding;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProviderTurn {
@@ -210,7 +211,7 @@ pub trait AppToolDispatcher: Send + Sync {
         &self,
         session_context: &SessionContext,
         request: ToolCoreRequest,
-        kernel_ctx: Option<&KernelContext>,
+        binding: ConversationRuntimeBinding<'_>,
     ) -> Result<ToolCoreOutcome, String>;
 }
 
@@ -222,7 +223,7 @@ impl AppToolDispatcher for NoopAppToolDispatcher {
         &self,
         _session_context: &SessionContext,
         request: ToolCoreRequest,
-        _kernel_ctx: Option<&KernelContext>,
+        _binding: ConversationRuntimeBinding<'_>,
     ) -> Result<ToolCoreOutcome, String> {
         Err(format!("app_tool_not_implemented: {}", request.tool_name))
     }
@@ -341,7 +342,7 @@ impl AppToolDispatcher for DefaultAppToolDispatcher {
         &self,
         session_context: &SessionContext,
         request: ToolCoreRequest,
-        _kernel_ctx: Option<&KernelContext>,
+        _binding: ConversationRuntimeBinding<'_>,
     ) -> Result<ToolCoreOutcome, String> {
         let canonical_tool_name = crate::tools::canonical_tool_name(request.tool_name.as_str());
         let effective_tool_view = self.effective_tool_view_for_session(session_context)?;
@@ -605,21 +606,25 @@ impl TurnEngine {
         turn: &ProviderTurn,
         kernel_ctx: &KernelContext,
     ) -> TurnResult {
-        self.execute_turn_in_view(turn, &runtime_tool_view(), Some(kernel_ctx))
-            .await
+        self.execute_turn_in_view(
+            turn,
+            &runtime_tool_view(),
+            ConversationRuntimeBinding::kernel(kernel_ctx),
+        )
+        .await
     }
 
     pub async fn execute_turn_in_view(
         &self,
         turn: &ProviderTurn,
         tool_view: &ToolView,
-        kernel_ctx: Option<&KernelContext>,
+        binding: ConversationRuntimeBinding<'_>,
     ) -> TurnResult {
         self.execute_turn_in_context(
             turn,
             &session_context_from_turn(turn, tool_view.clone()),
             &DefaultAppToolDispatcher::runtime(),
-            kernel_ctx,
+            binding,
         )
         .await
     }
@@ -629,7 +634,7 @@ impl TurnEngine {
         turn: &ProviderTurn,
         session_context: &SessionContext,
         app_dispatcher: &D,
-        kernel_ctx: Option<&KernelContext>,
+        binding: ConversationRuntimeBinding<'_>,
     ) -> TurnResult {
         match self.validate_turn_in_context(turn, session_context) {
             Ok(TurnValidation::FinalText(text)) => return TurnResult::FinalText(text),
@@ -650,7 +655,7 @@ impl TurnEngine {
             };
             let outcome = match descriptor.execution_kind {
                 ToolExecutionKind::Core => {
-                    let Some(kernel_ctx) = kernel_ctx else {
+                    let Some(kernel_ctx) = binding.kernel_context() else {
                         return TurnResult::policy_denied("no_kernel_context", "no_kernel_context");
                     };
                     match execute_tool_intent_via_kernel(intent, kernel_ctx).await {
@@ -659,7 +664,7 @@ impl TurnEngine {
                     }
                 }
                 ToolExecutionKind::App => match app_dispatcher
-                    .execute_app_tool(session_context, request, kernel_ctx)
+                    .execute_app_tool(session_context, request, binding)
                     .await
                 {
                     Ok(outcome) => outcome,
