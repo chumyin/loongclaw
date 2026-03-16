@@ -16,6 +16,23 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 static TEMP_PATH_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn assert_compact_loongclaw_header(lines: &[String], context: &str) {
+    assert!(
+        lines
+            .first()
+            .is_some_and(|line| line.starts_with("LOONGCLAW")),
+        "{context} should start with the compact LOONGCLAW header: {lines:#?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .take_while(|line| !line.is_empty())
+            .any(|line| line.contains(concat!("v", env!("CARGO_PKG_VERSION")))),
+        "{context} should keep the current build version visible even when the branch name wraps: {lines:#?}"
+    );
+}
+
 fn unique_temp_path(label: &str) -> PathBuf {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1307,12 +1324,13 @@ fn backup_existing_config_copies_without_removing_original() {
 }
 
 #[test]
-fn onboard_risk_screen_includes_brand_header_and_continue_cancel_options() {
+fn onboard_risk_screen_uses_compact_header_and_continue_cancel_options() {
     let lines = crate::onboard_cli::render_onboarding_risk_screen_lines(80);
 
+    assert_compact_loongclaw_header(&lines, "risk screen");
     assert!(
-        lines[0].starts_with("██╗"),
-        "risk screen should start with the shared LOONGCLAW brand block: {lines:#?}"
+        !lines[0].starts_with("██╗"),
+        "risk screen should avoid the oversized block-logo banner on the guard screen: {lines:#?}"
     );
     assert!(
         lines.iter().any(|line| line == "security check"),
@@ -3729,10 +3747,7 @@ fn onboard_model_selection_screen_keeps_provider_context() {
 
     let lines = crate::onboard_cli::render_model_selection_screen_lines(&config, 80);
 
-    assert!(
-        lines[0].starts_with("LOONGCLAW  v"),
-        "model screen should start with the compact LOONGCLAW step header: {lines:#?}"
-    );
+    assert_compact_loongclaw_header(&lines, "model screen");
     assert!(
         lines.iter().any(|line| line == "choose model"),
         "model screen should use a focused title: {lines:#?}"
@@ -3834,10 +3849,7 @@ fn onboard_api_key_env_screen_explains_suggested_env_and_blank_behavior() {
         80,
     );
 
-    assert!(
-        lines[0].starts_with("LOONGCLAW  v"),
-        "credential-env screen should start with the compact LOONGCLAW step header: {lines:#?}"
-    );
+    assert_compact_loongclaw_header(&lines, "credential-env screen");
     assert!(
         lines.iter().any(|line| line == "choose credential env var"),
         "credential-env screen should make it explicit that this field expects an env var name: {lines:#?}"
@@ -3967,10 +3979,7 @@ fn onboard_personality_screen_lists_presets_without_rendering_full_prompt() {
         80,
     );
 
-    assert!(
-        lines[0].starts_with("LOONGCLAW  v"),
-        "personality screen should start with the compact LOONGCLAW step header: {lines:#?}"
-    );
+    assert_compact_loongclaw_header(&lines, "personality screen");
     assert!(
         lines
             .iter()
@@ -4022,10 +4031,7 @@ fn onboard_memory_profile_screen_lists_supported_profiles() {
         80,
     );
 
-    assert!(
-        lines[0].starts_with("LOONGCLAW  v"),
-        "memory-profile screen should start with the compact LOONGCLAW step header: {lines:#?}"
-    );
+    assert_compact_loongclaw_header(&lines, "memory-profile screen");
     assert!(
         lines.iter().any(|line| line == "choose memory profile"),
         "memory-profile screen should frame memory selection as a preset choice: {lines:#?}"
@@ -4209,9 +4215,10 @@ fn onboard_existing_config_write_screen_offers_replace_backup_and_cancel() {
         80,
     );
 
+    assert_compact_loongclaw_header(&lines, "existing-config write screen");
     assert!(
-        lines[0].starts_with("██╗"),
-        "existing-config write screen should start with the shared LOONGCLAW brand block: {lines:#?}"
+        !lines[0].starts_with("██╗"),
+        "existing-config write screen should avoid the oversized block-logo banner on the write guard screen: {lines:#?}"
     );
     assert!(
         lines.iter().any(|line| line == "existing config found"),
@@ -4275,10 +4282,7 @@ fn onboard_preflight_screen_summarizes_status_counts_and_guidance() {
 
     let lines = crate::onboard_cli::render_preflight_summary_screen_lines(&checks, 80);
 
-    assert!(
-        lines[0].starts_with("LOONGCLAW  v"),
-        "preflight screen should use the compact LOONGCLAW step header after review to avoid banner repetition: {lines:#?}"
-    );
+    assert_compact_loongclaw_header(&lines, "preflight screen");
     assert!(
         lines.iter().any(|line| line == "preflight checks"),
         "preflight screen should use a focused title: {lines:#?}"
@@ -4438,10 +4442,7 @@ fn onboard_write_confirmation_screen_shows_target_path_and_write_choice() {
         80,
     );
 
-    assert!(
-        lines[0].starts_with("LOONGCLAW  v"),
-        "write-confirm screen should use the compact branded header: {lines:#?}"
-    );
+    assert_compact_loongclaw_header(&lines, "write-confirm screen");
     assert!(
         lines.iter().any(|line| line == "ready to write config"),
         "write-confirm screen should use a focused title: {lines:#?}"
