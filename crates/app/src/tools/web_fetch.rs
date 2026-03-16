@@ -22,22 +22,24 @@ pub(super) fn execute_web_fetch_tool_with_config(
 }
 
 /// Bridge sync-to-async: reuses the current tokio runtime when available
-/// (production path), otherwise creates a temporary single-threaded runtime
-/// (test path).
+/// (production path via `block_in_place`), otherwise creates a temporary
+/// single-threaded runtime (test path or `current_thread` runtime).
+///
+/// `block_in_place` panics under `current_thread` runtimes, so we detect
+/// the runtime flavor and fall back to a fresh runtime when necessary.
 #[cfg(feature = "tool-webfetch")]
 fn run_async<F: std::future::Future>(fut: F) -> Result<F::Output, String> {
-    match tokio::runtime::Handle::try_current() {
-        Ok(handle) => Ok(tokio::task::block_in_place(|| handle.block_on(fut))),
-        Err(_) => {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(|error| {
-                    format!("failed to create tokio runtime for web.fetch: {error}")
-                })?;
-            Ok(rt.block_on(fut))
-        }
+    if let Ok(handle) = tokio::runtime::Handle::try_current()
+        && handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread
+    {
+        return Ok(tokio::task::block_in_place(|| handle.block_on(fut)));
     }
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| format!("failed to create tokio runtime for web.fetch: {error}"))?;
+    Ok(rt.block_on(fut))
 }
 
 /// Custom DNS resolver that rejects private/special-use IP addresses at
@@ -182,10 +184,31 @@ fn execute_web_fetch_tool_enabled(
                 .and_then(|value| value.to_str().ok())
                 .map(|value| value.to_owned());
 
-            let body = response
-                .bytes()
-                .await
-                .map_err(|error| format!("failed to read web.fetch response body: {error}"))?;
+            // Short-circuit on Content-Length when the server advertises it.
+            if let Some(content_length) = response.content_length()
+                && content_length > max_bytes as u64
+            {
+                return Err(format!(
+                    "web.fetch response Content-Length ({content_length}) exceeds max_bytes limit ({max_bytes} bytes)"
+                ));
+            }
+
+            // Stream the body with a hard cap at max_bytes + 1 to detect
+            // oversize responses without unbounded memory allocation.
+            let limit = (max_bytes as u64).saturating_add(1);
+            let mut body = Vec::new();
+            let mut stream = response.bytes_stream();
+            use futures_util::StreamExt;
+            while let Some(chunk) = stream.next().await {
+                let chunk = chunk
+                    .map_err(|error| format!("failed to read web.fetch response body: {error}"))?;
+                body.extend_from_slice(&chunk);
+                if body.len() as u64 > limit {
+                    return Err(format!(
+                        "web.fetch response exceeded max_bytes limit ({max_bytes} bytes)"
+                    ));
+                }
+            }
             if body.len() > max_bytes {
                 return Err(format!(
                     "web.fetch response exceeded max_bytes limit ({max_bytes} bytes)"
@@ -761,7 +784,10 @@ mod tests {
         let error = execute_web_fetch_tool_with_config(request(json!({"url": url})), &config)
             .expect_err("oversized body should be rejected");
 
-        assert!(error.contains("exceeded max_bytes limit"));
+        assert!(
+            error.contains("max_bytes limit"),
+            "expected max_bytes error, got: {error}"
+        );
     }
 
     #[test]
