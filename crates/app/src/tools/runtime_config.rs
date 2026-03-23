@@ -10,6 +10,7 @@ use super::shell_policy_ext::ShellPolicyDefault;
 use crate::config::LoongClawConfig;
 #[cfg(feature = "feishu-integration")]
 use crate::config::{FeishuChannelConfig, FeishuIntegrationConfig};
+use crate::runtime_self_continuity;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct BrowserRuntimeNarrowing {
@@ -573,20 +574,21 @@ impl ToolRuntimeConfig {
         &self,
         narrowing: &ToolRuntimeNarrowing,
     ) -> Option<String> {
-        if narrowing.is_empty() {
-            return None;
+        let effective = self.narrowed(narrowing);
+        let mut lines = Vec::new();
+        lines.push("[delegate_child_runtime_contract]".to_owned());
+        lines.push("Child-session self continuity rules:".to_owned());
+
+        let continuity_lines = runtime_self_continuity::delegate_child_continuity_lines();
+        for continuity_line in continuity_lines {
+            lines.push((*continuity_line).to_owned());
         }
 
-        let effective = self.narrowed(narrowing);
-        let mut lines = vec![
-            "[delegate_child_runtime_contract]".to_owned(),
-            "Plan within these child-session runtime limits:".to_owned(),
-        ];
-        let mut rendered_any = false;
+        let mut rendered_tool_limits = false;
 
         if effective.web_fetch.enabled {
             if narrowing.web_fetch.allow_private_hosts.is_some() {
-                rendered_any = true;
+                rendered_tool_limits = true;
                 lines.push(format!(
                     "- web.fetch private hosts: {}",
                     if effective.web_fetch.allow_private_hosts {
@@ -597,7 +599,7 @@ impl ToolRuntimeConfig {
                 ));
             }
             if !narrowing.web_fetch.allowed_domains.is_empty() {
-                rendered_any = true;
+                rendered_tool_limits = true;
                 if effective.web_fetch.enforce_allowed_domains
                     && effective.web_fetch.allowed_domains.is_empty()
                 {
@@ -619,7 +621,7 @@ impl ToolRuntimeConfig {
                 }
             }
             if !narrowing.web_fetch.blocked_domains.is_empty() {
-                rendered_any = true;
+                rendered_tool_limits = true;
                 lines.push(format!(
                     "- web.fetch blocked domains: {}",
                     effective
@@ -632,21 +634,21 @@ impl ToolRuntimeConfig {
                 ));
             }
             if narrowing.web_fetch.timeout_seconds.is_some() {
-                rendered_any = true;
+                rendered_tool_limits = true;
                 lines.push(format!(
                     "- web.fetch timeout seconds: {}",
                     effective.web_fetch.timeout_seconds
                 ));
             }
             if narrowing.web_fetch.max_bytes.is_some() {
-                rendered_any = true;
+                rendered_tool_limits = true;
                 lines.push(format!(
                     "- web.fetch max bytes: {}",
                     effective.web_fetch.max_bytes
                 ));
             }
             if narrowing.web_fetch.max_redirects.is_some() {
-                rendered_any = true;
+                rendered_tool_limits = true;
                 lines.push(format!(
                     "- web.fetch max redirects: {}",
                     effective.web_fetch.max_redirects
@@ -656,21 +658,21 @@ impl ToolRuntimeConfig {
 
         if effective.browser.enabled {
             if narrowing.browser.max_sessions.is_some() {
-                rendered_any = true;
+                rendered_tool_limits = true;
                 lines.push(format!(
                     "- browser max sessions: {}",
                     effective.browser.max_sessions
                 ));
             }
             if narrowing.browser.max_links.is_some() {
-                rendered_any = true;
+                rendered_tool_limits = true;
                 lines.push(format!(
                     "- browser max links: {}",
                     effective.browser.max_links
                 ));
             }
             if narrowing.browser.max_text_chars.is_some() {
-                rendered_any = true;
+                rendered_tool_limits = true;
                 lines.push(format!(
                     "- browser max text chars: {}",
                     effective.browser.max_text_chars
@@ -678,11 +680,13 @@ impl ToolRuntimeConfig {
             }
         }
 
-        if !rendered_any {
-            return None;
+        if rendered_tool_limits {
+            let heading = "Plan within these child-session runtime limits:".to_owned();
+            let insert_at = continuity_lines.len() + 2;
+            lines.insert(insert_at, heading);
+            lines.push("Treat these as enforced limits for this child session.".to_owned());
         }
 
-        lines.push("Treat these as enforced limits for this child session.".to_owned());
         Some(lines.join("\n"))
     }
 
@@ -1612,11 +1616,16 @@ mod tests {
     }
 
     #[test]
-    fn delegate_child_prompt_summary_returns_none_when_narrowing_is_empty() {
-        assert_eq!(
-            ToolRuntimeConfig::default()
-                .delegate_child_prompt_summary(&ToolRuntimeNarrowing::default()),
-            None
+    fn delegate_child_prompt_summary_keeps_continuity_contract_when_narrowing_is_empty() {
+        let summary = ToolRuntimeConfig::default()
+            .delegate_child_prompt_summary(&ToolRuntimeNarrowing::default())
+            .expect("delegate child prompt summary");
+
+        assert!(summary.contains("[delegate_child_runtime_contract]"));
+        assert!(summary.contains("Child-session self continuity rules:"));
+        assert!(
+            !summary.contains("Plan within these child-session runtime limits:"),
+            "empty narrowing should omit tool-limit details: {summary}"
         );
     }
 
@@ -1664,6 +1673,11 @@ mod tests {
         assert_eq!(
             summary,
             "[delegate_child_runtime_contract]\n\
+Child-session self continuity rules:\n\
+- Runtime Self Context continues to supply standing instructions and soul guidance.\n\
+- Resolved Runtime Identity remains the identity authority for this session chain.\n\
+- Session Profile may carry durable advisory context, and future durable recall can enrich it without overriding Resolved Runtime Identity.\n\
+- Memory Summary and child-task findings stay session-local unless a separate durable-memory path promotes them.\n\
 Plan within these child-session runtime limits:\n\
 - web.fetch private hosts: denied\n\
 - web.fetch allowed domains: none (effective intersection is empty)\n\
@@ -1773,7 +1787,7 @@ Treat these as enforced limits for this child session."
     }
 
     #[test]
-    fn delegate_child_prompt_summary_returns_none_when_all_tools_disabled() {
+    fn delegate_child_prompt_summary_keeps_continuity_contract_when_all_tools_are_disabled() {
         let base = ToolRuntimeConfig {
             web_fetch: WebFetchRuntimePolicy {
                 enabled: false,
@@ -1796,10 +1810,17 @@ Treat these as enforced limits for this child session."
             },
         };
 
-        assert_eq!(
-            base.delegate_child_prompt_summary(&narrowing),
-            None,
-            "should return None when all narrowed tools are disabled"
+        let summary = base
+            .delegate_child_prompt_summary(&narrowing)
+            .expect("delegate child prompt summary");
+
+        assert!(
+            summary.contains("Child-session self continuity rules:"),
+            "continuity contract should remain even when all narrowed tools are disabled: {summary}"
+        );
+        assert!(
+            !summary.contains("Plan within these child-session runtime limits:"),
+            "disabled tools should omit tool-limit details: {summary}"
         );
     }
 

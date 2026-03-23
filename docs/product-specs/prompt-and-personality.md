@@ -18,6 +18,10 @@ system prompt.
 - [ ] Runtime identity overlays are resolved separately from the native base
       prompt so workspace `IDENTITY.md` context can take precedence over legacy
       imported identity without replacing LoongClaw's product-owned baseline.
+- [ ] Delegate child sessions inherit runtime self continuity through one
+      explicit contract instead of relying on ad hoc prompt copying.
+- [ ] Compacted memory summaries and future durable recall remain advisory
+      context surfaces and do not override resolved runtime identity.
 - [ ] Non-interactive onboarding supports personality selection with a stable
       CLI flag.
 - [ ] Advanced users can still provide a full inline system prompt override.

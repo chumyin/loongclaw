@@ -1057,9 +1057,15 @@ fn delegate_child_runtime_contract_prompt_summary(
     session_context: &SessionContext,
 ) -> Option<String> {
     session_context.parent_session_id.as_ref()?;
-    let runtime_narrowing = session_context.runtime_narrowing.as_ref()?;
-    crate::tools::runtime_config::ToolRuntimeConfig::from_loongclaw_config(config, None)
-        .delegate_child_prompt_summary(runtime_narrowing)
+    let tool_runtime_config =
+        crate::tools::runtime_config::ToolRuntimeConfig::from_loongclaw_config(config, None);
+    let default_narrowing = ToolRuntimeNarrowing::default();
+    let runtime_narrowing = session_context
+        .runtime_narrowing
+        .as_ref()
+        .unwrap_or(&default_narrowing);
+
+    tool_runtime_config.delegate_child_prompt_summary(runtime_narrowing)
 }
 
 fn merge_system_prompt_additions(existing: Option<&str>, extra: Option<&str>) -> Option<String> {

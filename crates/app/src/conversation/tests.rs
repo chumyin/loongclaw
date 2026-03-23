@@ -2057,6 +2057,22 @@ async fn default_runtime_build_context_merges_delegate_runtime_contract_with_sys
         merged.contains("[delegate_child_runtime_contract]"),
         "expected delegate runtime contract marker, got: {merged}"
     );
+    assert!(
+        merged.contains("Child-session self continuity rules:"),
+        "expected explicit self continuity rules in child contract, got: {merged}"
+    );
+    assert!(
+        merged.contains("Resolved Runtime Identity remains the identity authority"),
+        "expected child contract to keep runtime identity authoritative, got: {merged}"
+    );
+    assert!(
+        merged.contains("Session Profile may carry durable advisory context"),
+        "expected child contract to distinguish durable advisory profile context, got: {merged}"
+    );
+    assert!(
+        merged.contains("Memory Summary and child-task findings stay session-local"),
+        "expected child contract to mark summary and task results as session-local, got: {merged}"
+    );
     assert!(merged.contains("Plan within these child-session runtime limits:"));
     assert!(merged.contains("- web.fetch private hosts: denied"));
     assert!(merged.contains("- web.fetch allowed domains: docs.example.com"));
@@ -2131,7 +2147,7 @@ async fn default_runtime_build_context_does_not_add_delegate_runtime_contract_fo
 
 #[cfg(feature = "memory-sqlite")]
 #[tokio::test]
-async fn default_runtime_build_context_skips_delegate_runtime_contract_for_empty_child_narrowing() {
+async fn default_runtime_build_context_keeps_self_continuity_contract_for_empty_child_narrowing() {
     let mut config = test_config();
     let child_session_id = seed_delegate_child_session_with_runtime_narrowing(
         &mut config,
@@ -2150,8 +2166,16 @@ async fn default_runtime_build_context_skips_delegate_runtime_contract_for_empty
         .as_str()
         .expect("system prompt should stay string");
     assert!(
-        !system_content.contains("[delegate_child_runtime_contract]"),
-        "empty child narrowing should not inject a contract block: {system_content}"
+        system_content.contains("[delegate_child_runtime_contract]"),
+        "delegate children should still receive an explicit self continuity contract: {system_content}"
+    );
+    assert!(
+        system_content.contains("Child-session self continuity rules:"),
+        "delegate children should still see continuity semantics when no tool narrowing is present: {system_content}"
+    );
+    assert!(
+        !system_content.contains("Plan within these child-session runtime limits:"),
+        "empty narrowing should keep the continuity contract but omit tool-limit details: {system_content}"
     );
 }
 

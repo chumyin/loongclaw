@@ -1,4 +1,5 @@
 use crate::runtime_self::RuntimeSelfModel;
+use crate::runtime_self_continuity;
 
 const LEGACY_IMPORTED_IDENTITY_HEADINGS: &[&str] =
     &["## imported identity.md", "## imported identity.json"];
@@ -55,10 +56,11 @@ pub(crate) fn render_runtime_identity_section(identity: &ResolvedRuntimeIdentity
 
 pub(crate) fn render_session_profile_section(profile_note: Option<&str>) -> Option<String> {
     let advisory_profile_note = resolve_advisory_profile_note(profile_note)?;
+    let intro = runtime_self_continuity::session_profile_intro();
 
     let sections = [
         "## Session Profile".to_owned(),
-        "Durable preferences and advisory session context carried into this session:".to_owned(),
+        intro.to_owned(),
         advisory_profile_note,
     ];
     Some(sections.join("\n"))
@@ -278,5 +280,15 @@ mod tests {
             render_session_profile_section(Some(profile_note)).expect("session profile section");
 
         assert!(rendered.contains("Operator prefers concise shell output."));
+    }
+
+    #[test]
+    fn render_session_profile_section_marks_durable_recall_as_advisory_only() {
+        let profile_note = "Operator prefers concise shell output.";
+        let rendered =
+            render_session_profile_section(Some(profile_note)).expect("session profile section");
+
+        assert!(rendered.contains("Future durable recall may enrich this section."));
+        assert!(rendered.contains("does not override Resolved Runtime Identity."));
     }
 }

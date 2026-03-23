@@ -17,6 +17,7 @@ use super::{
     MEMORY_OP_APPEND_TURN, MEMORY_OP_CLEAR_SESSION, MEMORY_OP_WINDOW,
     runtime_config::MemoryRuntimeConfig,
 };
+use crate::runtime_self_continuity;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConversationTurn {
@@ -2923,9 +2924,9 @@ pub(super) fn format_summary_block(summary_body: &str) -> Option<String> {
         return None;
     }
 
-    Some(format!(
-        "## Memory Summary\nEarlier session context condensed from turns outside the active window:\n{trimmed}"
-    ))
+    let intro = runtime_self_continuity::memory_summary_intro();
+    let rendered = format!("## Memory Summary\n{intro}\n{trimmed}");
+    Some(rendered)
 }
 
 #[cfg(test)]
@@ -4916,6 +4917,18 @@ mod tests {
         );
 
         assert_eq!(summary_body, "- user: 你好 世");
+    }
+
+    #[test]
+    fn format_summary_block_marks_summary_as_session_local_recall() {
+        let rendered = format_summary_block("- user: remember the release notes")
+            .expect("formatted summary block");
+
+        assert!(rendered.contains("Treat it as session-local recall."));
+        assert!(rendered.contains("It does not replace Runtime Self Context."));
+        assert!(
+            rendered.contains("It does not override Resolved Runtime Identity or Session Profile.")
+        );
     }
 
     #[test]
