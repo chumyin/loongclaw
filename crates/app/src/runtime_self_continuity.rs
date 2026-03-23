@@ -18,6 +18,13 @@ const DURABLE_RECALL_INTRO: &str = concat!(
     "It does not override Resolved Runtime Identity or Session Profile.",
 );
 
+const RUNTIME_DURABLE_RECALL_INTRO: &str = concat!(
+    "Advisory durable recall loaded from workspace memory files. ",
+    "It may enrich the current session. ",
+    "It does not replace Runtime Self Context. ",
+    "It does not override Resolved Runtime Identity or Session Profile.",
+);
+
 const DELEGATE_CHILD_CONTINUITY_LINES: &[&str] = &[
     "- Runtime Self Context continues to supply standing instructions and soul guidance.",
     "- Resolved Runtime Identity remains the identity authority for this session chain.",
@@ -41,6 +48,10 @@ pub(crate) const fn memory_summary_intro() -> &'static str {
 
 pub(crate) const fn durable_recall_intro() -> &'static str {
     DURABLE_RECALL_INTRO
+}
+
+pub(crate) const fn runtime_durable_recall_intro() -> &'static str {
+    RUNTIME_DURABLE_RECALL_INTRO
 }
 
 pub(crate) const fn delegate_child_continuity_lines() -> &'static [&'static str] {
