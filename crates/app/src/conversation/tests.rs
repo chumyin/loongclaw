@@ -14088,7 +14088,7 @@ async fn load_discovery_first_event_summary_accepts_explicit_runtime_binding() {
         &payloads,
     );
 
-    let direct_summary = super::session_history::load_discovery_first_event_summary_with_binding(
+    let direct_summary = load_discovery_first_event_summary(
         "session-discovery-first-direct",
         32,
         ConversationRuntimeBinding::direct(),
@@ -14108,7 +14108,7 @@ async fn load_discovery_first_event_summary_accepts_explicit_runtime_binding() {
     let (kernel_ctx, invocations) =
         build_kernel_context_with_window_turns(audit, discovery_first_window_turns(&payloads));
 
-    let kernel_summary = super::session_history::load_discovery_first_event_summary_with_binding(
+    let kernel_summary = load_discovery_first_event_summary(
         "session-discovery-first-kernel",
         48,
         ConversationRuntimeBinding::kernel(&kernel_ctx),
@@ -14138,7 +14138,7 @@ async fn load_discovery_first_event_summary_accepts_explicit_runtime_binding() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn load_discovery_first_event_summary_preserves_public_kernel_context_signature() {
+async fn load_discovery_first_event_summary_preserves_kernel_context_compatibility_shim() {
     let payloads = [
         json!({
             "type": "conversation_event",
@@ -14172,7 +14172,7 @@ async fn load_discovery_first_event_summary_preserves_public_kernel_context_sign
         &payloads,
     );
 
-    let direct_summary = load_discovery_first_event_summary(
+    let direct_summary = load_discovery_first_event_summary_with_kernel_context(
         "session-discovery-first-compat-direct",
         16,
         None,
@@ -14191,7 +14191,7 @@ async fn load_discovery_first_event_summary_preserves_public_kernel_context_sign
     let (kernel_ctx, invocations) =
         build_kernel_context_with_window_turns(audit, discovery_first_window_turns(&payloads));
 
-    let kernel_summary = load_discovery_first_event_summary(
+    let kernel_summary = load_discovery_first_event_summary_with_kernel_context(
         "session-discovery-first-compat-kernel",
         24,
         Some(&kernel_ctx),
