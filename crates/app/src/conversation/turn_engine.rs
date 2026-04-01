@@ -919,6 +919,12 @@ fn tool_is_auto_eligible(
             && governance.approval_mode == ToolApprovalMode::Never)
 }
 
+fn requires_mutating_runtime_binding(descriptor: &crate::tools::ToolDescriptor) -> bool {
+    let governance = governance_profile_for_descriptor(descriptor);
+    descriptor.execution_kind == ToolExecutionKind::App
+        && governance.approval_mode == ToolApprovalMode::PolicyDriven
+}
+
 impl Default for DefaultAppToolDispatcher {
     fn default() -> Self {
         Self::runtime()
@@ -2723,6 +2729,20 @@ impl TurnEngine {
         let capability_action_class = descriptor.capability_action_class();
         let scheduling_class = descriptor.scheduling_class();
 
+        if requires_mutating_runtime_binding(descriptor) && !binding.allows_mutation() {
+            let reason_code = "governed_runtime_binding_required";
+            let failure = TurnFailure::policy_denied(reason_code, reason_code);
+            let turn_result = TurnResult::ToolDenied(failure.clone());
+            let base_decision = denied_tool_decision(effective_tool_name.as_str(), &failure);
+            let decision =
+                base_decision.with_capability_action_class(capability_action_class.as_str());
+            return Err(PreparedToolIntentFailure {
+                intent: effective_intent,
+                turn_result,
+                decision,
+            });
+        }
+
         let decision = match app_dispatcher
             .preflight_tool_intent_with_binding(
                 session_context,
@@ -2909,9 +2929,13 @@ mod tests {
         }
     }
 
-    fn kernel_context(agent_id: &str) -> KernelContext {
+    fn test_kernel_context(agent_id: &str) -> KernelContext {
         crate::context::bootstrap_test_kernel_context(agent_id, 60)
             .expect("bootstrap test kernel context")
+    }
+
+    fn kernel_context(agent_id: &str) -> KernelContext {
+        test_kernel_context(agent_id)
     }
 
     fn delegate_async_turn(session_id: &str, turn_id: &str, tool_call_id: &str) -> ProviderTurn {
@@ -3232,7 +3256,7 @@ mod tests {
         let tool_view = runtime_tool_view_for_config(&tool_config);
         let session_context = SessionContext::root_with_tool_view("root-session", tool_view);
         let dispatcher = DefaultAppToolDispatcher::new(memory_config.clone(), tool_config);
-        let kernel_ctx = kernel_context("turn-engine-autonomy-persist");
+        let kernel_ctx = test_kernel_context("turn-engine-governed-approval-delegate-async");
 
         let result = TurnEngine::new(4)
             .execute_turn_in_context(
@@ -3308,7 +3332,8 @@ mod tests {
         let tool_view = runtime_tool_view_for_config(&tool_config);
         let session_context = SessionContext::root_with_tool_view("root-session", tool_view);
         let dispatcher = DefaultAppToolDispatcher::new(memory_config.clone(), tool_config);
-        let kernel_ctx = kernel_context("turn-engine-autonomy-persist-discovered");
+        let kernel_ctx =
+            test_kernel_context("turn-engine-governed-approval-discovered-delegate-async");
 
         let result = TurnEngine::new(4)
             .execute_turn_in_context(
@@ -3674,7 +3699,7 @@ mod tests {
         let session_context = SessionContext::root_with_tool_view("root-session", tool_view);
         let dispatcher = DefaultAppToolDispatcher::new(memory_config.clone(), tool_config);
         let turn = delegate_async_turn("root-session", "turn-reuse", "call-reuse");
-        let kernel_ctx = kernel_context("turn-engine-autonomy-reuse");
+        let kernel_ctx = test_kernel_context("turn-engine-governed-approval-reuse");
 
         let first = TurnEngine::new(4)
             .execute_turn_in_context(
@@ -4010,6 +4035,7 @@ mod tests {
         let tool_view = crate::tools::runtime_tool_view_for_runtime_config(&runtime_config);
         let session_context = SessionContext::root_with_tool_view("root-session", tool_view);
         let dispatcher = DefaultAppToolDispatcher::new(memory_config.clone(), tool_config);
+        let kernel_ctx = test_kernel_context("turn-engine-browser-companion-click-approval");
 
         let result = TurnEngine::new(4)
             .execute_turn_in_context(
@@ -4021,7 +4047,7 @@ mod tests {
                 ),
                 &session_context,
                 &dispatcher,
-                ConversationRuntimeBinding::direct(),
+                ConversationRuntimeBinding::kernel(&kernel_ctx),
                 None,
             )
             .await;
@@ -4190,6 +4216,7 @@ mod tests {
         let tool_view = crate::tools::runtime_tool_view_for_runtime_config(&runtime_config);
         let session_context = SessionContext::root_with_tool_view("root-session", tool_view);
         let dispatcher = DefaultAppToolDispatcher::new(memory_config, tool_config);
+        let kernel_ctx = test_kernel_context("turn-engine-browser-companion-click-exec");
 
         let result = TurnEngine::new(4)
             .execute_turn_in_context(
@@ -4201,7 +4228,7 @@ mod tests {
                 ),
                 &session_context,
                 &dispatcher,
-                ConversationRuntimeBinding::direct(),
+                ConversationRuntimeBinding::kernel(&kernel_ctx),
                 None,
             )
             .await;
@@ -4290,6 +4317,7 @@ mod tests {
         let tool_view = crate::tools::runtime_tool_view_for_runtime_config(&runtime_config);
         let session_context = SessionContext::root_with_tool_view("root-session", tool_view);
         let dispatcher = DefaultAppToolDispatcher::new(memory_config, tool_config);
+        let kernel_ctx = test_kernel_context("turn-engine-browser-companion-click-runtime-ready");
 
         let result = TurnEngine::new(4)
             .execute_turn_in_context(
@@ -4301,7 +4329,7 @@ mod tests {
                 ),
                 &session_context,
                 &dispatcher,
-                ConversationRuntimeBinding::direct(),
+                ConversationRuntimeBinding::kernel(&kernel_ctx),
                 None,
             )
             .await;
@@ -4392,6 +4420,7 @@ mod tests {
         let tool_view = crate::tools::runtime_tool_view_for_runtime_config(&runtime_config);
         let session_context = SessionContext::root_with_tool_view("root-session", tool_view);
         let dispatcher = DefaultAppToolDispatcher::new(memory_config, ToolConfig::default());
+        let kernel_ctx = test_kernel_context("turn-engine-browser-companion-click-runtime-policy");
 
         let result = TurnEngine::new(4)
             .execute_turn_in_context(
@@ -4403,7 +4432,7 @@ mod tests {
                 ),
                 &session_context,
                 &dispatcher,
-                ConversationRuntimeBinding::direct(),
+                ConversationRuntimeBinding::kernel(&kernel_ctx),
                 None,
             )
             .await;

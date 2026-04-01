@@ -102,6 +102,7 @@ fn build_system_message_with_tool_runtime_config(
         tool_view,
         tool_runtime_config,
         runtime_self_model,
+        None,
     )
 }
 
@@ -131,6 +132,7 @@ async fn build_system_message_with_binding_and_tool_runtime_config(
         tool_view,
         tool_runtime_config,
         runtime_self_model,
+        Some(render_governed_runtime_binding_section(binding)),
     )
 }
 
@@ -140,6 +142,7 @@ fn build_system_message_from_runtime_self_model(
     tool_view: &ToolView,
     tool_runtime_config: &tools::runtime_config::ToolRuntimeConfig,
     runtime_self_model: Option<runtime_self::RuntimeSelfModel>,
+    extra_section: Option<String>,
 ) -> Option<Value> {
     if !include_system_prompt {
         return None;
@@ -170,6 +173,9 @@ fn build_system_message_from_runtime_self_model(
     if let Some(section) = runtime_identity_section {
         sections.push(section);
     }
+    if let Some(section) = extra_section {
+        sections.push(section);
+    }
     sections.push(snapshot);
 
     let content = sections.join("\n\n");
@@ -177,6 +183,18 @@ fn build_system_message_from_runtime_self_model(
         "role": "system",
         "content": content,
     }))
+}
+
+fn render_governed_runtime_binding_section(binding: ProviderRuntimeBinding<'_>) -> String {
+    let kernel_binding = if binding.is_kernel_bound() {
+        "present"
+    } else {
+        "absent"
+    };
+    format!(
+        "## Governed Runtime Binding\n- session_mode: {}\n- kernel_binding: {kernel_binding}",
+        binding.session_mode().as_str()
+    )
 }
 
 pub(super) fn build_base_messages_for_view(
@@ -654,6 +672,36 @@ mod tests {
         assert!(runtime_self_content.contains(&agents_text));
         assert!(runtime_self_content.contains("runtime self truncated"));
         assert!(!runtime_self_content.contains(raw_user_prefix));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn governed_runtime_binding_system_message_surfaces_binding_facts() {
+        let harness = TurnTestHarness::new();
+        let agents_path = harness.temp_dir.join("AGENTS.md");
+        let agents_text = "runtime self should still load for binding-aware prompts";
+        let mut config = LoongClawConfig::default();
+
+        std::fs::write(&agents_path, agents_text).expect("write AGENTS");
+
+        config.tools.file_root = Some(harness.temp_dir.display().to_string());
+
+        let advisory_messages =
+            build_base_messages_with_binding(&config, true, ProviderRuntimeBinding::direct()).await;
+        let advisory_content = runtime_self_system_content(&advisory_messages);
+        assert!(advisory_content.contains("## Governed Runtime Binding"));
+        assert!(advisory_content.contains("session_mode: advisory_only"));
+        assert!(advisory_content.contains("kernel_binding: absent"));
+
+        let mutating_messages = build_base_messages_with_binding(
+            &config,
+            true,
+            ProviderRuntimeBinding::kernel(&harness.kernel_ctx),
+        )
+        .await;
+        let mutating_content = runtime_self_system_content(&mutating_messages);
+        assert!(mutating_content.contains("## Governed Runtime Binding"));
+        assert!(mutating_content.contains("session_mode: mutating_capable"));
+        assert!(mutating_content.contains("kernel_binding: present"));
     }
 
     #[test]
