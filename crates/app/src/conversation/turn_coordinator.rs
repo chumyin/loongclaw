@@ -3795,6 +3795,22 @@ where
         Err("app_tool_denied: governed_runtime_binding_required".to_owned())
     }
 
+    fn approval_request_not_pending_error(approval_request: &ApprovalRequestRecord) -> String {
+        let approval_request_id = approval_request.approval_request_id.as_str();
+        let status = approval_request.status.as_str();
+        format!("approval_request_not_pending: `{approval_request_id}` is already {status}")
+    }
+
+    fn ensure_resolution_request_is_pending(
+        approval_request: &ApprovalRequestRecord,
+    ) -> Result<(), String> {
+        if approval_request.status == ApprovalRequestStatus::Pending {
+            return Ok(());
+        }
+
+        Err(Self::approval_request_not_pending_error(approval_request))
+    }
+
     async fn replay_approved_request(
         &self,
         approval_request: &ApprovalRequestRecord,
@@ -3955,6 +3971,7 @@ where
             ));
         }
 
+        Self::ensure_resolution_request_is_pending(&approval_request)?;
         self.ensure_resolution_binding_allows_decision(&approval_request, request.decision)?;
 
         match request.decision {
@@ -3980,11 +3997,7 @@ where
                                     request.approval_request_id
                                 )
                             })?;
-                        return Err(format!(
-                            "approval_request_not_pending: `{}` is already {}",
-                            request.approval_request_id,
-                            latest.status.as_str()
-                        ));
+                        return Err(Self::approval_request_not_pending_error(&latest));
                     }
                 };
                 Ok(crate::tools::approval::ApprovalResolutionOutcome {
@@ -4014,11 +4027,7 @@ where
                                     request.approval_request_id
                                 )
                             })?;
-                        return Err(format!(
-                            "approval_request_not_pending: `{}` is already {}",
-                            request.approval_request_id,
-                            latest.status.as_str()
-                        ));
+                        return Err(Self::approval_request_not_pending_error(&latest));
                     }
                 };
                 if let Some(session_consent_mode) = request.session_consent_mode {
@@ -4062,11 +4071,7 @@ where
                                     request.approval_request_id
                                 )
                             })?;
-                        return Err(format!(
-                            "approval_request_not_pending: `{}` is already {}",
-                            request.approval_request_id,
-                            latest.status.as_str()
-                        ));
+                        return Err(Self::approval_request_not_pending_error(&latest));
                     }
                 };
                 let grant_scope_session_id = repo
