@@ -1810,7 +1810,7 @@ mod tests {
         write_executable_script_atomically(
             &script_path,
             &format!(
-                "#!/bin/sh\nset -eu\nLOG_PATH=\"{}\"\nprintf '%s\\n' \"$*\" >> \"$LOG_PATH\"\n{}\n",
+                "#!/bin/sh\nset -eu\nLOG_PATH=\"{}\"\nprintf '%s\\n' \"$*\" >> \"$LOG_PATH\"\ndrain_stdin() {{\n  while IFS= read -r _acpx_ignored_line; do\n    :\n  done\n}}\n{}\n",
                 log_path.display(),
                 body
             ),
@@ -2083,22 +2083,28 @@ case "$*" in
     ;;
 esac
 
-if printf '%s' "$*" | grep -q 'config show'; then
-  echo '{"agents":{"codex":{"command":"npx @zed-industries/codex-acp"}}}'
-  exit 0
-fi
+case "$*" in
+  *"config show"*)
+    echo '{"agents":{"codex":{"command":"npx @zed-industries/codex-acp"}}}'
+    exit 0
+    ;;
+esac
 
-if printf '%s' "$*" | grep -q 'sessions ensure --name'; then
-  echo '{"acpxSessionId":"sess-mcp","agentSessionId":"agent-mcp","acpxRecordId":"record-mcp"}'
-  exit 0
-fi
+case "$*" in
+  *"sessions ensure --name"*)
+    echo '{"acpxSessionId":"sess-mcp","agentSessionId":"agent-mcp","acpxRecordId":"record-mcp"}'
+    exit 0
+    ;;
+esac
 
-if printf '%s' "$*" | grep -q 'prompt --session'; then
-  cat >/dev/null
-  echo '{"type":"text","content":"proxy ok"}'
-  echo '{"type":"done"}'
-  exit 0
-fi
+case "$*" in
+  *"prompt --session"*)
+    drain_stdin
+    echo '{"type":"text","content":"proxy ok"}'
+    echo '{"type":"done"}'
+    exit 0
+    ;;
+esac
 
 exit 0
 "#,
@@ -2252,24 +2258,30 @@ case "$*" in
     ;;
 esac
 
-if printf '%s' "$*" | grep -q 'sessions ensure --name'; then
-  echo '{"acpxSessionId":"sess-42","agentSessionId":"agent-42","acpxRecordId":"record-42"}'
-  exit 0
-fi
+case "$*" in
+  *"sessions ensure --name"*)
+    echo '{"acpxSessionId":"sess-42","agentSessionId":"agent-42","acpxRecordId":"record-42"}'
+    exit 0
+    ;;
+esac
 
-if printf '%s' "$*" | grep -q 'prompt --session'; then
-  cat >/dev/null
-  echo '{"type":"text","content":"hello "}'
-  echo '{"type":"text","content":"world"}'
-  echo '{"type":"usage_update","used":7,"size":128}'
-  echo '{"type":"done"}'
-  exit 0
-fi
+case "$*" in
+  *"prompt --session"*)
+    drain_stdin
+    echo '{"type":"text","content":"hello "}'
+    echo '{"type":"text","content":"world"}'
+    echo '{"type":"usage_update","used":7,"size":128}'
+    echo '{"type":"done"}'
+    exit 0
+    ;;
+esac
 
-if printf '%s' "$*" | grep -q 'status --session'; then
-  echo '{"status":"ready","acpxSessionId":"sess-42","agentSessionId":"agent-42","acpxRecordId":"record-42"}'
-  exit 0
-fi
+case "$*" in
+  *"status --session"*)
+    echo '{"status":"ready","acpxSessionId":"sess-42","agentSessionId":"agent-42","acpxRecordId":"record-42"}'
+    exit 0
+    ;;
+esac
 
 exit 0
 "#,
@@ -2430,16 +2442,20 @@ case "$*" in
     ;;
 esac
 
-if printf '%s' "$*" | grep -q 'sessions ensure --name'; then
-  echo '{"acpxSessionId":"sess-abort","agentSessionId":"agent-abort","acpxRecordId":"record-abort"}'
-  exit 0
-fi
+case "$*" in
+  *"sessions ensure --name"*)
+    echo '{"acpxSessionId":"sess-abort","agentSessionId":"agent-abort","acpxRecordId":"record-abort"}'
+    exit 0
+    ;;
+esac
 
-if printf '%s' "$*" | grep -q 'prompt --session'; then
-  cat >/dev/null
-  sleep 30
-  exit 0
-fi
+case "$*" in
+  *"prompt --session"*)
+    drain_stdin
+    /bin/sleep 30
+    exit 0
+    ;;
+esac
 
 exit 0
 "#,
@@ -2527,15 +2543,19 @@ case "$*" in
     ;;
 esac
 
-if printf '%s' "$*" | grep -q 'sessions ensure --name'; then
-  echo '{}'
-  exit 0
-fi
+case "$*" in
+  *"sessions ensure --name"*)
+    echo '{}'
+    exit 0
+    ;;
+esac
 
-if printf '%s' "$*" | grep -q 'sessions new --name'; then
-  echo '{"acpxSessionId":"sess-fallback","agentSessionId":"agent-fallback","acpxRecordId":"record-fallback"}'
-  exit 0
-fi
+case "$*" in
+  *"sessions new --name"*)
+    echo '{"acpxSessionId":"sess-fallback","agentSessionId":"agent-fallback","acpxRecordId":"record-fallback"}'
+    exit 0
+    ;;
+esac
 
 exit 0
 "#,
