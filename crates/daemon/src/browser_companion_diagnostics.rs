@@ -318,6 +318,23 @@ mod tests {
     }
 
     #[cfg(unix)]
+    fn warm_up_browser_companion_script(script_path: &Path) {
+        let mut command = std::process::Command::new(script_path);
+        command.arg("--warmup");
+
+        let output = command
+            .output()
+            .expect("run browser companion warm-up script");
+        let succeeded = output.status.success();
+        let observed_output = observed_output(&output.stdout, &output.stderr);
+
+        assert!(
+            succeeded,
+            "browser companion warm-up should succeed before probe assertions: {observed_output}"
+        );
+    }
+
+    #[cfg(unix)]
     fn set_browser_companion_env_var(key: &str, value: &str) {
         // SAFETY: daemon tests serialize process env mutations behind
         // `lock_daemon_test_environment`, so no concurrent env readers/writers
@@ -378,8 +395,9 @@ mod tests {
         let script_path = temp_dir.join("browser-companion");
         write_browser_companion_script(
             &script_path,
-            "#!/bin/sh\necho 'loongclaw-browser-companion 11.5.0'\n",
+            "#!/bin/sh\nif [ \"$1\" = \"--warmup\" ]; then\n  exit 0\nfi\necho 'loongclaw-browser-companion 11.5.0'\n",
         );
+        warm_up_browser_companion_script(&script_path);
 
         let mut config = mvp::config::LoongClawConfig::default();
         config.tools.browser_companion.enabled = true;
@@ -412,10 +430,11 @@ mod tests {
         let script_path = temp_dir.join("browser-companion");
         let state_path = temp_dir.join("probe-state");
         let script_body = format!(
-            "#!/bin/sh\nstate_path='{}'\nif [ ! -f \"$state_path\" ]; then\n  touch \"$state_path\"\n  sleep 4\nfi\necho 'loongclaw-browser-companion 1.5.0'\n",
+            "#!/bin/sh\nif [ \"$1\" = \"--warmup\" ]; then\n  exit 0\nfi\nstate_path='{}'\nif [ ! -f \"$state_path\" ]; then\n  touch \"$state_path\"\n  sleep 4\nfi\necho 'loongclaw-browser-companion 1.5.0'\n",
             state_path.display()
         );
         write_browser_companion_script(&script_path, script_body.as_str());
+        warm_up_browser_companion_script(&script_path);
 
         let mut config = mvp::config::LoongClawConfig::default();
         config.tools.browser_companion.enabled = true;

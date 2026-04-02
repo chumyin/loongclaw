@@ -1968,6 +1968,25 @@ mod tests {
     }
 
     #[cfg(unix)]
+    fn warm_up_browser_companion_script(script_path: &Path) {
+        let mut command = std::process::Command::new(script_path);
+        command.arg("--version");
+
+        let output = command
+            .output()
+            .expect("run browser companion warm-up script");
+        let succeeded = output.status.success();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let observed_output = format!("stdout=`{}` stderr=`{}`", stdout.trim(), stderr.trim());
+
+        assert!(
+            succeeded,
+            "browser companion warm-up should succeed before doctor probe assertions: {observed_output}"
+        );
+    }
+
+    #[cfg(unix)]
     struct BrowserCompanionEnvGuard {
         _lock: MutexGuard<'static, ()>,
         saved_ready: Option<OsString>,
@@ -3449,6 +3468,7 @@ mod tests {
             &script_path,
             "#!/bin/sh\necho 'loongclaw-browser-companion 1.4.0'\n",
         );
+        warm_up_browser_companion_script(&script_path);
 
         let mut config = mvp::config::LoongClawConfig::default();
         config.tools.browser_companion.enabled = true;
@@ -3480,6 +3500,7 @@ mod tests {
             &script_path,
             "#!/bin/sh\necho 'loongclaw-browser-companion 1.5.0'\n",
         );
+        warm_up_browser_companion_script(&script_path);
 
         let mut config = mvp::config::LoongClawConfig::default();
         config.tools.browser_companion.enabled = true;
@@ -3508,6 +3529,7 @@ mod tests {
             &script_path,
             "#!/bin/sh\necho 'loongclaw-browser-companion 1.5.0'\n",
         );
+        warm_up_browser_companion_script(&script_path);
 
         let mut config = mvp::config::LoongClawConfig::default();
         config.tools.browser_companion.enabled = true;

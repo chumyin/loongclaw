@@ -6204,6 +6204,24 @@ mod tests {
         script_path
     }
 
+    fn warm_up_browser_companion_script(script_path: &Path) {
+        let mut command = std::process::Command::new(script_path);
+        command.arg("--version");
+
+        let output = command
+            .output()
+            .expect("run browser companion warm-up script");
+        let succeeded = output.status.success();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let observed_output = format!("stdout=`{}` stderr=`{}`", stdout.trim(), stderr.trim());
+
+        assert!(
+            succeeded,
+            "browser companion warm-up should succeed before onboard probe assertions: {observed_output}"
+        );
+    }
+
     impl OnboardUi for TestOnboardUi {
         fn print_line(&mut self, _line: &str) -> CliResult<()> {
             Ok(())
@@ -6599,6 +6617,7 @@ mod tests {
         let _env_guard = BrowserCompanionEnvGuard::runtime_gate_closed();
         let temp_dir = browser_companion_temp_dir("runtime-gate");
         let script_path = write_browser_companion_version_script(&temp_dir, "1.5.0");
+        warm_up_browser_companion_script(&script_path);
 
         let mut config = mvp::config::LoongClawConfig::default();
         config.provider.api_key = Some(SecretRef::Inline("inline-openai-key".to_owned()));
@@ -6623,6 +6642,7 @@ mod tests {
         let _env_guard = BrowserCompanionEnvGuard::runtime_gate_open();
         let temp_dir = browser_companion_temp_dir("runtime-ready");
         let script_path = write_browser_companion_version_script(&temp_dir, "1.5.0");
+        warm_up_browser_companion_script(&script_path);
 
         let mut config = mvp::config::LoongClawConfig::default();
         config.provider.api_key = Some(SecretRef::Inline("inline-openai-key".to_owned()));
