@@ -30,7 +30,7 @@ Catalog of design documents and architectural decisions.
 |---------|-------------|----------------|
 | Core/Extension split | Every execution plane has a core adapter and optional extensions | `kernel/src/tool.rs`, `runtime.rs`, `memory.rs`, `connector.rs` |
 | Capability-gated access | Every resource access requires an explicit capability token | `kernel/src/policy.rs` |
-| Rule of Two | Tool calls require both LLM intent and deterministic policy approval | `kernel/src/policy.rs` |
+| Rule of Two | Tool calls require both LLM intent and deterministic policy approval | `kernel/src/policy.rs`, `kernel/src/policy_ext.rs` |
 | Registry pattern | Adapters registered by name into `BTreeMap<String, Arc<dyn Trait>>` | All execution planes |
 | Generation-based revocation | `AtomicU64` threshold invalidates all tokens with generation <= N | `kernel/src/kernel.rs` |
 | Policy extension chain | Chain-of-responsibility: multiple extensions evaluated in order, any can deny | `kernel/src/policy_ext.rs` |

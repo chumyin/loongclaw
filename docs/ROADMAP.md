@@ -1,6 +1,6 @@
 # LoongClaw Roadmap
 
-Last updated: 2026-03-29
+Last updated: 2026-04-03
 
 This roadmap is execution-focused. Every stage has:
 
@@ -480,16 +480,19 @@ Candidates:
 
 Trade-off: wiring now locks in the API surface; waiting allows more usage patterns to emerge.
 
-### D2: Persistent audit sink
+### D2: Audit integrity verification and query baseline
 
-`InMemoryAuditSink` loses all audit events on process restart. For security-critical decisions (policy denials, token revocations) to be auditable post-incident, a durable sink is needed.
+LoongClaw now has durable JSONL retention and fanout support, so the main remaining audit gap is
+no longer "a persistent sink does not exist." The next gap is that the durable lane still lacks
+tamper-evident verification, operator query baseline, and richer export surfaces.
 
 Options:
-- SQLite audit table (reuse existing rusqlite dependency)
-- Append-only JSONL file (simplest, grep-friendly)
-- SIEM export lane (already planned in Stage 1)
+- add hash-chain or signing support for append-only JSONL events
+- add a small verify/query CLI over the existing durable journal
+- add richer export lanes beyond the current JSONL-first path
 
-Trade-off: SQLite is queryable but adds schema migration burden. JSONL is zero-schema but harder to query.
+Trade-off: retaining the simple JSONL baseline keeps the kernel seam small, but verification and
+query surfaces must be additive so audit usability improves without forcing a storage rewrite.
 
 ### D3: Make `persist_turn` async
 
@@ -613,8 +616,8 @@ instead of preceding it.
 
 ## Current Priority Order
 
-1. Kernel-first runtime closure and direct-path retirement
-2. Persistent audit sink and query baseline
+1. Architecture-truth closure plus kernel-first runtime closure and direct-path retirement
+2. Audit integrity verification and query baseline
 3. ACP control-plane hardening and recovery
 4. Local product control plane foundation
 5. Shared execution security tiers across process/browser/WASM lanes
