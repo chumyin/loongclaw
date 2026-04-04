@@ -21,6 +21,7 @@ use super::subagent::ConstrainedSubagentExecution;
 use super::turn_engine::TurnResult;
 
 pub(super) async fn emit_runtime_binding_trust_event_if_needed<R: ConversationRuntime + ?Sized>(
+    config: &LoongClawConfig,
     runtime: &R,
     session_id: &str,
     turn_result: &TurnResult,
@@ -41,6 +42,10 @@ pub(super) async fn emit_runtime_binding_trust_event_if_needed<R: ConversationRu
     let Some(failure_code) = failure_code else {
         return;
     };
+
+    if !config.conversation.safe_lane_emit_runtime_events {
+        return;
+    }
 
     let provenance_ref = if binding.is_kernel_bound() {
         "kernel"
