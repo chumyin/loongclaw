@@ -2748,7 +2748,6 @@ async fn prepare_provider_turn_continue_phase<R: ConversationRuntime + ?Sized>(
     )
     .await;
     emit_runtime_binding_trust_event_if_needed(
-        config,
         runtime,
         session_id,
         &lane_execution.turn_result,

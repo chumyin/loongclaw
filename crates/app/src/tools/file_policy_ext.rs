@@ -135,33 +135,25 @@ impl FilePolicyExtension {
         tool_name: &str,
         payload: &'a serde_json::Map<String, serde_json::Value>,
     ) -> Vec<&'a str> {
+        let tool_name = super::canonical_tool_name(tool_name);
         let mut raw_paths = Vec::new();
 
         if tool_name == "config.import" {
-            let input_path = payload.get("input_path");
-            let input_path = input_path.and_then(serde_json::Value::as_str).unwrap_or("");
-            if !input_path.is_empty() {
+            let input_path = trimmed_non_empty_path(payload.get("input_path"));
+            if let Some(input_path) = input_path {
                 raw_paths.push(input_path);
             }
 
-            let mode_requires_write =
-                super::config_import::config_import_mode_requires_write_object(payload);
-            if mode_requires_write {
-                let output_path = payload.get("output_path");
-                let output_path = output_path
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("");
-                if !output_path.is_empty() {
-                    raw_paths.push(output_path);
-                }
+            let output_path = trimmed_non_empty_path(payload.get("output_path"));
+            if let Some(output_path) = output_path {
+                raw_paths.push(output_path);
             }
 
             return raw_paths;
         }
 
-        let raw_path = payload.get("path");
-        let raw_path = raw_path.and_then(serde_json::Value::as_str).unwrap_or("");
-        if !raw_path.is_empty() {
+        let raw_path = trimmed_non_empty_path(payload.get("path"));
+        if let Some(raw_path) = raw_path {
             raw_paths.push(raw_path);
         }
 
@@ -215,6 +207,13 @@ fn reconstruct_from_existing_ancestor(path: &Path) -> Option<PathBuf> {
     }
 
     Some(reconstructed)
+}
+
+fn trimmed_non_empty_path<'a>(value: Option<&'a serde_json::Value>) -> Option<&'a str> {
+    let raw_value = value.and_then(serde_json::Value::as_str);
+    let trimmed_value = raw_value.map(str::trim);
+
+    trimmed_value.filter(|value| !value.is_empty())
 }
 
 pub(crate) fn authorize_direct_file_payload(
@@ -637,6 +636,32 @@ mod tests {
     }
 
     #[test]
+    fn config_import_plan_checks_trimmed_output_preview_path() {
+        let root_dir = tempfile::tempdir().expect("tempdir");
+        let ext = FilePolicyExtension::new(Some(root_dir.path().to_path_buf()));
+        let pack = test_pack();
+        let token = token_with_caps(BTreeSet::from([
+            Capability::InvokeTool,
+            Capability::FilesystemRead,
+        ]));
+        let caps = BTreeSet::from([Capability::InvokeTool]);
+        let params = json!({
+            "tool_name": "config.import",
+            "payload": {
+                "mode": "plan",
+                "input_path": "subdir/config.toml",
+                "output_path": " ../../etc/passwd "
+            }
+        });
+        let ctx = make_context(&pack, &token, &caps, Some(&params));
+        let result = ext.authorize_extension(&ctx);
+        assert!(matches!(
+            result.unwrap_err(),
+            PolicyError::ExtensionDenied { .. }
+        ));
+    }
+
+    #[test]
     fn config_import_apply_requires_filesystem_write() {
         let ext = FilePolicyExtension::new(None);
         let pack = test_pack();
@@ -669,6 +694,30 @@ mod tests {
             !ext.path_escapes_root("nested/generated/loongclaw.toml"),
             "nested new path under the file root should stay allowed"
         );
+    }
+
+    #[test]
+    fn direct_file_payload_authorization_accepts_config_import_aliases() {
+        let root_dir = tempfile::tempdir().expect("tempdir");
+        let runtime_config = crate::tools::runtime_config::ToolRuntimeConfig {
+            file_root: Some(root_dir.path().to_path_buf()),
+            ..crate::tools::runtime_config::ToolRuntimeConfig::default()
+        };
+        let payload_value = json!({
+            "mode": "apply",
+            "input_path": "legacy-config.toml",
+            "output_path": "../outside.toml"
+        });
+        let payload = payload_value
+            .as_object()
+            .cloned()
+            .expect("payload should be an object");
+
+        let error = authorize_direct_file_payload("claw.migrate", &payload, &runtime_config)
+            .expect_err("alias should still reuse config.import direct file policy checks");
+
+        assert!(error.starts_with("policy_denied: "));
+        assert!(error.contains("outside.toml"));
     }
 
     // ── Symlink-aware filesystem tests ──────────────────────────────────
