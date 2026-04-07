@@ -1630,7 +1630,7 @@ mod tests {
 
     #[cfg(feature = "memory-sqlite")]
     #[tokio::test]
-    async fn compact_stage_skips_for_registry_selected_system_without_executor() {
+    async fn compact_stage_remains_runtime_owned_for_registry_selected_system_without_executor() {
         register_memory_system(REGISTRY_RETRIEVE_ONLY_COMPACT_SYSTEM_ID, || {
             Box::new(RegistryRetrieveOnlyMemorySystem {
                 id: REGISTRY_RETRIEVE_ONLY_COMPACT_SYSTEM_ID,

@@ -125,6 +125,17 @@ where
         ));
     }
 
+    {
+        let guard = registry()
+            .read()
+            .map_err(|_error| "memory system registry lock poisoned".to_owned())?;
+        let already_registered = guard.contains_key(&normalized);
+        if already_registered {
+            let error = format!("memory system `{normalized}` is already registered");
+            return Err(error);
+        }
+    }
+
     let system = factory();
     let runtime_id = super::normalize_system_id(system.id())
         .ok_or_else(|| "memory system runtime id must not be empty".to_owned())?;
@@ -142,11 +153,6 @@ where
     let mut guard = registry()
         .write()
         .map_err(|_error| "memory system registry lock poisoned".to_owned())?;
-    let already_registered = guard.contains_key(&normalized);
-    if already_registered {
-        let error = format!("memory system `{normalized}` is already registered");
-        return Err(error);
-    }
     guard.insert(normalized, Arc::new(factory));
     Ok(())
 }
@@ -268,6 +274,8 @@ pub fn collect_memory_system_runtime_snapshot(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use super::*;
     use crate::memory::{MEMORY_SYSTEM_API_VERSION, MemoryRecallMode, MemorySystemCapability};
     use crate::test_support::ScopedEnv;
@@ -328,6 +336,22 @@ mod tests {
                 "registry-duplicate-check",
                 [MemorySystemCapability::PromptHydration],
                 "Duplicate registry test system",
+            )
+        }
+    }
+
+    struct DuplicateSideEffectRegistrySystem;
+
+    impl MemorySystem for DuplicateSideEffectRegistrySystem {
+        fn id(&self) -> &'static str {
+            "registry-duplicate-side-effect"
+        }
+
+        fn metadata(&self) -> MemorySystemMetadata {
+            MemorySystemMetadata::new(
+                "registry-duplicate-side-effect",
+                [MemorySystemCapability::PromptHydration],
+                "Duplicate side-effect registry test system",
             )
         }
     }
@@ -452,6 +476,27 @@ mod tests {
         .expect_err("duplicate custom ids should fail");
 
         assert!(error.contains("already registered"), "error: {error}");
+    }
+
+    #[test]
+    fn registry_rejects_duplicate_custom_id_without_invoking_factory() {
+        static DUPLICATE_FACTORY_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+        register_memory_system("registry-duplicate-side-effect", || {
+            Box::new(DuplicateSideEffectRegistrySystem)
+        })
+        .expect("register baseline duplicate side-effect system");
+
+        DUPLICATE_FACTORY_CALLS.store(0, Ordering::SeqCst);
+
+        let error = register_memory_system("registry-duplicate-side-effect", || {
+            DUPLICATE_FACTORY_CALLS.fetch_add(1, Ordering::SeqCst);
+            Box::new(DuplicateSideEffectRegistrySystem)
+        })
+        .expect_err("duplicate side-effect registration should fail");
+
+        assert!(error.contains("already registered"), "error: {error}");
+        assert_eq!(DUPLICATE_FACTORY_CALLS.load(Ordering::SeqCst), 0);
     }
 
     #[test]
