@@ -234,8 +234,11 @@ pub struct RuntimeExperimentCompareReport {
     pub mutation: RuntimeExperimentMutationSummary,
     pub baseline_snapshot: RuntimeExperimentSnapshotSummary,
     pub baseline_trajectories: Vec<RuntimeExperimentTrajectorySummary>,
+    pub baseline_trajectory_evidence: RuntimeExperimentTrajectoryEvidenceDigest,
     pub result_snapshot: Option<RuntimeExperimentSnapshotSummary>,
     pub result_trajectories: Vec<RuntimeExperimentTrajectorySummary>,
+    pub result_trajectory_evidence: RuntimeExperimentTrajectoryEvidenceDigest,
+    pub trajectory_delta: Option<RuntimeExperimentTrajectoryEvidenceDelta>,
     pub evaluation: Option<RuntimeExperimentEvaluation>,
     pub compare_mode: RuntimeExperimentCompareMode,
     pub snapshot_delta: Option<RuntimeExperimentSnapshotDelta>,
@@ -278,6 +281,82 @@ pub struct RuntimeExperimentEvidenceArtifactDocument {
     pub result_snapshot: Option<RuntimeExperimentEvidenceSnapshotAttachment>,
     pub baseline_trajectories: Vec<RuntimeExperimentEvidenceTrajectoryAttachment>,
     pub result_trajectories: Vec<RuntimeExperimentEvidenceTrajectoryAttachment>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeExperimentTrajectoryEvidenceDigest {
+    pub artifact_count: usize,
+    pub requested_session_ids: Vec<String>,
+    pub export_scopes: Vec<String>,
+    pub session_count: usize,
+    pub descendant_session_count: usize,
+    pub exported_turn_count: usize,
+    pub canonical_record_count: usize,
+    pub event_count: usize,
+    pub approval_request_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeExperimentCountCompare {
+    pub before: usize,
+    pub after: usize,
+}
+
+impl RuntimeExperimentCountCompare {
+    fn changed(&self) -> bool {
+        self.before != self.after
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeExperimentTrajectoryEvidenceDelta {
+    pub artifact_paths: RuntimeExperimentSetCompare,
+    pub requested_session_ids: RuntimeExperimentSetCompare,
+    pub export_scopes: RuntimeExperimentSetCompare,
+    pub artifact_count: RuntimeExperimentCountCompare,
+    pub session_count: RuntimeExperimentCountCompare,
+    pub descendant_session_count: RuntimeExperimentCountCompare,
+    pub exported_turn_count: RuntimeExperimentCountCompare,
+    pub canonical_record_count: RuntimeExperimentCountCompare,
+    pub event_count: RuntimeExperimentCountCompare,
+    pub approval_request_count: RuntimeExperimentCountCompare,
+}
+
+impl RuntimeExperimentTrajectoryEvidenceDelta {
+    fn changed_dimensions(&self) -> Vec<String> {
+        let mut dimensions = Vec::new();
+        if self.artifact_paths.changed() {
+            dimensions.push("artifact_paths".to_owned());
+        }
+        if self.requested_session_ids.changed() {
+            dimensions.push("requested_session_ids".to_owned());
+        }
+        if self.export_scopes.changed() {
+            dimensions.push("export_scopes".to_owned());
+        }
+        if self.artifact_count.changed() {
+            dimensions.push("artifact_count".to_owned());
+        }
+        if self.session_count.changed() {
+            dimensions.push("session_count".to_owned());
+        }
+        if self.descendant_session_count.changed() {
+            dimensions.push("descendant_session_count".to_owned());
+        }
+        if self.exported_turn_count.changed() {
+            dimensions.push("exported_turn_count".to_owned());
+        }
+        if self.canonical_record_count.changed() {
+            dimensions.push("canonical_record_count".to_owned());
+        }
+        if self.event_count.changed() {
+            dimensions.push("event_count".to_owned());
+        }
+        if self.approval_request_count.changed() {
+            dimensions.push("approval_request_count".to_owned());
+        }
+        dimensions
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -520,6 +599,16 @@ pub fn execute_runtime_experiment_compare_command(
     options: RuntimeExperimentCompareCommandOptions,
 ) -> CliResult<RuntimeExperimentCompareReport> {
     let artifact = load_runtime_experiment_artifact(Path::new(&options.run))?;
+    let baseline_trajectories = artifact.baseline_trajectories.clone();
+    let result_trajectories = artifact.result_trajectories.clone();
+    let baseline_trajectory_evidence =
+        build_runtime_experiment_trajectory_evidence_digest(&baseline_trajectories);
+    let result_trajectory_evidence =
+        build_runtime_experiment_trajectory_evidence_digest(&result_trajectories);
+    let trajectory_delta = build_runtime_experiment_trajectory_evidence_delta(
+        &baseline_trajectories,
+        &result_trajectories,
+    );
     let snapshot_delta = load_runtime_experiment_compare_snapshot_delta(
         &artifact,
         &options.run,
@@ -541,9 +630,12 @@ pub fn execute_runtime_experiment_compare_command(
         decision: artifact.decision,
         mutation: artifact.mutation,
         baseline_snapshot: artifact.baseline_snapshot,
-        baseline_trajectories: artifact.baseline_trajectories,
+        baseline_trajectories,
+        baseline_trajectory_evidence,
         result_snapshot: artifact.result_snapshot,
-        result_trajectories: artifact.result_trajectories,
+        result_trajectories,
+        result_trajectory_evidence,
+        trajectory_delta,
         evaluation: artifact.evaluation,
         compare_mode,
         snapshot_delta,
@@ -1167,6 +1259,143 @@ fn build_runtime_experiment_trajectory_summary(
     }
 }
 
+fn build_runtime_experiment_trajectory_evidence_digest(
+    summaries: &[RuntimeExperimentTrajectorySummary],
+) -> RuntimeExperimentTrajectoryEvidenceDigest {
+    let artifact_count = summaries.len();
+    let requested_session_ids =
+        summarize_runtime_experiment_trajectory_requested_sessions(summaries);
+    let export_scopes = summarize_runtime_experiment_trajectory_export_scopes(summaries);
+    let session_count = summaries.iter().fold(0_usize, |count, summary| {
+        count.saturating_add(summary.session_count)
+    });
+    let descendant_session_count = summaries.iter().fold(0_usize, |count, summary| {
+        count.saturating_add(summary.descendant_session_count)
+    });
+    let exported_turn_count = summaries.iter().fold(0_usize, |count, summary| {
+        count.saturating_add(summary.exported_turn_count)
+    });
+    let canonical_record_count = summaries.iter().fold(0_usize, |count, summary| {
+        count.saturating_add(summary.canonical_record_count)
+    });
+    let event_count = summaries.iter().fold(0_usize, |count, summary| {
+        count.saturating_add(summary.event_count)
+    });
+    let approval_request_count = summaries.iter().fold(0_usize, |count, summary| {
+        count.saturating_add(summary.approval_request_count)
+    });
+
+    RuntimeExperimentTrajectoryEvidenceDigest {
+        artifact_count,
+        requested_session_ids,
+        export_scopes,
+        session_count,
+        descendant_session_count,
+        exported_turn_count,
+        canonical_record_count,
+        event_count,
+        approval_request_count,
+    }
+}
+
+fn summarize_runtime_experiment_trajectory_requested_sessions(
+    summaries: &[RuntimeExperimentTrajectorySummary],
+) -> Vec<String> {
+    summaries
+        .iter()
+        .map(|summary| summary.requested_session_id.clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn summarize_runtime_experiment_trajectory_export_scopes(
+    summaries: &[RuntimeExperimentTrajectorySummary],
+) -> Vec<String> {
+    summaries
+        .iter()
+        .map(|summary| summary.export_scope.clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn summarize_runtime_experiment_trajectory_artifact_paths(
+    summaries: &[RuntimeExperimentTrajectorySummary],
+) -> Vec<String> {
+    summaries
+        .iter()
+        .map(|summary| summary.artifact_path.clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn build_runtime_experiment_trajectory_evidence_delta(
+    baseline: &[RuntimeExperimentTrajectorySummary],
+    result: &[RuntimeExperimentTrajectorySummary],
+) -> Option<RuntimeExperimentTrajectoryEvidenceDelta> {
+    if baseline.is_empty() && result.is_empty() {
+        return None;
+    }
+
+    let baseline_digest = build_runtime_experiment_trajectory_evidence_digest(baseline);
+    let result_digest = build_runtime_experiment_trajectory_evidence_digest(result);
+    let artifact_paths = compare_string_sets(
+        summarize_runtime_experiment_trajectory_artifact_paths(baseline),
+        summarize_runtime_experiment_trajectory_artifact_paths(result),
+    );
+    let requested_session_ids = compare_string_sets(
+        baseline_digest.requested_session_ids.clone(),
+        result_digest.requested_session_ids.clone(),
+    );
+    let export_scopes = compare_string_sets(
+        baseline_digest.export_scopes.clone(),
+        result_digest.export_scopes.clone(),
+    );
+    let artifact_count = RuntimeExperimentCountCompare {
+        before: baseline_digest.artifact_count,
+        after: result_digest.artifact_count,
+    };
+    let session_count = RuntimeExperimentCountCompare {
+        before: baseline_digest.session_count,
+        after: result_digest.session_count,
+    };
+    let descendant_session_count = RuntimeExperimentCountCompare {
+        before: baseline_digest.descendant_session_count,
+        after: result_digest.descendant_session_count,
+    };
+    let exported_turn_count = RuntimeExperimentCountCompare {
+        before: baseline_digest.exported_turn_count,
+        after: result_digest.exported_turn_count,
+    };
+    let canonical_record_count = RuntimeExperimentCountCompare {
+        before: baseline_digest.canonical_record_count,
+        after: result_digest.canonical_record_count,
+    };
+    let event_count = RuntimeExperimentCountCompare {
+        before: baseline_digest.event_count,
+        after: result_digest.event_count,
+    };
+    let approval_request_count = RuntimeExperimentCountCompare {
+        before: baseline_digest.approval_request_count,
+        after: result_digest.approval_request_count,
+    };
+
+    Some(RuntimeExperimentTrajectoryEvidenceDelta {
+        artifact_paths,
+        requested_session_ids,
+        export_scopes,
+        artifact_count,
+        session_count,
+        descendant_session_count,
+        exported_turn_count,
+        canonical_record_count,
+        event_count,
+        approval_request_count,
+    })
+}
+
 fn canonicalize_snapshot_artifact_path(path: &str) -> CliResult<String> {
     fs::canonicalize(path)
         .map(|resolved| resolved.display().to_string())
@@ -1671,12 +1900,28 @@ pub fn render_runtime_experiment_compare_text(report: &RuntimeExperimentCompareR
             render_runtime_experiment_trajectory_paths(&report.baseline_trajectories)
         ),
         format!(
+            "baseline_trajectory_requested_sessions={}",
+            render_string_values(&report.baseline_trajectory_evidence.requested_session_ids)
+        ),
+        format!(
+            "baseline_trajectory_export_scopes={}",
+            render_string_values(&report.baseline_trajectory_evidence.export_scopes)
+        ),
+        format!(
             "result_trajectory_count={}",
             report.result_trajectories.len()
         ),
         format!(
             "result_trajectory_paths={}",
             render_runtime_experiment_trajectory_paths(&report.result_trajectories)
+        ),
+        format!(
+            "result_trajectory_requested_sessions={}",
+            render_string_values(&report.result_trajectory_evidence.requested_session_ids)
+        ),
+        format!(
+            "result_trajectory_export_scopes={}",
+            render_string_values(&report.result_trajectory_evidence.export_scopes)
         ),
         format!("compare_mode={}", render_compare_mode(report.compare_mode)),
         format!("mutation_summary={}", report.mutation.summary),
@@ -1685,6 +1930,64 @@ pub fn render_runtime_experiment_compare_text(report: &RuntimeExperimentCompareR
             render_string_values(&report.mutation.tags)
         ),
     ];
+
+    if let Some(trajectory_delta) = report.trajectory_delta.as_ref() {
+        let changed_dimensions = trajectory_delta.changed_dimensions();
+        lines.push(format!(
+            "trajectory_delta_changed_dimensions={}",
+            render_string_values(&changed_dimensions)
+        ));
+        push_count_compare_line(
+            &mut lines,
+            "trajectory_artifact_count",
+            &trajectory_delta.artifact_count,
+        );
+        push_set_compare_lines(
+            &mut lines,
+            "trajectory_artifact_paths",
+            &trajectory_delta.artifact_paths,
+        );
+        push_set_compare_lines(
+            &mut lines,
+            "trajectory_requested_session_ids",
+            &trajectory_delta.requested_session_ids,
+        );
+        push_set_compare_lines(
+            &mut lines,
+            "trajectory_export_scopes",
+            &trajectory_delta.export_scopes,
+        );
+        push_count_compare_line(
+            &mut lines,
+            "trajectory_session_count",
+            &trajectory_delta.session_count,
+        );
+        push_count_compare_line(
+            &mut lines,
+            "trajectory_descendant_session_count",
+            &trajectory_delta.descendant_session_count,
+        );
+        push_count_compare_line(
+            &mut lines,
+            "trajectory_exported_turn_count",
+            &trajectory_delta.exported_turn_count,
+        );
+        push_count_compare_line(
+            &mut lines,
+            "trajectory_canonical_record_count",
+            &trajectory_delta.canonical_record_count,
+        );
+        push_count_compare_line(
+            &mut lines,
+            "trajectory_event_count",
+            &trajectory_delta.event_count,
+        );
+        push_count_compare_line(
+            &mut lines,
+            "trajectory_approval_request_count",
+            &trajectory_delta.approval_request_count,
+        );
+    }
 
     if let Some(snapshot_delta) = report.snapshot_delta.as_ref() {
         lines.push(format!(
@@ -1937,6 +2240,16 @@ fn push_set_compare_lines(
             "{name}_removed={}",
             render_string_values(&compare.removed)
         ));
+    }
+}
+
+fn push_count_compare_line(
+    lines: &mut Vec<String>,
+    name: &str,
+    compare: &RuntimeExperimentCountCompare,
+) {
+    if compare.changed() {
+        lines.push(format!("{name}={} -> {}", compare.before, compare.after));
     }
 }
 
