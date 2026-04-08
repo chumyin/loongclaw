@@ -33,6 +33,8 @@ pub enum RuntimeExperimentCommands {
 pub struct RuntimeExperimentStartCommandOptions {
     #[arg(long)]
     pub snapshot: String,
+    #[arg(long = "baseline-trajectory")]
+    pub baseline_trajectory: Vec<String>,
     #[arg(long)]
     pub output: String,
     #[arg(long)]
@@ -53,6 +55,8 @@ pub struct RuntimeExperimentFinishCommandOptions {
     pub run: String,
     #[arg(long)]
     pub result_snapshot: String,
+    #[arg(long = "result-trajectory")]
+    pub result_trajectory: Vec<String>,
     #[arg(long)]
     pub evaluation_summary: String,
     #[arg(long = "metric")]
@@ -167,6 +171,19 @@ pub struct RuntimeExperimentSnapshotSummary {
     pub capability_snapshot_sha256: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeExperimentTrajectorySummary {
+    pub artifact_path: String,
+    pub requested_session_id: String,
+    pub export_scope: String,
+    pub session_count: usize,
+    pub descendant_session_count: usize,
+    pub exported_turn_count: usize,
+    pub canonical_record_count: usize,
+    pub event_count: usize,
+    pub approval_request_count: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RuntimeExperimentEvaluation {
     pub summary: String,
@@ -186,7 +203,11 @@ pub struct RuntimeExperimentArtifactDocument {
     pub decision: RuntimeExperimentDecision,
     pub mutation: RuntimeExperimentMutationSummary,
     pub baseline_snapshot: RuntimeExperimentSnapshotSummary,
+    #[serde(default)]
+    pub baseline_trajectories: Vec<RuntimeExperimentTrajectorySummary>,
     pub result_snapshot: Option<RuntimeExperimentSnapshotSummary>,
+    #[serde(default)]
+    pub result_trajectories: Vec<RuntimeExperimentTrajectorySummary>,
     pub evaluation: Option<RuntimeExperimentEvaluation>,
 }
 
@@ -199,7 +220,9 @@ pub struct RuntimeExperimentCompareReport {
     pub decision: RuntimeExperimentDecision,
     pub mutation: RuntimeExperimentMutationSummary,
     pub baseline_snapshot: RuntimeExperimentSnapshotSummary,
+    pub baseline_trajectories: Vec<RuntimeExperimentTrajectorySummary>,
     pub result_snapshot: Option<RuntimeExperimentSnapshotSummary>,
+    pub result_trajectories: Vec<RuntimeExperimentTrajectorySummary>,
     pub evaluation: Option<RuntimeExperimentEvaluation>,
     pub compare_mode: RuntimeExperimentCompareMode,
     pub snapshot_delta: Option<RuntimeExperimentSnapshotDelta>,
@@ -345,6 +368,8 @@ pub fn execute_runtime_experiment_start_command(
     let mutation_summary = required_trimmed_arg("mutation_summary", &options.mutation_summary)?;
     let tags = normalize_repeated_values(&options.tag);
     let baseline_snapshot = build_snapshot_summary(&baseline, Some(Path::new(&options.snapshot)))?;
+    let baseline_trajectories =
+        collect_runtime_experiment_trajectory_summaries(&options.baseline_trajectory)?;
     let run_id = compute_run_id(
         &created_at,
         label.as_deref(),
@@ -371,7 +396,9 @@ pub fn execute_runtime_experiment_start_command(
             tags,
         },
         baseline_snapshot,
+        baseline_trajectories,
         result_snapshot: None,
+        result_trajectories: Vec::new(),
         evaluation: None,
     };
     persist_runtime_experiment_artifact(&options.output, &artifact)?;
@@ -415,10 +442,13 @@ pub fn execute_runtime_experiment_finish_command(
         RuntimeExperimentFinishStatus::Aborted => RuntimeExperimentStatus::Aborted,
     };
     artifact.decision = options.decision;
+    let result_trajectories =
+        collect_runtime_experiment_trajectory_summaries(&options.result_trajectory)?;
     artifact.result_snapshot = Some(build_snapshot_summary(
         &result_snapshot,
         Some(Path::new(&options.result_snapshot)),
     )?);
+    artifact.result_trajectories = result_trajectories;
     artifact.evaluation = Some(RuntimeExperimentEvaluation {
         summary: required_trimmed_arg("evaluation_summary", &options.evaluation_summary)?,
         metrics: parse_metrics(&options.metric)?,
@@ -459,7 +489,9 @@ pub fn execute_runtime_experiment_compare_command(
         decision: artifact.decision,
         mutation: artifact.mutation,
         baseline_snapshot: artifact.baseline_snapshot,
+        baseline_trajectories: artifact.baseline_trajectories,
         result_snapshot: artifact.result_snapshot,
+        result_trajectories: artifact.result_trajectories,
         evaluation: artifact.evaluation,
         compare_mode,
         snapshot_delta,
@@ -845,6 +877,32 @@ fn parse_metrics(values: &[String]) -> CliResult<BTreeMap<String, f64>> {
     Ok(metrics)
 }
 
+fn collect_runtime_experiment_trajectory_summaries(
+    raw_paths: &[String],
+) -> CliResult<Vec<RuntimeExperimentTrajectorySummary>> {
+    let mut seen_paths = BTreeSet::new();
+    let mut summaries = Vec::new();
+
+    for raw_path in raw_paths {
+        let trimmed_path = raw_path.trim();
+        if trimmed_path.is_empty() {
+            return Err("runtime experiment trajectory path entries cannot be empty".to_owned());
+        }
+
+        let canonical_path = canonicalize_runtime_trajectory_artifact_path(trimmed_path)?;
+        if !seen_paths.insert(canonical_path.clone()) {
+            continue;
+        }
+
+        let canonical_path_buf = PathBuf::from(canonical_path.clone());
+        let artifact = load_runtime_trajectory_artifact(canonical_path_buf.as_path())?;
+        let summary = build_runtime_experiment_trajectory_summary(canonical_path, &artifact);
+        summaries.push(summary);
+    }
+
+    Ok(summaries)
+}
+
 fn build_snapshot_summary(
     artifact: &RuntimeSnapshotArtifactDocument,
     artifact_path: Option<&Path>,
@@ -866,12 +924,133 @@ fn build_snapshot_summary(
     })
 }
 
+fn load_runtime_trajectory_artifact(
+    path: &Path,
+) -> CliResult<crate::mvp::session::trajectory::SessionTrajectoryArtifact> {
+    let encoded = fs::read_to_string(path).map_err(|error| {
+        format!(
+            "read runtime trajectory artifact {} failed: {error}",
+            path.display()
+        )
+    })?;
+    let artifact =
+        serde_json::from_str::<crate::mvp::session::trajectory::SessionTrajectoryArtifact>(
+            &encoded,
+        )
+        .map_err(|error| {
+            format!(
+                "decode runtime trajectory artifact {} failed: {error}",
+                path.display()
+            )
+        })?;
+    validate_runtime_trajectory_artifact(path, &artifact)?;
+    Ok(artifact)
+}
+
+fn validate_runtime_trajectory_artifact(
+    path: &Path,
+    artifact: &crate::mvp::session::trajectory::SessionTrajectoryArtifact,
+) -> CliResult<()> {
+    let expected_version =
+        crate::mvp::session::trajectory::SESSION_TRAJECTORY_ARTIFACT_JSON_SCHEMA_VERSION;
+    let actual_version = artifact.schema.version;
+    if actual_version != expected_version {
+        return Err(format!(
+            "runtime trajectory artifact {} uses unsupported schema version {}; expected {}",
+            path.display(),
+            actual_version,
+            expected_version
+        ));
+    }
+
+    let expected_surface = crate::mvp::session::trajectory::SESSION_TRAJECTORY_ARTIFACT_SURFACE;
+    let actual_surface = artifact.schema.surface.as_str();
+    if actual_surface != expected_surface {
+        return Err(format!(
+            "runtime trajectory artifact {} uses unsupported schema surface `{}`; expected `{}`",
+            path.display(),
+            actual_surface,
+            expected_surface
+        ));
+    }
+
+    let expected_purpose = crate::mvp::session::trajectory::SESSION_TRAJECTORY_ARTIFACT_PURPOSE;
+    let actual_purpose = artifact.schema.purpose.as_str();
+    if actual_purpose != expected_purpose {
+        return Err(format!(
+            "runtime trajectory artifact {} uses unsupported schema purpose `{}`; expected `{}`",
+            path.display(),
+            actual_purpose,
+            expected_purpose
+        ));
+    }
+
+    Ok(())
+}
+
+fn build_runtime_experiment_trajectory_summary(
+    artifact_path: String,
+    artifact: &crate::mvp::session::trajectory::SessionTrajectoryArtifact,
+) -> RuntimeExperimentTrajectorySummary {
+    let requested_session_id = artifact.effective_requested_session_id().to_owned();
+    let export_scope = artifact.effective_export_scope().as_str().to_owned();
+    let session_count = artifact.effective_session_count();
+    let descendant_session_count = artifact.effective_descendant_session_count();
+    let exported_turn_count = artifact
+        .all_session_exports()
+        .iter()
+        .fold(0_usize, |count, export| {
+            count.saturating_add(export.exported_turn_count)
+        });
+    let canonical_record_count = artifact
+        .all_session_exports()
+        .iter()
+        .fold(0_usize, |count, export| {
+            count.saturating_add(export.canonical_record_count)
+        });
+    let event_count = artifact
+        .all_session_exports()
+        .iter()
+        .fold(0_usize, |count, export| {
+            count.saturating_add(export.event_count)
+        });
+    let approval_request_count = artifact
+        .all_session_exports()
+        .iter()
+        .fold(0_usize, |count, export| {
+            count.saturating_add(export.approval_request_count)
+        });
+
+    RuntimeExperimentTrajectorySummary {
+        artifact_path,
+        requested_session_id,
+        export_scope,
+        session_count,
+        descendant_session_count,
+        exported_turn_count,
+        canonical_record_count,
+        event_count,
+        approval_request_count,
+    }
+}
+
 fn canonicalize_snapshot_artifact_path(path: &str) -> CliResult<String> {
     fs::canonicalize(path)
         .map(|resolved| resolved.display().to_string())
         .map_err(|error| {
             format!(
                 "canonicalize snapshot artifact path {} failed: {error}",
+                path
+            )
+        })
+}
+
+fn canonicalize_runtime_trajectory_artifact_path(path: &str) -> CliResult<String> {
+    fs::canonicalize(path)
+        .map(|resolved| resolved.display().to_string())
+        .map_err(|error| {
+            format!(
+                "canonicalize runtime trajectory artifact path {} failed: {error}",
                 path
             )
         })
@@ -1258,6 +1437,22 @@ pub fn render_runtime_experiment_text(artifact: &RuntimeExperimentArtifactDocume
                 .and_then(|snapshot| snapshot.artifact_path.as_deref())
                 .unwrap_or("-")
         ),
+        format!(
+            "baseline_trajectory_count={}",
+            artifact.baseline_trajectories.len()
+        ),
+        format!(
+            "baseline_trajectory_paths={}",
+            render_runtime_experiment_trajectory_paths(&artifact.baseline_trajectories)
+        ),
+        format!(
+            "result_trajectory_count={}",
+            artifact.result_trajectories.len()
+        ),
+        format!(
+            "result_trajectory_paths={}",
+            render_runtime_experiment_trajectory_paths(&artifact.result_trajectories)
+        ),
         format!("mutation_summary={}", artifact.mutation.summary),
         format!(
             "mutation_tags={}",
@@ -1306,6 +1501,22 @@ pub fn render_runtime_experiment_compare_text(report: &RuntimeExperimentCompareR
                 .as_ref()
                 .and_then(|snapshot| snapshot.artifact_path.as_deref())
                 .unwrap_or("-")
+        ),
+        format!(
+            "baseline_trajectory_count={}",
+            report.baseline_trajectories.len()
+        ),
+        format!(
+            "baseline_trajectory_paths={}",
+            render_runtime_experiment_trajectory_paths(&report.baseline_trajectories)
+        ),
+        format!(
+            "result_trajectory_count={}",
+            report.result_trajectories.len()
+        ),
+        format!(
+            "result_trajectory_paths={}",
+            render_runtime_experiment_trajectory_paths(&report.result_trajectories)
         ),
         format!("compare_mode={}", render_compare_mode(report.compare_mode)),
         format!("mutation_summary={}", report.mutation.summary),
@@ -1399,6 +1610,16 @@ fn render_evaluation_summary(evaluation: Option<&RuntimeExperimentEvaluation>) -
         .to_owned()
 }
 
+fn render_runtime_experiment_trajectory_paths(
+    summaries: &[RuntimeExperimentTrajectorySummary],
+) -> String {
+    let trajectory_paths = summaries
+        .iter()
+        .map(|summary| summary.artifact_path.as_str())
+        .collect::<Vec<_>>();
+    render_string_values_with_separator(trajectory_paths.as_slice(), " | ")
+}
+
 fn render_metrics(evaluation: Option<&RuntimeExperimentEvaluation>) -> String {
     evaluation
         .map(|evaluation| {
@@ -1433,6 +1654,14 @@ fn render_string_values(values: &[String]) -> String {
         "-".to_owned()
     } else {
         values.join(",")
+    }
+}
+
+fn render_string_values_with_separator(values: &[&str], separator: &str) -> String {
+    if values.is_empty() {
+        "-".to_owned()
+    } else {
+        values.join(separator)
     }
 }
 

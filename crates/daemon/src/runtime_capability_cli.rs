@@ -175,6 +175,10 @@ pub struct RuntimeCapabilitySourceRunSummary {
     pub warnings: Vec<String>,
     pub snapshot_delta: Option<RuntimeExperimentSnapshotDelta>,
     pub artifact_path: Option<String>,
+    #[serde(default)]
+    pub baseline_trajectory_artifact_paths: Vec<String>,
+    #[serde(default)]
+    pub result_trajectory_artifact_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -293,6 +297,7 @@ pub struct RuntimeCapabilityPromotionProvenance {
     pub source_run_ids: Vec<String>,
     pub experiment_ids: Vec<String>,
     pub source_run_artifact_paths: Vec<String>,
+    pub source_run_trajectory_artifact_paths: Vec<String>,
     pub latest_candidate_at: Option<String>,
     pub latest_reviewed_at: Option<String>,
 }
@@ -713,6 +718,16 @@ fn build_source_run_summary(
         warnings: evaluation.warnings.clone(),
         snapshot_delta,
         artifact_path: artifact_path.map(canonicalize_existing_path).transpose()?,
+        baseline_trajectory_artifact_paths: run
+            .baseline_trajectories
+            .iter()
+            .map(|summary| summary.artifact_path.clone())
+            .collect(),
+        result_trajectory_artifact_paths: run
+            .result_trajectories
+            .iter()
+            .map(|summary| summary.artifact_path.clone())
+            .collect(),
     })
 }
 
@@ -1644,6 +1659,20 @@ pub fn render_runtime_capability_text(artifact: &RuntimeCapabilityArtifactDocume
                 .unwrap_or_else(|| "-".to_owned())
         ),
         format!(
+            "source_baseline_trajectory_paths={}",
+            render_string_values_with_separator(
+                &artifact.source_run.baseline_trajectory_artifact_paths,
+                " | "
+            )
+        ),
+        format!(
+            "source_result_trajectory_paths={}",
+            render_string_values_with_separator(
+                &artifact.source_run.result_trajectory_artifact_paths,
+                " | "
+            )
+        ),
+        format!(
             "review_summary={}",
             artifact
                 .review
@@ -2032,6 +2061,24 @@ fn build_runtime_capability_promotion_provenance(
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect(),
+        source_run_trajectory_artifact_paths: ordered_artifacts
+            .iter()
+            .flat_map(|artifact| {
+                let baseline_paths = artifact
+                    .source_run
+                    .baseline_trajectory_artifact_paths
+                    .iter()
+                    .cloned();
+                let result_paths = artifact
+                    .source_run
+                    .result_trajectory_artifact_paths
+                    .iter()
+                    .cloned();
+                baseline_paths.chain(result_paths)
+            })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect(),
         latest_candidate_at: evidence.latest_candidate_at.clone(),
         latest_reviewed_at: evidence.latest_reviewed_at.clone(),
     }
@@ -2159,6 +2206,13 @@ pub fn render_runtime_capability_promotion_plan_text(
             "provenance_source_run_artifact_paths={}",
             render_string_values_with_separator(
                 &report.provenance.source_run_artifact_paths,
+                " | "
+            )
+        ),
+        format!(
+            "provenance_source_run_trajectory_artifact_paths={}",
+            render_string_values_with_separator(
+                &report.provenance.source_run_trajectory_artifact_paths,
                 " | "
             )
         ),

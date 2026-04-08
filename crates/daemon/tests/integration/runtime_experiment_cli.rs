@@ -25,6 +25,8 @@ fn write_runtime_experiment_config(root: &Path) -> PathBuf {
     fs::create_dir_all(root).expect("create fixture root");
 
     let mut config = mvp::config::LoongClawConfig::default();
+    let sqlite_path = root.join("memory.sqlite3");
+    config.memory.sqlite_path = sqlite_path.display().to_string();
     config.tools.file_root = Some(root.display().to_string());
     config.tools.browser.enabled = true;
     config.tools.web.enabled = true;
@@ -87,6 +89,79 @@ fn write_snapshot_artifact(
     )
     .expect("write snapshot artifact");
     (artifact_path, payload)
+}
+
+fn seed_runtime_trajectory_session(config_path: &Path, session_id: &str) {
+    let config_path_text = config_path.to_string_lossy();
+    let (_, config) =
+        mvp::config::load(Some(config_path_text.as_ref())).expect("load config fixture");
+    let memory_config =
+        mvp::memory::runtime_config::MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let repository =
+        mvp::session::repository::SessionRepository::new(&memory_config).expect("repository");
+
+    let session_record = mvp::session::repository::NewSessionRecord {
+        session_id: session_id.to_owned(),
+        kind: mvp::session::repository::SessionKind::Root,
+        parent_session_id: None,
+        label: Some("Root".to_owned()),
+        state: mvp::session::repository::SessionState::Completed,
+    };
+    repository
+        .create_session(session_record)
+        .expect("create root session");
+
+    let turn_contents = ["step one", "step two"];
+    for turn_content in turn_contents {
+        mvp::memory::append_turn_direct(session_id, "assistant", turn_content, &memory_config)
+            .expect("append turn");
+    }
+
+    let finalize_request = mvp::session::repository::FinalizeSessionTerminalRequest {
+        state: mvp::session::repository::SessionState::Completed,
+        last_error: None,
+        event_kind: "delegate_completed".to_owned(),
+        actor_session_id: Some("operator".to_owned()),
+        event_payload_json: serde_json::json!({
+            "task": "summarize"
+        }),
+        outcome_status: "ok".to_owned(),
+        outcome_payload_json: serde_json::json!({
+            "summary": "done"
+        }),
+        frozen_result: None,
+    };
+    repository
+        .finalize_session_terminal(session_id, finalize_request)
+        .expect("finalize session");
+}
+
+fn write_runtime_trajectory_artifact(
+    root: &Path,
+    config_path: &Path,
+    relative: &str,
+    session_id: &str,
+) -> PathBuf {
+    seed_runtime_trajectory_session(config_path, session_id);
+
+    let config_path_text = config_path.to_string_lossy();
+    let (_, config) =
+        mvp::config::load(Some(config_path_text.as_ref())).expect("load config fixture");
+    let memory_config =
+        mvp::memory::runtime_config::MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let options = mvp::session::trajectory::SessionTrajectoryExportOptions::default();
+    let artifact =
+        mvp::session::trajectory::export_session_trajectory(session_id, &memory_config, &options)
+            .expect("export trajectory artifact");
+    let artifact_path = root.join(relative);
+    if let Some(parent) = artifact_path.parent() {
+        fs::create_dir_all(parent).expect("create trajectory artifact directory");
+    }
+    let encoded =
+        serde_json::to_string_pretty(&artifact).expect("encode runtime trajectory artifact");
+    fs::write(&artifact_path, encoded).expect("write runtime trajectory artifact");
+
+    artifact_path
 }
 
 fn snapshot_id_from_payload(payload: &Value) -> String {
@@ -158,6 +233,7 @@ fn start_runtime_experiment(
     let run = loongclaw_daemon::runtime_experiment_cli::execute_runtime_experiment_start_command(
         loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentStartCommandOptions {
             snapshot: snapshot_path.display().to_string(),
+            baseline_trajectory: Vec::new(),
             output: run_path.display().to_string(),
             mutation_summary: "enable browser preview skill".to_owned(),
             experiment_id: experiment_id.map(str::to_owned),
@@ -207,6 +283,7 @@ fn finish_runtime_experiment(
             loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentFinishCommandOptions {
                 run: run_path.display().to_string(),
                 result_snapshot: result_snapshot_path.display().to_string(),
+                result_trajectory: Vec::new(),
                 evaluation_summary: "task success improved".to_owned(),
                 metric: vec!["task_success=1".to_owned(), "token_delta=0".to_owned()],
                 warning: vec!["manual verification only".to_owned()],
@@ -261,6 +338,7 @@ fn finish_runtime_experiment_with_compare_delta(
             loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentFinishCommandOptions {
                 run: run_path.display().to_string(),
                 result_snapshot: result_snapshot_path.display().to_string(),
+                result_trajectory: Vec::new(),
                 evaluation_summary: "provider and tool policy updated".to_owned(),
                 metric: vec!["task_success=1".to_owned(), "cost_delta=-0.2".to_owned()],
                 warning: vec!["manual verification only".to_owned()],
@@ -331,6 +409,7 @@ fn finish_runtime_experiment_with_missing_compare_sections(
             loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentFinishCommandOptions {
                 run: run_path.display().to_string(),
                 result_snapshot: result_snapshot_path.display().to_string(),
+                result_trajectory: Vec::new(),
                 evaluation_summary: "filled missing runtime sections".to_owned(),
                 metric: vec!["task_success=1".to_owned()],
                 warning: Vec::new(),
@@ -369,6 +448,7 @@ fn runtime_experiment_start_creates_planned_run_and_inherits_baseline_lineage() 
     let run = loongclaw_daemon::runtime_experiment_cli::execute_runtime_experiment_start_command(
         loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentStartCommandOptions {
             snapshot: snapshot_path.display().to_string(),
+            baseline_trajectory: Vec::new(),
             output: run_path.display().to_string(),
             mutation_summary: "enable browser preview skill".to_owned(),
             experiment_id: None,
@@ -436,6 +516,7 @@ fn runtime_experiment_start_requires_explicit_experiment_id_when_baseline_is_mis
     let error = loongclaw_daemon::runtime_experiment_cli::execute_runtime_experiment_start_command(
         loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentStartCommandOptions {
             snapshot: snapshot_path.display().to_string(),
+            baseline_trajectory: Vec::new(),
             output: run_path.display().to_string(),
             mutation_summary: "enable browser preview skill".to_owned(),
             experiment_id: None,
@@ -485,6 +566,7 @@ fn runtime_experiment_finish_persists_result_metrics_and_warnings() {
             loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentFinishCommandOptions {
                 run: run_path.display().to_string(),
                 result_snapshot: result_snapshot_path.display().to_string(),
+                result_trajectory: Vec::new(),
                 evaluation_summary: "task success improved".to_owned(),
                 metric: vec!["task_success=1".to_owned(), "token_delta=0".to_owned()],
                 warning: vec!["manual verification only".to_owned()],
@@ -580,6 +662,7 @@ fn runtime_experiment_finish_rejects_conflicting_result_snapshot_experiment_id()
             loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentFinishCommandOptions {
                 run: run_path.display().to_string(),
                 result_snapshot: result_snapshot_path.display().to_string(),
+                result_trajectory: Vec::new(),
                 evaluation_summary: "task success improved".to_owned(),
                 metric: vec!["task_success=1".to_owned()],
                 warning: Vec::new(),
@@ -629,6 +712,7 @@ fn runtime_experiment_finish_warns_when_result_snapshot_has_no_experiment_id() {
             loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentFinishCommandOptions {
                 run: run_path.display().to_string(),
                 result_snapshot: result_snapshot_path.display().to_string(),
+                result_trajectory: Vec::new(),
                 evaluation_summary: "task success improved".to_owned(),
                 metric: vec!["task_success=1".to_owned()],
                 warning: Vec::new(),
@@ -687,6 +771,7 @@ fn runtime_experiment_finish_rejects_mutating_a_finalized_run() {
             loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentFinishCommandOptions {
                 run: run_path.display().to_string(),
                 result_snapshot: result_snapshot_path.display().to_string(),
+                result_trajectory: Vec::new(),
                 evaluation_summary: "task success improved".to_owned(),
                 metric: vec!["task_success=1".to_owned()],
                 warning: Vec::new(),
@@ -706,6 +791,7 @@ fn runtime_experiment_finish_rejects_mutating_a_finalized_run() {
             loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentFinishCommandOptions {
                 run: run_path.display().to_string(),
                 result_snapshot: result_snapshot_path.display().to_string(),
+                result_trajectory: Vec::new(),
                 evaluation_summary: "task success improved again".to_owned(),
                 metric: vec!["task_success=2".to_owned()],
                 warning: Vec::new(),
@@ -777,6 +863,115 @@ fn runtime_experiment_show_text_surfaces_decision_fields_first() {
     assert_eq!(lines[5], "decision=promoted");
     assert_eq!(lines[6], "metrics=task_success:1,token_delta:0");
     assert_eq!(lines[7], "warnings=manual verification only");
+
+    fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn runtime_experiment_start_and_finish_keep_trajectory_artifact_evidence() {
+    let root = unique_temp_dir("loongclaw-runtime-experiment-trajectories");
+    let config_path = write_runtime_experiment_config(&root);
+    let (baseline_snapshot_path, baseline_snapshot_payload) = write_snapshot_artifact(
+        &root,
+        &config_path,
+        "artifacts/runtime-snapshot.json",
+        loongclaw_daemon::RuntimeSnapshotArtifactMetadata {
+            created_at: "2026-03-16T12:00:00Z".to_owned(),
+            label: Some("baseline".to_owned()),
+            experiment_id: Some("exp-42".to_owned()),
+            parent_snapshot_id: Some("snapshot-parent".to_owned()),
+        },
+    );
+    let baseline_trajectory_path = write_runtime_trajectory_artifact(
+        &root,
+        &config_path,
+        "artifacts/baseline-trajectory.json",
+        "baseline-session",
+    );
+
+    let run = loongclaw_daemon::runtime_experiment_cli::execute_runtime_experiment_start_command(
+        loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentStartCommandOptions {
+            snapshot: baseline_snapshot_path.display().to_string(),
+            baseline_trajectory: vec![baseline_trajectory_path.display().to_string()],
+            output: root
+                .join("artifacts/runtime-experiment.json")
+                .display()
+                .to_string(),
+            mutation_summary: "enable browser preview skill".to_owned(),
+            experiment_id: None,
+            label: Some("browser-preview-a".to_owned()),
+            tag: vec!["browser".to_owned(), "preview".to_owned()],
+            json: false,
+        },
+    )
+    .expect("runtime experiment start should succeed");
+
+    let baseline_snapshot_id = snapshot_id_from_payload(&baseline_snapshot_payload);
+    rewrite_runtime_experiment_compare_config(&config_path);
+    let (result_snapshot_path, _) = write_snapshot_artifact(
+        &root,
+        &config_path,
+        "artifacts/runtime-snapshot-result.json",
+        loongclaw_daemon::RuntimeSnapshotArtifactMetadata {
+            created_at: "2026-03-16T12:30:00Z".to_owned(),
+            label: Some("candidate".to_owned()),
+            experiment_id: Some("exp-42".to_owned()),
+            parent_snapshot_id: Some(baseline_snapshot_id),
+        },
+    );
+    let result_trajectory_path = write_runtime_trajectory_artifact(
+        &root,
+        &config_path,
+        "artifacts/result-trajectory.json",
+        "result-session",
+    );
+
+    let finished =
+        loongclaw_daemon::runtime_experiment_cli::execute_runtime_experiment_finish_command(
+            loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentFinishCommandOptions {
+                run: root
+                    .join("artifacts/runtime-experiment.json")
+                    .display()
+                    .to_string(),
+                result_snapshot: result_snapshot_path.display().to_string(),
+                result_trajectory: vec![result_trajectory_path.display().to_string()],
+                evaluation_summary: "task success improved".to_owned(),
+                metric: vec!["task_success=1".to_owned()],
+                warning: Vec::new(),
+                decision:
+                    loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentDecision::Promoted,
+                status:
+                    loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentFinishStatus::Completed,
+                json: false,
+            },
+        )
+        .expect("runtime experiment finish should succeed");
+
+    assert_eq!(run.baseline_trajectories.len(), 1);
+    assert_eq!(
+        run.baseline_trajectories[0].artifact_path,
+        canonical_display_path(&baseline_trajectory_path)
+    );
+    assert_eq!(
+        run.baseline_trajectories[0].requested_session_id,
+        "baseline-session"
+    );
+    assert_eq!(finished.result_trajectories.len(), 1);
+    assert_eq!(
+        finished.result_trajectories[0].artifact_path,
+        canonical_display_path(&result_trajectory_path)
+    );
+    assert_eq!(
+        finished.result_trajectories[0].requested_session_id,
+        "result-session"
+    );
+
+    let rendered =
+        loongclaw_daemon::runtime_experiment_cli::render_runtime_experiment_text(&finished);
+    assert!(rendered.contains("baseline_trajectory_count=1"));
+    assert!(rendered.contains("result_trajectory_count=1"));
+    assert!(rendered.contains("baseline-trajectory.json"));
+    assert!(rendered.contains("result-trajectory.json"));
 
     fs::remove_dir_all(&root).ok();
 }

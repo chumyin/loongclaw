@@ -242,6 +242,7 @@ fn start_runtime_experiment(
     let run = loongclaw_daemon::runtime_experiment_cli::execute_runtime_experiment_start_command(
         loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentStartCommandOptions {
             snapshot: snapshot_path.display().to_string(),
+            baseline_trajectory: Vec::new(),
             output: run_path.display().to_string(),
             mutation_summary: "enable browser preview skill".to_owned(),
             experiment_id: Some("exp-42".to_owned()),
@@ -266,6 +267,7 @@ fn start_runtime_experiment_variant(
     let run = loongclaw_daemon::runtime_experiment_cli::execute_runtime_experiment_start_command(
         loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentStartCommandOptions {
             snapshot: snapshot_path.display().to_string(),
+            baseline_trajectory: Vec::new(),
             output: run_path.display().to_string(),
             mutation_summary: format!("enable browser preview skill ({slug})"),
             experiment_id: Some("exp-42".to_owned()),
@@ -316,6 +318,7 @@ fn finish_runtime_experiment(
             loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentFinishCommandOptions {
                 run: run_path.display().to_string(),
                 result_snapshot: result_snapshot_path.display().to_string(),
+                result_trajectory: Vec::new(),
                 evaluation_summary: "provider and tool policy updated".to_owned(),
                 metric: vec!["task_success=1".to_owned(), "cost_delta=-0.2".to_owned()],
                 warning: vec!["manual verification only".to_owned()],
@@ -371,6 +374,7 @@ fn finish_runtime_experiment_with_compare_delta(
             loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentFinishCommandOptions {
                 run: run_path.display().to_string(),
                 result_snapshot: result_snapshot_path.display().to_string(),
+                result_trajectory: Vec::new(),
                 evaluation_summary: "provider and tool policy updated".to_owned(),
                 metric: vec!["task_success=1".to_owned(), "cost_delta=-0.2".to_owned()],
                 warning: vec!["manual verification only".to_owned()],
@@ -435,6 +439,7 @@ fn finish_runtime_experiment_variant_with_compare_delta(
             loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentFinishCommandOptions {
                 run: run_path.display().to_string(),
                 result_snapshot: result_snapshot_path.display().to_string(),
+                result_trajectory: Vec::new(),
                 evaluation_summary: format!("provider and tool policy updated ({slug})"),
                 metric: vec![
                     "task_success=1".to_owned(),
@@ -496,6 +501,7 @@ fn finish_runtime_experiment_variant_with_memory_compare_delta(
             loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentFinishCommandOptions {
                 run: run_path.display().to_string(),
                 result_snapshot: result_snapshot_path.display().to_string(),
+                result_trajectory: Vec::new(),
                 evaluation_summary: format!("memory and context policy updated ({slug})"),
                 metric: vec![
                     "task_success=1".to_owned(),
@@ -554,6 +560,7 @@ fn finish_runtime_experiment_variant(
             loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentFinishCommandOptions {
                 run: run_path.display().to_string(),
                 result_snapshot: result_snapshot_path.display().to_string(),
+                result_trajectory: Vec::new(),
                 evaluation_summary: format!("provider and tool policy updated ({slug})"),
                 metric: vec![
                     "task_success=1".to_owned(),
@@ -3736,6 +3743,72 @@ fn runtime_capability_show_text_renders_snapshot_delta_summary() {
         rendered.contains("source_snapshot_delta_changed_surfaces="),
         "rendered text should include compact changed-surface names"
     );
+
+    fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn runtime_capability_propose_preserves_trajectory_evidence_paths_from_source_run() {
+    let root = unique_temp_dir("loongclaw-runtime-capability-trajectory-evidence");
+    let config_path = write_runtime_capability_config(&root);
+    let (run_path, _finished) = finish_runtime_experiment(&root, &config_path);
+    let baseline_trajectory_path = root.join("artifacts/baseline-trajectory.json");
+    let result_trajectory_path = root.join("artifacts/result-trajectory.json");
+
+    rewrite_json_file(&run_path, |payload| {
+        payload["baseline_trajectories"] = serde_json::json!([
+            {
+                "artifact_path": canonicalized_path_text(&baseline_trajectory_path),
+                "requested_session_id": "baseline-session",
+                "export_scope": "session_only",
+                "session_count": 1,
+                "descendant_session_count": 0,
+                "exported_turn_count": 2,
+                "canonical_record_count": 2,
+                "event_count": 2,
+                "approval_request_count": 0
+            }
+        ]);
+        payload["result_trajectories"] = serde_json::json!([
+            {
+                "artifact_path": canonicalized_path_text(&result_trajectory_path),
+                "requested_session_id": "result-session",
+                "export_scope": "session_only",
+                "session_count": 1,
+                "descendant_session_count": 0,
+                "exported_turn_count": 2,
+                "canonical_record_count": 2,
+                "event_count": 2,
+                "approval_request_count": 0
+            }
+        ]);
+    });
+
+    let candidate = propose_runtime_capability_variant_with_target(
+        &root,
+        &run_path,
+        "trajectory-evidence",
+        loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityTarget::ManagedSkill,
+        "Codify browser preview onboarding as a reusable managed skill",
+        "Browser preview onboarding and companion readiness checks only",
+        &["invoke_tool", "memory_read"],
+        &["browser", "onboarding"],
+    );
+
+    assert_eq!(
+        candidate.source_run.baseline_trajectory_artifact_paths,
+        vec![canonicalized_path_text(&baseline_trajectory_path)]
+    );
+    assert_eq!(
+        candidate.source_run.result_trajectory_artifact_paths,
+        vec![canonicalized_path_text(&result_trajectory_path)]
+    );
+
+    let rendered =
+        loongclaw_daemon::runtime_capability_cli::render_runtime_capability_text(&candidate);
+    assert!(rendered.contains("source_baseline_trajectory_paths="));
+    assert!(rendered.contains("baseline-trajectory.json"));
+    assert!(rendered.contains("result-trajectory.json"));
 
     fs::remove_dir_all(&root).ok();
 }
