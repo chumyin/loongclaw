@@ -302,25 +302,6 @@ fn work_unit_cli_create_claim_complete_and_archive_round_trip() {
     run_work_unit_cli_process(
         vec![
             "work-unit".to_owned(),
-            "note".to_owned(),
-            "--config".to_owned(),
-            config_path_string.clone(),
-            "--id".to_owned(),
-            work_unit_id.clone(),
-            "--actor".to_owned(),
-            "operator".to_owned(),
-            "--note".to_owned(),
-            "waiting on prerequisite".to_owned(),
-            "--now-ms".to_owned(),
-            "1090".to_owned(),
-            "--json".to_owned(),
-        ],
-        "append note via CLI subprocess",
-    );
-
-    run_work_unit_cli_process(
-        vec![
-            "work-unit".to_owned(),
             "claim".to_owned(),
             "--config".to_owned(),
             config_path_string.clone(),
@@ -338,6 +319,17 @@ fn work_unit_cli_create_claim_complete_and_archive_round_trip() {
     );
 
     let repository = load_work_unit_repository(&config_path);
+    let note = repository
+        .append_note(mvp::work::repository::AppendWorkUnitNoteRequest {
+            work_unit_id: work_unit_id.clone(),
+            actor: Some("operator".to_owned()),
+            note: "waiting on prerequisite".to_owned(),
+            now_ms: Some(1_090),
+        })
+        .expect("append note")
+        .expect("note event");
+    assert_eq!(note.event_kind, "work_unit_note_added");
+
     let updated_snapshot = repository
         .load_work_unit_snapshot(work_unit_id.as_str())
         .expect("load updated snapshot")

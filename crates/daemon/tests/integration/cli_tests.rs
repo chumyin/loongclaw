@@ -357,18 +357,27 @@ fn safe_lane_summary_cli_rejects_zero_limit() {
 
 #[test]
 fn runtime_trajectory_cli_rejects_invalid_limits() {
-    let turn_limit_error =
-        run_runtime_trajectory_cli(None, Some("session-a"), None, None, Some(0), 10, false)
-            .expect_err("zero turn limit must be rejected");
+    let turn_limit_error = run_runtime_trajectory_cli(
+        None,
+        Some("session-a"),
+        false,
+        None,
+        None,
+        Some(0),
+        10,
+        false,
+    )
+    .expect_err("zero turn limit must be rejected");
     assert!(turn_limit_error.contains("turn_limit"));
 
     let event_page_error =
-        run_runtime_trajectory_cli(None, Some("session-a"), None, None, None, 0, false)
+        run_runtime_trajectory_cli(None, Some("session-a"), false, None, None, None, 0, false)
             .expect_err("zero event page limit must be rejected");
     assert!(event_page_error.contains("event_page_limit"));
 
-    let missing_source_error = run_runtime_trajectory_cli(None, None, None, None, None, 10, false)
-        .expect_err("missing session and artifact must be rejected");
+    let missing_source_error =
+        run_runtime_trajectory_cli(None, None, false, None, None, None, 10, false)
+            .expect_err("missing session and artifact must be rejected");
     assert!(missing_source_error.contains("--session or --artifact"));
 }
 
@@ -1703,6 +1712,7 @@ fn runtime_trajectory_cli_parses_flags() {
         "export",
         "--session",
         "root-session",
+        "--include-descendants",
         "--output",
         "/tmp/runtime-trajectory.json",
         "--turn-limit",
@@ -1719,6 +1729,7 @@ fn runtime_trajectory_cli_parses_flags() {
                 options,
             ) => {
                 assert_eq!(options.session.as_deref(), Some("root-session"));
+                assert!(options.include_descendants);
                 assert_eq!(
                     options.output.as_deref(),
                     Some("/tmp/runtime-trajectory.json")
@@ -1727,7 +1738,17 @@ fn runtime_trajectory_cli_parses_flags() {
                 assert_eq!(options.event_page_limit, 50);
                 assert!(options.json);
             }
-            other => panic!("unexpected runtime-trajectory subcommand parsed: {other:?}"),
+            other
+            @ loongclaw_daemon::runtime_trajectory_cli::RuntimeTrajectoryCommands::Show(_)
+            | other @ loongclaw_daemon::runtime_trajectory_cli::RuntimeTrajectoryCommands::Index(
+                _,
+            )
+            | other
+            @ loongclaw_daemon::runtime_trajectory_cli::RuntimeTrajectoryCommands::Search(
+                _,
+            ) => {
+                panic!("unexpected runtime-trajectory subcommand parsed: {other:?}")
+            }
         },
         other => panic!("unexpected command parsed: {other:?}"),
     }
@@ -1751,18 +1772,109 @@ fn runtime_trajectory_cli_parses_artifact_show_mode() {
                 assert_eq!(options.artifact, "/tmp/runtime-trajectory.json");
                 assert!(options.json);
             }
-            other => panic!("unexpected runtime-trajectory subcommand parsed: {other:?}"),
+            other
+            @ loongclaw_daemon::runtime_trajectory_cli::RuntimeTrajectoryCommands::Export(
+                _,
+            )
+            | other @ loongclaw_daemon::runtime_trajectory_cli::RuntimeTrajectoryCommands::Index(
+                _,
+            )
+            | other
+            @ loongclaw_daemon::runtime_trajectory_cli::RuntimeTrajectoryCommands::Search(
+                _,
+            ) => {
+                panic!("unexpected runtime-trajectory subcommand parsed: {other:?}")
+            }
         },
         other => panic!("unexpected command parsed: {other:?}"),
     }
 }
 
 #[test]
-fn runtime_trajectory_help_mentions_export_and_show_subcommands() {
+fn runtime_trajectory_help_mentions_export_show_index_and_search_subcommands() {
     let help = render_cli_help(["runtime-trajectory"]);
 
     assert!(help.contains("export"));
     assert!(help.contains("show"));
+    assert!(help.contains("index"));
+    assert!(help.contains("search"));
+}
+
+#[test]
+fn runtime_trajectory_cli_parses_index_mode() {
+    let cli = try_parse_cli([
+        "loongclaw",
+        "runtime-trajectory",
+        "index",
+        "--root",
+        "/tmp/runtime-trajectories",
+        "--json",
+    ])
+    .expect("runtime-trajectory index should parse");
+
+    match cli.command {
+        Some(Commands::RuntimeTrajectory { command }) => match command {
+            loongclaw_daemon::runtime_trajectory_cli::RuntimeTrajectoryCommands::Index(options) => {
+                assert_eq!(options.root, "/tmp/runtime-trajectories");
+                assert!(options.json);
+            }
+            other
+            @ loongclaw_daemon::runtime_trajectory_cli::RuntimeTrajectoryCommands::Export(
+                _,
+            )
+            | other
+            @ loongclaw_daemon::runtime_trajectory_cli::RuntimeTrajectoryCommands::Show(_)
+            | other
+            @ loongclaw_daemon::runtime_trajectory_cli::RuntimeTrajectoryCommands::Search(
+                _,
+            ) => {
+                panic!("unexpected runtime-trajectory subcommand parsed: {other:?}")
+            }
+        },
+        other => panic!("unexpected command parsed: {other:?}"),
+    }
+}
+
+#[test]
+fn runtime_trajectory_cli_parses_search_mode() {
+    let cli = try_parse_cli([
+        "loongclaw",
+        "runtime-trajectory",
+        "search",
+        "--root",
+        "/tmp/runtime-trajectories",
+        "--query",
+        "delegate_review",
+        "--limit",
+        "5",
+        "--json",
+    ])
+    .expect("runtime-trajectory search should parse");
+
+    match cli.command {
+        Some(Commands::RuntimeTrajectory { command }) => match command {
+            loongclaw_daemon::runtime_trajectory_cli::RuntimeTrajectoryCommands::Search(
+                options,
+            ) => {
+                assert_eq!(options.root, "/tmp/runtime-trajectories");
+                assert_eq!(options.query, "delegate_review");
+                assert_eq!(options.limit, 5);
+                assert!(options.json);
+            }
+            other
+            @ loongclaw_daemon::runtime_trajectory_cli::RuntimeTrajectoryCommands::Export(
+                _,
+            )
+            | other
+            @ loongclaw_daemon::runtime_trajectory_cli::RuntimeTrajectoryCommands::Show(_)
+            | other @ loongclaw_daemon::runtime_trajectory_cli::RuntimeTrajectoryCommands::Index(
+                _,
+            ) => {
+                panic!("unexpected runtime-trajectory subcommand parsed: {other:?}")
+            }
+        },
+        other => panic!("unexpected command parsed: {other:?}"),
+    }
 }
 
 #[test]
@@ -1849,6 +1961,121 @@ fn format_acp_event_summary_includes_routing_intent_and_provenance() {
     assert!(rendered.contains("trace_id=trace-123"));
     assert!(rendered.contains("source_message_id=message-42"));
     assert!(rendered.contains("ack_cursor=cursor-9"));
+}
+
+fn format_runtime_trajectory_summary_includes_counts_and_terminal_status() {
+    let artifact = mvp::session::trajectory::SessionTrajectoryArtifact {
+        schema: mvp::session::trajectory::SessionTrajectoryArtifactSchema::default(),
+        exported_at: "2026-04-08T02:03:04Z".to_owned(),
+        requested_session_id: "root-session".to_owned(),
+        export_scope: mvp::session::trajectory::SessionTrajectoryExportScope::SessionOnly,
+        session_count: 1,
+        session: mvp::session::trajectory::SessionTrajectorySession {
+            session_id: "root-session".to_owned(),
+            kind: "root".to_owned(),
+            parent_session_id: None,
+            label: Some("Root".to_owned()),
+            state: "completed".to_owned(),
+            created_at: 1,
+            updated_at: 2,
+            archived_at: None,
+            turn_count: 3,
+            last_turn_at: Some(2),
+            last_error: None,
+        },
+        lineage: mvp::session::trajectory::SessionTrajectoryLineage {
+            root_session_id: Some("root-session".to_owned()),
+            depth: 0,
+        },
+        exported_turn_count: 2,
+        turns_truncated: true,
+        turns: vec![
+            mvp::session::trajectory::SessionTrajectoryTurn {
+                sequence: 2,
+                role: "assistant".to_owned(),
+                content: "step two".to_owned(),
+                ts: 2,
+            },
+            mvp::session::trajectory::SessionTrajectoryTurn {
+                sequence: 3,
+                role: "assistant".to_owned(),
+                content: "step three".to_owned(),
+                ts: 3,
+            },
+        ],
+        canonical_record_count: 2,
+        canonical_records: vec![
+            mvp::session::trajectory::SessionTrajectoryCanonicalRecord {
+                scope: "session".to_owned(),
+                kind: "assistant_turn".to_owned(),
+                role: Some("assistant".to_owned()),
+                content: "step two".to_owned(),
+                metadata: serde_json::json!({}),
+            },
+            mvp::session::trajectory::SessionTrajectoryCanonicalRecord {
+                scope: "session".to_owned(),
+                kind: "assistant_turn".to_owned(),
+                role: Some("assistant".to_owned()),
+                content: "step three".to_owned(),
+                metadata: serde_json::json!({}),
+            },
+        ],
+        event_count: 4,
+        event_page_limit: 50,
+        events: vec![],
+        approval_request_count: 1,
+        approval_requests: vec![mvp::session::trajectory::SessionTrajectoryApprovalRequest {
+            approval_request_id: "approval-1".to_owned(),
+            session_id: "root-session".to_owned(),
+            turn_id: "turn-1".to_owned(),
+            tool_call_id: "tool-call-1".to_owned(),
+            tool_name: "delegate".to_owned(),
+            approval_key: "tool:delegate".to_owned(),
+            status: "pending".to_owned(),
+            decision: None,
+            request_payload_json: serde_json::json!({
+                "tool_name": "delegate"
+            }),
+            governance_snapshot_json: serde_json::json!({
+                "rule_id": "delegate_review"
+            }),
+            requested_at: 3,
+            resolved_at: None,
+            resolved_by_session_id: None,
+            executed_at: None,
+            last_error: None,
+        }],
+        terminal_outcome: Some(mvp::session::trajectory::SessionTrajectoryTerminalOutcome {
+            session_id: "root-session".to_owned(),
+            status: "ok".to_owned(),
+            payload_json: serde_json::json!({
+                "summary": "done"
+            }),
+            frozen_result: None,
+            recorded_at: 3,
+        }),
+        descendant_session_count: 0,
+        descendant_sessions: vec![],
+    };
+
+    let rendered = format_runtime_trajectory_summary(&artifact);
+
+    assert!(
+        rendered.contains(
+            "runtime_trajectory session=root-session kind=root state=completed lineage_root=root-session lineage_depth=0"
+        )
+    );
+    assert!(rendered.contains("total_turns=3"));
+    assert!(rendered.contains("exported_turns=2"));
+    assert!(rendered.contains("turns_truncated=true"));
+    assert!(rendered.contains("canonical_records=2"));
+    assert!(rendered.contains("events=4"));
+    assert!(rendered.contains("approvals=1"));
+    assert!(rendered.contains("descendants=0"));
+    assert!(rendered.contains("terminal_status=ok"));
+    assert!(rendered.contains("export_scope=session_only"));
+    assert!(rendered.contains("session_count=1"));
+    assert!(rendered.contains("event_page_limit=50"));
 }
 
 #[test]

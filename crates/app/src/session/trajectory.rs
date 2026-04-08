@@ -24,6 +24,7 @@ const DEFAULT_EVENT_PAGE_LIMIT: usize = 200;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionTrajectoryExportOptions {
+    pub include_descendants: bool,
     pub turn_limit: Option<usize>,
     pub event_page_limit: usize,
 }
@@ -31,8 +32,26 @@ pub struct SessionTrajectoryExportOptions {
 impl Default for SessionTrajectoryExportOptions {
     fn default() -> Self {
         Self {
+            include_descendants: false,
             turn_limit: None,
             event_page_limit: DEFAULT_EVENT_PAGE_LIMIT,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionTrajectoryExportScope {
+    #[default]
+    SessionOnly,
+    SessionWithDescendants,
+}
+
+impl SessionTrajectoryExportScope {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SessionOnly => "session_only",
+            Self::SessionWithDescendants => "session_with_descendants",
         }
     }
 }
@@ -104,6 +123,7 @@ pub struct SessionTrajectoryCanonicalRecord {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionTrajectoryApprovalRequest {
     pub approval_request_id: String,
+    pub session_id: String,
     pub turn_id: String,
     pub tool_call_id: String,
     pub tool_name: String,
@@ -120,9 +140,31 @@ pub struct SessionTrajectoryApprovalRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionTrajectorySessionExport {
+    pub session: SessionTrajectorySession,
+    pub lineage: SessionTrajectoryLineage,
+    pub exported_turn_count: usize,
+    pub turns_truncated: bool,
+    pub turns: Vec<SessionTrajectoryTurn>,
+    pub canonical_record_count: usize,
+    pub canonical_records: Vec<SessionTrajectoryCanonicalRecord>,
+    pub event_count: usize,
+    pub events: Vec<SessionTrajectoryEvent>,
+    pub approval_request_count: usize,
+    pub approval_requests: Vec<SessionTrajectoryApprovalRequest>,
+    pub terminal_outcome: Option<SessionTrajectoryTerminalOutcome>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionTrajectoryArtifact {
     pub schema: SessionTrajectoryArtifactSchema,
     pub exported_at: String,
+    #[serde(default)]
+    pub requested_session_id: String,
+    #[serde(default)]
+    pub export_scope: SessionTrajectoryExportScope,
+    #[serde(default)]
+    pub session_count: usize,
     pub session: SessionTrajectorySession,
     pub lineage: SessionTrajectoryLineage,
     pub exported_turn_count: usize,
@@ -136,6 +178,10 @@ pub struct SessionTrajectoryArtifact {
     pub approval_request_count: usize,
     pub approval_requests: Vec<SessionTrajectoryApprovalRequest>,
     pub terminal_outcome: Option<SessionTrajectoryTerminalOutcome>,
+    #[serde(default)]
+    pub descendant_session_count: usize,
+    #[serde(default)]
+    pub descendant_sessions: Vec<SessionTrajectorySessionExport>,
 }
 
 pub fn export_session_trajectory(
@@ -151,62 +197,132 @@ pub fn export_session_trajectory(
             conn, session_id,
         )?
         .ok_or_else(|| format!("session `{session_id}` not found"))?;
-        let total_turn_count = summary.turn_count;
-        let turn_limit = resolve_turn_limit(total_turn_count, options.turn_limit)?;
-        let root_session_id =
-            SessionRepository::lineage_root_session_id_with_conn(conn, session_id)?;
-        let lineage_depth = SessionRepository::session_lineage_depth_with_conn(conn, session_id)?;
-        let turns = load_export_turns_with_conn(conn, session_id, turn_limit)?;
-        let events = SessionRepository::list_all_events_with_conn(
-            conn,
-            session_id,
-            options.event_page_limit,
-        )?;
-        let approval_requests = SessionRepository::list_approval_requests_for_session_with_conn(
-            conn, session_id, None,
-        )?;
-        let terminal_outcome =
-            SessionRepository::load_terminal_outcome_with_conn(conn, session_id)?;
-        let turns_truncated = total_turn_count > turn_limit;
         let exported_at = now_rfc3339()?;
-        let session = SessionTrajectorySession::from_summary(&summary);
-        let lineage = SessionTrajectoryLineage {
-            root_session_id,
-            depth: lineage_depth,
-        };
-        let exported_turn_count = turns.len();
-        let first_sequence = resolve_first_sequence(total_turn_count, exported_turn_count);
-        let trajectory_turns = build_trajectory_turns(&turns, first_sequence);
-        let canonical_records = build_canonical_records(session_id, &turns);
-        let trajectory_events = build_trajectory_events(&events);
-        let trajectory_approval_requests = build_approval_requests(&approval_requests);
-        let trajectory_outcome = terminal_outcome
-            .as_ref()
-            .map(SessionTrajectoryTerminalOutcome::from_terminal_outcome);
-        let exported_turn_count = trajectory_turns.len();
-        let canonical_record_count = canonical_records.len();
-        let event_count = trajectory_events.len();
-        let approval_request_count = trajectory_approval_requests.len();
         let schema = SessionTrajectoryArtifactSchema::default();
+        let requested_export =
+            build_session_trajectory_export_with_conn(conn, session_id, &summary, options)?;
+        let descendant_exports =
+            build_descendant_session_exports_with_conn(conn, session_id, options)?;
+        let export_scope = resolve_export_scope(options.include_descendants, &descendant_exports);
+        let descendant_session_count = descendant_exports.len();
+        let session_count = descendant_session_count.saturating_add(1);
+        let requested_session_id = session_id.to_owned();
 
         Ok(SessionTrajectoryArtifact {
             schema,
             exported_at,
-            session,
-            lineage,
-            exported_turn_count,
-            turns_truncated,
-            turns: trajectory_turns,
-            canonical_record_count,
-            canonical_records,
-            event_count,
+            requested_session_id,
+            export_scope,
+            session_count,
+            session: requested_export.session,
+            lineage: requested_export.lineage,
+            exported_turn_count: requested_export.exported_turn_count,
+            turns_truncated: requested_export.turns_truncated,
+            turns: requested_export.turns,
+            canonical_record_count: requested_export.canonical_record_count,
+            canonical_records: requested_export.canonical_records,
+            event_count: requested_export.event_count,
             event_page_limit: options.event_page_limit,
-            events: trajectory_events,
-            approval_request_count,
-            approval_requests: trajectory_approval_requests,
-            terminal_outcome: trajectory_outcome,
+            events: requested_export.events,
+            approval_request_count: requested_export.approval_request_count,
+            approval_requests: requested_export.approval_requests,
+            terminal_outcome: requested_export.terminal_outcome,
+            descendant_session_count,
+            descendant_sessions: descendant_exports,
         })
     })
+}
+
+fn build_session_trajectory_export_with_conn(
+    conn: &rusqlite::Connection,
+    session_id: &str,
+    summary: &SessionSummaryRecord,
+    options: &SessionTrajectoryExportOptions,
+) -> Result<SessionTrajectorySessionExport, String> {
+    let turn_limit = resolve_turn_limit(summary.turn_count, options.turn_limit)?;
+    let root_session_id = SessionRepository::lineage_root_session_id_with_conn(conn, session_id)?;
+    let lineage_depth = SessionRepository::session_lineage_depth_with_conn(conn, session_id)?;
+    let turns = load_export_turns_with_conn(conn, session_id, turn_limit)?;
+    let events =
+        SessionRepository::list_all_events_with_conn(conn, session_id, options.event_page_limit)?;
+    let approval_requests =
+        SessionRepository::list_approval_requests_for_session_with_conn(conn, session_id, None)?;
+    let terminal_outcome = SessionRepository::load_terminal_outcome_with_conn(conn, session_id)?;
+    let turns_truncated = summary.turn_count > turn_limit;
+    let session = SessionTrajectorySession::from_summary(summary);
+    let lineage = SessionTrajectoryLineage {
+        root_session_id,
+        depth: lineage_depth,
+    };
+    let first_sequence = resolve_first_sequence(summary.turn_count, turn_limit);
+    let trajectory_turns = build_trajectory_turns(&turns, first_sequence);
+    let canonical_records = build_canonical_records(session_id, &turns);
+    let trajectory_events = build_trajectory_events(&events);
+    let trajectory_approval_requests = build_approval_requests(&approval_requests);
+    let terminal_outcome = terminal_outcome
+        .as_ref()
+        .map(SessionTrajectoryTerminalOutcome::from_terminal_outcome);
+    let exported_turn_count = trajectory_turns.len();
+    let canonical_record_count = canonical_records.len();
+    let event_count = trajectory_events.len();
+    let approval_request_count = trajectory_approval_requests.len();
+
+    Ok(SessionTrajectorySessionExport {
+        session,
+        lineage,
+        exported_turn_count,
+        turns_truncated,
+        turns: trajectory_turns,
+        canonical_record_count,
+        canonical_records,
+        event_count,
+        events: trajectory_events,
+        approval_request_count,
+        approval_requests: trajectory_approval_requests,
+        terminal_outcome,
+    })
+}
+
+fn build_descendant_session_exports_with_conn(
+    conn: &rusqlite::Connection,
+    requested_session_id: &str,
+    options: &SessionTrajectoryExportOptions,
+) -> Result<Vec<SessionTrajectorySessionExport>, String> {
+    if !options.include_descendants {
+        return Ok(Vec::new());
+    }
+
+    let visible_sessions =
+        SessionRepository::list_visible_sessions_with_conn(conn, requested_session_id)?;
+    let mut descendant_exports = Vec::new();
+
+    for visible_session in visible_sessions {
+        let visible_session_id = visible_session.session_id.as_str();
+        if visible_session_id == requested_session_id {
+            continue;
+        }
+
+        let session_export = build_session_trajectory_export_with_conn(
+            conn,
+            visible_session_id,
+            &visible_session,
+            options,
+        )?;
+        descendant_exports.push(session_export);
+    }
+
+    Ok(descendant_exports)
+}
+
+fn resolve_export_scope(
+    include_descendants: bool,
+    descendant_exports: &[SessionTrajectorySessionExport],
+) -> SessionTrajectoryExportScope {
+    if include_descendants && !descendant_exports.is_empty() {
+        return SessionTrajectoryExportScope::SessionWithDescendants;
+    }
+
+    SessionTrajectoryExportScope::SessionOnly
 }
 
 fn load_export_turns_with_conn(
@@ -443,6 +559,7 @@ impl SessionTrajectoryApprovalRequest {
 
         Self {
             approval_request_id: record.approval_request_id.clone(),
+            session_id: record.session_id.clone(),
             turn_id: record.turn_id.clone(),
             tool_call_id: record.tool_call_id.clone(),
             tool_name: record.tool_name.clone(),
@@ -460,12 +577,82 @@ impl SessionTrajectoryApprovalRequest {
     }
 }
 
+impl SessionTrajectoryArtifact {
+    pub fn all_session_exports(&self) -> Vec<SessionTrajectorySessionExport> {
+        let requested_export = self.requested_session_export();
+        let capacity = self.effective_session_count();
+        let mut exports = Vec::with_capacity(capacity);
+        exports.push(requested_export);
+
+        for descendant_session in &self.descendant_sessions {
+            exports.push(descendant_session.clone());
+        }
+
+        exports
+    }
+
+    pub fn requested_session_export(&self) -> SessionTrajectorySessionExport {
+        SessionTrajectorySessionExport {
+            session: self.session.clone(),
+            lineage: self.lineage.clone(),
+            exported_turn_count: self.exported_turn_count,
+            turns_truncated: self.turns_truncated,
+            turns: self.turns.clone(),
+            canonical_record_count: self.canonical_record_count,
+            canonical_records: self.canonical_records.clone(),
+            event_count: self.event_count,
+            events: self.events.clone(),
+            approval_request_count: self.approval_request_count,
+            approval_requests: self.approval_requests.clone(),
+            terminal_outcome: self.terminal_outcome.clone(),
+        }
+    }
+
+    pub fn effective_requested_session_id(&self) -> &str {
+        let requested_session_id = self.requested_session_id.as_str();
+        if requested_session_id.is_empty() {
+            return self.session.session_id.as_str();
+        }
+
+        requested_session_id
+    }
+
+    pub fn effective_export_scope(&self) -> SessionTrajectoryExportScope {
+        if self.export_scope == SessionTrajectoryExportScope::SessionWithDescendants {
+            return self.export_scope;
+        }
+
+        if !self.descendant_sessions.is_empty() {
+            return SessionTrajectoryExportScope::SessionWithDescendants;
+        }
+
+        SessionTrajectoryExportScope::SessionOnly
+    }
+
+    pub fn effective_session_count(&self) -> usize {
+        if self.session_count > 0 {
+            return self.session_count;
+        }
+
+        self.descendant_sessions.len().saturating_add(1)
+    }
+
+    pub fn effective_descendant_session_count(&self) -> usize {
+        if self.descendant_session_count > 0 {
+            return self.descendant_session_count;
+        }
+
+        self.descendant_sessions.len()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
 
     use super::ConversationTurn;
     use super::SessionTrajectoryExportOptions;
+    use super::SessionTrajectoryExportScope;
     use super::export_session_trajectory;
     use super::trim_turns_to_limit;
     use crate::memory;
@@ -576,6 +763,12 @@ mod tests {
         let artifact =
             export_session_trajectory("root-session", &config, &options).expect("export");
 
+        assert_eq!(artifact.requested_session_id, "root-session");
+        assert_eq!(
+            artifact.export_scope,
+            SessionTrajectoryExportScope::SessionOnly
+        );
+        assert_eq!(artifact.session_count, 1);
         assert_eq!(artifact.session.session_id, "root-session");
         assert_eq!(artifact.session.turn_count, 2);
         assert_eq!(
@@ -591,7 +784,10 @@ mod tests {
         assert_eq!(artifact.events[0].event_kind, "delegate_started");
         assert_eq!(artifact.events[1].event_kind, "delegate_completed");
         assert_eq!(artifact.approval_request_count, 1);
+        assert_eq!(artifact.approval_requests[0].session_id, "root-session");
         assert_eq!(artifact.approval_requests[0].tool_name, "delegate");
+        assert_eq!(artifact.descendant_session_count, 0);
+        assert!(artifact.descendant_sessions.is_empty());
         assert_eq!(
             artifact
                 .terminal_outcome
@@ -626,12 +822,53 @@ mod tests {
     }
 
     #[test]
+    fn export_session_trajectory_can_include_descendant_delegate_sessions() {
+        let config = isolated_memory_config("session-trajectory-descendants");
+        let repository = SessionRepository::new(&config).expect("repository");
+        create_session(&repository, "root-session").expect("create root");
+        append_turns("root-session", &config, &["root"]).expect("append root turns");
+
+        let child_record = NewSessionRecord {
+            session_id: "child-session".to_owned(),
+            kind: SessionKind::DelegateChild,
+            parent_session_id: Some("root-session".to_owned()),
+            label: Some("Child".to_owned()),
+            state: SessionState::Completed,
+        };
+        repository
+            .create_session(child_record)
+            .expect("create child session");
+        append_turns("child-session", &config, &["child"]).expect("append child turns");
+
+        let options = SessionTrajectoryExportOptions {
+            include_descendants: true,
+            ..SessionTrajectoryExportOptions::default()
+        };
+        let artifact =
+            export_session_trajectory("root-session", &config, &options).expect("export");
+
+        assert_eq!(
+            artifact.export_scope,
+            SessionTrajectoryExportScope::SessionWithDescendants
+        );
+        assert_eq!(artifact.session_count, 2);
+        assert_eq!(artifact.descendant_session_count, 1);
+        assert_eq!(artifact.descendant_sessions.len(), 1);
+        assert_eq!(
+            artifact.descendant_sessions[0].session.session_id,
+            "child-session"
+        );
+        assert_eq!(artifact.descendant_sessions[0].lineage.depth, 1);
+    }
+
+    #[test]
     fn export_session_trajectory_rejects_invalid_options() {
         let config = isolated_memory_config("session-trajectory-invalid-options");
         let repository = SessionRepository::new(&config).expect("repository");
         create_session(&repository, "root-session").expect("create session");
 
         let invalid_turn_limit_options = SessionTrajectoryExportOptions {
+            include_descendants: false,
             turn_limit: Some(0),
             event_page_limit: 10,
         };
@@ -641,6 +878,7 @@ mod tests {
         assert!(turn_limit_error.contains("turn_limit"));
 
         let invalid_event_page_options = SessionTrajectoryExportOptions {
+            include_descendants: false,
             turn_limit: None,
             event_page_limit: 0,
         };

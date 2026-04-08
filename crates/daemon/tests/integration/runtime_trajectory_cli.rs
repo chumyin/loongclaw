@@ -110,11 +110,41 @@ fn seed_runtime_trajectory_session(config_path: &Path, session_id: &str) {
         .expect("finalize session");
 }
 
+fn seed_runtime_trajectory_child_session(config_path: &Path) {
+    let config_path_text = config_path.to_string_lossy();
+    let (_, config) =
+        mvp::config::load(Some(config_path_text.as_ref())).expect("load config fixture");
+    let memory_config =
+        mvp::memory::runtime_config::MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let repository =
+        mvp::session::repository::SessionRepository::new(&memory_config).expect("repository");
+
+    let child_record = mvp::session::repository::NewSessionRecord {
+        session_id: "child-session".to_owned(),
+        kind: mvp::session::repository::SessionKind::DelegateChild,
+        parent_session_id: Some("root-session".to_owned()),
+        label: Some("Child".to_owned()),
+        state: mvp::session::repository::SessionState::Completed,
+    };
+    repository
+        .create_session(child_record)
+        .expect("create child session");
+
+    mvp::memory::append_turn_direct(
+        "child-session",
+        "assistant",
+        "child artifact note",
+        &memory_config,
+    )
+    .expect("append child turn");
+}
+
 #[test]
 fn runtime_trajectory_export_writes_bounded_artifact_with_lineage_and_canonical_records() {
     let root = unique_temp_dir("loongclaw-runtime-trajectory-export");
     let config_path = write_runtime_trajectory_config(root.as_path());
     seed_runtime_trajectory_session(config_path.as_path(), "root-session");
+    seed_runtime_trajectory_child_session(config_path.as_path());
 
     let artifact_path = root.join("artifacts").join("root-session.json");
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_loongclaw"))
@@ -125,6 +155,7 @@ fn runtime_trajectory_export_writes_bounded_artifact_with_lineage_and_canonical_
             config_path.to_str().expect("config path should be utf-8"),
             "--session",
             "root-session",
+            "--include-descendants",
             "--output",
             artifact_path
                 .to_str()
@@ -142,6 +173,9 @@ fn runtime_trajectory_export_writes_bounded_artifact_with_lineage_and_canonical_
     let stdout = String::from_utf8(output.stdout).expect("stdout should be utf8");
     let artifact = serde_json::from_str::<Value>(&stdout).expect("decode export json");
 
+    assert_eq!(artifact["requested_session_id"], "root-session");
+    assert_eq!(artifact["export_scope"], "session_with_descendants");
+    assert_eq!(artifact["session_count"], 2);
     assert_eq!(artifact["session"]["session_id"], "root-session");
     assert_eq!(artifact["lineage"]["root_session_id"], "root-session");
     assert_eq!(artifact["lineage"]["depth"], 0);
@@ -154,6 +188,15 @@ fn runtime_trajectory_export_writes_bounded_artifact_with_lineage_and_canonical_
     assert_eq!(artifact["turns"][1]["sequence"], 3);
     assert_eq!(artifact["canonical_records"][0]["kind"], "assistant_turn");
     assert_eq!(artifact["terminal_outcome"]["status"], "ok");
+    assert_eq!(artifact["descendant_session_count"], 1);
+    assert_eq!(
+        artifact["descendant_sessions"][0]["session"]["session_id"],
+        "child-session"
+    );
+    assert_eq!(
+        artifact["descendant_sessions"][0]["turns"][0]["content"],
+        "child artifact note"
+    );
 
     let persisted = fs::read_to_string(&artifact_path).expect("read persisted artifact");
     let persisted_artifact = serde_json::from_str::<Value>(&persisted).expect("decode persisted");
@@ -237,4 +280,113 @@ fn runtime_trajectory_export_accepts_bare_output_file_in_current_directory() {
     let persisted_artifact = serde_json::from_str::<Value>(&persisted).expect("decode artifact");
 
     assert_eq!(persisted_artifact["session"]["session_id"], "root-session");
+}
+
+#[test]
+fn runtime_trajectory_index_reports_persisted_artifacts() {
+    let root = unique_temp_dir("loongclaw-runtime-trajectory-index");
+    let config_path = write_runtime_trajectory_config(root.as_path());
+    seed_runtime_trajectory_session(config_path.as_path(), "root-session");
+    seed_runtime_trajectory_child_session(config_path.as_path());
+
+    let artifact_root = root.join("artifacts");
+    let artifact_path = artifact_root.join("root-session.json");
+    let export_status = std::process::Command::new(env!("CARGO_BIN_EXE_loongclaw"))
+        .args([
+            "runtime-trajectory",
+            "export",
+            "--config",
+            config_path.to_str().expect("config path should be utf-8"),
+            "--session",
+            "root-session",
+            "--include-descendants",
+            "--output",
+            artifact_path
+                .to_str()
+                .expect("artifact path should be utf-8"),
+        ])
+        .status()
+        .expect("run runtime-trajectory export");
+
+    assert!(export_status.success(), "export should succeed");
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_loongclaw"))
+        .args([
+            "runtime-trajectory",
+            "index",
+            "--root",
+            artifact_root
+                .to_str()
+                .expect("artifact root should be utf-8"),
+            "--json",
+        ])
+        .output()
+        .expect("run runtime-trajectory index");
+
+    assert!(output.status.success(), "index should succeed");
+
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be utf8");
+    let report = serde_json::from_str::<Value>(&stdout).expect("decode index json");
+
+    assert_eq!(report["artifact_count"], 1);
+    assert_eq!(
+        report["artifacts"][0]["requested_session_id"],
+        "root-session"
+    );
+    assert_eq!(report["artifacts"][0]["session_count"], 2);
+    assert_eq!(report["artifacts"][0]["session_ids"][0], "root-session");
+    assert_eq!(report["artifacts"][0]["session_ids"][1], "child-session");
+}
+
+#[test]
+fn runtime_trajectory_search_finds_descendant_turn_content() {
+    let root = unique_temp_dir("loongclaw-runtime-trajectory-search");
+    let config_path = write_runtime_trajectory_config(root.as_path());
+    seed_runtime_trajectory_session(config_path.as_path(), "root-session");
+    seed_runtime_trajectory_child_session(config_path.as_path());
+
+    let artifact_root = root.join("artifacts");
+    let artifact_path = artifact_root.join("root-session.json");
+    let export_status = std::process::Command::new(env!("CARGO_BIN_EXE_loongclaw"))
+        .args([
+            "runtime-trajectory",
+            "export",
+            "--config",
+            config_path.to_str().expect("config path should be utf-8"),
+            "--session",
+            "root-session",
+            "--include-descendants",
+            "--output",
+            artifact_path
+                .to_str()
+                .expect("artifact path should be utf-8"),
+        ])
+        .status()
+        .expect("run runtime-trajectory export");
+
+    assert!(export_status.success(), "export should succeed");
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_loongclaw"))
+        .args([
+            "runtime-trajectory",
+            "search",
+            "--root",
+            artifact_root
+                .to_str()
+                .expect("artifact root should be utf-8"),
+            "--query",
+            "child artifact note",
+            "--json",
+        ])
+        .output()
+        .expect("run runtime-trajectory search");
+
+    assert!(output.status.success(), "search should succeed");
+
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be utf8");
+    let report = serde_json::from_str::<Value>(&stdout).expect("decode search json");
+
+    assert_eq!(report["hit_count"], 1);
+    assert_eq!(report["hits"][0]["session_id"], "child-session");
+    assert_eq!(report["hits"][0]["section"], "turn");
 }

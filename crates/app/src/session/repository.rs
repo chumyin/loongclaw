@@ -927,6 +927,13 @@ impl SessionRepository {
     ) -> Result<Vec<SessionSummaryRecord>, String> {
         let current_session_id = normalize_required_text(current_session_id, "current_session_id")?;
         let conn = self.open_connection()?;
+        Self::list_visible_sessions_with_conn(&conn, &current_session_id)
+    }
+
+    pub(crate) fn list_visible_sessions_with_conn(
+        conn: &Connection,
+        current_session_id: &str,
+    ) -> Result<Vec<SessionSummaryRecord>, String> {
         let mut stmt = conn
             .prepare(
                 "WITH RECURSIVE visible(session_id) AS (
@@ -998,7 +1005,8 @@ impl SessionRepository {
         if !sessions
             .iter()
             .any(|session| session.session_id == current_session_id)
-            && let Some(legacy) = self.infer_legacy_session_summary(&current_session_id)?
+            && let Some(legacy) =
+                Self::infer_legacy_session_summary_with_conn(conn, current_session_id)?
         {
             sessions.push(legacy);
             sort_session_summaries(&mut sessions);
@@ -3353,15 +3361,6 @@ impl SessionRepository {
             recent_events,
             tail_events,
         }))
-    }
-
-    fn infer_legacy_session_summary(
-        &self,
-        session_id: &str,
-    ) -> Result<Option<SessionSummaryRecord>, String> {
-        let session_id = normalize_required_text(session_id, "session_id")?;
-        let conn = self.open_connection()?;
-        Self::infer_legacy_session_summary_with_conn(&conn, &session_id)
     }
 
     fn infer_legacy_session_summary_with_conn(

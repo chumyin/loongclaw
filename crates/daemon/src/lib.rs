@@ -48,7 +48,6 @@ pub use loongclaw_bench::{
 };
 #[cfg(any(feature = "memory-sqlite", feature = "mvp"))]
 pub use memory_context_benchmark::run_memory_context_benchmark_cli;
-pub use runtime_trajectory_cli::{format_runtime_trajectory_summary, run_runtime_trajectory_cli};
 #[cfg(not(any(feature = "memory-sqlite", feature = "mvp")))]
 pub fn run_memory_context_benchmark_cli(
     output_path: &str,
@@ -4972,11 +4971,748 @@ pub fn run_safe_lane_summary_cli(
     }
 }
 
+pub fn run_runtime_trajectory_cli(
+    config_path: Option<&str>,
+    session: Option<&str>,
+    include_descendants: bool,
+    artifact: Option<&str>,
+    output: Option<&str>,
+    turn_limit: Option<usize>,
+    event_page_limit: usize,
+    as_json: bool,
+) -> CliResult<()> {
+    if matches!(turn_limit, Some(0)) {
+        return Err("runtime-trajectory turn_limit must be >= 1 when provided".to_owned());
+    }
+
+    if event_page_limit == 0 {
+        return Err("runtime-trajectory event_page_limit must be >= 1".to_owned());
+    }
+
+    validate_runtime_trajectory_arguments(session, artifact, output, turn_limit, event_page_limit)?;
+
+    #[cfg(feature = "memory-sqlite")]
+    {
+        let artifact_path = artifact
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(std::path::PathBuf::from);
+        let artifact = if let Some(artifact_path) = artifact_path.as_ref() {
+            load_runtime_trajectory_artifact(artifact_path.as_path())?
+        } else {
+            let (_, config) = mvp::config::load(config_path)?;
+            let session_id = session
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| "runtime-trajectory requires --session or --artifact".to_owned())?
+                .to_owned();
+            let memory_config =
+                mvp::memory::runtime_config::MemoryRuntimeConfig::from_memory_config(
+                    &config.memory,
+                );
+            let export_options = mvp::session::trajectory::SessionTrajectoryExportOptions {
+                include_descendants,
+                turn_limit,
+                event_page_limit,
+            };
+            let export_result = mvp::session::trajectory::export_session_trajectory(
+                &session_id,
+                &memory_config,
+                &export_options,
+            );
+            export_result.map_err(|error| format!("export session trajectory failed: {error}"))?
+        };
+        let output_path = output
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(std::path::PathBuf::from);
+
+        if let Some(output_path) = output_path.as_ref() {
+            persist_runtime_trajectory_artifact(output_path.as_path(), &artifact)?;
+        }
+
+        if as_json {
+            let pretty = serde_json::to_string_pretty(&artifact)
+                .map_err(|error| format!("serialize session trajectory failed: {error}"))?;
+            println!("{pretty}");
+            return Ok(());
+        }
+
+        let rendered = format_runtime_trajectory_summary(&artifact);
+        if let Some(output_path) = output_path.as_ref() {
+            println!("artifact_path={}", output_path.display());
+        }
+        print!("{rendered}");
+        Ok(())
+    }
+
+    #[cfg(not(feature = "memory-sqlite"))]
+    {
+        let _ = (
+            config_path,
+            session,
+            include_descendants,
+            artifact,
+            output,
+            turn_limit,
+            event_page_limit,
+            as_json,
+        );
+        Err("runtime-trajectory requires memory-sqlite feature".to_owned())
+    }
+}
+
+fn validate_runtime_trajectory_arguments(
+    session: Option<&str>,
+    artifact: Option<&str>,
+    output: Option<&str>,
+    turn_limit: Option<usize>,
+    event_page_limit: usize,
+) -> CliResult<()> {
+    let session = session.map(str::trim).filter(|value| !value.is_empty());
+    let artifact = artifact.map(str::trim).filter(|value| !value.is_empty());
+    let output = output.map(str::trim).filter(|value| !value.is_empty());
+
+    if session.is_none() && artifact.is_none() {
+        return Err("runtime-trajectory requires --session or --artifact".to_owned());
+    }
+
+    if session.is_some() && artifact.is_some() {
+        return Err("runtime-trajectory cannot combine --session with --artifact".to_owned());
+    }
+
+    if artifact.is_some() && output.is_some() {
+        return Err("runtime-trajectory cannot combine --artifact with --output".to_owned());
+    }
+
+    if artifact.is_some() && turn_limit.is_some() {
+        return Err("runtime-trajectory cannot combine --artifact with --turn-limit".to_owned());
+    }
+
+    if artifact.is_some() && event_page_limit != 200 {
+        return Err(
+            "runtime-trajectory cannot combine --artifact with --event-page-limit".to_owned(),
+        );
+    }
+
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RuntimeTrajectoryIndexArtifactSummary {
+    pub artifact_path: String,
+    pub requested_session_id: String,
+    pub export_scope: String,
+    pub session_count: usize,
+    pub exported_turn_count: usize,
+    pub canonical_record_count: usize,
+    pub event_count: usize,
+    pub approval_request_count: usize,
+    pub session_ids: Vec<String>,
+    pub terminal_statuses: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RuntimeTrajectoryIndexReport {
+    pub generated_at: String,
+    pub root: String,
+    pub artifact_count: usize,
+    pub artifacts: Vec<RuntimeTrajectoryIndexArtifactSummary>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RuntimeTrajectorySearchHit {
+    pub artifact_path: String,
+    pub session_id: String,
+    pub section: String,
+    pub excerpt: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RuntimeTrajectorySearchReport {
+    pub generated_at: String,
+    pub root: String,
+    pub query: String,
+    pub limit: usize,
+    pub hit_count: usize,
+    pub hits: Vec<RuntimeTrajectorySearchHit>,
+}
+
+struct RuntimeTrajectoryLoadedArtifact {
+    path: std::path::PathBuf,
+    artifact: mvp::session::trajectory::SessionTrajectoryArtifact,
+}
+
+pub fn run_runtime_trajectory_index_cli(root: &str, as_json: bool) -> CliResult<()> {
+    let root_path = std::path::Path::new(root);
+    let artifacts = collect_runtime_trajectory_artifacts(root_path)?;
+    let mut summaries = Vec::with_capacity(artifacts.len());
+
+    for artifact in &artifacts {
+        let summary = summarize_runtime_trajectory_artifact(artifact)?;
+        summaries.push(summary);
+    }
+
+    let report = RuntimeTrajectoryIndexReport {
+        generated_at: now_rfc3339()?,
+        root: canonicalize_runtime_trajectory_path(root_path)?,
+        artifact_count: summaries.len(),
+        artifacts: summaries,
+    };
+
+    if as_json {
+        let pretty = serde_json::to_string_pretty(&report)
+            .map_err(|error| format!("serialize runtime trajectory index failed: {error}"))?;
+        println!("{pretty}");
+        return Ok(());
+    }
+
+    print!("{}", format_runtime_trajectory_index_report(&report));
+    Ok(())
+}
+
+pub fn run_runtime_trajectory_search_cli(
+    root: &str,
+    query: &str,
+    limit: usize,
+    as_json: bool,
+) -> CliResult<()> {
+    let normalized_query = query.trim();
+    if normalized_query.is_empty() {
+        return Err("runtime-trajectory search requires a non-empty --query".to_owned());
+    }
+    if limit == 0 {
+        return Err("runtime-trajectory search limit must be >= 1".to_owned());
+    }
+
+    let root_path = std::path::Path::new(root);
+    let artifacts = collect_runtime_trajectory_artifacts(root_path)?;
+    let mut hits = Vec::new();
+    let query_lower = normalized_query.to_ascii_lowercase();
+
+    for artifact in &artifacts {
+        if hits.len() >= limit {
+            break;
+        }
+
+        let artifact_hits = search_runtime_trajectory_artifact(
+            artifact,
+            query_lower.as_str(),
+            limit.saturating_sub(hits.len()),
+        )?;
+        hits.extend(artifact_hits);
+    }
+
+    let report = RuntimeTrajectorySearchReport {
+        generated_at: now_rfc3339()?,
+        root: canonicalize_runtime_trajectory_path(root_path)?,
+        query: normalized_query.to_owned(),
+        limit,
+        hit_count: hits.len(),
+        hits,
+    };
+
+    if as_json {
+        let pretty = serde_json::to_string_pretty(&report)
+            .map_err(|error| format!("serialize runtime trajectory search failed: {error}"))?;
+        println!("{pretty}");
+        return Ok(());
+    }
+
+    print!("{}", format_runtime_trajectory_search_report(&report));
+    Ok(())
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn persist_runtime_trajectory_artifact(
+    output_path: &std::path::Path,
+    artifact: &mvp::session::trajectory::SessionTrajectoryArtifact,
+) -> CliResult<()> {
+    let output_parent = output_path.parent();
+    if let Some(output_parent) = output_parent {
+        std::fs::create_dir_all(output_parent).map_err(|error| {
+            format!(
+                "create runtime trajectory artifact directory {} failed: {error}",
+                output_parent.display()
+            )
+        })?;
+    }
+
+    let encoded = serde_json::to_string_pretty(artifact)
+        .map_err(|error| format!("serialize runtime trajectory artifact failed: {error}"))?;
+    std::fs::write(output_path, encoded).map_err(|error| {
+        format!(
+            "write runtime trajectory artifact {} failed: {error}",
+            output_path.display()
+        )
+    })?;
+    Ok(())
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn load_runtime_trajectory_artifact(
+    artifact_path: &std::path::Path,
+) -> CliResult<mvp::session::trajectory::SessionTrajectoryArtifact> {
+    let encoded = std::fs::read_to_string(artifact_path).map_err(|error| {
+        format!(
+            "read runtime trajectory artifact {} failed: {error}",
+            artifact_path.display()
+        )
+    })?;
+    let artifact =
+        serde_json::from_str::<mvp::session::trajectory::SessionTrajectoryArtifact>(&encoded)
+            .map_err(|error| {
+                format!(
+                    "decode runtime trajectory artifact {} failed: {error}",
+                    artifact_path.display()
+                )
+            })?;
+    validate_runtime_trajectory_artifact(&artifact, artifact_path)?;
+    Ok(artifact)
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn validate_runtime_trajectory_artifact(
+    artifact: &mvp::session::trajectory::SessionTrajectoryArtifact,
+    artifact_path: &std::path::Path,
+) -> CliResult<()> {
+    let schema = &artifact.schema;
+    let expected_version =
+        mvp::session::trajectory::SESSION_TRAJECTORY_ARTIFACT_JSON_SCHEMA_VERSION;
+    if schema.version != expected_version {
+        return Err(format!(
+            "runtime trajectory artifact {} uses unsupported schema version {}; expected {}",
+            artifact_path.display(),
+            schema.version,
+            expected_version
+        ));
+    }
+
+    let expected_surface = mvp::session::trajectory::SESSION_TRAJECTORY_ARTIFACT_SURFACE;
+    if schema.surface != expected_surface {
+        return Err(format!(
+            "runtime trajectory artifact {} uses unsupported schema surface {}; expected {}",
+            artifact_path.display(),
+            schema.surface,
+            expected_surface
+        ));
+    }
+
+    let expected_purpose = mvp::session::trajectory::SESSION_TRAJECTORY_ARTIFACT_PURPOSE;
+    if schema.purpose != expected_purpose {
+        return Err(format!(
+            "runtime trajectory artifact {} uses unsupported schema purpose {}; expected {}",
+            artifact_path.display(),
+            schema.purpose,
+            expected_purpose
+        ));
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn collect_runtime_trajectory_artifacts(
+    root: &std::path::Path,
+) -> CliResult<Vec<RuntimeTrajectoryLoadedArtifact>> {
+    let mut artifacts = Vec::new();
+    collect_runtime_trajectory_artifacts_recursive(root, &mut artifacts)?;
+    Ok(artifacts)
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn collect_runtime_trajectory_artifacts_recursive(
+    root: &std::path::Path,
+    artifacts: &mut Vec<RuntimeTrajectoryLoadedArtifact>,
+) -> CliResult<()> {
+    let mut entries = std::fs::read_dir(root)
+        .map_err(|error| {
+            format!(
+                "read runtime trajectory root {} failed: {error}",
+                root.display()
+            )
+        })?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| {
+            format!(
+                "enumerate runtime trajectory root {} failed: {error}",
+                root.display()
+            )
+        })?;
+    entries.sort_by_key(|entry| entry.path());
+
+    for entry in entries {
+        let path = entry.path();
+        let entry_type = entry.file_type().map_err(|error| {
+            format!(
+                "inspect runtime trajectory entry {} failed: {error}",
+                path.display()
+            )
+        })?;
+
+        if entry_type.is_symlink() {
+            continue;
+        }
+
+        if entry_type.is_dir() {
+            collect_runtime_trajectory_artifacts_recursive(path.as_path(), artifacts)?;
+            continue;
+        }
+
+        let extension = path.extension().and_then(|value| value.to_str());
+        if extension != Some("json") {
+            continue;
+        }
+
+        let loaded_artifact = load_supported_runtime_trajectory_artifact(path.as_path())?;
+        if let Some(loaded_artifact) = loaded_artifact {
+            artifacts.push(loaded_artifact);
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn load_supported_runtime_trajectory_artifact(
+    artifact_path: &std::path::Path,
+) -> CliResult<Option<RuntimeTrajectoryLoadedArtifact>> {
+    let encoded = std::fs::read_to_string(artifact_path).map_err(|error| {
+        format!(
+            "read runtime trajectory entry {} failed: {error}",
+            artifact_path.display()
+        )
+    })?;
+    let value = serde_json::from_str::<serde_json::Value>(&encoded).map_err(|error| {
+        format!(
+            "decode runtime trajectory entry {} failed: {error}",
+            artifact_path.display()
+        )
+    })?;
+    let surface = value
+        .get("schema")
+        .and_then(|schema| schema.get("surface"))
+        .and_then(serde_json::Value::as_str);
+    let Some(surface) = surface else {
+        return Ok(None);
+    };
+
+    if surface != mvp::session::trajectory::SESSION_TRAJECTORY_ARTIFACT_SURFACE {
+        return Ok(None);
+    }
+
+    let artifact = load_runtime_trajectory_artifact(artifact_path)?;
+    Ok(Some(RuntimeTrajectoryLoadedArtifact {
+        path: artifact_path.to_path_buf(),
+        artifact,
+    }))
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn summarize_runtime_trajectory_artifact(
+    loaded_artifact: &RuntimeTrajectoryLoadedArtifact,
+) -> CliResult<RuntimeTrajectoryIndexArtifactSummary> {
+    let canonical_path = canonicalize_runtime_trajectory_path(loaded_artifact.path.as_path())?;
+    let artifact = &loaded_artifact.artifact;
+    let all_session_exports = artifact.all_session_exports();
+    let mut session_ids = Vec::with_capacity(all_session_exports.len());
+    let mut terminal_statuses = Vec::new();
+    let mut exported_turn_count = 0_usize;
+    let mut canonical_record_count = 0_usize;
+    let mut event_count = 0_usize;
+    let mut approval_request_count = 0_usize;
+
+    for session_export in &all_session_exports {
+        session_ids.push(session_export.session.session_id.clone());
+        exported_turn_count =
+            exported_turn_count.saturating_add(session_export.exported_turn_count);
+        canonical_record_count =
+            canonical_record_count.saturating_add(session_export.canonical_record_count);
+        event_count = event_count.saturating_add(session_export.event_count);
+        approval_request_count =
+            approval_request_count.saturating_add(session_export.approval_request_count);
+
+        let terminal_status = session_export
+            .terminal_outcome
+            .as_ref()
+            .map(|outcome| outcome.status.as_str())
+            .unwrap_or("none");
+        terminal_statuses.push(terminal_status.to_owned());
+    }
+
+    Ok(RuntimeTrajectoryIndexArtifactSummary {
+        artifact_path: canonical_path,
+        requested_session_id: artifact.effective_requested_session_id().to_owned(),
+        export_scope: artifact.effective_export_scope().as_str().to_owned(),
+        session_count: artifact.effective_session_count(),
+        exported_turn_count,
+        canonical_record_count,
+        event_count,
+        approval_request_count,
+        session_ids,
+        terminal_statuses,
+    })
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn search_runtime_trajectory_artifact(
+    loaded_artifact: &RuntimeTrajectoryLoadedArtifact,
+    query_lower: &str,
+    remaining_limit: usize,
+) -> CliResult<Vec<RuntimeTrajectorySearchHit>> {
+    let artifact_path = canonicalize_runtime_trajectory_path(loaded_artifact.path.as_path())?;
+    let mut hits = Vec::new();
+    let mut seen_content_keys = BTreeSet::new();
+    let session_exports = loaded_artifact.artifact.all_session_exports();
+
+    for session_export in session_exports {
+        if hits.len() >= remaining_limit {
+            break;
+        }
+
+        let session_id = session_export.session.session_id.clone();
+        let mut searchable_sections = build_runtime_trajectory_searchable_sections(&session_export);
+
+        for (section, content) in searchable_sections.drain(..) {
+            if hits.len() >= remaining_limit {
+                break;
+            }
+
+            let content_lower = content.to_ascii_lowercase();
+            if !content_lower.contains(query_lower) {
+                continue;
+            }
+
+            let seen_key = (session_id.clone(), content_lower.clone());
+            if !seen_content_keys.insert(seen_key) {
+                continue;
+            }
+
+            let excerpt = build_runtime_trajectory_excerpt(content.as_str());
+            let hit = RuntimeTrajectorySearchHit {
+                artifact_path: artifact_path.clone(),
+                session_id: session_id.clone(),
+                section,
+                excerpt,
+            };
+            hits.push(hit);
+        }
+    }
+
+    Ok(hits)
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn build_runtime_trajectory_searchable_sections(
+    session_export: &mvp::session::trajectory::SessionTrajectorySessionExport,
+) -> Vec<(String, String)> {
+    let mut sections = Vec::new();
+    let summary_text = format!(
+        "{} {} {}",
+        session_export.session.session_id,
+        session_export.session.label.as_deref().unwrap_or(""),
+        session_export.session.state
+    );
+    sections.push(("session".to_owned(), summary_text));
+
+    for turn in &session_export.turns {
+        sections.push(("turn".to_owned(), turn.content.clone()));
+    }
+
+    for canonical_record in &session_export.canonical_records {
+        sections.push((
+            "canonical_record".to_owned(),
+            canonical_record.content.clone(),
+        ));
+    }
+
+    for event in &session_export.events {
+        let payload = serialize_runtime_trajectory_value(&event.payload_json);
+        let event_text = format!("{} {}", event.event_kind, payload);
+        sections.push(("event".to_owned(), event_text));
+    }
+
+    for approval_request in &session_export.approval_requests {
+        let request_payload =
+            serialize_runtime_trajectory_value(&approval_request.request_payload_json);
+        let approval_text = format!(
+            "{} {} {}",
+            approval_request.tool_name, approval_request.approval_key, request_payload
+        );
+        sections.push(("approval".to_owned(), approval_text));
+    }
+
+    if let Some(terminal_outcome) = session_export.terminal_outcome.as_ref() {
+        let payload = serialize_runtime_trajectory_value(&terminal_outcome.payload_json);
+        let terminal_text = format!("{} {}", terminal_outcome.status, payload);
+        sections.push(("terminal_outcome".to_owned(), terminal_text));
+    }
+
+    sections
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn serialize_runtime_trajectory_value(value: &serde_json::Value) -> String {
+    serde_json::to_string(value).unwrap_or_else(|_| String::new())
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn build_runtime_trajectory_excerpt(content: &str) -> String {
+    let trimmed = content.trim();
+    let excerpt_chars = 160_usize;
+    let excerpt = trimmed.chars().take(excerpt_chars).collect::<String>();
+    if trimmed.chars().count() <= excerpt_chars {
+        return excerpt;
+    }
+
+    format!("{excerpt}…")
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn canonicalize_runtime_trajectory_path(path: &std::path::Path) -> CliResult<String> {
+    std::fs::canonicalize(path)
+        .map(|resolved| resolved.display().to_string())
+        .map_err(|error| {
+            format!(
+                "canonicalize runtime trajectory path {} failed: {error}",
+                path.display()
+            )
+        })
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn now_rfc3339() -> CliResult<String> {
+    time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .map_err(|error| format!("format runtime trajectory timestamp failed: {error}"))
+}
+
 #[cfg(feature = "memory-sqlite")]
 pub fn format_milli_ratio(value: Option<u32>) -> String {
     value
         .map(|raw| format!("{:.3}", (raw as f64) / 1000.0))
         .unwrap_or_else(|| "-".to_owned())
+}
+
+#[cfg(feature = "memory-sqlite")]
+pub fn format_runtime_trajectory_summary(
+    artifact: &mvp::session::trajectory::SessionTrajectoryArtifact,
+) -> String {
+    let terminal_outcome = artifact.terminal_outcome.as_ref();
+    let terminal_status = terminal_outcome
+        .map(|outcome| outcome.status.as_str())
+        .unwrap_or("none");
+    let turns_truncated = if artifact.turns_truncated {
+        "true"
+    } else {
+        "false"
+    };
+
+    let mut rendered = String::new();
+    rendered.push_str("runtime_trajectory ");
+    rendered.push_str("session=");
+    rendered.push_str(&artifact.session.session_id);
+    rendered.push_str(" kind=");
+    rendered.push_str(&artifact.session.kind);
+    rendered.push_str(" state=");
+    rendered.push_str(&artifact.session.state);
+    rendered.push_str(" lineage_root=");
+    rendered.push_str(artifact.lineage.root_session_id.as_deref().unwrap_or("-"));
+    rendered.push_str(" lineage_depth=");
+    rendered.push_str(&artifact.lineage.depth.to_string());
+    rendered.push('\n');
+
+    rendered.push_str("counts ");
+    rendered.push_str("total_turns=");
+    rendered.push_str(&artifact.session.turn_count.to_string());
+    rendered.push_str(" exported_turns=");
+    rendered.push_str(&artifact.exported_turn_count.to_string());
+    rendered.push_str(" turns_truncated=");
+    rendered.push_str(turns_truncated);
+    rendered.push_str(" canonical_records=");
+    rendered.push_str(&artifact.canonical_record_count.to_string());
+    rendered.push_str(" events=");
+    rendered.push_str(&artifact.event_count.to_string());
+    rendered.push_str(" approvals=");
+    rendered.push_str(&artifact.approval_request_count.to_string());
+    rendered.push_str(" descendants=");
+    rendered.push_str(&artifact.effective_descendant_session_count().to_string());
+    rendered.push_str(" terminal_status=");
+    rendered.push_str(terminal_status);
+    rendered.push('\n');
+
+    rendered.push_str("export ");
+    rendered.push_str("schema_version=");
+    rendered.push_str(&artifact.schema.version.to_string());
+    rendered.push_str(" exported_at=");
+    rendered.push_str(&artifact.exported_at);
+    rendered.push_str(" export_scope=");
+    rendered.push_str(artifact.effective_export_scope().as_str());
+    rendered.push_str(" session_count=");
+    rendered.push_str(&artifact.effective_session_count().to_string());
+    rendered.push_str(" event_page_limit=");
+    rendered.push_str(&artifact.event_page_limit.to_string());
+    rendered.push('\n');
+
+    rendered
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn format_runtime_trajectory_index_report(report: &RuntimeTrajectoryIndexReport) -> String {
+    let mut rendered = String::new();
+    rendered.push_str("runtime_trajectory_index ");
+    rendered.push_str("root=");
+    rendered.push_str(&report.root);
+    rendered.push_str(" artifacts=");
+    rendered.push_str(&report.artifact_count.to_string());
+    rendered.push('\n');
+
+    for artifact in &report.artifacts {
+        rendered.push_str("- artifact=");
+        rendered.push_str(&artifact.artifact_path);
+        rendered.push_str(" requested_session=");
+        rendered.push_str(&artifact.requested_session_id);
+        rendered.push_str(" scope=");
+        rendered.push_str(&artifact.export_scope);
+        rendered.push_str(" sessions=");
+        rendered.push_str(&artifact.session_count.to_string());
+        rendered.push_str(" turns=");
+        rendered.push_str(&artifact.exported_turn_count.to_string());
+        rendered.push_str(" events=");
+        rendered.push_str(&artifact.event_count.to_string());
+        rendered.push_str(" approvals=");
+        rendered.push_str(&artifact.approval_request_count.to_string());
+        rendered.push('\n');
+    }
+
+    rendered
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn format_runtime_trajectory_search_report(report: &RuntimeTrajectorySearchReport) -> String {
+    let mut rendered = String::new();
+    rendered.push_str("runtime_trajectory_search ");
+    rendered.push_str("root=");
+    rendered.push_str(&report.root);
+    rendered.push_str(" query=");
+    rendered.push_str(&report.query);
+    rendered.push_str(" hits=");
+    rendered.push_str(&report.hit_count.to_string());
+    rendered.push('\n');
+
+    for hit in &report.hits {
+        rendered.push_str("- artifact=");
+        rendered.push_str(&hit.artifact_path);
+        rendered.push_str(" session=");
+        rendered.push_str(&hit.session_id);
+        rendered.push_str(" section=");
+        rendered.push_str(&hit.section);
+        rendered.push_str(" excerpt=");
+        rendered.push_str(&hit.excerpt);
+        rendered.push('\n');
+    }
+
+    rendered
 }
 
 pub async fn with_graceful_shutdown<F>(serve_future: F) -> CliResult<()>
