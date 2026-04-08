@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+pub const WORK_UNIT_SPLIT_MIN_CHILDREN: usize = 2;
+
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -265,7 +267,9 @@ pub struct WorkUnitRecord {
     pub last_error: Option<String>,
     pub blocking_reason: Option<String>,
     pub parent_work_unit_id: Option<String>,
+    pub superseded_by_work_unit_id: Option<String>,
     pub child_work_unit_ids: Vec<String>,
+    pub supersedes_work_unit_ids: Vec<String>,
     pub blocks_work_unit_ids: Vec<String>,
     pub blocked_by_work_unit_ids: Vec<String>,
     pub review: Option<WorkUnitReviewRecord>,

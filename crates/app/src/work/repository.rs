@@ -2,9 +2,10 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use loongclaw_contracts::{
-    WorkRuntimeHealthSnapshot, WorkUnitEventRecord, WorkUnitKind, WorkUnitLeaseRecord,
-    WorkUnitPriority, WorkUnitRecord, WorkUnitRetryPolicy, WorkUnitReviewRecord,
-    WorkUnitReviewStatus, WorkUnitSnapshot, WorkUnitSourceRef, WorkUnitStatus,
+    WORK_UNIT_SPLIT_MIN_CHILDREN, WorkRuntimeHealthSnapshot, WorkUnitEventRecord, WorkUnitKind,
+    WorkUnitLeaseRecord, WorkUnitPriority, WorkUnitRecord, WorkUnitRetryPolicy,
+    WorkUnitReviewRecord, WorkUnitReviewStatus, WorkUnitSnapshot, WorkUnitSourceRef,
+    WorkUnitStatus,
 };
 use rand::random;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
@@ -33,6 +34,7 @@ const WORK_UNIT_REVIEW_REQUESTED_EVENT_KIND: &str = "work_unit_review_requested"
 const WORK_UNIT_REVIEW_RECORDED_EVENT_KIND: &str = "work_unit_review_recorded";
 const WORK_UNIT_CHILD_CREATED_EVENT_KIND: &str = "work_unit_child_created";
 const WORK_UNIT_SPLIT_APPLIED_EVENT_KIND: &str = "work_unit_split_applied";
+const WORK_UNIT_SUPERSEDED_EVENT_KIND: &str = "work_unit_superseded";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct NewWorkUnitRecord {
@@ -221,6 +223,20 @@ pub struct SplitWorkUnitResult {
     pub children: Vec<WorkUnitSnapshot>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SupersedeWorkUnitRequest {
+    pub obsolete_work_unit_id: String,
+    pub replacement_work_unit_id: String,
+    pub actor: Option<String>,
+    pub now_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct SupersedeWorkUnitResult {
+    pub obsolete: WorkUnitSnapshot,
+    pub replacement: WorkUnitSnapshot,
+}
+
 #[derive(Debug, Clone)]
 pub struct WorkUnitRepository {
     db_path: PathBuf,
@@ -241,8 +257,10 @@ struct RawWorkUnitRecord {
     last_error: Option<String>,
     blocking_reason: Option<String>,
     parent_work_unit_id: Option<String>,
+    superseded_by_work_unit_id: Option<String>,
     assigned_to: Option<String>,
     child_work_unit_ids: Vec<String>,
+    supersedes_work_unit_ids: Vec<String>,
     blocks_work_unit_ids: Vec<String>,
     blocked_by_work_unit_ids: Vec<String>,
     review_json: Option<String>,
@@ -332,6 +350,7 @@ impl WorkUnitRepository {
                     last_error,
                     blocking_reason,
                     parent_work_unit_id,
+                    superseded_by_work_unit_id,
                     assigned_to,
                     review_json,
                     result_payload_json,
@@ -343,7 +362,7 @@ impl WorkUnitRepository {
                     created_at_ms,
                     updated_at_ms,
                     archived_at_ms
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, NULL, NULL, ?11, NULL, NULL, NULL, NULL, 0, NULL, NULL, NULL, ?12, ?12, NULL)",
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, NULL, NULL, ?11, NULL, NULL, NULL, NULL, NULL, 0, NULL, NULL, NULL, ?12, ?12, NULL)",
                 params![
                     work_unit_id,
                     record.kind.as_str(),
@@ -420,8 +439,10 @@ impl WorkUnitRepository {
         let parent_work_unit_id =
             normalize_required_text(&request.parent_work_unit_id, "parent_work_unit_id")?;
         let child_count = request.children.len();
-        if child_count < 2 {
-            return Err("split_work_unit requires at least two child work units".to_owned());
+        if child_count < WORK_UNIT_SPLIT_MIN_CHILDREN {
+            return Err(format!(
+                "split_work_unit requires at least {WORK_UNIT_SPLIT_MIN_CHILDREN} child work units"
+            ));
         }
 
         let actor = normalize_optional_text(request.actor);
@@ -485,6 +506,136 @@ impl WorkUnitRepository {
         }
 
         Ok(SplitWorkUnitResult { parent, children })
+    }
+
+    pub fn supersede_work_unit(
+        &self,
+        request: SupersedeWorkUnitRequest,
+    ) -> Result<SupersedeWorkUnitResult, String> {
+        let obsolete_work_unit_id =
+            normalize_required_text(&request.obsolete_work_unit_id, "obsolete_work_unit_id")?;
+        let replacement_work_unit_id = normalize_required_text(
+            &request.replacement_work_unit_id,
+            "replacement_work_unit_id",
+        )?;
+        validate_supersede_endpoints(
+            obsolete_work_unit_id.as_str(),
+            replacement_work_unit_id.as_str(),
+        )?;
+        let actor = normalize_optional_text(request.actor);
+        let now_ms = request.now_ms.unwrap_or_else(current_unix_ms);
+        let mut connection = self.open_connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| format!("open supersede work-unit transaction failed: {error}"))?;
+        let obsolete_snapshot =
+            self.load_work_unit_snapshot_with_conn(&transaction, obsolete_work_unit_id.as_str())?;
+        let obsolete_snapshot = obsolete_snapshot
+            .ok_or_else(|| format!("work unit `{obsolete_work_unit_id}` not found"))?;
+        let replacement_snapshot = self
+            .load_work_unit_snapshot_with_conn(&transaction, replacement_work_unit_id.as_str())?;
+        let replacement_snapshot = replacement_snapshot
+            .ok_or_else(|| format!("work unit `{replacement_work_unit_id}` not found"))?;
+        validate_supersede_transition(&obsolete_snapshot, &replacement_snapshot, now_ms)?;
+
+        let incoming_blocking_work_unit_ids = obsolete_snapshot
+            .work_unit
+            .blocked_by_work_unit_ids
+            .as_slice();
+        let outgoing_blocked_work_unit_ids =
+            obsolete_snapshot.work_unit.blocks_work_unit_ids.as_slice();
+
+        for blocking_work_unit_id in incoming_blocking_work_unit_ids {
+            self.add_dependency_in_tx(
+                &transaction,
+                blocking_work_unit_id.as_str(),
+                replacement_work_unit_id.as_str(),
+                actor.as_deref(),
+                now_ms,
+            )?;
+        }
+        for blocked_work_unit_id in outgoing_blocked_work_unit_ids {
+            self.add_dependency_in_tx(
+                &transaction,
+                replacement_work_unit_id.as_str(),
+                blocked_work_unit_id.as_str(),
+                actor.as_deref(),
+                now_ms,
+            )?;
+        }
+        for blocking_work_unit_id in incoming_blocking_work_unit_ids {
+            self.remove_dependency_in_tx(
+                &transaction,
+                blocking_work_unit_id.as_str(),
+                obsolete_work_unit_id.as_str(),
+                actor.as_deref(),
+                now_ms,
+            )?;
+        }
+        for blocked_work_unit_id in outgoing_blocked_work_unit_ids {
+            self.remove_dependency_in_tx(
+                &transaction,
+                obsolete_work_unit_id.as_str(),
+                blocked_work_unit_id.as_str(),
+                actor.as_deref(),
+                now_ms,
+            )?;
+        }
+
+        transaction
+            .execute(
+                "UPDATE work_units
+                 SET status = ?1,
+                     superseded_by_work_unit_id = ?2,
+                     blocking_reason = NULL,
+                     lease_owner = NULL,
+                     lease_version = 0,
+                     lease_acquired_at_ms = NULL,
+                     lease_heartbeat_at_ms = NULL,
+                     lease_expires_at_ms = NULL,
+                     updated_at_ms = ?3
+                 WHERE work_unit_id = ?4
+                   AND archived_at_ms IS NULL",
+                params![
+                    WorkUnitStatus::Cancelled.as_str(),
+                    replacement_work_unit_id,
+                    now_ms,
+                    obsolete_work_unit_id,
+                ],
+            )
+            .map_err(|error| format!("mark superseded work unit failed: {error}"))?;
+        touch_work_unit(&transaction, replacement_work_unit_id.as_str(), now_ms)?;
+
+        let event_payload = json!({
+            "obsolete_work_unit_id": obsolete_work_unit_id,
+            "replacement_work_unit_id": replacement_work_unit_id,
+            "transferred_blocking_work_unit_ids": incoming_blocking_work_unit_ids,
+            "transferred_blocked_work_unit_ids": outgoing_blocked_work_unit_ids,
+        });
+        insert_event_in_tx(
+            &transaction,
+            obsolete_work_unit_id.as_str(),
+            WORK_UNIT_SUPERSEDED_EVENT_KIND,
+            actor.as_deref(),
+            &event_payload,
+            now_ms,
+        )?;
+
+        transaction
+            .commit()
+            .map_err(|error| format!("commit supersede work-unit transaction failed: {error}"))?;
+
+        let obsolete = self
+            .load_work_unit_snapshot(obsolete_work_unit_id.as_str())?
+            .ok_or_else(|| "obsolete work unit disappeared after supersede".to_owned())?;
+        let replacement = self
+            .load_work_unit_snapshot(replacement_work_unit_id.as_str())?
+            .ok_or_else(|| "replacement work unit disappeared after supersede".to_owned())?;
+
+        Ok(SupersedeWorkUnitResult {
+            obsolete,
+            replacement,
+        })
     }
 
     fn load_parent_work_unit_for_children(
@@ -1509,6 +1660,29 @@ impl WorkUnitRepository {
             return Ok(None);
         };
 
+        self.remove_dependency_in_tx(
+            &transaction,
+            blocking_work_unit_id.as_str(),
+            blocked_work_unit_id.as_str(),
+            actor.as_deref(),
+            now_ms,
+        )?;
+
+        transaction.commit().map_err(|error| {
+            format!("commit work unit dependency removal transaction failed: {error}")
+        })?;
+
+        self.load_work_unit_snapshot(&blocked_work_unit_id)
+    }
+
+    fn remove_dependency_in_tx(
+        &self,
+        transaction: &Transaction<'_>,
+        blocking_work_unit_id: &str,
+        blocked_work_unit_id: &str,
+        actor: Option<&str>,
+        now_ms: i64,
+    ) -> Result<(), String> {
         let removed_rows = transaction
             .execute(
                 "DELETE FROM work_unit_dependencies
@@ -1518,27 +1692,25 @@ impl WorkUnitRepository {
             )
             .map_err(|error| format!("remove work unit dependency failed: {error}"))?;
 
-        if removed_rows > 0 {
-            touch_work_unit(&transaction, blocked_work_unit_id.as_str(), now_ms)?;
-            let event_payload = json!({
-                "blocking_work_unit_id": blocking_work_unit_id,
-                "blocked_work_unit_id": blocked_work_unit_id,
-            });
-            insert_event_in_tx(
-                &transaction,
-                blocked_work_unit_id.as_str(),
-                WORK_UNIT_DEPENDENCY_REMOVED_EVENT_KIND,
-                actor.as_deref(),
-                &event_payload,
-                now_ms,
-            )?;
+        if removed_rows == 0 {
+            return Ok(());
         }
 
-        transaction.commit().map_err(|error| {
-            format!("commit work unit dependency removal transaction failed: {error}")
-        })?;
-
-        self.load_work_unit_snapshot(&blocked_work_unit_id)
+        touch_work_unit(transaction, blocked_work_unit_id, now_ms)?;
+        touch_work_unit(transaction, blocking_work_unit_id, now_ms)?;
+        let event_payload = json!({
+            "blocking_work_unit_id": blocking_work_unit_id,
+            "blocked_work_unit_id": blocked_work_unit_id,
+        });
+        insert_event_in_tx(
+            transaction,
+            blocked_work_unit_id,
+            WORK_UNIT_DEPENDENCY_REMOVED_EVENT_KIND,
+            actor,
+            &event_payload,
+            now_ms,
+        )?;
+        Ok(())
     }
 
     pub fn append_note(
@@ -1756,6 +1928,7 @@ impl WorkUnitRepository {
                     last_error TEXT NULL,
                     blocking_reason TEXT NULL,
                     parent_work_unit_id TEXT NULL,
+                    superseded_by_work_unit_id TEXT NULL,
                     assigned_to TEXT NULL,
                     review_json TEXT NULL,
                     result_payload_json TEXT NULL,
@@ -1796,6 +1969,7 @@ impl WorkUnitRepository {
                 ",
             )
             .map_err(|error| format!("ensure work unit schema failed: {error}"))?;
+        ensure_work_units_column_exists(&connection, "superseded_by_work_unit_id", "TEXT NULL")?;
         Ok(())
     }
 
@@ -1803,6 +1977,39 @@ impl WorkUnitRepository {
         Connection::open(&self.db_path)
             .map_err(|error| format!("open work unit repository sqlite db failed: {error}"))
     }
+}
+
+fn ensure_work_units_column_exists(
+    connection: &Connection,
+    column_name: &str,
+    column_definition: &str,
+) -> Result<(), String> {
+    let pragma_sql = "PRAGMA table_info(work_units)";
+    let mut statement = connection
+        .prepare(pragma_sql)
+        .map_err(|error| format!("prepare work unit schema inspection failed: {error}"))?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|error| format!("query work unit schema inspection failed: {error}"))?;
+    let mut column_exists = false;
+
+    for row in rows {
+        let existing_column_name =
+            row.map_err(|error| format!("decode work unit schema column failed: {error}"))?;
+        if existing_column_name == column_name {
+            column_exists = true;
+            break;
+        }
+    }
+    if column_exists {
+        return Ok(());
+    }
+
+    let alter_sql = format!("ALTER TABLE work_units ADD COLUMN {column_name} {column_definition}");
+    connection
+        .execute(alter_sql.as_str(), [])
+        .map_err(|error| format!("add work unit column `{column_name}` failed: {error}"))?;
+    Ok(())
 }
 
 fn insert_event_in_tx(
@@ -1863,6 +2070,7 @@ fn load_raw_work_unit_with_conn(
                 last_error,
                 blocking_reason,
                 parent_work_unit_id,
+                superseded_by_work_unit_id,
                 assigned_to,
                 review_json,
                 result_payload_json,
@@ -1892,20 +2100,22 @@ fn load_raw_work_unit_with_conn(
                     last_error: row.get(10)?,
                     blocking_reason: row.get(11)?,
                     parent_work_unit_id: row.get(12)?,
-                    assigned_to: row.get(13)?,
+                    superseded_by_work_unit_id: row.get(13)?,
+                    assigned_to: row.get(14)?,
                     child_work_unit_ids: Vec::new(),
+                    supersedes_work_unit_ids: Vec::new(),
                     blocks_work_unit_ids: Vec::new(),
                     blocked_by_work_unit_ids: Vec::new(),
-                    review_json: row.get(14)?,
-                    result_payload_json: row.get(15)?,
-                    lease_owner: row.get(16)?,
-                    lease_version: row.get(17)?,
-                    lease_acquired_at_ms: row.get(18)?,
-                    lease_heartbeat_at_ms: row.get(19)?,
-                    lease_expires_at_ms: row.get(20)?,
-                    created_at_ms: row.get(21)?,
-                    updated_at_ms: row.get(22)?,
-                    archived_at_ms: row.get(23)?,
+                    review_json: row.get(15)?,
+                    result_payload_json: row.get(16)?,
+                    lease_owner: row.get(17)?,
+                    lease_version: row.get(18)?,
+                    lease_acquired_at_ms: row.get(19)?,
+                    lease_heartbeat_at_ms: row.get(20)?,
+                    lease_expires_at_ms: row.get(21)?,
+                    created_at_ms: row.get(22)?,
+                    updated_at_ms: row.get(23)?,
+                    archived_at_ms: row.get(24)?,
                 })
             },
         )
@@ -1942,6 +2152,7 @@ fn load_raw_work_units_with_query(
                 last_error,
                 blocking_reason,
                 parent_work_unit_id,
+                superseded_by_work_unit_id,
                 assigned_to,
                 review_json,
                 result_payload_json,
@@ -1974,6 +2185,7 @@ fn load_raw_work_units_with_query(
                 last_error,
                 blocking_reason,
                 parent_work_unit_id,
+                superseded_by_work_unit_id,
                 assigned_to,
                 review_json,
                 result_payload_json,
@@ -2005,6 +2217,7 @@ fn load_raw_work_units_with_query(
                 last_error,
                 blocking_reason,
                 parent_work_unit_id,
+                superseded_by_work_unit_id,
                 assigned_to,
                 review_json,
                 result_payload_json,
@@ -2036,6 +2249,7 @@ fn load_raw_work_units_with_query(
                 last_error,
                 blocking_reason,
                 parent_work_unit_id,
+                superseded_by_work_unit_id,
                 assigned_to,
                 review_json,
                 result_payload_json,
@@ -2070,20 +2284,22 @@ fn load_raw_work_units_with_query(
             last_error: row.get(10)?,
             blocking_reason: row.get(11)?,
             parent_work_unit_id: row.get(12)?,
-            assigned_to: row.get(13)?,
+            superseded_by_work_unit_id: row.get(13)?,
+            assigned_to: row.get(14)?,
             child_work_unit_ids: Vec::new(),
+            supersedes_work_unit_ids: Vec::new(),
             blocks_work_unit_ids: Vec::new(),
             blocked_by_work_unit_ids: Vec::new(),
-            review_json: row.get(14)?,
-            result_payload_json: row.get(15)?,
-            lease_owner: row.get(16)?,
-            lease_version: row.get(17)?,
-            lease_acquired_at_ms: row.get(18)?,
-            lease_heartbeat_at_ms: row.get(19)?,
-            lease_expires_at_ms: row.get(20)?,
-            created_at_ms: row.get(21)?,
-            updated_at_ms: row.get(22)?,
-            archived_at_ms: row.get(23)?,
+            review_json: row.get(15)?,
+            result_payload_json: row.get(16)?,
+            lease_owner: row.get(17)?,
+            lease_version: row.get(18)?,
+            lease_acquired_at_ms: row.get(19)?,
+            lease_heartbeat_at_ms: row.get(20)?,
+            lease_expires_at_ms: row.get(21)?,
+            created_at_ms: row.get(22)?,
+            updated_at_ms: row.get(23)?,
+            archived_at_ms: row.get(24)?,
         })
     };
     let rows = match status {
@@ -2112,11 +2328,14 @@ fn hydrate_raw_work_unit_relationships(
 ) -> Result<RawWorkUnitRecord, String> {
     let child_work_unit_ids =
         load_child_work_unit_ids(connection, raw_record.work_unit_id.as_str())?;
+    let supersedes_work_unit_ids =
+        load_supersedes_work_unit_ids(connection, raw_record.work_unit_id.as_str())?;
     let blocks_work_unit_ids =
         load_blocked_work_unit_ids(connection, raw_record.work_unit_id.as_str())?;
     let blocked_by_work_unit_ids =
         load_blocking_work_unit_ids(connection, raw_record.work_unit_id.as_str())?;
     raw_record.child_work_unit_ids = child_work_unit_ids;
+    raw_record.supersedes_work_unit_ids = supersedes_work_unit_ids;
     raw_record.blocks_work_unit_ids = blocks_work_unit_ids;
     raw_record.blocked_by_work_unit_ids = blocked_by_work_unit_ids;
     Ok(raw_record)
@@ -2143,6 +2362,32 @@ fn load_child_work_unit_ids(
         let child_work_unit_id =
             row.map_err(|error| format!("decode child work unit row failed: {error}"))?;
         work_unit_ids.push(child_work_unit_id);
+    }
+
+    Ok(work_unit_ids)
+}
+
+fn load_supersedes_work_unit_ids(
+    connection: &Connection,
+    work_unit_id: &str,
+) -> Result<Vec<String>, String> {
+    let mut statement = connection
+        .prepare(
+            "SELECT work_unit_id
+             FROM work_units
+             WHERE superseded_by_work_unit_id = ?1
+             ORDER BY work_unit_id ASC",
+        )
+        .map_err(|error| format!("prepare superseded work unit query failed: {error}"))?;
+    let rows = statement
+        .query_map(params![work_unit_id], |row| row.get::<_, String>(0))
+        .map_err(|error| format!("query superseded work units failed: {error}"))?;
+    let mut work_unit_ids = Vec::new();
+
+    for row in rows {
+        let superseded_work_unit_id =
+            row.map_err(|error| format!("decode superseded work unit row failed: {error}"))?;
+        work_unit_ids.push(superseded_work_unit_id);
     }
 
     Ok(work_unit_ids)
@@ -2220,6 +2465,7 @@ fn select_next_ready_raw_work_unit(
                 last_error,
                 blocking_reason,
                 parent_work_unit_id,
+                superseded_by_work_unit_id,
                 assigned_to,
                 review_json,
                 result_payload_json,
@@ -2264,20 +2510,22 @@ fn select_next_ready_raw_work_unit(
                 last_error: row.get(10)?,
                 blocking_reason: row.get(11)?,
                 parent_work_unit_id: row.get(12)?,
-                assigned_to: row.get(13)?,
+                superseded_by_work_unit_id: row.get(13)?,
+                assigned_to: row.get(14)?,
                 child_work_unit_ids: Vec::new(),
+                supersedes_work_unit_ids: Vec::new(),
                 blocks_work_unit_ids: Vec::new(),
                 blocked_by_work_unit_ids: Vec::new(),
-                review_json: row.get(14)?,
-                result_payload_json: row.get(15)?,
-                lease_owner: row.get(16)?,
-                lease_version: row.get(17)?,
-                lease_acquired_at_ms: row.get(18)?,
-                lease_heartbeat_at_ms: row.get(19)?,
-                lease_expires_at_ms: row.get(20)?,
-                created_at_ms: row.get(21)?,
-                updated_at_ms: row.get(22)?,
-                archived_at_ms: row.get(23)?,
+                review_json: row.get(15)?,
+                result_payload_json: row.get(16)?,
+                lease_owner: row.get(17)?,
+                lease_version: row.get(18)?,
+                lease_acquired_at_ms: row.get(19)?,
+                lease_heartbeat_at_ms: row.get(20)?,
+                lease_expires_at_ms: row.get(21)?,
+                created_at_ms: row.get(22)?,
+                updated_at_ms: row.get(23)?,
+                archived_at_ms: row.get(24)?,
             })
         })
         .optional()
@@ -2308,6 +2556,7 @@ fn load_expired_raw_work_units_with_conn(
                 last_error,
                 blocking_reason,
                 parent_work_unit_id,
+                superseded_by_work_unit_id,
                 assigned_to,
                 review_json,
                 result_payload_json,
@@ -2342,20 +2591,22 @@ fn load_expired_raw_work_units_with_conn(
                 last_error: row.get(10)?,
                 blocking_reason: row.get(11)?,
                 parent_work_unit_id: row.get(12)?,
-                assigned_to: row.get(13)?,
+                superseded_by_work_unit_id: row.get(13)?,
+                assigned_to: row.get(14)?,
                 child_work_unit_ids: Vec::new(),
+                supersedes_work_unit_ids: Vec::new(),
                 blocks_work_unit_ids: Vec::new(),
                 blocked_by_work_unit_ids: Vec::new(),
-                review_json: row.get(14)?,
-                result_payload_json: row.get(15)?,
-                lease_owner: row.get(16)?,
-                lease_version: row.get(17)?,
-                lease_acquired_at_ms: row.get(18)?,
-                lease_heartbeat_at_ms: row.get(19)?,
-                lease_expires_at_ms: row.get(20)?,
-                created_at_ms: row.get(21)?,
-                updated_at_ms: row.get(22)?,
-                archived_at_ms: row.get(23)?,
+                review_json: row.get(15)?,
+                result_payload_json: row.get(16)?,
+                lease_owner: row.get(17)?,
+                lease_version: row.get(18)?,
+                lease_acquired_at_ms: row.get(19)?,
+                lease_heartbeat_at_ms: row.get(20)?,
+                lease_expires_at_ms: row.get(21)?,
+                created_at_ms: row.get(22)?,
+                updated_at_ms: row.get(23)?,
+                archived_at_ms: row.get(24)?,
             })
         })
         .map_err(|error| format!("query expired work units failed: {error}"))?;
@@ -2411,7 +2662,9 @@ fn try_work_unit_snapshot_from_raw(
         last_error: raw_record.last_error.clone(),
         blocking_reason: raw_record.blocking_reason.clone(),
         parent_work_unit_id: raw_record.parent_work_unit_id.clone(),
+        superseded_by_work_unit_id: raw_record.superseded_by_work_unit_id.clone(),
         child_work_unit_ids: raw_record.child_work_unit_ids.clone(),
+        supersedes_work_unit_ids: raw_record.supersedes_work_unit_ids.clone(),
         blocks_work_unit_ids: raw_record.blocks_work_unit_ids.clone(),
         blocked_by_work_unit_ids: raw_record.blocked_by_work_unit_ids.clone(),
         review,
@@ -2593,6 +2846,110 @@ fn validate_dependency_endpoints(
     if blocking_work_unit_id == blocked_work_unit_id {
         return Err("work unit dependency cannot target the same work unit".to_owned());
     }
+    Ok(())
+}
+
+fn validate_supersede_endpoints(
+    obsolete_work_unit_id: &str,
+    replacement_work_unit_id: &str,
+) -> Result<(), String> {
+    if obsolete_work_unit_id == replacement_work_unit_id {
+        return Err("work unit supersede cannot target the same work unit".to_owned());
+    }
+    Ok(())
+}
+
+fn validate_supersede_transition(
+    obsolete_snapshot: &WorkUnitSnapshot,
+    replacement_snapshot: &WorkUnitSnapshot,
+    now_ms: i64,
+) -> Result<(), String> {
+    let obsolete_status = obsolete_snapshot.work_unit.status;
+    if obsolete_snapshot.work_unit.archived_at_ms.is_some() {
+        return Err(format!(
+            "cannot supersede archived work unit `{}`",
+            obsolete_snapshot.work_unit.work_unit_id
+        ));
+    }
+    if obsolete_snapshot
+        .work_unit
+        .superseded_by_work_unit_id
+        .is_some()
+    {
+        return Err(format!(
+            "work unit `{}` is already superseded",
+            obsolete_snapshot.work_unit.work_unit_id
+        ));
+    }
+    if obsolete_status.is_terminal() {
+        return Err(format!(
+            "cannot supersede terminal work unit `{}` with status `{}`",
+            obsolete_snapshot.work_unit.work_unit_id,
+            obsolete_status.as_str()
+        ));
+    }
+    let obsolete_is_runtime_owned = matches!(
+        obsolete_status,
+        WorkUnitStatus::Leased | WorkUnitStatus::Running
+    );
+    if obsolete_is_runtime_owned {
+        return Err(format!(
+            "cannot supersede runtime-owned work unit `{}` while status is `{}`",
+            obsolete_snapshot.work_unit.work_unit_id,
+            obsolete_status.as_str()
+        ));
+    }
+
+    if replacement_snapshot.work_unit.archived_at_ms.is_some() {
+        return Err(format!(
+            "cannot supersede with archived replacement `{}`",
+            replacement_snapshot.work_unit.work_unit_id
+        ));
+    }
+    if replacement_snapshot
+        .work_unit
+        .superseded_by_work_unit_id
+        .is_some()
+    {
+        return Err(format!(
+            "replacement work unit `{}` is already superseded",
+            replacement_snapshot.work_unit.work_unit_id
+        ));
+    }
+    if replacement_snapshot
+        .work_unit
+        .blocked_by_work_unit_ids
+        .iter()
+        .any(|id| id == obsolete_snapshot.work_unit.work_unit_id.as_str())
+    {
+        return Err(format!(
+            "replacement work unit `{}` is blocked by obsolete work unit `{}`",
+            replacement_snapshot.work_unit.work_unit_id, obsolete_snapshot.work_unit.work_unit_id
+        ));
+    }
+    if obsolete_snapshot
+        .work_unit
+        .blocked_by_work_unit_ids
+        .iter()
+        .any(|id| id == replacement_snapshot.work_unit.work_unit_id.as_str())
+    {
+        return Err(format!(
+            "obsolete work unit `{}` is already blocked by replacement `{}`",
+            obsolete_snapshot.work_unit.work_unit_id, replacement_snapshot.work_unit.work_unit_id
+        ));
+    }
+
+    let stale_lease = obsolete_snapshot
+        .lease
+        .as_ref()
+        .is_some_and(|lease| lease.expires_at_ms >= now_ms);
+    if stale_lease {
+        return Err(format!(
+            "cannot supersede work unit `{}` while it still holds an active lease",
+            obsolete_snapshot.work_unit.work_unit_id
+        ));
+    }
+
     Ok(())
 }
 
@@ -2906,13 +3263,14 @@ mod tests {
         ArchiveWorkUnitRequest, AssignWorkUnitRequest, CompleteWorkUnitRequest,
         CreateChildWorkUnitRequest, NewWorkUnitRecord, RecordWorkUnitReviewDecisionRequest,
         RemoveWorkUnitDependencyRequest, RequestWorkUnitReviewRequest, SplitWorkUnitChildRequest,
-        SplitWorkUnitRequest, StartWorkUnitLeaseRequest, UpdateWorkUnitRequest,
-        WORK_UNIT_ASSIGNED_EVENT_KIND, WORK_UNIT_CHILD_CREATED_EVENT_KIND,
+        SplitWorkUnitRequest, StartWorkUnitLeaseRequest, SupersedeWorkUnitRequest,
+        UpdateWorkUnitRequest, WORK_UNIT_ASSIGNED_EVENT_KIND, WORK_UNIT_CHILD_CREATED_EVENT_KIND,
         WORK_UNIT_DEPENDENCY_ADDED_EVENT_KIND, WORK_UNIT_DEPENDENCY_REMOVED_EVENT_KIND,
         WORK_UNIT_NOTE_ADDED_EVENT_KIND, WORK_UNIT_REVIEW_RECORDED_EVENT_KIND,
         WORK_UNIT_REVIEW_REQUESTED_EVENT_KIND, WORK_UNIT_SPLIT_APPLIED_EVENT_KIND,
-        WORK_UNIT_UPDATED_EVENT_KIND, WorkUnitCompletionDisposition, WorkUnitHeartbeatRequest,
-        WorkUnitListQuery, WorkUnitRepository, WorkUnitReviewDecision,
+        WORK_UNIT_SUPERSEDED_EVENT_KIND, WORK_UNIT_UPDATED_EVENT_KIND,
+        WorkUnitCompletionDisposition, WorkUnitHeartbeatRequest, WorkUnitListQuery,
+        WorkUnitRepository, WorkUnitReviewDecision,
     };
     use loongclaw_contracts::{
         WorkSourceKind, WorkUnitKind, WorkUnitPriority, WorkUnitRetryPolicy, WorkUnitReviewStatus,
@@ -3325,7 +3683,206 @@ mod tests {
             })
             .expect_err("split should require at least two children");
 
-        assert!(error.contains("at least two child work units"));
+        assert!(error.contains("at least 2 child work units"));
+    }
+
+    #[test]
+    fn split_work_unit_rejects_duplicate_child_ids() {
+        let config = isolated_memory_config("split-work-unit-duplicate-child-id");
+        let repository = WorkUnitRepository::new(&config).expect("repository");
+        repository
+            .create_work_unit(sample_work_unit(WorkUnitStatus::Ready), Some("operator"))
+            .expect("create parent work unit");
+
+        let duplicate_child = SplitWorkUnitChildRequest {
+            child: NewWorkUnitRecord {
+                work_unit_id: Some("wu-child-dup".to_owned()),
+                kind: WorkUnitKind::Issue,
+                title: "Child".to_owned(),
+                description: "Duplicate id".to_owned(),
+                source_ref: WorkUnitSourceRef::default(),
+                status: WorkUnitStatus::Ready,
+                priority: WorkUnitPriority::Normal,
+                retry_policy: WorkUnitRetryPolicy::default(),
+                parent_work_unit_id: None,
+                next_run_at_ms: Some(1_010),
+            },
+            inherit_parent_source_ref: true,
+            inherit_parent_retry_policy: true,
+            inherit_parent_priority: true,
+        };
+        let error = repository
+            .split_work_unit(SplitWorkUnitRequest {
+                parent_work_unit_id: "wu-test".to_owned(),
+                children: vec![duplicate_child.clone(), duplicate_child],
+                block_parent: true,
+                actor: Some("planner".to_owned()),
+            })
+            .expect_err("split should reject duplicate child ids");
+
+        assert!(error.contains("is duplicated"));
+    }
+
+    #[test]
+    fn supersede_work_unit_transfers_dependency_context_to_replacement() {
+        let config = isolated_memory_config("supersede-work-unit");
+        let repository = WorkUnitRepository::new(&config).expect("repository");
+        let blocker = NewWorkUnitRecord {
+            work_unit_id: Some("wu-blocker".to_owned()),
+            kind: WorkUnitKind::Ops,
+            title: "Blocker".to_owned(),
+            description: "Must complete first".to_owned(),
+            source_ref: WorkUnitSourceRef::default(),
+            status: WorkUnitStatus::Ready,
+            priority: WorkUnitPriority::Low,
+            retry_policy: WorkUnitRetryPolicy::default(),
+            parent_work_unit_id: None,
+            next_run_at_ms: Some(1_000),
+        };
+        let obsolete = NewWorkUnitRecord {
+            work_unit_id: Some("wu-obsolete".to_owned()),
+            title: "Obsolete".to_owned(),
+            description: "Will be replaced".to_owned(),
+            ..sample_work_unit(WorkUnitStatus::Ready)
+        };
+        let replacement = NewWorkUnitRecord {
+            work_unit_id: Some("wu-replacement".to_owned()),
+            title: "Replacement".to_owned(),
+            description: "Takes over".to_owned(),
+            ..sample_work_unit(WorkUnitStatus::Triaged)
+        };
+        let blocked = NewWorkUnitRecord {
+            work_unit_id: Some("wu-blocked".to_owned()),
+            kind: WorkUnitKind::Review,
+            title: "Blocked".to_owned(),
+            description: "Depends on obsolete".to_owned(),
+            source_ref: WorkUnitSourceRef::default(),
+            status: WorkUnitStatus::Ready,
+            priority: WorkUnitPriority::Normal,
+            retry_policy: WorkUnitRetryPolicy::default(),
+            parent_work_unit_id: None,
+            next_run_at_ms: Some(1_020),
+        };
+        repository
+            .create_work_unit(blocker, Some("operator"))
+            .expect("create blocker");
+        repository
+            .create_work_unit(obsolete, Some("operator"))
+            .expect("create obsolete");
+        repository
+            .create_work_unit(replacement, Some("operator"))
+            .expect("create replacement");
+        repository
+            .create_work_unit(blocked, Some("operator"))
+            .expect("create blocked");
+        repository
+            .add_dependency(AddWorkUnitDependencyRequest {
+                blocking_work_unit_id: "wu-blocker".to_owned(),
+                blocked_work_unit_id: "wu-obsolete".to_owned(),
+                actor: Some("planner".to_owned()),
+                now_ms: Some(1_030),
+            })
+            .expect("block obsolete");
+        repository
+            .add_dependency(AddWorkUnitDependencyRequest {
+                blocking_work_unit_id: "wu-obsolete".to_owned(),
+                blocked_work_unit_id: "wu-blocked".to_owned(),
+                actor: Some("planner".to_owned()),
+                now_ms: Some(1_040),
+            })
+            .expect("obsolete blocks blocked");
+
+        let result = repository
+            .supersede_work_unit(SupersedeWorkUnitRequest {
+                obsolete_work_unit_id: "wu-obsolete".to_owned(),
+                replacement_work_unit_id: "wu-replacement".to_owned(),
+                actor: Some("planner".to_owned()),
+                now_ms: Some(1_050),
+            })
+            .expect("supersede obsolete");
+
+        assert_eq!(result.obsolete.work_unit.status, WorkUnitStatus::Cancelled);
+        assert_eq!(
+            result
+                .obsolete
+                .work_unit
+                .superseded_by_work_unit_id
+                .as_deref(),
+            Some("wu-replacement")
+        );
+        assert_eq!(
+            result.replacement.work_unit.supersedes_work_unit_ids,
+            vec!["wu-obsolete".to_owned()]
+        );
+        assert_eq!(
+            result.replacement.work_unit.blocked_by_work_unit_ids,
+            vec!["wu-blocker".to_owned()]
+        );
+
+        let blocked_snapshot = repository
+            .load_work_unit_snapshot("wu-blocked")
+            .expect("load blocked snapshot")
+            .expect("blocked snapshot");
+        assert_eq!(
+            blocked_snapshot.work_unit.blocked_by_work_unit_ids,
+            vec!["wu-replacement".to_owned()]
+        );
+
+        let events = repository
+            .list_work_unit_events("wu-obsolete", 10)
+            .expect("list obsolete events");
+        assert!(
+            events
+                .iter()
+                .any(|event| event.event_kind == WORK_UNIT_SUPERSEDED_EVENT_KIND),
+            "expected superseded event on the obsolete work unit"
+        );
+    }
+
+    #[test]
+    fn supersede_work_unit_rejects_terminal_obsolete_work() {
+        let config = isolated_memory_config("supersede-work-unit-terminal");
+        let repository = WorkUnitRepository::new(&config).expect("repository");
+        repository
+            .create_work_unit(sample_work_unit(WorkUnitStatus::Ready), Some("operator"))
+            .expect("create obsolete");
+        repository
+            .update_work_unit(UpdateWorkUnitRequest {
+                work_unit_id: "wu-test".to_owned(),
+                title: None,
+                description: None,
+                status: Some(WorkUnitStatus::Cancelled),
+                priority: None,
+                next_run_at_ms: None,
+                blocking_reason: None,
+                clear_blocking_reason: false,
+                actor: Some("operator".to_owned()),
+                now_ms: Some(990),
+            })
+            .expect("cancel obsolete")
+            .expect("cancelled snapshot");
+        repository
+            .create_work_unit(
+                NewWorkUnitRecord {
+                    work_unit_id: Some("wu-replacement".to_owned()),
+                    title: "Replacement".to_owned(),
+                    description: "Takes over".to_owned(),
+                    ..sample_work_unit(WorkUnitStatus::Ready)
+                },
+                Some("operator"),
+            )
+            .expect("create replacement");
+
+        let error = repository
+            .supersede_work_unit(SupersedeWorkUnitRequest {
+                obsolete_work_unit_id: "wu-test".to_owned(),
+                replacement_work_unit_id: "wu-replacement".to_owned(),
+                actor: Some("planner".to_owned()),
+                now_ms: Some(1_000),
+            })
+            .expect_err("terminal obsolete work should not supersede");
+
+        assert!(error.contains("cannot supersede terminal work unit"));
     }
 
     #[test]

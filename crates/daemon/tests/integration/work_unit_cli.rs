@@ -74,6 +74,10 @@ fn cli_work_unit_help_mentions_durable_runtime_commands() {
         help.contains("split"),
         "work-unit help should expose multi-child decomposition: {help}"
     );
+    assert!(
+        help.contains("supersede"),
+        "work-unit help should expose replacement orchestration: {help}"
+    );
 }
 
 #[test]
@@ -324,6 +328,63 @@ fn cli_work_unit_parse_accepts_split_shape() {
     assert_eq!(options.actor.as_deref(), Some("planner"));
     assert!(!options.block_parent);
     assert!(options.json);
+}
+
+#[test]
+fn cli_work_unit_parse_accepts_supersede_shape() {
+    let cli = try_parse_cli([
+        "loongclaw",
+        "work-unit",
+        "supersede",
+        "--config",
+        "/tmp/loongclaw.toml",
+        "--obsolete-id",
+        "wu-old",
+        "--replacement-id",
+        "wu-new",
+        "--actor",
+        "planner",
+        "--now-ms",
+        "4242",
+        "--json",
+    ])
+    .expect("work-unit supersede CLI should parse");
+
+    let command = cli.command.expect("CLI should parse a subcommand");
+    let Commands::WorkUnit { command } = command else {
+        panic!("unexpected CLI parse result: {command:?}");
+    };
+    let work_unit_runtime::WorkUnitCommands::Supersede(options) = command else {
+        panic!("unexpected supersede parse result: {command:?}");
+    };
+
+    assert_eq!(options.obsolete_id, "wu-old");
+    assert_eq!(options.replacement_id, "wu-new");
+    assert_eq!(options.actor.as_deref(), Some("planner"));
+    assert_eq!(options.now_ms, Some(4242));
+    assert!(options.json);
+}
+
+#[test]
+fn cli_work_unit_split_rejects_one_child_payload() {
+    let children_json =
+        r#"[{"id":"wu-child-a","kind":"issue","title":"Child A","description":"Do A"}]"#;
+    let command = work_unit_runtime::WorkUnitCommands::Split(
+        work_unit_runtime::WorkUnitSplitCommandOptions {
+            config: None,
+            parent_id: "wu-parent".to_owned(),
+            children_json: Some(children_json.to_owned()),
+            children_path: None,
+            block_parent: true,
+            actor: Some("planner".to_owned()),
+            json: true,
+        },
+    );
+
+    let error = work_unit_runtime::run_work_unit_cli(command)
+        .expect_err("split should reject a one-child payload");
+
+    assert!(error.contains("at least 2"));
 }
 
 #[test]
@@ -953,6 +1014,196 @@ fn work_unit_cli_split_blocks_parent_until_all_children_complete() {
             .as_ref()
             .map(|lease| lease.owner.as_str()),
         Some("worker-c")
+    );
+}
+
+#[test]
+fn work_unit_cli_supersede_transfers_dependencies_to_replacement() {
+    let _env = work_unit_environment_guard();
+    let root = unique_temp_dir("loongclaw-work-unit-supersede-cli");
+    let config_path = write_work_unit_config(&root);
+    let config_path_string = config_path.display().to_string();
+
+    work_unit_runtime::run_work_unit_cli(work_unit_runtime::WorkUnitCommands::Create(
+        work_unit_runtime::WorkUnitCreateCommandOptions {
+            config: Some(config_path_string.clone()),
+            id: Some("wu-blocker".to_owned()),
+            kind: work_unit_runtime::WorkUnitKindArg::Ops,
+            title: "Blocker".to_owned(),
+            description: "Must complete first".to_owned(),
+            status: work_unit_runtime::WorkUnitStatusArg::Ready,
+            priority: work_unit_runtime::WorkUnitPriorityArg::Low,
+            max_attempts: 1,
+            initial_backoff_ms: 1_000,
+            max_backoff_ms: 1_000,
+            next_run_at_ms: Some(1_000),
+            actor: Some("operator".to_owned()),
+            source_kind: work_unit_runtime::WorkSourceKindArg::Manual,
+            project_id: None,
+            channel_id: None,
+            thread_id: None,
+            message_id: None,
+            external_ref: None,
+            source_url: None,
+            parent_work_unit_id: None,
+            json: true,
+        },
+    ))
+    .expect("create blocker work unit");
+
+    work_unit_runtime::run_work_unit_cli(work_unit_runtime::WorkUnitCommands::Create(
+        work_unit_runtime::WorkUnitCreateCommandOptions {
+            config: Some(config_path_string.clone()),
+            id: Some("wu-obsolete".to_owned()),
+            kind: work_unit_runtime::WorkUnitKindArg::Feature,
+            title: "Obsolete work".to_owned(),
+            description: "Will be replaced".to_owned(),
+            status: work_unit_runtime::WorkUnitStatusArg::Ready,
+            priority: work_unit_runtime::WorkUnitPriorityArg::High,
+            max_attempts: 3,
+            initial_backoff_ms: 1_000,
+            max_backoff_ms: 8_000,
+            next_run_at_ms: Some(1_010),
+            actor: Some("operator".to_owned()),
+            source_kind: work_unit_runtime::WorkSourceKindArg::Discord,
+            project_id: Some("loongclaw-ai/server".to_owned()),
+            channel_id: Some("feature".to_owned()),
+            thread_id: Some("thread-obsolete".to_owned()),
+            message_id: Some("message-obsolete".to_owned()),
+            external_ref: Some("obsolete-thread".to_owned()),
+            source_url: None,
+            parent_work_unit_id: None,
+            json: true,
+        },
+    ))
+    .expect("create obsolete work unit");
+
+    work_unit_runtime::run_work_unit_cli(work_unit_runtime::WorkUnitCommands::Create(
+        work_unit_runtime::WorkUnitCreateCommandOptions {
+            config: Some(config_path_string.clone()),
+            id: Some("wu-replacement".to_owned()),
+            kind: work_unit_runtime::WorkUnitKindArg::Feature,
+            title: "Replacement work".to_owned(),
+            description: "Takes over".to_owned(),
+            status: work_unit_runtime::WorkUnitStatusArg::Triaged,
+            priority: work_unit_runtime::WorkUnitPriorityArg::Critical,
+            max_attempts: 3,
+            initial_backoff_ms: 1_000,
+            max_backoff_ms: 8_000,
+            next_run_at_ms: Some(1_020),
+            actor: Some("operator".to_owned()),
+            source_kind: work_unit_runtime::WorkSourceKindArg::Discord,
+            project_id: Some("loongclaw-ai/server".to_owned()),
+            channel_id: Some("feature".to_owned()),
+            thread_id: Some("thread-replacement".to_owned()),
+            message_id: Some("message-replacement".to_owned()),
+            external_ref: Some("replacement-thread".to_owned()),
+            source_url: None,
+            parent_work_unit_id: None,
+            json: true,
+        },
+    ))
+    .expect("create replacement work unit");
+
+    work_unit_runtime::run_work_unit_cli(work_unit_runtime::WorkUnitCommands::Create(
+        work_unit_runtime::WorkUnitCreateCommandOptions {
+            config: Some(config_path_string.clone()),
+            id: Some("wu-blocked".to_owned()),
+            kind: work_unit_runtime::WorkUnitKindArg::Review,
+            title: "Blocked work".to_owned(),
+            description: "Depends on obsolete".to_owned(),
+            status: work_unit_runtime::WorkUnitStatusArg::Ready,
+            priority: work_unit_runtime::WorkUnitPriorityArg::Normal,
+            max_attempts: 3,
+            initial_backoff_ms: 1_000,
+            max_backoff_ms: 8_000,
+            next_run_at_ms: Some(1_030),
+            actor: Some("operator".to_owned()),
+            source_kind: work_unit_runtime::WorkSourceKindArg::Manual,
+            project_id: None,
+            channel_id: None,
+            thread_id: None,
+            message_id: None,
+            external_ref: None,
+            source_url: None,
+            parent_work_unit_id: None,
+            json: true,
+        },
+    ))
+    .expect("create blocked work unit");
+
+    work_unit_runtime::run_work_unit_cli(work_unit_runtime::WorkUnitCommands::Depend(
+        work_unit_runtime::WorkUnitDependCommandOptions {
+            config: Some(config_path_string.clone()),
+            blocking_id: "wu-blocker".to_owned(),
+            blocked_id: "wu-obsolete".to_owned(),
+            actor: Some("planner".to_owned()),
+            now_ms: Some(1_040),
+            json: true,
+        },
+    ))
+    .expect("block obsolete with blocker");
+    work_unit_runtime::run_work_unit_cli(work_unit_runtime::WorkUnitCommands::Depend(
+        work_unit_runtime::WorkUnitDependCommandOptions {
+            config: Some(config_path_string.clone()),
+            blocking_id: "wu-obsolete".to_owned(),
+            blocked_id: "wu-blocked".to_owned(),
+            actor: Some("planner".to_owned()),
+            now_ms: Some(1_050),
+            json: true,
+        },
+    ))
+    .expect("make blocked work depend on obsolete");
+
+    work_unit_runtime::run_work_unit_cli(work_unit_runtime::WorkUnitCommands::Supersede(
+        work_unit_runtime::WorkUnitSupersedeCommandOptions {
+            config: Some(config_path_string),
+            obsolete_id: "wu-obsolete".to_owned(),
+            replacement_id: "wu-replacement".to_owned(),
+            actor: Some("planner".to_owned()),
+            now_ms: Some(1_060),
+            json: true,
+        },
+    ))
+    .expect("supersede obsolete work unit");
+
+    let repository = load_work_unit_repository(&config_path);
+    let obsolete_snapshot = repository
+        .load_work_unit_snapshot("wu-obsolete")
+        .expect("load obsolete snapshot")
+        .expect("obsolete snapshot");
+    assert_eq!(
+        obsolete_snapshot.work_unit.status,
+        loongclaw_contracts::WorkUnitStatus::Cancelled
+    );
+    assert_eq!(
+        obsolete_snapshot
+            .work_unit
+            .superseded_by_work_unit_id
+            .as_deref(),
+        Some("wu-replacement")
+    );
+
+    let replacement_snapshot = repository
+        .load_work_unit_snapshot("wu-replacement")
+        .expect("load replacement snapshot")
+        .expect("replacement snapshot");
+    assert_eq!(
+        replacement_snapshot.work_unit.supersedes_work_unit_ids,
+        vec!["wu-obsolete".to_owned()]
+    );
+    assert_eq!(
+        replacement_snapshot.work_unit.blocked_by_work_unit_ids,
+        vec!["wu-blocker".to_owned()]
+    );
+
+    let blocked_snapshot = repository
+        .load_work_unit_snapshot("wu-blocked")
+        .expect("load blocked snapshot")
+        .expect("blocked snapshot");
+    assert_eq!(
+        blocked_snapshot.work_unit.blocked_by_work_unit_ids,
+        vec!["wu-replacement".to_owned()]
     );
 }
 

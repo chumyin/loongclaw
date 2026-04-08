@@ -2,8 +2,8 @@ use std::fs;
 
 use clap::{Args, Subcommand, ValueEnum};
 use loongclaw_contracts::{
-    WorkSourceKind, WorkUnitKind, WorkUnitPriority, WorkUnitRetryPolicy, WorkUnitSnapshot,
-    WorkUnitSourceRef, WorkUnitStatus,
+    WORK_UNIT_SPLIT_MIN_CHILDREN, WorkSourceKind, WorkUnitKind, WorkUnitPriority,
+    WorkUnitRetryPolicy, WorkUnitSnapshot, WorkUnitSourceRef, WorkUnitStatus,
 };
 use loongclaw_spec::CliResult;
 use serde::{Deserialize, Serialize};
@@ -36,6 +36,8 @@ pub enum WorkUnitCommands {
     SpawnChild(WorkUnitSpawnChildCommandOptions),
     /// Split one parent work unit into multiple child work units
     Split(WorkUnitSplitCommandOptions),
+    /// Replace one obsolete work unit with another durable work unit
+    Supersede(WorkUnitSupersedeCommandOptions),
     /// Assign or clear a durable work-unit owner without taking a runtime lease
     Assign(WorkUnitAssignCommandOptions),
     /// Update mutable orchestration fields on a durable work unit
@@ -310,6 +312,22 @@ pub struct WorkUnitSplitCommandOptions {
     pub block_parent: bool,
     #[arg(long)]
     pub actor: Option<String>,
+    #[arg(long, default_value_t = false)]
+    pub json: bool,
+}
+
+#[derive(Args, Debug, Clone, PartialEq, Eq)]
+pub struct WorkUnitSupersedeCommandOptions {
+    #[arg(long)]
+    pub config: Option<String>,
+    #[arg(long)]
+    pub obsolete_id: String,
+    #[arg(long)]
+    pub replacement_id: String,
+    #[arg(long)]
+    pub actor: Option<String>,
+    #[arg(long)]
+    pub now_ms: Option<i64>,
     #[arg(long, default_value_t = false)]
     pub json: bool,
 }
@@ -607,6 +625,12 @@ struct WorkUnitSplitView {
     children: Vec<WorkUnitSnapshot>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct WorkUnitSupersedeView {
+    obsolete: WorkUnitSnapshot,
+    replacement: WorkUnitSnapshot,
+}
+
 pub fn run_work_unit_cli(command: WorkUnitCommands) -> CliResult<()> {
     match command {
         WorkUnitCommands::Create(options) => run_create_command(options),
@@ -621,6 +645,7 @@ pub fn run_work_unit_cli(command: WorkUnitCommands) -> CliResult<()> {
         WorkUnitCommands::Archive(options) => run_archive_command(options),
         WorkUnitCommands::SpawnChild(options) => run_spawn_child_command(options),
         WorkUnitCommands::Split(options) => run_split_command(options),
+        WorkUnitCommands::Supersede(options) => run_supersede_command(options),
         WorkUnitCommands::Assign(options) => run_assign_command(options),
         WorkUnitCommands::Update(options) => run_update_command(options),
         WorkUnitCommands::RequestReview(options) => run_request_review_command(options),
@@ -842,11 +867,11 @@ fn run_spawn_child_command(options: WorkUnitSpawnChildCommandOptions) -> CliResu
 }
 
 fn run_split_command(options: WorkUnitSplitCommandOptions) -> CliResult<()> {
-    let repository = load_work_unit_repository(options.config.as_deref())?;
     let child_inputs = parse_split_children_inputs(
         options.children_json.as_deref(),
         options.children_path.as_deref(),
     )?;
+    let repository = load_work_unit_repository(options.config.as_deref())?;
     let mut child_requests = Vec::with_capacity(child_inputs.len());
 
     for child_input in child_inputs {
@@ -885,6 +910,22 @@ fn run_split_command(options: WorkUnitSplitCommandOptions) -> CliResult<()> {
         children: result.children,
     };
     render_json_or_text(&view, options.json, render_work_unit_split_text)
+}
+
+fn run_supersede_command(options: WorkUnitSupersedeCommandOptions) -> CliResult<()> {
+    let repository = load_work_unit_repository(options.config.as_deref())?;
+    let request = mvp::work::repository::SupersedeWorkUnitRequest {
+        obsolete_work_unit_id: options.obsolete_id,
+        replacement_work_unit_id: options.replacement_id,
+        actor: options.actor,
+        now_ms: options.now_ms,
+    };
+    let result = repository.supersede_work_unit(request)?;
+    let view = WorkUnitSupersedeView {
+        obsolete: result.obsolete,
+        replacement: result.replacement,
+    };
+    render_json_or_text(&view, options.json, render_work_unit_supersede_text)
 }
 
 fn run_assign_command(options: WorkUnitAssignCommandOptions) -> CliResult<()> {
@@ -1119,8 +1160,11 @@ fn decode_split_children_inputs(
 ) -> CliResult<Vec<WorkUnitSplitChildInput>> {
     let children = serde_json::from_str::<Vec<WorkUnitSplitChildInput>>(raw_children)
         .map_err(|error| format!("{context}: {error}"))?;
-    if children.is_empty() {
-        return Err("split children payload must contain at least one child item".to_owned());
+    let child_count = children.len();
+    if child_count < WORK_UNIT_SPLIT_MIN_CHILDREN {
+        return Err(format!(
+            "split children payload must contain at least {WORK_UNIT_SPLIT_MIN_CHILDREN} child items"
+        ));
     }
     Ok(children)
 }
@@ -1145,14 +1189,19 @@ fn render_work_unit_snapshot_text(snapshot: &WorkUnitSnapshot) -> String {
     let last_error = work_unit.last_error.as_deref().unwrap_or("-");
     let blocking_reason = work_unit.blocking_reason.as_deref().unwrap_or("-");
     let parent = work_unit.parent_work_unit_id.as_deref().unwrap_or("-");
+    let superseded_by = work_unit
+        .superseded_by_work_unit_id
+        .as_deref()
+        .unwrap_or("-");
     let assigned_to = work_unit.assigned_to.as_deref().unwrap_or("-");
     let children = render_string_list(work_unit.child_work_unit_ids.as_slice());
+    let supersedes = render_string_list(work_unit.supersedes_work_unit_ids.as_slice());
     let blocks = render_string_list(work_unit.blocks_work_unit_ids.as_slice());
     let blocked_by = render_string_list(work_unit.blocked_by_work_unit_ids.as_slice());
     let source = render_source_ref(&work_unit.source_ref);
     let retry = render_retry_policy(&work_unit.retry_policy);
     format!(
-        "id={} kind={} status={} priority={} attempts={} next_run_at_ms={} archived_at_ms={}\nsource={}\nretry={}\nparent_work_unit_id={}\nchild_work_unit_ids={}\nassigned_to={}\nblocks_work_unit_ids={}\nblocked_by_work_unit_ids={}\ntitle={}\ndescription={}\nlast_error={}\nblocking_reason={}\nresult_payload_json={}\n{}\n{}\n",
+        "id={} kind={} status={} priority={} attempts={} next_run_at_ms={} archived_at_ms={}\nsource={}\nretry={}\nparent_work_unit_id={}\nsuperseded_by_work_unit_id={}\nchild_work_unit_ids={}\nsupersedes_work_unit_ids={}\nassigned_to={}\nblocks_work_unit_ids={}\nblocked_by_work_unit_ids={}\ntitle={}\ndescription={}\nlast_error={}\nblocking_reason={}\nresult_payload_json={}\n{}\n{}\n",
         work_unit.work_unit_id,
         work_unit.kind.as_str(),
         work_unit.status.as_str(),
@@ -1163,7 +1212,9 @@ fn render_work_unit_snapshot_text(snapshot: &WorkUnitSnapshot) -> String {
         source,
         retry,
         parent,
+        superseded_by,
         children,
+        supersedes,
         assigned_to,
         blocks,
         blocked_by,
@@ -1196,6 +1247,16 @@ fn render_work_unit_split_text(view: &WorkUnitSplitView) -> String {
         child_work_unit_ids,
         render_work_unit_snapshot_text(&view.parent),
         render_work_unit_list_text(view.children.as_slice()),
+    )
+}
+
+fn render_work_unit_supersede_text(view: &WorkUnitSupersedeView) -> String {
+    format!(
+        "superseded_obsolete_id={} superseded_replacement_id={}\n{}{}",
+        view.obsolete.work_unit.work_unit_id,
+        view.replacement.work_unit.work_unit_id,
+        render_work_unit_snapshot_text(&view.obsolete),
+        render_work_unit_snapshot_text(&view.replacement),
     )
 }
 
