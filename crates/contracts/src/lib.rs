@@ -54,8 +54,9 @@ pub use tool_types::{
     ToolCoreOutcome, ToolCoreRequest, ToolExtensionOutcome, ToolExtensionRequest, ToolTier,
 };
 pub use work_types::{
-    WORK_UNIT_SPLIT_MIN_CHILDREN, WorkRuntimeHealthSnapshot, WorkSourceKind, WorkUnitEventRecord,
-    WorkUnitKind, WorkUnitLeaseRecord, WorkUnitPriority, WorkUnitRecord, WorkUnitRetryPolicy,
+    WORK_UNIT_SPLIT_MIN_CHILDREN, WorkRuntimeHealthSnapshot, WorkRuntimeOwnerAcquireStatus,
+    WorkRuntimeOwnerLeaseRecord, WorkSourceKind, WorkUnitEventRecord, WorkUnitKind,
+    WorkUnitLeaseRecord, WorkUnitPriority, WorkUnitRecord, WorkUnitRetryPolicy,
     WorkUnitReviewRecord, WorkUnitReviewStatus, WorkUnitSnapshot, WorkUnitSourceRef,
     WorkUnitStatus,
 };

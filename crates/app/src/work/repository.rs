@@ -2,10 +2,10 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use loongclaw_contracts::{
-    WORK_UNIT_SPLIT_MIN_CHILDREN, WorkRuntimeHealthSnapshot, WorkUnitEventRecord, WorkUnitKind,
-    WorkUnitLeaseRecord, WorkUnitPriority, WorkUnitRecord, WorkUnitRetryPolicy,
-    WorkUnitReviewRecord, WorkUnitReviewStatus, WorkUnitSnapshot, WorkUnitSourceRef,
-    WorkUnitStatus,
+    WORK_UNIT_SPLIT_MIN_CHILDREN, WorkRuntimeHealthSnapshot, WorkRuntimeOwnerAcquireStatus,
+    WorkRuntimeOwnerLeaseRecord, WorkUnitEventRecord, WorkUnitKind, WorkUnitLeaseRecord,
+    WorkUnitPriority, WorkUnitRecord, WorkUnitRetryPolicy, WorkUnitReviewRecord,
+    WorkUnitReviewStatus, WorkUnitSnapshot, WorkUnitSourceRef, WorkUnitStatus,
 };
 use rand::random;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
@@ -38,6 +38,7 @@ const WORK_UNIT_SUPERSEDED_EVENT_KIND: &str = "work_unit_superseded";
 const WORK_UNIT_REPLANNED_EVENT_KIND: &str = "work_unit_replanned";
 const WORK_UNIT_RESEQUENCED_EVENT_KIND: &str = "work_unit_resequenced";
 const WORK_UNIT_MERGED_EVENT_KIND: &str = "work_unit_merged";
+const WORK_RUNTIME_OWNER_SCOPE_SCHEDULER: &str = "scheduler";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct NewWorkUnitRecord {
@@ -256,6 +257,22 @@ pub struct MergeWorkUnitsResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkRuntimeMaintenanceRequest {
+    pub owner_id: String,
+    pub process_id: u32,
+    pub ttl_ms: u64,
+    pub now_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct WorkRuntimeMaintenanceResult {
+    pub owner_status: WorkRuntimeOwnerAcquireStatus,
+    pub owner_lease: WorkRuntimeOwnerLeaseRecord,
+    pub recovered: Vec<WorkUnitSnapshot>,
+    pub health: WorkRuntimeHealthSnapshot,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReplanWorkUnitRequest {
     pub work_unit_id: String,
     pub title: Option<String>,
@@ -327,6 +344,16 @@ struct RawWorkUnitRecord {
     created_at_ms: i64,
     updated_at_ms: i64,
     archived_at_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone)]
+struct RawWorkRuntimeOwnerLeaseRecord {
+    scope: String,
+    owner_id: String,
+    process_id: i64,
+    acquired_at_ms: i64,
+    heartbeat_at_ms: i64,
+    expires_at_ms: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -724,6 +751,57 @@ impl WorkUnitRepository {
             canonical,
             obsolete,
         })
+    }
+
+    pub fn run_runtime_maintenance_cycle(
+        &self,
+        request: WorkRuntimeMaintenanceRequest,
+    ) -> Result<WorkRuntimeMaintenanceResult, String> {
+        let owner_id = normalize_required_text(&request.owner_id, "owner_id")?;
+        validate_ttl_ms(request.ttl_ms)?;
+        let now_ms = request.now_ms.unwrap_or_else(current_unix_ms);
+        let acquire_result = acquire_runtime_owner_lease(
+            self,
+            WORK_RUNTIME_OWNER_SCOPE_SCHEDULER,
+            owner_id.as_str(),
+            request.process_id,
+            request.ttl_ms,
+            now_ms,
+        )?;
+        let recovered = if acquire_result.status == WorkRuntimeOwnerAcquireStatus::Blocked {
+            Vec::new()
+        } else {
+            self.recover_expired_leases(Some(owner_id.as_str()), Some(now_ms))?
+        };
+        let health = self.load_runtime_health(Some(now_ms))?;
+
+        Ok(WorkRuntimeMaintenanceResult {
+            owner_status: acquire_result.status,
+            owner_lease: acquire_result.lease,
+            recovered,
+            health,
+        })
+    }
+
+    pub fn load_runtime_owner_lease(&self) -> Result<Option<WorkRuntimeOwnerLeaseRecord>, String> {
+        let connection = self.open_connection()?;
+        let raw_lease =
+            load_runtime_owner_lease_with_conn(&connection, WORK_RUNTIME_OWNER_SCOPE_SCHEDULER)?;
+        raw_lease.map(try_runtime_owner_lease_from_raw).transpose()
+    }
+
+    pub fn release_runtime_owner_lease(&self, owner_id: &str) -> Result<bool, String> {
+        let owner_id = normalize_required_text(owner_id, "owner_id")?;
+        let connection = self.open_connection()?;
+        let deleted_rows = connection
+            .execute(
+                "DELETE FROM work_runtime_owner_leases
+                 WHERE scope = ?1
+                   AND owner_id = ?2",
+                params![WORK_RUNTIME_OWNER_SCOPE_SCHEDULER, owner_id],
+            )
+            .map_err(|error| format!("release runtime owner lease failed: {error}"))?;
+        Ok(deleted_rows > 0)
     }
 
     fn load_parent_work_unit_for_children(
@@ -2147,6 +2225,16 @@ impl WorkUnitRepository {
                 );
                 CREATE INDEX IF NOT EXISTS idx_work_unit_dependencies_blocked
                   ON work_unit_dependencies(blocked_work_unit_id, blocking_work_unit_id);
+                CREATE TABLE IF NOT EXISTS work_runtime_owner_leases(
+                    scope TEXT PRIMARY KEY,
+                    owner_id TEXT NOT NULL,
+                    process_id INTEGER NOT NULL,
+                    acquired_at_ms INTEGER NOT NULL,
+                    heartbeat_at_ms INTEGER NOT NULL,
+                    expires_at_ms INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_work_runtime_owner_leases_expiry
+                  ON work_runtime_owner_leases(expires_at_ms, owner_id);
                 CREATE TABLE IF NOT EXISTS work_unit_events(
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     work_unit_id TEXT NOT NULL,
@@ -2202,6 +2290,58 @@ fn ensure_work_units_column_exists(
         .execute(alter_sql.as_str(), [])
         .map_err(|error| format!("add work unit column `{column_name}` failed: {error}"))?;
     Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct WorkRuntimeOwnerAcquireResult {
+    status: WorkRuntimeOwnerAcquireStatus,
+    lease: WorkRuntimeOwnerLeaseRecord,
+}
+
+fn load_runtime_owner_lease_with_conn(
+    connection: &Connection,
+    scope: &str,
+) -> Result<Option<RawWorkRuntimeOwnerLeaseRecord>, String> {
+    connection
+        .query_row(
+            "SELECT
+                scope,
+                owner_id,
+                process_id,
+                acquired_at_ms,
+                heartbeat_at_ms,
+                expires_at_ms
+             FROM work_runtime_owner_leases
+             WHERE scope = ?1",
+            params![scope],
+            |row| {
+                Ok(RawWorkRuntimeOwnerLeaseRecord {
+                    scope: row.get(0)?,
+                    owner_id: row.get(1)?,
+                    process_id: row.get(2)?,
+                    acquired_at_ms: row.get(3)?,
+                    heartbeat_at_ms: row.get(4)?,
+                    expires_at_ms: row.get(5)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|error| format!("load runtime owner lease failed: {error}"))
+}
+
+fn try_runtime_owner_lease_from_raw(
+    raw_record: RawWorkRuntimeOwnerLeaseRecord,
+) -> Result<WorkRuntimeOwnerLeaseRecord, String> {
+    let process_id = u32::try_from(raw_record.process_id)
+        .map_err(|error| format!("runtime owner process_id overflowed u32: {error}"))?;
+    Ok(WorkRuntimeOwnerLeaseRecord {
+        scope: raw_record.scope,
+        owner_id: raw_record.owner_id,
+        process_id,
+        acquired_at_ms: raw_record.acquired_at_ms,
+        heartbeat_at_ms: raw_record.heartbeat_at_ms,
+        expires_at_ms: raw_record.expires_at_ms,
+    })
 }
 
 fn insert_event_in_tx(
@@ -3742,6 +3882,100 @@ fn load_ordered_child_snapshots(
     Ok(children)
 }
 
+fn acquire_runtime_owner_lease(
+    repository: &WorkUnitRepository,
+    scope: &str,
+    owner_id: &str,
+    process_id: u32,
+    ttl_ms: u64,
+    now_ms: i64,
+) -> Result<WorkRuntimeOwnerAcquireResult, String> {
+    let expires_at_ms = add_delay_ms(now_ms, ttl_ms)?;
+    let process_id = i64::from(process_id);
+    let mut connection = repository.open_connection()?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| format!("open runtime owner lease transaction failed: {error}"))?;
+    let existing_lease = load_runtime_owner_lease_with_conn(&transaction, scope)?;
+    let result = match existing_lease {
+        None => {
+            transaction
+                .execute(
+                    "INSERT INTO work_runtime_owner_leases(
+                        scope,
+                        owner_id,
+                        process_id,
+                        acquired_at_ms,
+                        heartbeat_at_ms,
+                        expires_at_ms
+                     ) VALUES (?1, ?2, ?3, ?4, ?4, ?5)",
+                    params![scope, owner_id, process_id, now_ms, expires_at_ms],
+                )
+                .map_err(|error| format!("insert runtime owner lease failed: {error}"))?;
+            let raw_lease = load_runtime_owner_lease_with_conn(&transaction, scope)?
+                .ok_or_else(|| "runtime owner lease disappeared after insert".to_owned())?;
+            let lease = try_runtime_owner_lease_from_raw(raw_lease)?;
+            WorkRuntimeOwnerAcquireResult {
+                status: WorkRuntimeOwnerAcquireStatus::Acquired,
+                lease,
+            }
+        }
+        Some(existing_lease) => {
+            let is_same_owner = existing_lease.owner_id == owner_id;
+            let is_expired = existing_lease.expires_at_ms < now_ms;
+            if is_same_owner {
+                transaction
+                    .execute(
+                        "UPDATE work_runtime_owner_leases
+                         SET process_id = ?1,
+                             heartbeat_at_ms = ?2,
+                             expires_at_ms = ?3
+                         WHERE scope = ?4",
+                        params![process_id, now_ms, expires_at_ms, scope],
+                    )
+                    .map_err(|error| format!("renew runtime owner lease failed: {error}"))?;
+                let raw_lease = load_runtime_owner_lease_with_conn(&transaction, scope)?
+                    .ok_or_else(|| "runtime owner lease disappeared after renew".to_owned())?;
+                let lease = try_runtime_owner_lease_from_raw(raw_lease)?;
+                WorkRuntimeOwnerAcquireResult {
+                    status: WorkRuntimeOwnerAcquireStatus::Renewed,
+                    lease,
+                }
+            } else if is_expired {
+                transaction
+                    .execute(
+                        "UPDATE work_runtime_owner_leases
+                         SET owner_id = ?1,
+                             process_id = ?2,
+                             acquired_at_ms = ?3,
+                             heartbeat_at_ms = ?3,
+                             expires_at_ms = ?4
+                         WHERE scope = ?5",
+                        params![owner_id, process_id, now_ms, expires_at_ms, scope],
+                    )
+                    .map_err(|error| format!("steal runtime owner lease failed: {error}"))?;
+                let raw_lease = load_runtime_owner_lease_with_conn(&transaction, scope)?
+                    .ok_or_else(|| "runtime owner lease disappeared after steal".to_owned())?;
+                let lease = try_runtime_owner_lease_from_raw(raw_lease)?;
+                WorkRuntimeOwnerAcquireResult {
+                    status: WorkRuntimeOwnerAcquireStatus::Stolen,
+                    lease,
+                }
+            } else {
+                let lease = try_runtime_owner_lease_from_raw(existing_lease)?;
+                WorkRuntimeOwnerAcquireResult {
+                    status: WorkRuntimeOwnerAcquireStatus::Blocked,
+                    lease,
+                }
+            }
+        }
+    };
+    transaction
+        .commit()
+        .map_err(|error| format!("commit runtime owner lease transaction failed: {error}"))?;
+    Ok(result)
+}
+
 fn apply_supersede_in_tx(
     repository: &WorkUnitRepository,
     transaction: &Transaction<'_>,
@@ -3887,12 +4121,12 @@ mod tests {
         WORK_UNIT_RESEQUENCED_EVENT_KIND, WORK_UNIT_REVIEW_RECORDED_EVENT_KIND,
         WORK_UNIT_REVIEW_REQUESTED_EVENT_KIND, WORK_UNIT_SPLIT_APPLIED_EVENT_KIND,
         WORK_UNIT_SUPERSEDED_EVENT_KIND, WORK_UNIT_UPDATED_EVENT_KIND,
-        WorkUnitCompletionDisposition, WorkUnitHeartbeatRequest, WorkUnitListQuery,
-        WorkUnitRepository, WorkUnitReviewDecision,
+        WorkRuntimeMaintenanceRequest, WorkUnitCompletionDisposition, WorkUnitHeartbeatRequest,
+        WorkUnitListQuery, WorkUnitRepository, WorkUnitReviewDecision,
     };
     use loongclaw_contracts::{
-        WorkSourceKind, WorkUnitKind, WorkUnitPriority, WorkUnitRetryPolicy, WorkUnitReviewStatus,
-        WorkUnitSourceRef, WorkUnitStatus,
+        WorkRuntimeOwnerAcquireStatus, WorkSourceKind, WorkUnitKind, WorkUnitPriority,
+        WorkUnitRetryPolicy, WorkUnitReviewStatus, WorkUnitSourceRef, WorkUnitStatus,
     };
 
     fn isolated_memory_config(test_name: &str) -> MemoryRuntimeConfig {
@@ -4690,6 +4924,76 @@ mod tests {
                 .any(|event| event.event_kind == WORK_UNIT_MERGED_EVENT_KIND),
             "expected merged event on canonical work unit"
         );
+    }
+
+    #[test]
+    fn runtime_maintenance_cycle_acquires_recovers_and_releases_owner_lease() {
+        let config = isolated_memory_config("runtime-maintenance-cycle");
+        let repository = WorkUnitRepository::new(&config).expect("repository");
+        repository
+            .create_work_unit(sample_work_unit(WorkUnitStatus::Ready), Some("operator"))
+            .expect("create work unit");
+        repository
+            .acquire_next_ready_lease(AcquireWorkUnitLeaseRequest {
+                owner: "worker-a".to_owned(),
+                ttl_ms: 500,
+                actor: Some("scheduler".to_owned()),
+                now_ms: Some(1_000),
+            })
+            .expect("claim work unit")
+            .expect("leased snapshot");
+
+        let first_cycle = repository
+            .run_runtime_maintenance_cycle(WorkRuntimeMaintenanceRequest {
+                owner_id: "scheduler-owner".to_owned(),
+                process_id: 4242,
+                ttl_ms: 5_000,
+                now_ms: Some(2_000),
+            })
+            .expect("run first maintenance cycle");
+
+        assert_eq!(
+            first_cycle.owner_status,
+            WorkRuntimeOwnerAcquireStatus::Acquired
+        );
+        assert_eq!(first_cycle.recovered.len(), 1);
+        assert_eq!(first_cycle.health.retry_pending_count, 1);
+
+        let second_cycle = repository
+            .run_runtime_maintenance_cycle(WorkRuntimeMaintenanceRequest {
+                owner_id: "scheduler-owner".to_owned(),
+                process_id: 4242,
+                ttl_ms: 5_000,
+                now_ms: Some(2_100),
+            })
+            .expect("run second maintenance cycle");
+        assert_eq!(
+            second_cycle.owner_status,
+            WorkRuntimeOwnerAcquireStatus::Renewed
+        );
+
+        let blocked_cycle = repository
+            .run_runtime_maintenance_cycle(WorkRuntimeMaintenanceRequest {
+                owner_id: "scheduler-other".to_owned(),
+                process_id: 5252,
+                ttl_ms: 5_000,
+                now_ms: Some(2_200),
+            })
+            .expect("run blocked maintenance cycle");
+        assert_eq!(
+            blocked_cycle.owner_status,
+            WorkRuntimeOwnerAcquireStatus::Blocked
+        );
+        assert_eq!(blocked_cycle.owner_lease.owner_id, "scheduler-owner");
+
+        let released = repository
+            .release_runtime_owner_lease("scheduler-owner")
+            .expect("release owner lease");
+        assert!(released);
+        let released_lease = repository
+            .load_runtime_owner_lease()
+            .expect("load runtime owner lease after release");
+        assert!(released_lease.is_none());
     }
 
     #[test]

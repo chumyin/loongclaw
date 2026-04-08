@@ -1,4 +1,5 @@
 use std::fs;
+use std::time::Duration;
 
 use clap::{Args, Subcommand, ValueEnum};
 use loongclaw_contracts::{
@@ -60,6 +61,8 @@ pub enum WorkUnitCommands {
     Note(WorkUnitNoteCommandOptions),
     /// Summarize durable runtime queue health
     Health(WorkUnitHealthCommandOptions),
+    /// Claim the scheduler owner slot and run one or more maintenance cycles
+    Maintain(WorkUnitMaintainCommandOptions),
 }
 
 #[derive(Args, Debug, Clone, PartialEq, Eq)]
@@ -544,6 +547,26 @@ pub struct WorkUnitHealthCommandOptions {
     pub json: bool,
 }
 
+#[derive(Args, Debug, Clone, PartialEq, Eq)]
+pub struct WorkUnitMaintainCommandOptions {
+    #[arg(long)]
+    pub config: Option<String>,
+    #[arg(long)]
+    pub owner_id: Option<String>,
+    #[arg(long, default_value_t = 30_000)]
+    pub ttl_ms: u64,
+    #[arg(long, default_value_t = 1_000)]
+    pub interval_ms: u64,
+    #[arg(long)]
+    pub iterations: Option<u32>,
+    #[arg(long, default_value_t = false)]
+    pub watch: bool,
+    #[arg(long)]
+    pub now_ms: Option<i64>,
+    #[arg(long, default_value_t = false)]
+    pub json: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum WorkUnitKindArg {
     Feature,
@@ -723,6 +746,14 @@ struct WorkUnitMergeView {
     obsolete: Vec<WorkUnitSnapshot>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct WorkUnitMaintainView {
+    owner_status: loongclaw_contracts::WorkRuntimeOwnerAcquireStatus,
+    owner_lease: loongclaw_contracts::WorkRuntimeOwnerLeaseRecord,
+    recovered: Vec<WorkUnitSnapshot>,
+    health: loongclaw_contracts::WorkRuntimeHealthSnapshot,
+}
+
 pub fn run_work_unit_cli(command: WorkUnitCommands) -> CliResult<()> {
     match command {
         WorkUnitCommands::Create(options) => run_create_command(options),
@@ -749,6 +780,7 @@ pub fn run_work_unit_cli(command: WorkUnitCommands) -> CliResult<()> {
         WorkUnitCommands::Undepend(options) => run_undepend_command(options),
         WorkUnitCommands::Note(options) => run_note_command(options),
         WorkUnitCommands::Health(options) => run_health_command(options),
+        WorkUnitCommands::Maintain(options) => run_maintain_command(options),
     }
 }
 
@@ -1207,6 +1239,65 @@ fn run_health_command(options: WorkUnitHealthCommandOptions) -> CliResult<()> {
     render_json_or_text(&health, options.json, render_work_unit_health_text)
 }
 
+fn run_maintain_command(options: WorkUnitMaintainCommandOptions) -> CliResult<()> {
+    if options.json && options.watch {
+        return Err("maintain --json does not support --watch".to_owned());
+    }
+    let repository = load_work_unit_repository(options.config.as_deref())?;
+    let owner_id = options
+        .owner_id
+        .unwrap_or_else(|| format!("work-runtime-owner-{}", std::process::id()));
+    let process_id = std::process::id();
+    let bounded_iterations = options.iterations.unwrap_or(1);
+    let should_watch = options.watch;
+    let mut iteration_index = 0_u32;
+    let mut last_view = None;
+
+    loop {
+        let cycle_now_ms = options.now_ms.map(|base_now_ms| {
+            let offset_ms =
+                i64::from(iteration_index) * i64::try_from(options.interval_ms).unwrap_or(i64::MAX);
+            base_now_ms.saturating_add(offset_ms)
+        });
+        let request = mvp::work::repository::WorkRuntimeMaintenanceRequest {
+            owner_id: owner_id.clone(),
+            process_id,
+            ttl_ms: options.ttl_ms,
+            now_ms: cycle_now_ms,
+        };
+        let result = repository.run_runtime_maintenance_cycle(request)?;
+        let view = WorkUnitMaintainView {
+            owner_status: result.owner_status,
+            owner_lease: result.owner_lease,
+            recovered: result.recovered,
+            health: result.health,
+        };
+        if should_watch {
+            print!("{}", render_work_unit_maintain_text(&view));
+        } else {
+            last_view = Some(view);
+        }
+        iteration_index = iteration_index.saturating_add(1);
+        let reached_bound = iteration_index >= bounded_iterations;
+        if !should_watch && reached_bound {
+            break;
+        }
+        if should_watch && options.iterations.is_some() && reached_bound {
+            break;
+        }
+        std::thread::park_timeout(Duration::from_millis(options.interval_ms));
+    }
+
+    if should_watch {
+        let _ = repository.release_runtime_owner_lease(owner_id.as_str());
+        return Ok(());
+    }
+
+    let view = last_view.ok_or_else(|| "maintain did not run any cycles".to_owned())?;
+    let _ = repository.release_runtime_owner_lease(owner_id.as_str());
+    render_json_or_text(&view, options.json, render_work_unit_maintain_text)
+}
+
 fn load_work_unit_repository(
     config_path: Option<&str>,
 ) -> CliResult<mvp::work::repository::WorkUnitRepository> {
@@ -1517,6 +1608,30 @@ fn render_work_unit_merge_text(view: &WorkUnitMergeView) -> String {
         view.obsolete.len(),
         render_work_unit_snapshot_text(&view.canonical),
         render_work_unit_list_text(view.obsolete.as_slice()),
+    )
+}
+
+fn render_work_unit_maintain_text(view: &WorkUnitMaintainView) -> String {
+    let recovered_count = view.recovered.len();
+    let owner_status = view.owner_status.as_str();
+    let owner_scope = view.owner_lease.scope.as_str();
+    let owner_id = view.owner_lease.owner_id.as_str();
+    let process_id = view.owner_lease.process_id;
+    let acquired_at_ms = view.owner_lease.acquired_at_ms;
+    let heartbeat_at_ms = view.owner_lease.heartbeat_at_ms;
+    let expires_at_ms = view.owner_lease.expires_at_ms;
+    let health_text = render_work_unit_health_text(&view.health);
+    format!(
+        "owner_status={} owner_scope={} owner_id={} process_id={} acquired_at_ms={} heartbeat_at_ms={} expires_at_ms={} recovered_count={}\n{}",
+        owner_status,
+        owner_scope,
+        owner_id,
+        process_id,
+        acquired_at_ms,
+        heartbeat_at_ms,
+        expires_at_ms,
+        recovered_count,
+        health_text,
     )
 }
 

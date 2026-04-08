@@ -90,6 +90,10 @@ fn cli_work_unit_help_mentions_durable_runtime_commands() {
         help.contains("merge"),
         "work-unit help should expose collapse orchestration: {help}"
     );
+    assert!(
+        help.contains("maintain"),
+        "work-unit help should expose runtime maintenance ownership: {help}"
+    );
 }
 
 #[test]
@@ -413,6 +417,44 @@ fn cli_work_unit_parse_accepts_merge_shape() {
     );
     assert_eq!(options.actor.as_deref(), Some("planner"));
     assert_eq!(options.now_ms, Some(7171));
+    assert!(options.json);
+}
+
+#[test]
+fn cli_work_unit_parse_accepts_maintain_shape() {
+    let cli = try_parse_cli([
+        "loongclaw",
+        "work-unit",
+        "maintain",
+        "--config",
+        "/tmp/loongclaw.toml",
+        "--owner-id",
+        "scheduler-a",
+        "--ttl-ms",
+        "30000",
+        "--interval-ms",
+        "1000",
+        "--iterations",
+        "2",
+        "--now-ms",
+        "8181",
+        "--json",
+    ])
+    .expect("work-unit maintain CLI should parse");
+
+    let command = cli.command.expect("CLI should parse a subcommand");
+    let Commands::WorkUnit { command } = command else {
+        panic!("unexpected CLI parse result: {command:?}");
+    };
+    let work_unit_runtime::WorkUnitCommands::Maintain(options) = command else {
+        panic!("unexpected maintain parse result: {command:?}");
+    };
+
+    assert_eq!(options.owner_id.as_deref(), Some("scheduler-a"));
+    assert_eq!(options.ttl_ms, 30_000);
+    assert_eq!(options.interval_ms, 1_000);
+    assert_eq!(options.iterations, Some(2));
+    assert_eq!(options.now_ms, Some(8181));
     assert!(options.json);
 }
 
@@ -1741,6 +1783,81 @@ fn work_unit_cli_merge_collapses_multiple_obsolete_units_into_canonical() {
         blocked_snapshot.work_unit.blocked_by_work_unit_ids,
         vec!["wu-canonical".to_owned()]
     );
+}
+
+#[test]
+fn work_unit_cli_maintain_cycle_acquires_owner_and_recovers_expired_leases() {
+    let _env = work_unit_environment_guard();
+    let root = unique_temp_dir("loongclaw-work-unit-maintain-cli");
+    let config_path = write_work_unit_config(&root);
+    let config_path_string = config_path.display().to_string();
+
+    work_unit_runtime::run_work_unit_cli(work_unit_runtime::WorkUnitCommands::Create(
+        work_unit_runtime::WorkUnitCreateCommandOptions {
+            config: Some(config_path_string.clone()),
+            id: Some("wu-ready".to_owned()),
+            kind: work_unit_runtime::WorkUnitKindArg::Feature,
+            title: "Ready work".to_owned(),
+            description: "Will get leased and expire".to_owned(),
+            status: work_unit_runtime::WorkUnitStatusArg::Ready,
+            priority: work_unit_runtime::WorkUnitPriorityArg::High,
+            max_attempts: 3,
+            initial_backoff_ms: 1_000,
+            max_backoff_ms: 8_000,
+            next_run_at_ms: Some(1_000),
+            actor: Some("operator".to_owned()),
+            source_kind: work_unit_runtime::WorkSourceKindArg::Manual,
+            project_id: None,
+            channel_id: None,
+            thread_id: None,
+            message_id: None,
+            external_ref: None,
+            source_url: None,
+            parent_work_unit_id: None,
+            json: true,
+        },
+    ))
+    .expect("create work unit fixture");
+
+    work_unit_runtime::run_work_unit_cli(work_unit_runtime::WorkUnitCommands::Claim(
+        work_unit_runtime::WorkUnitClaimCommandOptions {
+            config: Some(config_path_string.clone()),
+            owner: "worker-a".to_owned(),
+            ttl_ms: 500,
+            actor: Some("scheduler".to_owned()),
+            now_ms: Some(1_000),
+            json: true,
+        },
+    ))
+    .expect("claim work unit before maintenance");
+
+    work_unit_runtime::run_work_unit_cli(work_unit_runtime::WorkUnitCommands::Maintain(
+        work_unit_runtime::WorkUnitMaintainCommandOptions {
+            config: Some(config_path_string),
+            owner_id: Some("scheduler-owner".to_owned()),
+            ttl_ms: 5_000,
+            interval_ms: 1_000,
+            iterations: Some(1),
+            watch: false,
+            now_ms: Some(2_000),
+            json: true,
+        },
+    ))
+    .expect("run maintenance cycle");
+
+    let repository = load_work_unit_repository(&config_path);
+    let ready_snapshot = repository
+        .load_work_unit_snapshot("wu-ready")
+        .expect("load ready snapshot")
+        .expect("ready snapshot");
+    assert_eq!(
+        ready_snapshot.work_unit.status,
+        loongclaw_contracts::WorkUnitStatus::RetryPending
+    );
+    let owner_lease = repository
+        .load_runtime_owner_lease()
+        .expect("load runtime owner lease");
+    assert!(owner_lease.is_none());
 }
 
 #[test]

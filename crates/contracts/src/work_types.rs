@@ -318,3 +318,34 @@ pub struct WorkRuntimeHealthSnapshot {
     pub archived_count: usize,
     pub expired_lease_count: usize,
 }
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkRuntimeOwnerAcquireStatus {
+    Acquired,
+    Renewed,
+    Stolen,
+    Blocked,
+}
+
+impl WorkRuntimeOwnerAcquireStatus {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Acquired => "acquired",
+            Self::Renewed => "renewed",
+            Self::Stolen => "stolen",
+            Self::Blocked => "blocked",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkRuntimeOwnerLeaseRecord {
+    pub scope: String,
+    pub owner_id: String,
+    pub process_id: u32,
+    pub acquired_at_ms: i64,
+    pub heartbeat_at_ms: i64,
+    pub expires_at_ms: i64,
+}
