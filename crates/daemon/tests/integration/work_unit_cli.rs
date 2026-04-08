@@ -70,6 +70,10 @@ fn cli_work_unit_help_mentions_durable_runtime_commands() {
         help.contains("spawn-child"),
         "work-unit help should expose child-work decomposition: {help}"
     );
+    assert!(
+        help.contains("split"),
+        "work-unit help should expose multi-child decomposition: {help}"
+    );
 }
 
 #[test]
@@ -282,6 +286,42 @@ fn cli_work_unit_parse_accepts_spawn_child_shape() {
     assert_eq!(options.id.as_deref(), Some("wu-child"));
     assert_eq!(options.kind, work_unit_runtime::WorkUnitKindArg::Issue);
     assert_eq!(options.title, "Child work");
+    assert!(!options.block_parent);
+    assert!(options.json);
+}
+
+#[test]
+fn cli_work_unit_parse_accepts_split_shape() {
+    let children_json = r#"[{"id":"wu-child-a","kind":"issue","title":"Child A","description":"Do A"},{"id":"wu-child-b","kind":"issue","title":"Child B","description":"Do B"}]"#;
+    let cli = try_parse_cli([
+        "loongclaw",
+        "work-unit",
+        "split",
+        "--config",
+        "/tmp/loongclaw.toml",
+        "--parent-id",
+        "wu-parent",
+        "--children-json",
+        children_json,
+        "--block-parent",
+        "false",
+        "--actor",
+        "planner",
+        "--json",
+    ])
+    .expect("work-unit split CLI should parse");
+
+    let command = cli.command.expect("CLI should parse a subcommand");
+    let Commands::WorkUnit { command } = command else {
+        panic!("unexpected CLI parse result: {command:?}");
+    };
+    let work_unit_runtime::WorkUnitCommands::Split(options) = command else {
+        panic!("unexpected split parse result: {command:?}");
+    };
+
+    assert_eq!(options.parent_id, "wu-parent");
+    assert_eq!(options.children_json.as_deref(), Some(children_json));
+    assert_eq!(options.actor.as_deref(), Some("planner"));
     assert!(!options.block_parent);
     assert!(options.json);
 }
@@ -753,6 +793,166 @@ fn work_unit_cli_spawn_child_blocks_parent_until_child_completes() {
             .as_ref()
             .map(|lease| lease.owner.as_str()),
         Some("worker-b")
+    );
+}
+
+#[test]
+fn work_unit_cli_split_blocks_parent_until_all_children_complete() {
+    let _env = work_unit_environment_guard();
+    let root = unique_temp_dir("loongclaw-work-unit-split-cli");
+    let config_path = write_work_unit_config(&root);
+    let config_path_string = config_path.display().to_string();
+
+    work_unit_runtime::run_work_unit_cli(work_unit_runtime::WorkUnitCommands::Create(
+        work_unit_runtime::WorkUnitCreateCommandOptions {
+            config: Some(config_path_string.clone()),
+            id: Some("wu-parent".to_owned()),
+            kind: work_unit_runtime::WorkUnitKindArg::Feature,
+            title: "Parent work".to_owned(),
+            description: "Coordinate child items".to_owned(),
+            status: work_unit_runtime::WorkUnitStatusArg::Ready,
+            priority: work_unit_runtime::WorkUnitPriorityArg::High,
+            max_attempts: 3,
+            initial_backoff_ms: 1_000,
+            max_backoff_ms: 8_000,
+            next_run_at_ms: Some(1_000),
+            actor: Some("operator".to_owned()),
+            source_kind: work_unit_runtime::WorkSourceKindArg::Discord,
+            project_id: Some("loongclaw-ai/server".to_owned()),
+            channel_id: Some("feature".to_owned()),
+            thread_id: Some("thread-parent".to_owned()),
+            message_id: Some("message-parent".to_owned()),
+            external_ref: Some("parent-thread".to_owned()),
+            source_url: None,
+            parent_work_unit_id: None,
+            json: true,
+        },
+    ))
+    .expect("create parent work unit via CLI");
+
+    let children_json = r#"
+[
+  {
+    "id": "wu-child-a",
+    "kind": "issue",
+    "title": "Child A",
+    "description": "Handle dependency A",
+    "next_run_at_ms": 1010
+  },
+  {
+    "id": "wu-child-b",
+    "kind": "issue",
+    "title": "Child B",
+    "description": "Handle dependency B",
+    "next_run_at_ms": 1020
+  }
+]
+"#;
+    work_unit_runtime::run_work_unit_cli(work_unit_runtime::WorkUnitCommands::Split(
+        work_unit_runtime::WorkUnitSplitCommandOptions {
+            config: Some(config_path_string.clone()),
+            parent_id: "wu-parent".to_owned(),
+            children_json: Some(children_json.to_owned()),
+            children_path: None,
+            block_parent: true,
+            actor: Some("planner".to_owned()),
+            json: true,
+        },
+    ))
+    .expect("split parent work unit via CLI");
+
+    let repository = load_work_unit_repository(&config_path);
+    let parent_snapshot = repository
+        .load_work_unit_snapshot("wu-parent")
+        .expect("load parent snapshot")
+        .expect("parent snapshot");
+    assert_eq!(
+        parent_snapshot.work_unit.child_work_unit_ids,
+        vec!["wu-child-a".to_owned(), "wu-child-b".to_owned()]
+    );
+    assert_eq!(
+        parent_snapshot.work_unit.blocked_by_work_unit_ids,
+        vec!["wu-child-a".to_owned(), "wu-child-b".to_owned()]
+    );
+
+    work_unit_runtime::run_work_unit_cli(work_unit_runtime::WorkUnitCommands::Claim(
+        work_unit_runtime::WorkUnitClaimCommandOptions {
+            config: Some(config_path_string.clone()),
+            owner: "worker-a".to_owned(),
+            ttl_ms: 5_000,
+            actor: Some("scheduler".to_owned()),
+            now_ms: Some(1_030),
+            json: true,
+        },
+    ))
+    .expect("claim first child via CLI");
+
+    work_unit_runtime::run_work_unit_cli(work_unit_runtime::WorkUnitCommands::Complete(
+        work_unit_runtime::WorkUnitCompleteCommandOptions {
+            config: Some(config_path_string.clone()),
+            id: "wu-child-a".to_owned(),
+            owner: "worker-a".to_owned(),
+            disposition: work_unit_runtime::WorkUnitDispositionArg::Completed,
+            actor: Some("worker-a".to_owned()),
+            now_ms: Some(1_040),
+            next_run_at_ms: None,
+            result_payload_json: None,
+            error: None,
+            json: true,
+        },
+    ))
+    .expect("complete first child via CLI");
+
+    work_unit_runtime::run_work_unit_cli(work_unit_runtime::WorkUnitCommands::Claim(
+        work_unit_runtime::WorkUnitClaimCommandOptions {
+            config: Some(config_path_string.clone()),
+            owner: "worker-b".to_owned(),
+            ttl_ms: 5_000,
+            actor: Some("scheduler".to_owned()),
+            now_ms: Some(1_050),
+            json: true,
+        },
+    ))
+    .expect("claim second child via CLI");
+
+    work_unit_runtime::run_work_unit_cli(work_unit_runtime::WorkUnitCommands::Complete(
+        work_unit_runtime::WorkUnitCompleteCommandOptions {
+            config: Some(config_path_string.clone()),
+            id: "wu-child-b".to_owned(),
+            owner: "worker-b".to_owned(),
+            disposition: work_unit_runtime::WorkUnitDispositionArg::Completed,
+            actor: Some("worker-b".to_owned()),
+            now_ms: Some(1_060),
+            next_run_at_ms: None,
+            result_payload_json: None,
+            error: None,
+            json: true,
+        },
+    ))
+    .expect("complete second child via CLI");
+
+    work_unit_runtime::run_work_unit_cli(work_unit_runtime::WorkUnitCommands::Claim(
+        work_unit_runtime::WorkUnitClaimCommandOptions {
+            config: Some(config_path_string),
+            owner: "worker-c".to_owned(),
+            ttl_ms: 5_000,
+            actor: Some("scheduler".to_owned()),
+            now_ms: Some(1_070),
+            json: true,
+        },
+    ))
+    .expect("claim parent after split children complete");
+
+    let ready_parent = repository
+        .load_work_unit_snapshot("wu-parent")
+        .expect("reload parent snapshot")
+        .expect("ready parent snapshot");
+    assert_eq!(
+        ready_parent
+            .lease
+            .as_ref()
+            .map(|lease| lease.owner.as_str()),
+        Some("worker-c")
     );
 }
 

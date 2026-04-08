@@ -8,6 +8,7 @@ use loongclaw_contracts::{
 };
 use rand::random;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
+use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::memory;
@@ -31,6 +32,7 @@ const WORK_UNIT_UPDATED_EVENT_KIND: &str = "work_unit_updated";
 const WORK_UNIT_REVIEW_REQUESTED_EVENT_KIND: &str = "work_unit_review_requested";
 const WORK_UNIT_REVIEW_RECORDED_EVENT_KIND: &str = "work_unit_review_recorded";
 const WORK_UNIT_CHILD_CREATED_EVENT_KIND: &str = "work_unit_child_created";
+const WORK_UNIT_SPLIT_APPLIED_EVENT_KIND: &str = "work_unit_split_applied";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct NewWorkUnitRecord {
@@ -195,6 +197,28 @@ pub struct CreateChildWorkUnitRequest {
     pub inherit_parent_priority: bool,
     pub block_parent: bool,
     pub actor: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SplitWorkUnitChildRequest {
+    pub child: NewWorkUnitRecord,
+    pub inherit_parent_source_ref: bool,
+    pub inherit_parent_retry_policy: bool,
+    pub inherit_parent_priority: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SplitWorkUnitRequest {
+    pub parent_work_unit_id: String,
+    pub children: Vec<SplitWorkUnitChildRequest>,
+    pub block_parent: bool,
+    pub actor: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct SplitWorkUnitResult {
+    pub parent: WorkUnitSnapshot,
+    pub children: Vec<WorkUnitSnapshot>,
 }
 
 #[derive(Debug, Clone)]
@@ -363,59 +387,22 @@ impl WorkUnitRepository {
         let parent_work_unit_id =
             normalize_required_text(&request.parent_work_unit_id, "parent_work_unit_id")?;
         let actor = normalize_optional_text(request.actor);
-        let mut child = request.child;
+        let child = request.child;
         let mut connection = self.open_connection()?;
         let transaction = connection
             .transaction()
             .map_err(|error| format!("open child work-unit transaction failed: {error}"))?;
-        let Some(parent_snapshot) =
-            self.load_work_unit_snapshot_with_conn(&transaction, parent_work_unit_id.as_str())?
-        else {
-            return Err(format!(
-                "parent work unit `{parent_work_unit_id}` not found"
-            ));
-        };
-        if parent_snapshot.work_unit.archived_at_ms.is_some() {
-            return Err(format!(
-                "cannot create child work for archived parent `{}`",
-                parent_work_unit_id
-            ));
-        }
-
-        child.parent_work_unit_id = Some(parent_work_unit_id.clone());
-        if request.inherit_parent_source_ref {
-            child.source_ref = parent_snapshot.work_unit.source_ref.clone();
-        }
-        if request.inherit_parent_retry_policy {
-            child.retry_policy = parent_snapshot.work_unit.retry_policy.clone();
-        }
-        if request.inherit_parent_priority {
-            child.priority = parent_snapshot.work_unit.priority;
-        }
-        let child_snapshot = self.create_work_unit_in_tx(&transaction, child, actor.as_deref())?;
-
-        if request.block_parent {
-            self.add_dependency_in_tx(
-                &transaction,
-                child_snapshot.work_unit.work_unit_id.as_str(),
-                parent_work_unit_id.as_str(),
-                actor.as_deref(),
-                child_snapshot.work_unit.created_at_ms,
-            )?;
-        }
-
-        let event_payload = json!({
-            "parent_work_unit_id": parent_work_unit_id,
-            "child_work_unit_id": child_snapshot.work_unit.work_unit_id,
-            "block_parent": request.block_parent,
-        });
-        insert_event_in_tx(
+        let parent_snapshot =
+            self.load_parent_work_unit_for_children(&transaction, parent_work_unit_id.as_str())?;
+        let child_snapshot = self.create_child_work_unit_in_tx(
             &transaction,
-            child_snapshot.work_unit.work_unit_id.as_str(),
-            WORK_UNIT_CHILD_CREATED_EVENT_KIND,
+            &parent_snapshot,
+            child,
+            request.inherit_parent_source_ref,
+            request.inherit_parent_retry_policy,
+            request.inherit_parent_priority,
+            request.block_parent,
             actor.as_deref(),
-            &event_payload,
-            child_snapshot.work_unit.created_at_ms,
         )?;
 
         transaction
@@ -424,6 +411,151 @@ impl WorkUnitRepository {
 
         self.load_work_unit_snapshot(child_snapshot.work_unit.work_unit_id.as_str())?
             .ok_or_else(|| "child work unit disappeared after create".to_owned())
+    }
+
+    pub fn split_work_unit(
+        &self,
+        request: SplitWorkUnitRequest,
+    ) -> Result<SplitWorkUnitResult, String> {
+        let parent_work_unit_id =
+            normalize_required_text(&request.parent_work_unit_id, "parent_work_unit_id")?;
+        let child_count = request.children.len();
+        if child_count < 2 {
+            return Err("split_work_unit requires at least two child work units".to_owned());
+        }
+
+        let actor = normalize_optional_text(request.actor);
+        validate_split_child_ids(parent_work_unit_id.as_str(), request.children.as_slice())?;
+
+        let mut connection = self.open_connection()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| format!("open split work-unit transaction failed: {error}"))?;
+        let parent_snapshot =
+            self.load_parent_work_unit_for_children(&transaction, parent_work_unit_id.as_str())?;
+        let mut child_work_unit_ids = Vec::with_capacity(child_count);
+
+        for child_request in request.children {
+            let child_snapshot = self.create_child_work_unit_in_tx(
+                &transaction,
+                &parent_snapshot,
+                child_request.child,
+                child_request.inherit_parent_source_ref,
+                child_request.inherit_parent_retry_policy,
+                child_request.inherit_parent_priority,
+                request.block_parent,
+                actor.as_deref(),
+            )?;
+            let child_work_unit_id = child_snapshot.work_unit.work_unit_id;
+            child_work_unit_ids.push(child_work_unit_id);
+        }
+
+        let created_child_work_unit_ids = child_work_unit_ids.clone();
+        let recorded_at_ms = current_unix_ms();
+        let event_payload = json!({
+            "parent_work_unit_id": parent_work_unit_id,
+            "child_work_unit_ids": child_work_unit_ids,
+            "block_parent": request.block_parent,
+        });
+        insert_event_in_tx(
+            &transaction,
+            parent_work_unit_id.as_str(),
+            WORK_UNIT_SPLIT_APPLIED_EVENT_KIND,
+            actor.as_deref(),
+            &event_payload,
+            recorded_at_ms,
+        )?;
+
+        transaction
+            .commit()
+            .map_err(|error| format!("commit split work-unit transaction failed: {error}"))?;
+
+        let parent = self
+            .load_work_unit_snapshot(parent_work_unit_id.as_str())?
+            .ok_or_else(|| "parent work unit disappeared after split".to_owned())?;
+        let mut children = Vec::with_capacity(child_count);
+
+        for child_work_unit_id in created_child_work_unit_ids.iter() {
+            let child = self
+                .load_work_unit_snapshot(child_work_unit_id.as_str())?
+                .ok_or_else(|| {
+                    format!("child work unit `{child_work_unit_id}` disappeared after split")
+                })?;
+            children.push(child);
+        }
+
+        Ok(SplitWorkUnitResult { parent, children })
+    }
+
+    fn load_parent_work_unit_for_children(
+        &self,
+        transaction: &Transaction<'_>,
+        parent_work_unit_id: &str,
+    ) -> Result<WorkUnitSnapshot, String> {
+        let Some(parent_snapshot) =
+            self.load_work_unit_snapshot_with_conn(transaction, parent_work_unit_id)?
+        else {
+            return Err(format!(
+                "parent work unit `{parent_work_unit_id}` not found"
+            ));
+        };
+        if parent_snapshot.work_unit.archived_at_ms.is_some() {
+            return Err(format!(
+                "cannot create child work for archived parent `{parent_work_unit_id}`"
+            ));
+        }
+        Ok(parent_snapshot)
+    }
+
+    fn create_child_work_unit_in_tx(
+        &self,
+        transaction: &Transaction<'_>,
+        parent_snapshot: &WorkUnitSnapshot,
+        mut child: NewWorkUnitRecord,
+        inherit_parent_source_ref: bool,
+        inherit_parent_retry_policy: bool,
+        inherit_parent_priority: bool,
+        block_parent: bool,
+        actor: Option<&str>,
+    ) -> Result<WorkUnitSnapshot, String> {
+        let parent_work_unit_id = parent_snapshot.work_unit.work_unit_id.as_str();
+        child.parent_work_unit_id = Some(parent_work_unit_id.to_owned());
+        if inherit_parent_source_ref {
+            child.source_ref = parent_snapshot.work_unit.source_ref.clone();
+        }
+        if inherit_parent_retry_policy {
+            child.retry_policy = parent_snapshot.work_unit.retry_policy.clone();
+        }
+        if inherit_parent_priority {
+            child.priority = parent_snapshot.work_unit.priority;
+        }
+        let child_snapshot = self.create_work_unit_in_tx(transaction, child, actor)?;
+
+        if block_parent {
+            self.add_dependency_in_tx(
+                transaction,
+                child_snapshot.work_unit.work_unit_id.as_str(),
+                parent_work_unit_id,
+                actor,
+                child_snapshot.work_unit.created_at_ms,
+            )?;
+        }
+
+        let event_payload = json!({
+            "parent_work_unit_id": parent_work_unit_id,
+            "child_work_unit_id": child_snapshot.work_unit.work_unit_id,
+            "block_parent": block_parent,
+        });
+        insert_event_in_tx(
+            transaction,
+            child_snapshot.work_unit.work_unit_id.as_str(),
+            WORK_UNIT_CHILD_CREATED_EVENT_KIND,
+            actor,
+            &event_payload,
+            child_snapshot.work_unit.created_at_ms,
+        )?;
+
+        Ok(child_snapshot)
     }
 
     pub fn load_work_unit_snapshot(
@@ -2729,6 +2861,34 @@ fn priority_rank(priority: WorkUnitPriority) -> i64 {
     }
 }
 
+fn validate_split_child_ids(
+    parent_work_unit_id: &str,
+    children: &[SplitWorkUnitChildRequest],
+) -> Result<(), String> {
+    let mut seen_ids = std::collections::BTreeSet::new();
+
+    for child in children {
+        let Some(child_work_unit_id) = child.child.work_unit_id.as_deref() else {
+            continue;
+        };
+        let normalized_child_work_unit_id =
+            normalize_required_text(child_work_unit_id, "child.work_unit_id")?;
+        if normalized_child_work_unit_id == parent_work_unit_id {
+            return Err(format!(
+                "split child work unit id `{normalized_child_work_unit_id}` cannot match parent `{parent_work_unit_id}`"
+            ));
+        }
+        let inserted = seen_ids.insert(normalized_child_work_unit_id.clone());
+        if !inserted {
+            return Err(format!(
+                "split child work unit id `{normalized_child_work_unit_id}` is duplicated"
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 fn usize_from_i64(value: i64, label: &str) -> Result<usize, String> {
     usize::try_from(value).map_err(|error| format!("{label} overflowed usize: {error}"))
 }
@@ -2745,13 +2905,14 @@ mod tests {
         AcquireWorkUnitLeaseRequest, AddWorkUnitDependencyRequest, AppendWorkUnitNoteRequest,
         ArchiveWorkUnitRequest, AssignWorkUnitRequest, CompleteWorkUnitRequest,
         CreateChildWorkUnitRequest, NewWorkUnitRecord, RecordWorkUnitReviewDecisionRequest,
-        RemoveWorkUnitDependencyRequest, RequestWorkUnitReviewRequest, StartWorkUnitLeaseRequest,
-        UpdateWorkUnitRequest, WORK_UNIT_ASSIGNED_EVENT_KIND, WORK_UNIT_CHILD_CREATED_EVENT_KIND,
+        RemoveWorkUnitDependencyRequest, RequestWorkUnitReviewRequest, SplitWorkUnitChildRequest,
+        SplitWorkUnitRequest, StartWorkUnitLeaseRequest, UpdateWorkUnitRequest,
+        WORK_UNIT_ASSIGNED_EVENT_KIND, WORK_UNIT_CHILD_CREATED_EVENT_KIND,
         WORK_UNIT_DEPENDENCY_ADDED_EVENT_KIND, WORK_UNIT_DEPENDENCY_REMOVED_EVENT_KIND,
         WORK_UNIT_NOTE_ADDED_EVENT_KIND, WORK_UNIT_REVIEW_RECORDED_EVENT_KIND,
-        WORK_UNIT_REVIEW_REQUESTED_EVENT_KIND, WORK_UNIT_UPDATED_EVENT_KIND,
-        WorkUnitCompletionDisposition, WorkUnitHeartbeatRequest, WorkUnitListQuery,
-        WorkUnitRepository, WorkUnitReviewDecision,
+        WORK_UNIT_REVIEW_REQUESTED_EVENT_KIND, WORK_UNIT_SPLIT_APPLIED_EVENT_KIND,
+        WORK_UNIT_UPDATED_EVENT_KIND, WorkUnitCompletionDisposition, WorkUnitHeartbeatRequest,
+        WorkUnitListQuery, WorkUnitRepository, WorkUnitReviewDecision,
     };
     use loongclaw_contracts::{
         WorkSourceKind, WorkUnitKind, WorkUnitPriority, WorkUnitRetryPolicy, WorkUnitReviewStatus,
@@ -2983,6 +3144,188 @@ mod tests {
                 .blocked_by_work_unit_ids
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn split_work_unit_creates_multiple_children_and_blocks_parent_until_each_finishes() {
+        let config = isolated_memory_config("split-work-unit");
+        let repository = WorkUnitRepository::new(&config).expect("repository");
+        let parent = NewWorkUnitRecord {
+            work_unit_id: Some("wu-parent".to_owned()),
+            title: "Parent".to_owned(),
+            description: "Coordinate child work".to_owned(),
+            ..sample_work_unit(WorkUnitStatus::Ready)
+        };
+        repository
+            .create_work_unit(parent, Some("operator"))
+            .expect("create parent work unit");
+
+        let child_a = SplitWorkUnitChildRequest {
+            child: NewWorkUnitRecord {
+                work_unit_id: Some("wu-child-a".to_owned()),
+                kind: WorkUnitKind::Issue,
+                title: "Child A".to_owned(),
+                description: "Handle dependency A".to_owned(),
+                source_ref: WorkUnitSourceRef::default(),
+                status: WorkUnitStatus::Ready,
+                priority: WorkUnitPriority::Normal,
+                retry_policy: WorkUnitRetryPolicy::default(),
+                parent_work_unit_id: None,
+                next_run_at_ms: Some(1_010),
+            },
+            inherit_parent_source_ref: true,
+            inherit_parent_retry_policy: true,
+            inherit_parent_priority: true,
+        };
+        let child_b = SplitWorkUnitChildRequest {
+            child: NewWorkUnitRecord {
+                work_unit_id: Some("wu-child-b".to_owned()),
+                kind: WorkUnitKind::Issue,
+                title: "Child B".to_owned(),
+                description: "Handle dependency B".to_owned(),
+                source_ref: WorkUnitSourceRef::default(),
+                status: WorkUnitStatus::Ready,
+                priority: WorkUnitPriority::Normal,
+                retry_policy: WorkUnitRetryPolicy::default(),
+                parent_work_unit_id: None,
+                next_run_at_ms: Some(1_020),
+            },
+            inherit_parent_source_ref: true,
+            inherit_parent_retry_policy: true,
+            inherit_parent_priority: true,
+        };
+        let split = repository
+            .split_work_unit(SplitWorkUnitRequest {
+                parent_work_unit_id: "wu-parent".to_owned(),
+                children: vec![child_a, child_b],
+                block_parent: true,
+                actor: Some("planner".to_owned()),
+            })
+            .expect("split work unit");
+
+        assert_eq!(split.parent.work_unit.work_unit_id, "wu-parent");
+        assert_eq!(
+            split.parent.work_unit.child_work_unit_ids,
+            vec!["wu-child-a".to_owned(), "wu-child-b".to_owned()]
+        );
+        assert_eq!(
+            split.parent.work_unit.blocked_by_work_unit_ids,
+            vec!["wu-child-a".to_owned(), "wu-child-b".to_owned()]
+        );
+        assert_eq!(split.children.len(), 2);
+        assert_eq!(
+            split.children[0].work_unit.blocks_work_unit_ids,
+            vec!["wu-parent".to_owned()]
+        );
+        assert_eq!(
+            split.children[1].work_unit.blocks_work_unit_ids,
+            vec!["wu-parent".to_owned()]
+        );
+
+        let claimed_child_a = repository
+            .acquire_next_ready_lease(AcquireWorkUnitLeaseRequest {
+                owner: "worker-a".to_owned(),
+                ttl_ms: 5_000,
+                actor: Some("scheduler".to_owned()),
+                now_ms: Some(2_000),
+            })
+            .expect("claim first ready child")
+            .expect("expected first child claim");
+        assert_eq!(claimed_child_a.work_unit.work_unit_id, "wu-child-a");
+
+        repository
+            .complete_work_unit(CompleteWorkUnitRequest {
+                work_unit_id: "wu-child-a".to_owned(),
+                owner: "worker-a".to_owned(),
+                disposition: WorkUnitCompletionDisposition::Completed,
+                actor: Some("worker-a".to_owned()),
+                now_ms: Some(2_010),
+                next_run_at_ms: None,
+                result_payload_json: None,
+                error: None,
+            })
+            .expect("complete child a");
+
+        let claimed_child_b = repository
+            .acquire_next_ready_lease(AcquireWorkUnitLeaseRequest {
+                owner: "worker-b".to_owned(),
+                ttl_ms: 5_000,
+                actor: Some("scheduler".to_owned()),
+                now_ms: Some(2_020),
+            })
+            .expect("claim second ready child")
+            .expect("expected second child claim");
+        assert_eq!(claimed_child_b.work_unit.work_unit_id, "wu-child-b");
+
+        repository
+            .complete_work_unit(CompleteWorkUnitRequest {
+                work_unit_id: "wu-child-b".to_owned(),
+                owner: "worker-b".to_owned(),
+                disposition: WorkUnitCompletionDisposition::Completed,
+                actor: Some("worker-b".to_owned()),
+                now_ms: Some(2_030),
+                next_run_at_ms: None,
+                result_payload_json: None,
+                error: None,
+            })
+            .expect("complete child b");
+
+        let claimed_parent = repository
+            .acquire_next_ready_lease(AcquireWorkUnitLeaseRequest {
+                owner: "worker-c".to_owned(),
+                ttl_ms: 5_000,
+                actor: Some("scheduler".to_owned()),
+                now_ms: Some(2_040),
+            })
+            .expect("claim parent after children complete")
+            .expect("expected parent claim");
+        assert_eq!(claimed_parent.work_unit.work_unit_id, "wu-parent");
+
+        let events = repository
+            .list_work_unit_events("wu-parent", 10)
+            .expect("list parent events");
+        assert!(
+            events
+                .iter()
+                .any(|event| event.event_kind == WORK_UNIT_SPLIT_APPLIED_EVENT_KIND),
+            "expected split-applied event on the parent"
+        );
+    }
+
+    #[test]
+    fn split_work_unit_rejects_less_than_two_children() {
+        let config = isolated_memory_config("split-work-unit-too-small");
+        let repository = WorkUnitRepository::new(&config).expect("repository");
+        repository
+            .create_work_unit(sample_work_unit(WorkUnitStatus::Ready), Some("operator"))
+            .expect("create parent work unit");
+
+        let error = repository
+            .split_work_unit(SplitWorkUnitRequest {
+                parent_work_unit_id: "wu-test".to_owned(),
+                children: vec![SplitWorkUnitChildRequest {
+                    child: NewWorkUnitRecord {
+                        work_unit_id: Some("wu-child-only".to_owned()),
+                        kind: WorkUnitKind::Issue,
+                        title: "Only child".to_owned(),
+                        description: "This should fail".to_owned(),
+                        source_ref: WorkUnitSourceRef::default(),
+                        status: WorkUnitStatus::Ready,
+                        priority: WorkUnitPriority::Normal,
+                        retry_policy: WorkUnitRetryPolicy::default(),
+                        parent_work_unit_id: None,
+                        next_run_at_ms: Some(1_010),
+                    },
+                    inherit_parent_source_ref: true,
+                    inherit_parent_retry_policy: true,
+                    inherit_parent_priority: true,
+                }],
+                block_parent: true,
+                actor: Some("planner".to_owned()),
+            })
+            .expect_err("split should require at least two children");
+
+        assert!(error.contains("at least two child work units"));
     }
 
     #[test]

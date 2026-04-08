@@ -1,9 +1,12 @@
+use std::fs;
+
 use clap::{Args, Subcommand, ValueEnum};
 use loongclaw_contracts::{
     WorkSourceKind, WorkUnitKind, WorkUnitPriority, WorkUnitRetryPolicy, WorkUnitSnapshot,
     WorkUnitSourceRef, WorkUnitStatus,
 };
 use loongclaw_spec::CliResult;
+use serde::{Deserialize, Serialize};
 
 use crate::mvp;
 
@@ -31,6 +34,8 @@ pub enum WorkUnitCommands {
     Archive(WorkUnitArchiveCommandOptions),
     /// Create a child work unit beneath an existing parent work unit
     SpawnChild(WorkUnitSpawnChildCommandOptions),
+    /// Split one parent work unit into multiple child work units
+    Split(WorkUnitSplitCommandOptions),
     /// Assign or clear a durable work-unit owner without taking a runtime lease
     Assign(WorkUnitAssignCommandOptions),
     /// Update mutable orchestration fields on a durable work unit
@@ -281,6 +286,30 @@ pub struct WorkUnitSpawnChildCommandOptions {
     pub external_ref: Option<String>,
     #[arg(long)]
     pub source_url: Option<String>,
+    #[arg(long, default_value_t = false)]
+    pub json: bool,
+}
+
+#[derive(Args, Debug, Clone, PartialEq, Eq)]
+pub struct WorkUnitSplitCommandOptions {
+    #[arg(long)]
+    pub config: Option<String>,
+    #[arg(long)]
+    pub parent_id: String,
+    #[arg(long)]
+    pub children_json: Option<String>,
+    #[arg(long)]
+    pub children_path: Option<String>,
+    #[arg(
+        long,
+        default_value_t = true,
+        action = clap::ArgAction::Set,
+        num_args = 0..=1,
+        default_missing_value = "true"
+    )]
+    pub block_parent: bool,
+    #[arg(long)]
+    pub actor: Option<String>,
     #[arg(long, default_value_t = false)]
     pub json: bool,
 }
@@ -552,6 +581,32 @@ impl From<WorkUnitReviewDecisionArg> for mvp::work::repository::WorkUnitReviewDe
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WorkUnitSplitChildInput {
+    #[serde(default)]
+    id: Option<String>,
+    kind: WorkUnitKind,
+    title: String,
+    description: String,
+    #[serde(default)]
+    status: Option<WorkUnitStatus>,
+    #[serde(default)]
+    priority: Option<WorkUnitPriority>,
+    #[serde(default)]
+    retry_policy: Option<WorkUnitRetryPolicy>,
+    #[serde(default)]
+    source_ref: Option<WorkUnitSourceRef>,
+    #[serde(default)]
+    next_run_at_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct WorkUnitSplitView {
+    parent: WorkUnitSnapshot,
+    children: Vec<WorkUnitSnapshot>,
+}
+
 pub fn run_work_unit_cli(command: WorkUnitCommands) -> CliResult<()> {
     match command {
         WorkUnitCommands::Create(options) => run_create_command(options),
@@ -565,6 +620,7 @@ pub fn run_work_unit_cli(command: WorkUnitCommands) -> CliResult<()> {
         WorkUnitCommands::Recover(options) => run_recover_command(options),
         WorkUnitCommands::Archive(options) => run_archive_command(options),
         WorkUnitCommands::SpawnChild(options) => run_spawn_child_command(options),
+        WorkUnitCommands::Split(options) => run_split_command(options),
         WorkUnitCommands::Assign(options) => run_assign_command(options),
         WorkUnitCommands::Update(options) => run_update_command(options),
         WorkUnitCommands::RequestReview(options) => run_request_review_command(options),
@@ -785,6 +841,52 @@ fn run_spawn_child_command(options: WorkUnitSpawnChildCommandOptions) -> CliResu
     render_json_or_text(&snapshot, options.json, render_work_unit_snapshot_text)
 }
 
+fn run_split_command(options: WorkUnitSplitCommandOptions) -> CliResult<()> {
+    let repository = load_work_unit_repository(options.config.as_deref())?;
+    let child_inputs = parse_split_children_inputs(
+        options.children_json.as_deref(),
+        options.children_path.as_deref(),
+    )?;
+    let mut child_requests = Vec::with_capacity(child_inputs.len());
+
+    for child_input in child_inputs {
+        let source_ref_is_overridden = child_input.source_ref.is_some();
+        let retry_policy_is_overridden = child_input.retry_policy.is_some();
+        let priority_is_overridden = child_input.priority.is_some();
+        let child = mvp::work::repository::NewWorkUnitRecord {
+            work_unit_id: child_input.id,
+            kind: child_input.kind,
+            title: child_input.title,
+            description: child_input.description,
+            source_ref: child_input.source_ref.unwrap_or_default(),
+            status: child_input.status.unwrap_or(WorkUnitStatus::Ready),
+            priority: child_input.priority.unwrap_or(WorkUnitPriority::Normal),
+            retry_policy: child_input.retry_policy.unwrap_or_default(),
+            parent_work_unit_id: None,
+            next_run_at_ms: child_input.next_run_at_ms,
+        };
+        let child_request = mvp::work::repository::SplitWorkUnitChildRequest {
+            child,
+            inherit_parent_source_ref: !source_ref_is_overridden,
+            inherit_parent_retry_policy: !retry_policy_is_overridden,
+            inherit_parent_priority: !priority_is_overridden,
+        };
+        child_requests.push(child_request);
+    }
+
+    let result = repository.split_work_unit(mvp::work::repository::SplitWorkUnitRequest {
+        parent_work_unit_id: options.parent_id,
+        children: child_requests,
+        block_parent: options.block_parent,
+        actor: options.actor,
+    })?;
+    let view = WorkUnitSplitView {
+        parent: result.parent,
+        children: result.children,
+    };
+    render_json_or_text(&view, options.json, render_work_unit_split_text)
+}
+
 fn run_assign_command(options: WorkUnitAssignCommandOptions) -> CliResult<()> {
     let repository = load_work_unit_repository(options.config.as_deref())?;
     let request = mvp::work::repository::AssignWorkUnitRequest {
@@ -988,6 +1090,41 @@ fn parse_json_value(raw: &str) -> CliResult<serde_json::Value> {
     serde_json::from_str(raw).map_err(|error| format!("parse result payload json failed: {error}"))
 }
 
+fn parse_split_children_inputs(
+    children_json: Option<&str>,
+    children_path: Option<&str>,
+) -> CliResult<Vec<WorkUnitSplitChildInput>> {
+    match (children_json, children_path) {
+        (Some(_), Some(_)) => {
+            Err("provide either --children-json or --children-path, but not both".to_owned())
+        }
+        (None, None) => Err("split requires either --children-json or --children-path".to_owned()),
+        (Some(children_json), None) => {
+            decode_split_children_inputs(children_json, "parse split children json failed")
+        }
+        (None, Some(children_path)) => {
+            let raw_children = fs::read_to_string(children_path)
+                .map_err(|error| format!("read split children path failed: {error}"))?;
+            decode_split_children_inputs(
+                raw_children.as_str(),
+                "parse split children path json failed",
+            )
+        }
+    }
+}
+
+fn decode_split_children_inputs(
+    raw_children: &str,
+    context: &str,
+) -> CliResult<Vec<WorkUnitSplitChildInput>> {
+    let children = serde_json::from_str::<Vec<WorkUnitSplitChildInput>>(raw_children)
+        .map_err(|error| format!("{context}: {error}"))?;
+    if children.is_empty() {
+        return Err("split children payload must contain at least one child item".to_owned());
+    }
+    Ok(children)
+}
+
 fn render_work_unit_snapshot_text(snapshot: &WorkUnitSnapshot) -> String {
     let work_unit = &snapshot.work_unit;
     let lease_text = snapshot
@@ -1037,6 +1174,28 @@ fn render_work_unit_snapshot_text(snapshot: &WorkUnitSnapshot) -> String {
         result_payload,
         review_text,
         lease_text,
+    )
+}
+
+fn render_work_unit_split_text(view: &WorkUnitSplitView) -> String {
+    let child_work_unit_ids = view
+        .children
+        .iter()
+        .map(|child| child.work_unit.work_unit_id.as_str())
+        .collect::<Vec<_>>();
+    let child_work_unit_ids = child_work_unit_ids.join(",");
+    let child_work_unit_ids = if child_work_unit_ids.is_empty() {
+        "-".to_owned()
+    } else {
+        child_work_unit_ids
+    };
+    format!(
+        "split_parent_id={} child_count={} child_work_unit_ids={}\n{}{}",
+        view.parent.work_unit.work_unit_id,
+        view.children.len(),
+        child_work_unit_ids,
+        render_work_unit_snapshot_text(&view.parent),
+        render_work_unit_list_text(view.children.as_slice()),
     )
 }
 
