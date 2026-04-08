@@ -977,6 +977,178 @@ fn runtime_experiment_start_and_finish_keep_trajectory_artifact_evidence() {
 }
 
 #[test]
+fn runtime_experiment_evidence_bundles_snapshots_and_trajectory_artifacts() {
+    let root = unique_temp_dir("loongclaw-runtime-experiment-evidence-bundle");
+    let config_path = write_runtime_experiment_config(&root);
+    let (baseline_snapshot_path, baseline_snapshot_payload) = write_snapshot_artifact(
+        &root,
+        &config_path,
+        "artifacts/runtime-snapshot.json",
+        loongclaw_daemon::RuntimeSnapshotArtifactMetadata {
+            created_at: "2026-03-16T12:00:00Z".to_owned(),
+            label: Some("baseline".to_owned()),
+            experiment_id: Some("exp-42".to_owned()),
+            parent_snapshot_id: Some("snapshot-parent".to_owned()),
+        },
+    );
+    let baseline_trajectory_path = write_runtime_trajectory_artifact(
+        &root,
+        &config_path,
+        "artifacts/baseline-trajectory.json",
+        "baseline-session",
+    );
+
+    let run_path = root.join("artifacts/runtime-experiment.json");
+    let run = loongclaw_daemon::runtime_experiment_cli::execute_runtime_experiment_start_command(
+        loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentStartCommandOptions {
+            snapshot: baseline_snapshot_path.display().to_string(),
+            baseline_trajectory: vec![baseline_trajectory_path.display().to_string()],
+            output: run_path.display().to_string(),
+            mutation_summary: "enable browser preview skill".to_owned(),
+            experiment_id: None,
+            label: Some("browser-preview-a".to_owned()),
+            tag: vec!["browser".to_owned(), "preview".to_owned()],
+            json: false,
+        },
+    )
+    .expect("runtime experiment start should succeed");
+
+    let baseline_snapshot_id = snapshot_id_from_payload(&baseline_snapshot_payload);
+    rewrite_runtime_experiment_compare_config(&config_path);
+    let (result_snapshot_path, _) = write_snapshot_artifact(
+        &root,
+        &config_path,
+        "artifacts/runtime-snapshot-result.json",
+        loongclaw_daemon::RuntimeSnapshotArtifactMetadata {
+            created_at: "2026-03-16T12:30:00Z".to_owned(),
+            label: Some("candidate".to_owned()),
+            experiment_id: Some("exp-42".to_owned()),
+            parent_snapshot_id: Some(baseline_snapshot_id),
+        },
+    );
+    let result_trajectory_path = write_runtime_trajectory_artifact(
+        &root,
+        &config_path,
+        "artifacts/result-trajectory.json",
+        "result-session",
+    );
+
+    loongclaw_daemon::runtime_experiment_cli::execute_runtime_experiment_finish_command(
+        loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentFinishCommandOptions {
+            run: run_path.display().to_string(),
+            result_snapshot: result_snapshot_path.display().to_string(),
+            result_trajectory: vec![result_trajectory_path.display().to_string()],
+            evaluation_summary: "task success improved".to_owned(),
+            metric: vec!["task_success=1".to_owned()],
+            warning: Vec::new(),
+            decision: loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentDecision::Promoted,
+            status:
+                loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentFinishStatus::Completed,
+            json: false,
+        },
+    )
+    .expect("runtime experiment finish should succeed");
+
+    let evidence =
+        loongclaw_daemon::runtime_experiment_cli::execute_runtime_experiment_evidence_command(
+            loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentEvidenceCommandOptions {
+                run: run_path.display().to_string(),
+                output: None,
+                json: false,
+            },
+        )
+        .expect("runtime experiment evidence should succeed");
+
+    assert_eq!(evidence.run.run_id, run.run_id);
+    assert_eq!(
+        evidence.baseline_snapshot.artifact_path,
+        canonical_display_path(&baseline_snapshot_path)
+    );
+    assert_eq!(
+        evidence
+            .result_snapshot
+            .as_ref()
+            .expect("result snapshot attachment")
+            .artifact_path,
+        canonical_display_path(&result_snapshot_path)
+    );
+    assert_eq!(evidence.baseline_trajectories.len(), 1);
+    assert_eq!(
+        evidence.baseline_trajectories[0].artifact_path,
+        canonical_display_path(&baseline_trajectory_path)
+    );
+    assert_eq!(
+        evidence.baseline_trajectories[0]
+            .document
+            .effective_requested_session_id(),
+        "baseline-session"
+    );
+    assert_eq!(evidence.result_trajectories.len(), 1);
+    assert_eq!(
+        evidence.result_trajectories[0].artifact_path,
+        canonical_display_path(&result_trajectory_path)
+    );
+    assert_eq!(
+        evidence.result_trajectories[0]
+            .document
+            .effective_requested_session_id(),
+        "result-session"
+    );
+
+    let rendered =
+        loongclaw_daemon::runtime_experiment_cli::render_runtime_experiment_evidence_text(
+            &evidence,
+        );
+    assert!(rendered.contains("baseline_trajectory_count=1"));
+    assert!(rendered.contains("result_trajectory_count=1"));
+    assert!(rendered.contains("baseline-session"));
+    assert!(rendered.contains("result-session"));
+
+    fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn runtime_experiment_evidence_rejects_missing_trajectory_artifact_path() {
+    let root = unique_temp_dir("loongclaw-runtime-experiment-evidence-missing-trajectory");
+    let config_path = write_runtime_experiment_config(&root);
+    let (run_path, _finished) = finish_runtime_experiment(&root, &config_path);
+    let missing_trajectory_path = root.join("artifacts/missing-trajectory.json");
+
+    rewrite_json_file(&run_path, |payload| {
+        payload["baseline_trajectories"] = serde_json::json!([
+            {
+                "artifact_path": missing_trajectory_path.display().to_string(),
+                "requested_session_id": "missing-session",
+                "export_scope": "session_only",
+                "session_count": 1,
+                "descendant_session_count": 0,
+                "exported_turn_count": 0,
+                "canonical_record_count": 0,
+                "event_count": 0,
+                "approval_request_count": 0
+            }
+        ]);
+    });
+
+    let error =
+        loongclaw_daemon::runtime_experiment_cli::execute_runtime_experiment_evidence_command(
+            loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentEvidenceCommandOptions {
+                run: run_path.display().to_string(),
+                output: None,
+                json: false,
+            },
+        )
+        .expect_err("missing trajectory artifact should fail");
+
+    assert!(
+        error.contains("read runtime trajectory artifact"),
+        "expected missing trajectory artifact error, got: {error}"
+    );
+
+    fs::remove_dir_all(&root).ok();
+}
+
+#[test]
 fn runtime_experiment_compare_record_only_surfaces_decision_summary() {
     let root = unique_temp_dir("loongclaw-runtime-experiment-compare-record-only");
     let config_path = write_runtime_experiment_config(&root);

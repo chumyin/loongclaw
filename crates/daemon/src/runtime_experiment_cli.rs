@@ -14,6 +14,7 @@ use std::{
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 pub const RUNTIME_EXPERIMENT_ARTIFACT_JSON_SCHEMA_VERSION: u32 = 1;
+pub const RUNTIME_EXPERIMENT_EVIDENCE_ARTIFACT_JSON_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeExperimentCommands {
@@ -25,6 +26,8 @@ pub enum RuntimeExperimentCommands {
     Show(RuntimeExperimentShowCommandOptions),
     /// Compare one experiment run and, optionally, matching runtime snapshots
     Compare(RuntimeExperimentCompareCommandOptions),
+    /// Materialize one evaluator-ready evidence bundle from a finished experiment run
+    Evidence(RuntimeExperimentEvidenceCommandOptions),
     /// Restore one recorded baseline/result stage through the snapshot restore pipeline
     Restore(RuntimeExperimentRestoreCommandOptions),
 }
@@ -93,6 +96,16 @@ pub struct RuntimeExperimentCompareCommandOptions {
         conflicts_with_all = ["baseline_snapshot", "result_snapshot"]
     )]
     pub recorded_snapshots: bool,
+    #[arg(long, default_value_t = false)]
+    pub json: bool,
+}
+
+#[derive(Args, Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeExperimentEvidenceCommandOptions {
+    #[arg(long)]
+    pub run: String,
+    #[arg(long)]
+    pub output: Option<String>,
     #[arg(long, default_value_t = false)]
     pub json: bool,
 }
@@ -238,6 +251,36 @@ pub struct RuntimeExperimentRestoreExecution {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeExperimentEvidenceArtifactSchema {
+    pub version: u32,
+    pub surface: String,
+    pub purpose: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RuntimeExperimentEvidenceSnapshotAttachment {
+    pub artifact_path: String,
+    pub document: RuntimeSnapshotArtifactDocument,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RuntimeExperimentEvidenceTrajectoryAttachment {
+    pub artifact_path: String,
+    pub document: crate::mvp::session::trajectory::SessionTrajectoryArtifact,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RuntimeExperimentEvidenceArtifactDocument {
+    pub schema: RuntimeExperimentEvidenceArtifactSchema,
+    pub generated_at: String,
+    pub run: RuntimeExperimentArtifactDocument,
+    pub baseline_snapshot: RuntimeExperimentEvidenceSnapshotAttachment,
+    pub result_snapshot: Option<RuntimeExperimentEvidenceSnapshotAttachment>,
+    pub baseline_trajectories: Vec<RuntimeExperimentEvidenceTrajectoryAttachment>,
+    pub result_trajectories: Vec<RuntimeExperimentEvidenceTrajectoryAttachment>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RuntimeExperimentSnapshotDelta {
     pub changed_surface_count: usize,
     pub provider_active_profile: RuntimeExperimentScalarCompare,
@@ -346,6 +389,15 @@ pub fn run_runtime_experiment_cli(command: RuntimeExperimentCommands) -> CliResu
             let as_json = options.json;
             let report = execute_runtime_experiment_compare_command(options)?;
             emit_runtime_experiment_compare_report(&report, as_json)
+        }
+        RuntimeExperimentCommands::Evidence(options) => {
+            let as_json = options.json;
+            let output_path = options.output.clone();
+            let artifact = execute_runtime_experiment_evidence_command(options)?;
+            if let Some(output_path) = output_path.as_deref() {
+                persist_runtime_experiment_evidence_artifact(output_path, &artifact)?;
+            }
+            emit_runtime_experiment_evidence_artifact(&artifact, as_json)
         }
         RuntimeExperimentCommands::Restore(options) => {
             let as_json = options.json;
@@ -498,6 +550,38 @@ pub fn execute_runtime_experiment_compare_command(
     })
 }
 
+pub fn execute_runtime_experiment_evidence_command(
+    options: RuntimeExperimentEvidenceCommandOptions,
+) -> CliResult<RuntimeExperimentEvidenceArtifactDocument> {
+    let run_path = Path::new(&options.run);
+    let run = load_runtime_experiment_artifact(run_path)?;
+    let generated_at = now_rfc3339()?;
+    let baseline_snapshot = load_runtime_experiment_snapshot_attachment(&run.baseline_snapshot)?;
+    let result_snapshot = run
+        .result_snapshot
+        .as_ref()
+        .map(load_runtime_experiment_snapshot_attachment)
+        .transpose()?;
+    let baseline_trajectories =
+        load_runtime_experiment_trajectory_attachments(&run.baseline_trajectories)?;
+    let result_trajectories =
+        load_runtime_experiment_trajectory_attachments(&run.result_trajectories)?;
+
+    Ok(RuntimeExperimentEvidenceArtifactDocument {
+        schema: RuntimeExperimentEvidenceArtifactSchema {
+            version: RUNTIME_EXPERIMENT_EVIDENCE_ARTIFACT_JSON_SCHEMA_VERSION,
+            surface: "runtime_experiment_evidence".to_owned(),
+            purpose: "evaluator_input_bundle".to_owned(),
+        },
+        generated_at,
+        run,
+        baseline_snapshot,
+        result_snapshot,
+        baseline_trajectories,
+        result_trajectories,
+    })
+}
+
 pub(crate) fn derive_recorded_snapshot_delta_for_run(
     artifact: &RuntimeExperimentArtifactDocument,
     run_path: &str,
@@ -574,6 +658,22 @@ fn emit_runtime_experiment_compare_report(
     Ok(())
 }
 
+fn emit_runtime_experiment_evidence_artifact(
+    artifact: &RuntimeExperimentEvidenceArtifactDocument,
+    as_json: bool,
+) -> CliResult<()> {
+    if as_json {
+        let pretty = serde_json::to_string_pretty(artifact).map_err(|error| {
+            format!("serialize runtime experiment evidence artifact failed: {error}")
+        })?;
+        println!("{pretty}");
+        return Ok(());
+    }
+
+    println!("{}", render_runtime_experiment_evidence_text(artifact));
+    Ok(())
+}
+
 fn emit_runtime_experiment_restore_execution(
     execution: &RuntimeExperimentRestoreExecution,
     as_json: bool,
@@ -588,6 +688,41 @@ fn emit_runtime_experiment_restore_execution(
 
     println!("{}", render_runtime_experiment_restore_text(execution));
     Ok(())
+}
+
+fn load_runtime_experiment_snapshot_attachment(
+    summary: &RuntimeExperimentSnapshotSummary,
+) -> CliResult<RuntimeExperimentEvidenceSnapshotAttachment> {
+    let artifact_path = summary.artifact_path.as_deref().ok_or_else(|| {
+        format!(
+            "runtime experiment snapshot summary `{}` is missing artifact_path",
+            summary.snapshot_id
+        )
+    })?;
+    let document = load_runtime_snapshot_artifact(Path::new(artifact_path))?;
+
+    Ok(RuntimeExperimentEvidenceSnapshotAttachment {
+        artifact_path: artifact_path.to_owned(),
+        document,
+    })
+}
+
+fn load_runtime_experiment_trajectory_attachments(
+    summaries: &[RuntimeExperimentTrajectorySummary],
+) -> CliResult<Vec<RuntimeExperimentEvidenceTrajectoryAttachment>> {
+    let mut attachments = Vec::with_capacity(summaries.len());
+
+    for summary in summaries {
+        let artifact_path = summary.artifact_path.as_str();
+        let document = load_runtime_trajectory_artifact(Path::new(artifact_path))?;
+        let attachment = RuntimeExperimentEvidenceTrajectoryAttachment {
+            artifact_path: artifact_path.to_owned(),
+            document,
+        };
+        attachments.push(attachment);
+    }
+
+    Ok(attachments)
 }
 
 fn load_runtime_snapshot_artifact(path: &Path) -> CliResult<RuntimeSnapshotArtifactDocument> {
@@ -613,6 +748,68 @@ fn load_runtime_snapshot_artifact(path: &Path) -> CliResult<RuntimeSnapshotArtif
         ));
     }
     Ok(artifact)
+}
+
+fn load_runtime_trajectory_artifact(
+    path: &Path,
+) -> CliResult<crate::mvp::session::trajectory::SessionTrajectoryArtifact> {
+    let raw = fs::read_to_string(path).map_err(|error| {
+        format!(
+            "read runtime trajectory artifact {} failed: {error}",
+            path.display()
+        )
+    })?;
+    let artifact =
+        serde_json::from_str::<crate::mvp::session::trajectory::SessionTrajectoryArtifact>(&raw)
+            .map_err(|error| {
+                format!(
+                    "decode runtime trajectory artifact {} failed: {error}",
+                    path.display()
+                )
+            })?;
+    validate_runtime_trajectory_artifact(path, &artifact)?;
+    Ok(artifact)
+}
+
+fn validate_runtime_trajectory_artifact(
+    path: &Path,
+    artifact: &crate::mvp::session::trajectory::SessionTrajectoryArtifact,
+) -> CliResult<()> {
+    let expected_version =
+        crate::mvp::session::trajectory::SESSION_TRAJECTORY_ARTIFACT_JSON_SCHEMA_VERSION;
+    let actual_version = artifact.schema.version;
+    if actual_version != expected_version {
+        return Err(format!(
+            "runtime trajectory artifact {} uses unsupported schema version {}; expected {}",
+            path.display(),
+            actual_version,
+            expected_version
+        ));
+    }
+
+    let expected_surface = crate::mvp::session::trajectory::SESSION_TRAJECTORY_ARTIFACT_SURFACE;
+    let actual_surface = artifact.schema.surface.as_str();
+    if actual_surface != expected_surface {
+        return Err(format!(
+            "runtime trajectory artifact {} uses unsupported schema surface `{}`; expected `{}`",
+            path.display(),
+            actual_surface,
+            expected_surface
+        ));
+    }
+
+    let expected_purpose = crate::mvp::session::trajectory::SESSION_TRAJECTORY_ARTIFACT_PURPOSE;
+    let actual_purpose = artifact.schema.purpose.as_str();
+    if actual_purpose != expected_purpose {
+        return Err(format!(
+            "runtime trajectory artifact {} uses unsupported schema purpose `{}`; expected `{}`",
+            path.display(),
+            actual_purpose,
+            expected_purpose
+        ));
+    }
+
+    Ok(())
 }
 
 fn load_runtime_experiment_artifact(path: &Path) -> CliResult<RuntimeExperimentArtifactDocument> {
@@ -922,70 +1119,6 @@ fn build_snapshot_summary(
             .and_then(Value::as_str)
             .map(str::to_owned),
     })
-}
-
-fn load_runtime_trajectory_artifact(
-    path: &Path,
-) -> CliResult<crate::mvp::session::trajectory::SessionTrajectoryArtifact> {
-    let encoded = fs::read_to_string(path).map_err(|error| {
-        format!(
-            "read runtime trajectory artifact {} failed: {error}",
-            path.display()
-        )
-    })?;
-    let artifact =
-        serde_json::from_str::<crate::mvp::session::trajectory::SessionTrajectoryArtifact>(
-            &encoded,
-        )
-        .map_err(|error| {
-            format!(
-                "decode runtime trajectory artifact {} failed: {error}",
-                path.display()
-            )
-        })?;
-    validate_runtime_trajectory_artifact(path, &artifact)?;
-    Ok(artifact)
-}
-
-fn validate_runtime_trajectory_artifact(
-    path: &Path,
-    artifact: &crate::mvp::session::trajectory::SessionTrajectoryArtifact,
-) -> CliResult<()> {
-    let expected_version =
-        crate::mvp::session::trajectory::SESSION_TRAJECTORY_ARTIFACT_JSON_SCHEMA_VERSION;
-    let actual_version = artifact.schema.version;
-    if actual_version != expected_version {
-        return Err(format!(
-            "runtime trajectory artifact {} uses unsupported schema version {}; expected {}",
-            path.display(),
-            actual_version,
-            expected_version
-        ));
-    }
-
-    let expected_surface = crate::mvp::session::trajectory::SESSION_TRAJECTORY_ARTIFACT_SURFACE;
-    let actual_surface = artifact.schema.surface.as_str();
-    if actual_surface != expected_surface {
-        return Err(format!(
-            "runtime trajectory artifact {} uses unsupported schema surface `{}`; expected `{}`",
-            path.display(),
-            actual_surface,
-            expected_surface
-        ));
-    }
-
-    let expected_purpose = crate::mvp::session::trajectory::SESSION_TRAJECTORY_ARTIFACT_PURPOSE;
-    let actual_purpose = artifact.schema.purpose.as_str();
-    if actual_purpose != expected_purpose {
-        return Err(format!(
-            "runtime trajectory artifact {} uses unsupported schema purpose `{}`; expected `{}`",
-            path.display(),
-            actual_purpose,
-            expected_purpose
-        ));
-    }
-
-    Ok(())
 }
 
 fn build_runtime_experiment_trajectory_summary(
@@ -1401,6 +1534,33 @@ fn persist_runtime_experiment_artifact(
     Ok(())
 }
 
+fn persist_runtime_experiment_evidence_artifact(
+    output: &str,
+    artifact: &RuntimeExperimentEvidenceArtifactDocument,
+) -> CliResult<()> {
+    let output_path = PathBuf::from(output);
+    if let Some(parent) = output_path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "create runtime experiment evidence artifact directory {} failed: {error}",
+                parent.display()
+            )
+        })?;
+    }
+    let encoded = serde_json::to_string_pretty(artifact).map_err(|error| {
+        format!("serialize runtime experiment evidence artifact failed: {error}")
+    })?;
+    fs::write(&output_path, encoded).map_err(|error| {
+        format!(
+            "write runtime experiment evidence artifact {} failed: {error}",
+            output_path.display()
+        )
+    })?;
+    Ok(())
+}
+
 pub fn render_runtime_experiment_text(artifact: &RuntimeExperimentArtifactDocument) -> String {
     [
         format!("run_id={}", artifact.run_id),
@@ -1598,6 +1758,74 @@ fn render_runtime_experiment_restore_text(execution: &RuntimeExperimentRestoreEx
         format!("experiment_id={}", execution.experiment_id),
         format!("stage={}", execution.stage.as_str()),
         crate::runtime_restore_cli::render_runtime_restore_text(&execution.restore),
+    ]
+    .join("\n")
+}
+
+pub fn render_runtime_experiment_evidence_text(
+    artifact: &RuntimeExperimentEvidenceArtifactDocument,
+) -> String {
+    let baseline_trajectory_count = artifact.baseline_trajectories.len();
+    let result_trajectory_count = artifact.result_trajectories.len();
+    let baseline_requested_sessions = artifact
+        .baseline_trajectories
+        .iter()
+        .map(|attachment| {
+            attachment
+                .document
+                .effective_requested_session_id()
+                .to_owned()
+        })
+        .collect::<Vec<_>>();
+    let result_requested_sessions = artifact
+        .result_trajectories
+        .iter()
+        .map(|attachment| {
+            attachment
+                .document
+                .effective_requested_session_id()
+                .to_owned()
+        })
+        .collect::<Vec<_>>();
+
+    [
+        format!("run_id={}", artifact.run.run_id),
+        format!("experiment_id={}", artifact.run.experiment_id),
+        format!(
+            "baseline_snapshot_id={}",
+            artifact.run.baseline_snapshot.snapshot_id
+        ),
+        format!(
+            "result_snapshot_id={}",
+            artifact
+                .run
+                .result_snapshot
+                .as_ref()
+                .map(|summary| summary.snapshot_id.as_str())
+                .unwrap_or("-")
+        ),
+        format!(
+            "baseline_snapshot_path={}",
+            artifact.baseline_snapshot.artifact_path
+        ),
+        format!(
+            "result_snapshot_path={}",
+            artifact
+                .result_snapshot
+                .as_ref()
+                .map(|attachment| attachment.artifact_path.as_str())
+                .unwrap_or("-")
+        ),
+        format!("baseline_trajectory_count={baseline_trajectory_count}"),
+        format!(
+            "baseline_trajectory_requested_sessions={}",
+            render_string_values(&baseline_requested_sessions)
+        ),
+        format!("result_trajectory_count={result_trajectory_count}"),
+        format!(
+            "result_trajectory_requested_sessions={}",
+            render_string_values(&result_requested_sessions)
+        ),
     ]
     .join("\n")
 }

@@ -1091,6 +1091,7 @@ fn runtime_experiment_cli_parses_restore() {
             other @ (loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Start(_)
             | loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Finish(_)
             | loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Show(_)
+            | loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Evidence(_)
             | loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Compare(_)) => {
                 panic!("unexpected runtime-experiment subcommand parsed: {other:?}")
             }
@@ -1139,6 +1140,7 @@ fn runtime_experiment_cli_parses_start_finish_and_show() {
             }
             other @ (loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Finish(_)
             | loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Show(_)
+            | loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Evidence(_)
             | loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Compare(_)
             | loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Restore(_)) => {
                 panic!("unexpected runtime-experiment subcommand parsed: {other:?}")
@@ -1201,6 +1203,9 @@ fn runtime_experiment_cli_parses_start_finish_and_show() {
             | loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Show(
                 _,
             )
+            | loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Evidence(
+                _,
+            )
             | loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Compare(
                 _,
             )
@@ -1231,6 +1236,7 @@ fn runtime_experiment_cli_parses_start_finish_and_show() {
             }
             other @ (loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Start(_)
             | loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Finish(_)
+            | loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Evidence(_)
             | loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Compare(_)
             | loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Restore(_)) => {
                 panic!("unexpected runtime-experiment subcommand parsed: {other:?}")
@@ -1276,6 +1282,7 @@ fn runtime_experiment_cli_parses_compare() {
             other @ (loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Start(_)
             | loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Finish(_)
             | loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Show(_)
+            | loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Evidence(_)
             | loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Restore(_)) => {
                 panic!("unexpected runtime-experiment subcommand parsed: {other:?}")
             }
@@ -1311,6 +1318,45 @@ fn runtime_experiment_cli_parses_compare_with_recorded_snapshots() {
             other @ (loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Start(_)
             | loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Finish(_)
             | loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Show(_)
+            | loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Evidence(_)
+            | loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Restore(_)) => {
+                panic!("unexpected runtime-experiment subcommand parsed: {other:?}")
+            }
+        },
+        other => panic!("unexpected command parsed: {other:?}"),
+    }
+}
+
+#[test]
+fn runtime_experiment_cli_parses_evidence() {
+    let evidence = try_parse_cli([
+        "loongclaw",
+        "runtime-experiment",
+        "evidence",
+        "--run",
+        "/tmp/runtime-experiment.json",
+        "--output",
+        "/tmp/runtime-experiment-evidence.json",
+        "--json",
+    ])
+    .expect("`runtime-experiment evidence` should parse");
+
+    match evidence.command {
+        Some(Commands::RuntimeExperiment { command }) => match command {
+            loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Evidence(
+                options,
+            ) => {
+                assert_eq!(options.run, "/tmp/runtime-experiment.json");
+                assert_eq!(
+                    options.output.as_deref(),
+                    Some("/tmp/runtime-experiment-evidence.json")
+                );
+                assert!(options.json);
+            }
+            other @ (loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Start(_)
+            | loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Finish(_)
+            | loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Show(_)
+            | loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Compare(_)
             | loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Restore(_)) => {
                 panic!("unexpected runtime-experiment subcommand parsed: {other:?}")
             }

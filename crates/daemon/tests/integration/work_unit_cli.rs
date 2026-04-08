@@ -4,6 +4,7 @@ use loongclaw_daemon::work_unit_cli as work_unit_runtime;
 use std::{
     fs,
     path::{Path, PathBuf},
+    process::Command,
     sync::atomic::{AtomicUsize, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
