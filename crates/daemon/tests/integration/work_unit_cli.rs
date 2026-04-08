@@ -86,6 +86,10 @@ fn cli_work_unit_help_mentions_durable_runtime_commands() {
         help.contains("supersede"),
         "work-unit help should expose replacement orchestration: {help}"
     );
+    assert!(
+        help.contains("merge"),
+        "work-unit help should expose collapse orchestration: {help}"
+    );
 }
 
 #[test]
@@ -370,6 +374,45 @@ fn cli_work_unit_parse_accepts_supersede_shape() {
     assert_eq!(options.replacement_id, "wu-new");
     assert_eq!(options.actor.as_deref(), Some("planner"));
     assert_eq!(options.now_ms, Some(4242));
+    assert!(options.json);
+}
+
+#[test]
+fn cli_work_unit_parse_accepts_merge_shape() {
+    let obsolete_ids_json = r#"["wu-old-a","wu-old-b"]"#;
+    let cli = try_parse_cli([
+        "loongclaw",
+        "work-unit",
+        "merge",
+        "--config",
+        "/tmp/loongclaw.toml",
+        "--canonical-id",
+        "wu-canonical",
+        "--obsolete-ids-json",
+        obsolete_ids_json,
+        "--actor",
+        "planner",
+        "--now-ms",
+        "7171",
+        "--json",
+    ])
+    .expect("work-unit merge CLI should parse");
+
+    let command = cli.command.expect("CLI should parse a subcommand");
+    let Commands::WorkUnit { command } = command else {
+        panic!("unexpected CLI parse result: {command:?}");
+    };
+    let work_unit_runtime::WorkUnitCommands::Merge(options) = command else {
+        panic!("unexpected merge parse result: {command:?}");
+    };
+
+    assert_eq!(options.canonical_id, "wu-canonical");
+    assert_eq!(
+        options.obsolete_ids_json.as_deref(),
+        Some(obsolete_ids_json)
+    );
+    assert_eq!(options.actor.as_deref(), Some("planner"));
+    assert_eq!(options.now_ms, Some(7171));
     assert!(options.json);
 }
 
@@ -1530,6 +1573,173 @@ fn work_unit_cli_supersede_transfers_dependencies_to_replacement() {
     assert_eq!(
         blocked_snapshot.work_unit.blocked_by_work_unit_ids,
         vec!["wu-replacement".to_owned()]
+    );
+}
+
+#[test]
+fn work_unit_cli_merge_collapses_multiple_obsolete_units_into_canonical() {
+    let _env = work_unit_environment_guard();
+    let root = unique_temp_dir("loongclaw-work-unit-merge-cli");
+    let config_path = write_work_unit_config(&root);
+    let config_path_string = config_path.display().to_string();
+
+    work_unit_runtime::run_work_unit_cli(work_unit_runtime::WorkUnitCommands::Create(
+        work_unit_runtime::WorkUnitCreateCommandOptions {
+            config: Some(config_path_string.clone()),
+            id: Some("wu-blocker".to_owned()),
+            kind: work_unit_runtime::WorkUnitKindArg::Ops,
+            title: "Blocker".to_owned(),
+            description: "Must complete first".to_owned(),
+            status: work_unit_runtime::WorkUnitStatusArg::Ready,
+            priority: work_unit_runtime::WorkUnitPriorityArg::Low,
+            max_attempts: 1,
+            initial_backoff_ms: 1_000,
+            max_backoff_ms: 1_000,
+            next_run_at_ms: Some(1_000),
+            actor: Some("operator".to_owned()),
+            source_kind: work_unit_runtime::WorkSourceKindArg::Manual,
+            project_id: None,
+            channel_id: None,
+            thread_id: None,
+            message_id: None,
+            external_ref: None,
+            source_url: None,
+            parent_work_unit_id: None,
+            json: true,
+        },
+    ))
+    .expect("create blocker work unit");
+
+    for (id, title, next_run_at_ms) in [
+        ("wu-canonical", "Canonical work", 1_010),
+        ("wu-old-a", "Obsolete A", 1_020),
+        ("wu-old-b", "Obsolete B", 1_030),
+        ("wu-blocked", "Blocked work", 1_040),
+    ] {
+        work_unit_runtime::run_work_unit_cli(work_unit_runtime::WorkUnitCommands::Create(
+            work_unit_runtime::WorkUnitCreateCommandOptions {
+                config: Some(config_path_string.clone()),
+                id: Some(id.to_owned()),
+                kind: work_unit_runtime::WorkUnitKindArg::Feature,
+                title: title.to_owned(),
+                description: "fixture".to_owned(),
+                status: work_unit_runtime::WorkUnitStatusArg::Ready,
+                priority: work_unit_runtime::WorkUnitPriorityArg::High,
+                max_attempts: 3,
+                initial_backoff_ms: 1_000,
+                max_backoff_ms: 8_000,
+                next_run_at_ms: Some(next_run_at_ms),
+                actor: Some("operator".to_owned()),
+                source_kind: work_unit_runtime::WorkSourceKindArg::Discord,
+                project_id: Some("loongclaw-ai/server".to_owned()),
+                channel_id: Some("feature".to_owned()),
+                thread_id: Some(format!("thread-{id}")),
+                message_id: Some(format!("message-{id}")),
+                external_ref: Some(format!("external-{id}")),
+                source_url: None,
+                parent_work_unit_id: None,
+                json: true,
+            },
+        ))
+        .expect("create work unit fixture");
+    }
+
+    work_unit_runtime::run_work_unit_cli(work_unit_runtime::WorkUnitCommands::Depend(
+        work_unit_runtime::WorkUnitDependCommandOptions {
+            config: Some(config_path_string.clone()),
+            blocking_id: "wu-blocker".to_owned(),
+            blocked_id: "wu-old-a".to_owned(),
+            actor: Some("planner".to_owned()),
+            now_ms: Some(1_050),
+            json: true,
+        },
+    ))
+    .expect("block old a");
+    work_unit_runtime::run_work_unit_cli(work_unit_runtime::WorkUnitCommands::Depend(
+        work_unit_runtime::WorkUnitDependCommandOptions {
+            config: Some(config_path_string.clone()),
+            blocking_id: "wu-old-a".to_owned(),
+            blocked_id: "wu-old-b".to_owned(),
+            actor: Some("planner".to_owned()),
+            now_ms: Some(1_051),
+            json: true,
+        },
+    ))
+    .expect("old a blocks old b");
+    work_unit_runtime::run_work_unit_cli(work_unit_runtime::WorkUnitCommands::Depend(
+        work_unit_runtime::WorkUnitDependCommandOptions {
+            config: Some(config_path_string.clone()),
+            blocking_id: "wu-old-b".to_owned(),
+            blocked_id: "wu-blocked".to_owned(),
+            actor: Some("planner".to_owned()),
+            now_ms: Some(1_052),
+            json: true,
+        },
+    ))
+    .expect("old b blocks blocked");
+
+    let obsolete_ids_json = r#"["wu-old-a","wu-old-b"]"#;
+    work_unit_runtime::run_work_unit_cli(work_unit_runtime::WorkUnitCommands::Merge(
+        work_unit_runtime::WorkUnitMergeCommandOptions {
+            config: Some(config_path_string),
+            canonical_id: "wu-canonical".to_owned(),
+            obsolete_ids_json: Some(obsolete_ids_json.to_owned()),
+            obsolete_ids_path: None,
+            actor: Some("planner".to_owned()),
+            now_ms: Some(1_060),
+            json: true,
+        },
+    ))
+    .expect("merge obsolete work units into canonical");
+
+    let repository = load_work_unit_repository(&config_path);
+    let canonical_snapshot = repository
+        .load_work_unit_snapshot("wu-canonical")
+        .expect("load canonical snapshot")
+        .expect("canonical snapshot");
+    assert_eq!(
+        canonical_snapshot.work_unit.supersedes_work_unit_ids,
+        vec!["wu-old-a".to_owned(), "wu-old-b".to_owned()]
+    );
+    assert_eq!(
+        canonical_snapshot.work_unit.blocked_by_work_unit_ids,
+        vec!["wu-blocker".to_owned()]
+    );
+    assert_eq!(
+        canonical_snapshot.work_unit.blocks_work_unit_ids,
+        vec!["wu-blocked".to_owned()]
+    );
+
+    let old_a_snapshot = repository
+        .load_work_unit_snapshot("wu-old-a")
+        .expect("load old a snapshot")
+        .expect("old a snapshot");
+    let old_b_snapshot = repository
+        .load_work_unit_snapshot("wu-old-b")
+        .expect("load old b snapshot")
+        .expect("old b snapshot");
+    assert_eq!(
+        old_a_snapshot
+            .work_unit
+            .superseded_by_work_unit_id
+            .as_deref(),
+        Some("wu-canonical")
+    );
+    assert_eq!(
+        old_b_snapshot
+            .work_unit
+            .superseded_by_work_unit_id
+            .as_deref(),
+        Some("wu-canonical")
+    );
+
+    let blocked_snapshot = repository
+        .load_work_unit_snapshot("wu-blocked")
+        .expect("load blocked snapshot")
+        .expect("blocked snapshot");
+    assert_eq!(
+        blocked_snapshot.work_unit.blocked_by_work_unit_ids,
+        vec!["wu-canonical".to_owned()]
     );
 }
 

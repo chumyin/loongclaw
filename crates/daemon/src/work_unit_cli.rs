@@ -42,6 +42,8 @@ pub enum WorkUnitCommands {
     Resequence(WorkUnitResequenceCommandOptions),
     /// Replace one obsolete work unit with another durable work unit
     Supersede(WorkUnitSupersedeCommandOptions),
+    /// Collapse multiple obsolete work units into one canonical work unit
+    Merge(WorkUnitMergeCommandOptions),
     /// Assign or clear a durable work-unit owner without taking a runtime lease
     Assign(WorkUnitAssignCommandOptions),
     /// Update mutable orchestration fields on a durable work unit
@@ -328,6 +330,24 @@ pub struct WorkUnitSupersedeCommandOptions {
     pub obsolete_id: String,
     #[arg(long)]
     pub replacement_id: String,
+    #[arg(long)]
+    pub actor: Option<String>,
+    #[arg(long)]
+    pub now_ms: Option<i64>,
+    #[arg(long, default_value_t = false)]
+    pub json: bool,
+}
+
+#[derive(Args, Debug, Clone, PartialEq, Eq)]
+pub struct WorkUnitMergeCommandOptions {
+    #[arg(long)]
+    pub config: Option<String>,
+    #[arg(long)]
+    pub canonical_id: String,
+    #[arg(long)]
+    pub obsolete_ids_json: Option<String>,
+    #[arg(long)]
+    pub obsolete_ids_path: Option<String>,
     #[arg(long)]
     pub actor: Option<String>,
     #[arg(long)]
@@ -697,6 +717,12 @@ struct WorkUnitSupersedeView {
     replacement: WorkUnitSnapshot,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct WorkUnitMergeView {
+    canonical: WorkUnitSnapshot,
+    obsolete: Vec<WorkUnitSnapshot>,
+}
+
 pub fn run_work_unit_cli(command: WorkUnitCommands) -> CliResult<()> {
     match command {
         WorkUnitCommands::Create(options) => run_create_command(options),
@@ -714,6 +740,7 @@ pub fn run_work_unit_cli(command: WorkUnitCommands) -> CliResult<()> {
         WorkUnitCommands::Replan(options) => run_replan_command(options),
         WorkUnitCommands::Resequence(options) => run_resequence_command(options),
         WorkUnitCommands::Supersede(options) => run_supersede_command(options),
+        WorkUnitCommands::Merge(options) => run_merge_command(options),
         WorkUnitCommands::Assign(options) => run_assign_command(options),
         WorkUnitCommands::Update(options) => run_update_command(options),
         WorkUnitCommands::RequestReview(options) => run_request_review_command(options),
@@ -1055,6 +1082,26 @@ fn run_supersede_command(options: WorkUnitSupersedeCommandOptions) -> CliResult<
     render_json_or_text(&view, options.json, render_work_unit_supersede_text)
 }
 
+fn run_merge_command(options: WorkUnitMergeCommandOptions) -> CliResult<()> {
+    let obsolete_work_unit_ids = parse_merge_obsolete_ids(
+        options.obsolete_ids_json.as_deref(),
+        options.obsolete_ids_path.as_deref(),
+    )?;
+    let repository = load_work_unit_repository(options.config.as_deref())?;
+    let request = mvp::work::repository::MergeWorkUnitsRequest {
+        canonical_work_unit_id: options.canonical_id,
+        obsolete_work_unit_ids,
+        actor: options.actor,
+        now_ms: options.now_ms,
+    };
+    let result = repository.merge_work_units(request)?;
+    let view = WorkUnitMergeView {
+        canonical: result.canonical,
+        obsolete: result.obsolete,
+    };
+    render_json_or_text(&view, options.json, render_work_unit_merge_text)
+}
+
 fn run_assign_command(options: WorkUnitAssignCommandOptions) -> CliResult<()> {
     let repository = load_work_unit_repository(options.config.as_deref())?;
     let request = mvp::work::repository::AssignWorkUnitRequest {
@@ -1336,6 +1383,40 @@ fn decode_resequence_child_ids(raw_child_ids: &str, context: &str) -> CliResult<
     Ok(ordered_child_ids)
 }
 
+fn parse_merge_obsolete_ids(
+    obsolete_ids_json: Option<&str>,
+    obsolete_ids_path: Option<&str>,
+) -> CliResult<Vec<String>> {
+    match (obsolete_ids_json, obsolete_ids_path) {
+        (Some(_), Some(_)) => Err(
+            "provide either --obsolete-ids-json or --obsolete-ids-path, but not both".to_owned(),
+        ),
+        (None, None) => {
+            Err("merge requires either --obsolete-ids-json or --obsolete-ids-path".to_owned())
+        }
+        (Some(obsolete_ids_json), None) => {
+            decode_merge_obsolete_ids(obsolete_ids_json, "parse merge obsolete ids json failed")
+        }
+        (None, Some(obsolete_ids_path)) => {
+            let raw_obsolete_ids = fs::read_to_string(obsolete_ids_path)
+                .map_err(|error| format!("read merge obsolete ids path failed: {error}"))?;
+            decode_merge_obsolete_ids(
+                raw_obsolete_ids.as_str(),
+                "parse merge obsolete ids path json failed",
+            )
+        }
+    }
+}
+
+fn decode_merge_obsolete_ids(raw_obsolete_ids: &str, context: &str) -> CliResult<Vec<String>> {
+    let obsolete_ids = serde_json::from_str::<Vec<String>>(raw_obsolete_ids)
+        .map_err(|error| format!("{context}: {error}"))?;
+    if obsolete_ids.is_empty() {
+        return Err("merge obsolete ids payload must contain at least one work unit id".to_owned());
+    }
+    Ok(obsolete_ids)
+}
+
 fn render_work_unit_snapshot_text(snapshot: &WorkUnitSnapshot) -> String {
     let work_unit = &snapshot.work_unit;
     let lease_text = snapshot
@@ -1426,6 +1507,16 @@ fn render_work_unit_supersede_text(view: &WorkUnitSupersedeView) -> String {
         view.replacement.work_unit.work_unit_id,
         render_work_unit_snapshot_text(&view.obsolete),
         render_work_unit_snapshot_text(&view.replacement),
+    )
+}
+
+fn render_work_unit_merge_text(view: &WorkUnitMergeView) -> String {
+    format!(
+        "merge_canonical_id={} obsolete_count={}\n{}{}",
+        view.canonical.work_unit.work_unit_id,
+        view.obsolete.len(),
+        render_work_unit_snapshot_text(&view.canonical),
+        render_work_unit_list_text(view.obsolete.as_slice()),
     )
 }
 

@@ -37,6 +37,7 @@ const WORK_UNIT_SPLIT_APPLIED_EVENT_KIND: &str = "work_unit_split_applied";
 const WORK_UNIT_SUPERSEDED_EVENT_KIND: &str = "work_unit_superseded";
 const WORK_UNIT_REPLANNED_EVENT_KIND: &str = "work_unit_replanned";
 const WORK_UNIT_RESEQUENCED_EVENT_KIND: &str = "work_unit_resequenced";
+const WORK_UNIT_MERGED_EVENT_KIND: &str = "work_unit_merged";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct NewWorkUnitRecord {
@@ -238,6 +239,20 @@ pub struct SupersedeWorkUnitRequest {
 pub struct SupersedeWorkUnitResult {
     pub obsolete: WorkUnitSnapshot,
     pub replacement: WorkUnitSnapshot,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MergeWorkUnitsRequest {
+    pub canonical_work_unit_id: String,
+    pub obsolete_work_unit_ids: Vec<String>,
+    pub actor: Option<String>,
+    pub now_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct MergeWorkUnitsResult {
+    pub canonical: WorkUnitSnapshot,
+    pub obsolete: Vec<WorkUnitSnapshot>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -602,88 +617,13 @@ impl WorkUnitRepository {
             .load_work_unit_snapshot_with_conn(&transaction, replacement_work_unit_id.as_str())?;
         let replacement_snapshot = replacement_snapshot
             .ok_or_else(|| format!("work unit `{replacement_work_unit_id}` not found"))?;
-        validate_supersede_transition(&obsolete_snapshot, &replacement_snapshot, now_ms)?;
-
-        let incoming_blocking_work_unit_ids = obsolete_snapshot
-            .work_unit
-            .blocked_by_work_unit_ids
-            .as_slice();
-        let outgoing_blocked_work_unit_ids =
-            obsolete_snapshot.work_unit.blocks_work_unit_ids.as_slice();
-
-        for blocking_work_unit_id in incoming_blocking_work_unit_ids {
-            self.add_dependency_in_tx(
-                &transaction,
-                blocking_work_unit_id.as_str(),
-                replacement_work_unit_id.as_str(),
-                actor.as_deref(),
-                now_ms,
-            )?;
-        }
-        for blocked_work_unit_id in outgoing_blocked_work_unit_ids {
-            self.add_dependency_in_tx(
-                &transaction,
-                replacement_work_unit_id.as_str(),
-                blocked_work_unit_id.as_str(),
-                actor.as_deref(),
-                now_ms,
-            )?;
-        }
-        for blocking_work_unit_id in incoming_blocking_work_unit_ids {
-            self.remove_dependency_in_tx(
-                &transaction,
-                blocking_work_unit_id.as_str(),
-                obsolete_work_unit_id.as_str(),
-                actor.as_deref(),
-                now_ms,
-            )?;
-        }
-        for blocked_work_unit_id in outgoing_blocked_work_unit_ids {
-            self.remove_dependency_in_tx(
-                &transaction,
-                obsolete_work_unit_id.as_str(),
-                blocked_work_unit_id.as_str(),
-                actor.as_deref(),
-                now_ms,
-            )?;
-        }
-
-        transaction
-            .execute(
-                "UPDATE work_units
-                 SET status = ?1,
-                     superseded_by_work_unit_id = ?2,
-                     blocking_reason = NULL,
-                     lease_owner = NULL,
-                     lease_version = 0,
-                     lease_acquired_at_ms = NULL,
-                     lease_heartbeat_at_ms = NULL,
-                     lease_expires_at_ms = NULL,
-                     updated_at_ms = ?3
-                 WHERE work_unit_id = ?4
-                   AND archived_at_ms IS NULL",
-                params![
-                    WorkUnitStatus::Cancelled.as_str(),
-                    replacement_work_unit_id,
-                    now_ms,
-                    obsolete_work_unit_id,
-                ],
-            )
-            .map_err(|error| format!("mark superseded work unit failed: {error}"))?;
-        touch_work_unit(&transaction, replacement_work_unit_id.as_str(), now_ms)?;
-
-        let event_payload = json!({
-            "obsolete_work_unit_id": obsolete_work_unit_id,
-            "replacement_work_unit_id": replacement_work_unit_id,
-            "transferred_blocking_work_unit_ids": incoming_blocking_work_unit_ids,
-            "transferred_blocked_work_unit_ids": outgoing_blocked_work_unit_ids,
-        });
-        insert_event_in_tx(
+        apply_supersede_in_tx(
+            self,
             &transaction,
-            obsolete_work_unit_id.as_str(),
-            WORK_UNIT_SUPERSEDED_EVENT_KIND,
+            &obsolete_snapshot,
+            &replacement_snapshot,
+            &std::collections::BTreeSet::new(),
             actor.as_deref(),
-            &event_payload,
             now_ms,
         )?;
 
@@ -701,6 +641,88 @@ impl WorkUnitRepository {
         Ok(SupersedeWorkUnitResult {
             obsolete,
             replacement,
+        })
+    }
+
+    pub fn merge_work_units(
+        &self,
+        request: MergeWorkUnitsRequest,
+    ) -> Result<MergeWorkUnitsResult, String> {
+        let canonical_work_unit_id =
+            normalize_required_text(&request.canonical_work_unit_id, "canonical_work_unit_id")?;
+        let obsolete_work_unit_ids = normalize_merge_obsolete_ids(
+            canonical_work_unit_id.as_str(),
+            request.obsolete_work_unit_ids.as_slice(),
+        )?;
+        let actor = normalize_optional_text(request.actor);
+        let now_ms = request.now_ms.unwrap_or_else(current_unix_ms);
+        let excluded_work_unit_ids = obsolete_work_unit_ids
+            .iter()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut connection = self.open_connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| format!("open merge work-unit transaction failed: {error}"))?;
+        let canonical_snapshot =
+            self.load_work_unit_snapshot_with_conn(&transaction, canonical_work_unit_id.as_str())?;
+        let canonical_snapshot = canonical_snapshot
+            .ok_or_else(|| format!("work unit `{canonical_work_unit_id}` not found"))?;
+        let mut obsolete_snapshots = Vec::with_capacity(obsolete_work_unit_ids.len());
+
+        for obsolete_work_unit_id in obsolete_work_unit_ids.iter() {
+            let obsolete_snapshot = self
+                .load_work_unit_snapshot_with_conn(&transaction, obsolete_work_unit_id.as_str())?;
+            let obsolete_snapshot = obsolete_snapshot
+                .ok_or_else(|| format!("work unit `{obsolete_work_unit_id}` not found"))?;
+            obsolete_snapshots.push(obsolete_snapshot);
+        }
+
+        for obsolete_snapshot in obsolete_snapshots.iter() {
+            apply_supersede_in_tx(
+                self,
+                &transaction,
+                obsolete_snapshot,
+                &canonical_snapshot,
+                &excluded_work_unit_ids,
+                actor.as_deref(),
+                now_ms,
+            )?;
+        }
+
+        let event_payload = json!({
+            "canonical_work_unit_id": canonical_work_unit_id,
+            "obsolete_work_unit_ids": obsolete_work_unit_ids,
+        });
+        insert_event_in_tx(
+            &transaction,
+            canonical_work_unit_id.as_str(),
+            WORK_UNIT_MERGED_EVENT_KIND,
+            actor.as_deref(),
+            &event_payload,
+            now_ms,
+        )?;
+        transaction
+            .commit()
+            .map_err(|error| format!("commit merge work-unit transaction failed: {error}"))?;
+
+        let canonical = self
+            .load_work_unit_snapshot(canonical_work_unit_id.as_str())?
+            .ok_or_else(|| "canonical work unit disappeared after merge".to_owned())?;
+        let mut obsolete = Vec::with_capacity(obsolete_work_unit_ids.len());
+
+        for obsolete_work_unit_id in obsolete_work_unit_ids.iter() {
+            let obsolete_snapshot = self
+                .load_work_unit_snapshot(obsolete_work_unit_id.as_str())?
+                .ok_or_else(|| {
+                    format!("obsolete work unit `{obsolete_work_unit_id}` disappeared after merge")
+                })?;
+            obsolete.push(obsolete_snapshot);
+        }
+
+        Ok(MergeWorkUnitsResult {
+            canonical,
+            obsolete,
         })
     }
 
@@ -3082,6 +3104,7 @@ fn validate_supersede_endpoints(
 fn validate_supersede_transition(
     obsolete_snapshot: &WorkUnitSnapshot,
     replacement_snapshot: &WorkUnitSnapshot,
+    excluded_work_unit_ids: &std::collections::BTreeSet<String>,
     now_ms: i64,
 ) -> Result<(), String> {
     let obsolete_status = obsolete_snapshot.work_unit.status;
@@ -3136,23 +3159,27 @@ fn validate_supersede_transition(
             replacement_snapshot.work_unit.work_unit_id
         ));
     }
-    if replacement_snapshot
+    let obsolete_work_unit_id = obsolete_snapshot.work_unit.work_unit_id.as_str();
+    let replacement_work_unit_id = replacement_snapshot.work_unit.work_unit_id.as_str();
+    let replacement_is_blocked_by_obsolete = replacement_snapshot
         .work_unit
         .blocked_by_work_unit_ids
         .iter()
-        .any(|id| id == obsolete_snapshot.work_unit.work_unit_id.as_str())
-    {
+        .any(|id| id == obsolete_work_unit_id);
+    let obsolete_is_internal = excluded_work_unit_ids.contains(obsolete_work_unit_id);
+    if replacement_is_blocked_by_obsolete && !obsolete_is_internal {
         return Err(format!(
             "replacement work unit `{}` is blocked by obsolete work unit `{}`",
             replacement_snapshot.work_unit.work_unit_id, obsolete_snapshot.work_unit.work_unit_id
         ));
     }
-    if obsolete_snapshot
+    let obsolete_is_blocked_by_replacement = obsolete_snapshot
         .work_unit
         .blocked_by_work_unit_ids
         .iter()
-        .any(|id| id == replacement_snapshot.work_unit.work_unit_id.as_str())
-    {
+        .any(|id| id == replacement_work_unit_id);
+    let replacement_is_internal = excluded_work_unit_ids.contains(replacement_work_unit_id);
+    if obsolete_is_blocked_by_replacement && !replacement_is_internal {
         return Err(format!(
             "obsolete work unit `{}` is already blocked by replacement `{}`",
             obsolete_snapshot.work_unit.work_unit_id, replacement_snapshot.work_unit.work_unit_id
@@ -3171,6 +3198,36 @@ fn validate_supersede_transition(
     }
 
     Ok(())
+}
+
+fn normalize_merge_obsolete_ids(
+    canonical_work_unit_id: &str,
+    raw_obsolete_work_unit_ids: &[String],
+) -> Result<Vec<String>, String> {
+    if raw_obsolete_work_unit_ids.is_empty() {
+        return Err("merge requires at least one obsolete work unit id".to_owned());
+    }
+    let mut normalized_ids = Vec::with_capacity(raw_obsolete_work_unit_ids.len());
+    let mut seen_ids = std::collections::BTreeSet::new();
+
+    for raw_obsolete_work_unit_id in raw_obsolete_work_unit_ids {
+        let obsolete_work_unit_id =
+            normalize_required_text(raw_obsolete_work_unit_id, "obsolete_work_unit_ids")?;
+        if obsolete_work_unit_id == canonical_work_unit_id {
+            return Err(
+                "merge obsolete work unit ids cannot include the canonical work unit".to_owned(),
+            );
+        }
+        let inserted = seen_ids.insert(obsolete_work_unit_id.clone());
+        if !inserted {
+            return Err(format!(
+                "merge obsolete work unit id `{obsolete_work_unit_id}` is duplicated"
+            ));
+        }
+        normalized_ids.push(obsolete_work_unit_id);
+    }
+
+    Ok(normalized_ids)
 }
 
 fn would_create_dependency_cycle(
@@ -3685,6 +3742,125 @@ fn load_ordered_child_snapshots(
     Ok(children)
 }
 
+fn apply_supersede_in_tx(
+    repository: &WorkUnitRepository,
+    transaction: &Transaction<'_>,
+    obsolete_snapshot: &WorkUnitSnapshot,
+    replacement_snapshot: &WorkUnitSnapshot,
+    excluded_work_unit_ids: &std::collections::BTreeSet<String>,
+    actor: Option<&str>,
+    now_ms: i64,
+) -> Result<(), String> {
+    validate_supersede_transition(
+        obsolete_snapshot,
+        replacement_snapshot,
+        excluded_work_unit_ids,
+        now_ms,
+    )?;
+    let obsolete_work_unit_id = obsolete_snapshot.work_unit.work_unit_id.as_str();
+    let replacement_work_unit_id = replacement_snapshot.work_unit.work_unit_id.as_str();
+    let incoming_blocking_work_unit_ids = obsolete_snapshot
+        .work_unit
+        .blocked_by_work_unit_ids
+        .iter()
+        .filter(|work_unit_id| {
+            let work_unit_id = work_unit_id.as_str();
+            work_unit_id != replacement_work_unit_id
+                && !excluded_work_unit_ids.contains(work_unit_id)
+        })
+        .cloned()
+        .collect::<Vec<String>>();
+    let outgoing_blocked_work_unit_ids = obsolete_snapshot
+        .work_unit
+        .blocks_work_unit_ids
+        .iter()
+        .filter(|work_unit_id| {
+            let work_unit_id = work_unit_id.as_str();
+            work_unit_id != replacement_work_unit_id
+                && !excluded_work_unit_ids.contains(work_unit_id)
+        })
+        .cloned()
+        .collect::<Vec<String>>();
+
+    for blocking_work_unit_id in incoming_blocking_work_unit_ids.iter() {
+        repository.add_dependency_in_tx(
+            transaction,
+            blocking_work_unit_id.as_str(),
+            replacement_work_unit_id,
+            actor,
+            now_ms,
+        )?;
+    }
+    for blocked_work_unit_id in outgoing_blocked_work_unit_ids.iter() {
+        repository.add_dependency_in_tx(
+            transaction,
+            replacement_work_unit_id,
+            blocked_work_unit_id.as_str(),
+            actor,
+            now_ms,
+        )?;
+    }
+    for blocking_work_unit_id in obsolete_snapshot.work_unit.blocked_by_work_unit_ids.iter() {
+        repository.remove_dependency_in_tx(
+            transaction,
+            blocking_work_unit_id.as_str(),
+            obsolete_work_unit_id,
+            actor,
+            now_ms,
+        )?;
+    }
+    for blocked_work_unit_id in obsolete_snapshot.work_unit.blocks_work_unit_ids.iter() {
+        repository.remove_dependency_in_tx(
+            transaction,
+            obsolete_work_unit_id,
+            blocked_work_unit_id.as_str(),
+            actor,
+            now_ms,
+        )?;
+    }
+
+    transaction
+        .execute(
+            "UPDATE work_units
+             SET status = ?1,
+                 superseded_by_work_unit_id = ?2,
+                 blocking_reason = NULL,
+                 lease_owner = NULL,
+                 lease_version = 0,
+                 lease_acquired_at_ms = NULL,
+                 lease_heartbeat_at_ms = NULL,
+                 lease_expires_at_ms = NULL,
+                 updated_at_ms = ?3
+             WHERE work_unit_id = ?4
+               AND archived_at_ms IS NULL",
+            params![
+                WorkUnitStatus::Cancelled.as_str(),
+                replacement_work_unit_id,
+                now_ms,
+                obsolete_work_unit_id,
+            ],
+        )
+        .map_err(|error| format!("mark superseded work unit failed: {error}"))?;
+    touch_work_unit(transaction, replacement_work_unit_id, now_ms)?;
+
+    let event_payload = json!({
+        "obsolete_work_unit_id": obsolete_work_unit_id,
+        "replacement_work_unit_id": replacement_work_unit_id,
+        "transferred_blocking_work_unit_ids": incoming_blocking_work_unit_ids,
+        "transferred_blocked_work_unit_ids": outgoing_blocked_work_unit_ids,
+    });
+    insert_event_in_tx(
+        transaction,
+        obsolete_work_unit_id,
+        WORK_UNIT_SUPERSEDED_EVENT_KIND,
+        actor,
+        &event_payload,
+        now_ms,
+    )?;
+
+    Ok(())
+}
+
 fn usize_from_i64(value: i64, label: &str) -> Result<usize, String> {
     usize::try_from(value).map_err(|error| format!("{label} overflowed usize: {error}"))
 }
@@ -3700,12 +3876,13 @@ mod tests {
     use super::{
         AcquireWorkUnitLeaseRequest, AddWorkUnitDependencyRequest, AppendWorkUnitNoteRequest,
         ArchiveWorkUnitRequest, AssignWorkUnitRequest, CompleteWorkUnitRequest,
-        CreateChildWorkUnitRequest, NewWorkUnitRecord, RecordWorkUnitReviewDecisionRequest,
-        RemoveWorkUnitDependencyRequest, ReplanWorkUnitRequest, RequestWorkUnitReviewRequest,
-        ResequenceChildWorkUnitsRequest, SplitWorkUnitChildRequest, SplitWorkUnitRequest,
-        StartWorkUnitLeaseRequest, SupersedeWorkUnitRequest, UpdateWorkUnitRequest,
-        WORK_UNIT_ASSIGNED_EVENT_KIND, WORK_UNIT_CHILD_CREATED_EVENT_KIND,
-        WORK_UNIT_DEPENDENCY_ADDED_EVENT_KIND, WORK_UNIT_DEPENDENCY_REMOVED_EVENT_KIND,
+        CreateChildWorkUnitRequest, MergeWorkUnitsRequest, NewWorkUnitRecord,
+        RecordWorkUnitReviewDecisionRequest, RemoveWorkUnitDependencyRequest,
+        ReplanWorkUnitRequest, RequestWorkUnitReviewRequest, ResequenceChildWorkUnitsRequest,
+        SplitWorkUnitChildRequest, SplitWorkUnitRequest, StartWorkUnitLeaseRequest,
+        SupersedeWorkUnitRequest, UpdateWorkUnitRequest, WORK_UNIT_ASSIGNED_EVENT_KIND,
+        WORK_UNIT_CHILD_CREATED_EVENT_KIND, WORK_UNIT_DEPENDENCY_ADDED_EVENT_KIND,
+        WORK_UNIT_DEPENDENCY_REMOVED_EVENT_KIND, WORK_UNIT_MERGED_EVENT_KIND,
         WORK_UNIT_NOTE_ADDED_EVENT_KIND, WORK_UNIT_REPLANNED_EVENT_KIND,
         WORK_UNIT_RESEQUENCED_EVENT_KIND, WORK_UNIT_REVIEW_RECORDED_EVENT_KIND,
         WORK_UNIT_REVIEW_REQUESTED_EVENT_KIND, WORK_UNIT_SPLIT_APPLIED_EVENT_KIND,
@@ -4368,6 +4545,150 @@ mod tests {
                 .iter()
                 .any(|event| event.event_kind == WORK_UNIT_REPLANNED_EVENT_KIND),
             "expected replanned event on parent"
+        );
+    }
+
+    #[test]
+    fn merge_work_units_collapses_obsolete_units_into_canonical() {
+        let config = isolated_memory_config("merge-work-units");
+        let repository = WorkUnitRepository::new(&config).expect("repository");
+        let blocker = NewWorkUnitRecord {
+            work_unit_id: Some("wu-blocker".to_owned()),
+            kind: WorkUnitKind::Ops,
+            title: "Blocker".to_owned(),
+            description: "Must complete first".to_owned(),
+            source_ref: WorkUnitSourceRef::default(),
+            status: WorkUnitStatus::Ready,
+            priority: WorkUnitPriority::Low,
+            retry_policy: WorkUnitRetryPolicy::default(),
+            parent_work_unit_id: None,
+            plan_position: None,
+            next_run_at_ms: Some(1_000),
+        };
+        let canonical = NewWorkUnitRecord {
+            work_unit_id: Some("wu-canonical".to_owned()),
+            title: "Canonical".to_owned(),
+            description: "Canonical work".to_owned(),
+            ..sample_work_unit(WorkUnitStatus::Ready)
+        };
+        let old_a = NewWorkUnitRecord {
+            work_unit_id: Some("wu-old-a".to_owned()),
+            title: "Old A".to_owned(),
+            description: "Obsolete A".to_owned(),
+            ..sample_work_unit(WorkUnitStatus::Ready)
+        };
+        let old_b = NewWorkUnitRecord {
+            work_unit_id: Some("wu-old-b".to_owned()),
+            title: "Old B".to_owned(),
+            description: "Obsolete B".to_owned(),
+            ..sample_work_unit(WorkUnitStatus::Ready)
+        };
+        let blocked = NewWorkUnitRecord {
+            work_unit_id: Some("wu-blocked".to_owned()),
+            kind: WorkUnitKind::Review,
+            title: "Blocked".to_owned(),
+            description: "Depends on old work".to_owned(),
+            source_ref: WorkUnitSourceRef::default(),
+            status: WorkUnitStatus::Ready,
+            priority: WorkUnitPriority::Normal,
+            retry_policy: WorkUnitRetryPolicy::default(),
+            parent_work_unit_id: None,
+            plan_position: None,
+            next_run_at_ms: Some(1_020),
+        };
+        repository
+            .create_work_unit(blocker, Some("operator"))
+            .expect("create blocker");
+        repository
+            .create_work_unit(canonical, Some("operator"))
+            .expect("create canonical");
+        repository
+            .create_work_unit(old_a, Some("operator"))
+            .expect("create old a");
+        repository
+            .create_work_unit(old_b, Some("operator"))
+            .expect("create old b");
+        repository
+            .create_work_unit(blocked, Some("operator"))
+            .expect("create blocked");
+        repository
+            .add_dependency(AddWorkUnitDependencyRequest {
+                blocking_work_unit_id: "wu-blocker".to_owned(),
+                blocked_work_unit_id: "wu-old-a".to_owned(),
+                actor: Some("planner".to_owned()),
+                now_ms: Some(1_030),
+            })
+            .expect("block old a");
+        repository
+            .add_dependency(AddWorkUnitDependencyRequest {
+                blocking_work_unit_id: "wu-old-a".to_owned(),
+                blocked_work_unit_id: "wu-old-b".to_owned(),
+                actor: Some("planner".to_owned()),
+                now_ms: Some(1_031),
+            })
+            .expect("old a blocks old b");
+        repository
+            .add_dependency(AddWorkUnitDependencyRequest {
+                blocking_work_unit_id: "wu-old-b".to_owned(),
+                blocked_work_unit_id: "wu-blocked".to_owned(),
+                actor: Some("planner".to_owned()),
+                now_ms: Some(1_032),
+            })
+            .expect("old b blocks blocked");
+
+        let merged = repository
+            .merge_work_units(MergeWorkUnitsRequest {
+                canonical_work_unit_id: "wu-canonical".to_owned(),
+                obsolete_work_unit_ids: vec!["wu-old-a".to_owned(), "wu-old-b".to_owned()],
+                actor: Some("planner".to_owned()),
+                now_ms: Some(1_040),
+            })
+            .expect("merge work units");
+
+        assert_eq!(
+            merged.canonical.work_unit.supersedes_work_unit_ids,
+            vec!["wu-old-a".to_owned(), "wu-old-b".to_owned()]
+        );
+        assert_eq!(
+            merged.canonical.work_unit.blocked_by_work_unit_ids,
+            vec!["wu-blocker".to_owned()]
+        );
+        assert_eq!(
+            merged.canonical.work_unit.blocks_work_unit_ids,
+            vec!["wu-blocked".to_owned()]
+        );
+        assert_eq!(
+            merged.obsolete[0]
+                .work_unit
+                .superseded_by_work_unit_id
+                .as_deref(),
+            Some("wu-canonical")
+        );
+        assert_eq!(
+            merged.obsolete[1]
+                .work_unit
+                .superseded_by_work_unit_id
+                .as_deref(),
+            Some("wu-canonical")
+        );
+
+        let blocked_snapshot = repository
+            .load_work_unit_snapshot("wu-blocked")
+            .expect("load blocked snapshot")
+            .expect("blocked snapshot");
+        assert_eq!(
+            blocked_snapshot.work_unit.blocked_by_work_unit_ids,
+            vec!["wu-canonical".to_owned()]
+        );
+
+        let events = repository
+            .list_work_unit_events("wu-canonical", 20)
+            .expect("list canonical events");
+        assert!(
+            events
+                .iter()
+                .any(|event| event.event_kind == WORK_UNIT_MERGED_EVENT_KIND),
+            "expected merged event on canonical work unit"
         );
     }
 
