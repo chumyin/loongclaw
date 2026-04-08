@@ -35,6 +35,7 @@ const WORK_UNIT_REVIEW_RECORDED_EVENT_KIND: &str = "work_unit_review_recorded";
 const WORK_UNIT_CHILD_CREATED_EVENT_KIND: &str = "work_unit_child_created";
 const WORK_UNIT_SPLIT_APPLIED_EVENT_KIND: &str = "work_unit_split_applied";
 const WORK_UNIT_SUPERSEDED_EVENT_KIND: &str = "work_unit_superseded";
+const WORK_UNIT_RESEQUENCED_EVENT_KIND: &str = "work_unit_resequenced";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct NewWorkUnitRecord {
@@ -47,6 +48,7 @@ pub struct NewWorkUnitRecord {
     pub priority: WorkUnitPriority,
     pub retry_policy: WorkUnitRetryPolicy,
     pub parent_work_unit_id: Option<String>,
+    pub plan_position: Option<i64>,
     pub next_run_at_ms: Option<i64>,
 }
 
@@ -237,6 +239,20 @@ pub struct SupersedeWorkUnitResult {
     pub replacement: WorkUnitSnapshot,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResequenceChildWorkUnitsRequest {
+    pub parent_work_unit_id: String,
+    pub ordered_child_work_unit_ids: Vec<String>,
+    pub actor: Option<String>,
+    pub now_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ResequenceChildWorkUnitsResult {
+    pub parent: WorkUnitSnapshot,
+    pub children: Vec<WorkUnitSnapshot>,
+}
+
 #[derive(Debug, Clone)]
 pub struct WorkUnitRepository {
     db_path: PathBuf,
@@ -257,6 +273,7 @@ struct RawWorkUnitRecord {
     last_error: Option<String>,
     blocking_reason: Option<String>,
     parent_work_unit_id: Option<String>,
+    plan_position: Option<i64>,
     superseded_by_work_unit_id: Option<String>,
     assigned_to: Option<String>,
     child_work_unit_ids: Vec<String>,
@@ -325,6 +342,19 @@ impl WorkUnitRepository {
         let title = normalize_required_text(&record.title, "title")?;
         let description = normalize_required_text(&record.description, "description")?;
         let parent_work_unit_id = normalize_optional_text(record.parent_work_unit_id);
+        let plan_position = normalize_plan_position(record.plan_position)?;
+        let plan_position = if let Some(parent_work_unit_id) = parent_work_unit_id.as_deref() {
+            if plan_position.is_none() {
+                Some(load_next_child_plan_position(
+                    transaction,
+                    parent_work_unit_id,
+                )?)
+            } else {
+                plan_position
+            }
+        } else {
+            plan_position
+        };
         let source_ref = normalize_source_ref(record.source_ref);
         let source_ref_json = encode_json(&source_ref, "source_ref")?;
         let retry_policy_json = encode_json(&record.retry_policy, "retry_policy")?;
@@ -350,6 +380,7 @@ impl WorkUnitRepository {
                     last_error,
                     blocking_reason,
                     parent_work_unit_id,
+                    plan_position,
                     superseded_by_work_unit_id,
                     assigned_to,
                     review_json,
@@ -362,7 +393,7 @@ impl WorkUnitRepository {
                     created_at_ms,
                     updated_at_ms,
                     archived_at_ms
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, NULL, NULL, ?11, NULL, NULL, NULL, NULL, NULL, 0, NULL, NULL, NULL, ?12, ?12, NULL)",
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, NULL, NULL, ?11, ?12, NULL, NULL, NULL, NULL, NULL, 0, NULL, NULL, NULL, ?13, ?13, NULL)",
                 params![
                     work_unit_id,
                     record.kind.as_str(),
@@ -375,6 +406,7 @@ impl WorkUnitRepository {
                     retry_policy_json,
                     next_run_at_ms,
                     parent_work_unit_id,
+                    plan_position,
                     now_ms,
                 ],
             )
@@ -707,6 +739,76 @@ impl WorkUnitRepository {
         )?;
 
         Ok(child_snapshot)
+    }
+
+    pub fn resequence_child_work_units(
+        &self,
+        request: ResequenceChildWorkUnitsRequest,
+    ) -> Result<ResequenceChildWorkUnitsResult, String> {
+        let parent_work_unit_id =
+            normalize_required_text(&request.parent_work_unit_id, "parent_work_unit_id")?;
+        let actor = normalize_optional_text(request.actor);
+        let now_ms = request.now_ms.unwrap_or_else(current_unix_ms);
+        let ordered_child_work_unit_ids =
+            normalize_resequence_child_ids(request.ordered_child_work_unit_ids.as_slice())?;
+        let mut connection = self.open_connection()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| format!("open resequence work-unit transaction failed: {error}"))?;
+        let parent_snapshot =
+            self.load_parent_work_unit_for_children(&transaction, parent_work_unit_id.as_str())?;
+        let current_child_work_unit_ids = parent_snapshot.work_unit.child_work_unit_ids.clone();
+        validate_resequence_child_ids(
+            parent_work_unit_id.as_str(),
+            current_child_work_unit_ids.as_slice(),
+            ordered_child_work_unit_ids.as_slice(),
+        )?;
+        let current_order_matches = current_child_work_unit_ids == ordered_child_work_unit_ids;
+        if current_order_matches {
+            return Ok(ResequenceChildWorkUnitsResult {
+                parent: parent_snapshot,
+                children: load_ordered_child_snapshots(
+                    self,
+                    ordered_child_work_unit_ids.as_slice(),
+                )?,
+            });
+        }
+
+        for (index, child_work_unit_id) in ordered_child_work_unit_ids.iter().enumerate() {
+            let plan_position = i64::try_from(index + 1)
+                .map_err(|error| format!("plan position overflowed i64: {error}"))?;
+            set_child_plan_position_in_tx(
+                &transaction,
+                child_work_unit_id.as_str(),
+                plan_position,
+                now_ms,
+            )?;
+        }
+        touch_work_unit(&transaction, parent_work_unit_id.as_str(), now_ms)?;
+        let event_payload = json!({
+            "parent_work_unit_id": parent_work_unit_id,
+            "previous_child_work_unit_ids": current_child_work_unit_ids,
+            "ordered_child_work_unit_ids": ordered_child_work_unit_ids,
+        });
+        insert_event_in_tx(
+            &transaction,
+            parent_work_unit_id.as_str(),
+            WORK_UNIT_RESEQUENCED_EVENT_KIND,
+            actor.as_deref(),
+            &event_payload,
+            now_ms,
+        )?;
+        transaction
+            .commit()
+            .map_err(|error| format!("commit resequence work-unit transaction failed: {error}"))?;
+
+        let parent = self
+            .load_work_unit_snapshot(parent_work_unit_id.as_str())?
+            .ok_or_else(|| "parent work unit disappeared after resequence".to_owned())?;
+        let children =
+            load_ordered_child_snapshots(self, parent.work_unit.child_work_unit_ids.as_slice())?;
+
+        Ok(ResequenceChildWorkUnitsResult { parent, children })
     }
 
     pub fn load_work_unit_snapshot(
@@ -1928,6 +2030,7 @@ impl WorkUnitRepository {
                     last_error TEXT NULL,
                     blocking_reason TEXT NULL,
                     parent_work_unit_id TEXT NULL,
+                    plan_position INTEGER NULL,
                     superseded_by_work_unit_id TEXT NULL,
                     assigned_to TEXT NULL,
                     review_json TEXT NULL,
@@ -1969,6 +2072,7 @@ impl WorkUnitRepository {
                 ",
             )
             .map_err(|error| format!("ensure work unit schema failed: {error}"))?;
+        ensure_work_units_column_exists(&connection, "plan_position", "INTEGER NULL")?;
         ensure_work_units_column_exists(&connection, "superseded_by_work_unit_id", "TEXT NULL")?;
         Ok(())
     }
@@ -2070,6 +2174,7 @@ fn load_raw_work_unit_with_conn(
                 last_error,
                 blocking_reason,
                 parent_work_unit_id,
+                plan_position,
                 superseded_by_work_unit_id,
                 assigned_to,
                 review_json,
@@ -2100,22 +2205,23 @@ fn load_raw_work_unit_with_conn(
                     last_error: row.get(10)?,
                     blocking_reason: row.get(11)?,
                     parent_work_unit_id: row.get(12)?,
-                    superseded_by_work_unit_id: row.get(13)?,
-                    assigned_to: row.get(14)?,
+                    plan_position: row.get(13)?,
+                    superseded_by_work_unit_id: row.get(14)?,
+                    assigned_to: row.get(15)?,
                     child_work_unit_ids: Vec::new(),
                     supersedes_work_unit_ids: Vec::new(),
                     blocks_work_unit_ids: Vec::new(),
                     blocked_by_work_unit_ids: Vec::new(),
-                    review_json: row.get(15)?,
-                    result_payload_json: row.get(16)?,
-                    lease_owner: row.get(17)?,
-                    lease_version: row.get(18)?,
-                    lease_acquired_at_ms: row.get(19)?,
-                    lease_heartbeat_at_ms: row.get(20)?,
-                    lease_expires_at_ms: row.get(21)?,
-                    created_at_ms: row.get(22)?,
-                    updated_at_ms: row.get(23)?,
-                    archived_at_ms: row.get(24)?,
+                    review_json: row.get(16)?,
+                    result_payload_json: row.get(17)?,
+                    lease_owner: row.get(18)?,
+                    lease_version: row.get(19)?,
+                    lease_acquired_at_ms: row.get(20)?,
+                    lease_heartbeat_at_ms: row.get(21)?,
+                    lease_expires_at_ms: row.get(22)?,
+                    created_at_ms: row.get(23)?,
+                    updated_at_ms: row.get(24)?,
+                    archived_at_ms: row.get(25)?,
                 })
             },
         )
@@ -2152,6 +2258,7 @@ fn load_raw_work_units_with_query(
                 last_error,
                 blocking_reason,
                 parent_work_unit_id,
+                plan_position,
                 superseded_by_work_unit_id,
                 assigned_to,
                 review_json,
@@ -2185,6 +2292,7 @@ fn load_raw_work_units_with_query(
                 last_error,
                 blocking_reason,
                 parent_work_unit_id,
+                plan_position,
                 superseded_by_work_unit_id,
                 assigned_to,
                 review_json,
@@ -2217,6 +2325,7 @@ fn load_raw_work_units_with_query(
                 last_error,
                 blocking_reason,
                 parent_work_unit_id,
+                plan_position,
                 superseded_by_work_unit_id,
                 assigned_to,
                 review_json,
@@ -2249,6 +2358,7 @@ fn load_raw_work_units_with_query(
                 last_error,
                 blocking_reason,
                 parent_work_unit_id,
+                plan_position,
                 superseded_by_work_unit_id,
                 assigned_to,
                 review_json,
@@ -2284,22 +2394,23 @@ fn load_raw_work_units_with_query(
             last_error: row.get(10)?,
             blocking_reason: row.get(11)?,
             parent_work_unit_id: row.get(12)?,
-            superseded_by_work_unit_id: row.get(13)?,
-            assigned_to: row.get(14)?,
+            plan_position: row.get(13)?,
+            superseded_by_work_unit_id: row.get(14)?,
+            assigned_to: row.get(15)?,
             child_work_unit_ids: Vec::new(),
             supersedes_work_unit_ids: Vec::new(),
             blocks_work_unit_ids: Vec::new(),
             blocked_by_work_unit_ids: Vec::new(),
-            review_json: row.get(15)?,
-            result_payload_json: row.get(16)?,
-            lease_owner: row.get(17)?,
-            lease_version: row.get(18)?,
-            lease_acquired_at_ms: row.get(19)?,
-            lease_heartbeat_at_ms: row.get(20)?,
-            lease_expires_at_ms: row.get(21)?,
-            created_at_ms: row.get(22)?,
-            updated_at_ms: row.get(23)?,
-            archived_at_ms: row.get(24)?,
+            review_json: row.get(16)?,
+            result_payload_json: row.get(17)?,
+            lease_owner: row.get(18)?,
+            lease_version: row.get(19)?,
+            lease_acquired_at_ms: row.get(20)?,
+            lease_heartbeat_at_ms: row.get(21)?,
+            lease_expires_at_ms: row.get(22)?,
+            created_at_ms: row.get(23)?,
+            updated_at_ms: row.get(24)?,
+            archived_at_ms: row.get(25)?,
         })
     };
     let rows = match status {
@@ -2350,7 +2461,10 @@ fn load_child_work_unit_ids(
             "SELECT work_unit_id
              FROM work_units
              WHERE parent_work_unit_id = ?1
-             ORDER BY work_unit_id ASC",
+             ORDER BY
+                CASE WHEN plan_position IS NULL THEN 1 ELSE 0 END ASC,
+                plan_position ASC,
+                work_unit_id ASC",
         )
         .map_err(|error| format!("prepare child work unit query failed: {error}"))?;
     let rows = statement
@@ -2365,6 +2479,41 @@ fn load_child_work_unit_ids(
     }
 
     Ok(work_unit_ids)
+}
+
+fn load_next_child_plan_position(
+    connection: &Connection,
+    parent_work_unit_id: &str,
+) -> Result<i64, String> {
+    let mut statement = connection
+        .prepare(
+            "SELECT COALESCE(MAX(plan_position), 0)
+             FROM work_units
+             WHERE parent_work_unit_id = ?1",
+        )
+        .map_err(|error| format!("prepare next child plan position query failed: {error}"))?;
+    let max_plan_position = statement
+        .query_row(params![parent_work_unit_id], |row| row.get::<_, i64>(0))
+        .map_err(|error| format!("query next child plan position failed: {error}"))?;
+    Ok(max_plan_position.saturating_add(1))
+}
+
+fn set_child_plan_position_in_tx(
+    transaction: &Transaction<'_>,
+    child_work_unit_id: &str,
+    plan_position: i64,
+    now_ms: i64,
+) -> Result<(), String> {
+    transaction
+        .execute(
+            "UPDATE work_units
+             SET plan_position = ?1,
+                 updated_at_ms = ?2
+             WHERE work_unit_id = ?3",
+            params![plan_position, now_ms, child_work_unit_id],
+        )
+        .map_err(|error| format!("set child plan position failed: {error}"))?;
+    Ok(())
 }
 
 fn load_supersedes_work_unit_ids(
@@ -2465,6 +2614,7 @@ fn select_next_ready_raw_work_unit(
                 last_error,
                 blocking_reason,
                 parent_work_unit_id,
+                plan_position,
                 superseded_by_work_unit_id,
                 assigned_to,
                 review_json,
@@ -2510,22 +2660,23 @@ fn select_next_ready_raw_work_unit(
                 last_error: row.get(10)?,
                 blocking_reason: row.get(11)?,
                 parent_work_unit_id: row.get(12)?,
-                superseded_by_work_unit_id: row.get(13)?,
-                assigned_to: row.get(14)?,
+                plan_position: row.get(13)?,
+                superseded_by_work_unit_id: row.get(14)?,
+                assigned_to: row.get(15)?,
                 child_work_unit_ids: Vec::new(),
                 supersedes_work_unit_ids: Vec::new(),
                 blocks_work_unit_ids: Vec::new(),
                 blocked_by_work_unit_ids: Vec::new(),
-                review_json: row.get(15)?,
-                result_payload_json: row.get(16)?,
-                lease_owner: row.get(17)?,
-                lease_version: row.get(18)?,
-                lease_acquired_at_ms: row.get(19)?,
-                lease_heartbeat_at_ms: row.get(20)?,
-                lease_expires_at_ms: row.get(21)?,
-                created_at_ms: row.get(22)?,
-                updated_at_ms: row.get(23)?,
-                archived_at_ms: row.get(24)?,
+                review_json: row.get(16)?,
+                result_payload_json: row.get(17)?,
+                lease_owner: row.get(18)?,
+                lease_version: row.get(19)?,
+                lease_acquired_at_ms: row.get(20)?,
+                lease_heartbeat_at_ms: row.get(21)?,
+                lease_expires_at_ms: row.get(22)?,
+                created_at_ms: row.get(23)?,
+                updated_at_ms: row.get(24)?,
+                archived_at_ms: row.get(25)?,
             })
         })
         .optional()
@@ -2556,6 +2707,7 @@ fn load_expired_raw_work_units_with_conn(
                 last_error,
                 blocking_reason,
                 parent_work_unit_id,
+                plan_position,
                 superseded_by_work_unit_id,
                 assigned_to,
                 review_json,
@@ -2591,22 +2743,23 @@ fn load_expired_raw_work_units_with_conn(
                 last_error: row.get(10)?,
                 blocking_reason: row.get(11)?,
                 parent_work_unit_id: row.get(12)?,
-                superseded_by_work_unit_id: row.get(13)?,
-                assigned_to: row.get(14)?,
+                plan_position: row.get(13)?,
+                superseded_by_work_unit_id: row.get(14)?,
+                assigned_to: row.get(15)?,
                 child_work_unit_ids: Vec::new(),
                 supersedes_work_unit_ids: Vec::new(),
                 blocks_work_unit_ids: Vec::new(),
                 blocked_by_work_unit_ids: Vec::new(),
-                review_json: row.get(15)?,
-                result_payload_json: row.get(16)?,
-                lease_owner: row.get(17)?,
-                lease_version: row.get(18)?,
-                lease_acquired_at_ms: row.get(19)?,
-                lease_heartbeat_at_ms: row.get(20)?,
-                lease_expires_at_ms: row.get(21)?,
-                created_at_ms: row.get(22)?,
-                updated_at_ms: row.get(23)?,
-                archived_at_ms: row.get(24)?,
+                review_json: row.get(16)?,
+                result_payload_json: row.get(17)?,
+                lease_owner: row.get(18)?,
+                lease_version: row.get(19)?,
+                lease_acquired_at_ms: row.get(20)?,
+                lease_heartbeat_at_ms: row.get(21)?,
+                lease_expires_at_ms: row.get(22)?,
+                created_at_ms: row.get(23)?,
+                updated_at_ms: row.get(24)?,
+                archived_at_ms: row.get(25)?,
             })
         })
         .map_err(|error| format!("query expired work units failed: {error}"))?;
@@ -2662,6 +2815,7 @@ fn try_work_unit_snapshot_from_raw(
         last_error: raw_record.last_error.clone(),
         blocking_reason: raw_record.blocking_reason.clone(),
         parent_work_unit_id: raw_record.parent_work_unit_id.clone(),
+        plan_position: raw_record.plan_position,
         superseded_by_work_unit_id: raw_record.superseded_by_work_unit_id.clone(),
         child_work_unit_ids: raw_record.child_work_unit_ids.clone(),
         supersedes_work_unit_ids: raw_record.supersedes_work_unit_ids.clone(),
@@ -3129,6 +3283,16 @@ fn normalize_required_text(value: &str, field_name: &str) -> Result<String, Stri
     Ok(trimmed.to_owned())
 }
 
+fn normalize_plan_position(plan_position: Option<i64>) -> Result<Option<i64>, String> {
+    let Some(plan_position) = plan_position else {
+        return Ok(None);
+    };
+    if plan_position <= 0 {
+        return Err("work unit plan_position must be greater than zero".to_owned());
+    }
+    Ok(Some(plan_position))
+}
+
 fn normalize_optional_text(value: Option<String>) -> Option<String> {
     value.and_then(|raw_value| {
         let trimmed_value = raw_value.trim();
@@ -3246,6 +3410,68 @@ fn validate_split_child_ids(
     Ok(())
 }
 
+fn normalize_resequence_child_ids(raw_ids: &[String]) -> Result<Vec<String>, String> {
+    let mut normalized_ids = Vec::with_capacity(raw_ids.len());
+
+    for raw_id in raw_ids {
+        let normalized_id = normalize_required_text(raw_id, "ordered_child_work_unit_ids")?;
+        normalized_ids.push(normalized_id);
+    }
+
+    Ok(normalized_ids)
+}
+
+fn validate_resequence_child_ids(
+    parent_work_unit_id: &str,
+    current_child_work_unit_ids: &[String],
+    ordered_child_work_unit_ids: &[String],
+) -> Result<(), String> {
+    if current_child_work_unit_ids.len() < WORK_UNIT_SPLIT_MIN_CHILDREN {
+        return Err(format!(
+            "work unit `{parent_work_unit_id}` requires at least {WORK_UNIT_SPLIT_MIN_CHILDREN} child work units to resequence"
+        ));
+    }
+
+    let mut current_ids = current_child_work_unit_ids.to_vec();
+    let mut ordered_ids = ordered_child_work_unit_ids.to_vec();
+    current_ids.sort();
+    ordered_ids.sort();
+    if current_ids != ordered_ids {
+        return Err(format!(
+            "resequence child ids must exactly match current child set for parent `{parent_work_unit_id}`"
+        ));
+    }
+
+    let unique_ordered_ids = ordered_child_work_unit_ids
+        .iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    let unique_count = unique_ordered_ids.len();
+    let ordered_count = ordered_child_work_unit_ids.len();
+    if unique_count != ordered_count {
+        return Err("resequence child ids must be unique".to_owned());
+    }
+
+    Ok(())
+}
+
+fn load_ordered_child_snapshots(
+    repository: &WorkUnitRepository,
+    child_work_unit_ids: &[String],
+) -> Result<Vec<WorkUnitSnapshot>, String> {
+    let mut children = Vec::with_capacity(child_work_unit_ids.len());
+
+    for child_work_unit_id in child_work_unit_ids {
+        let child = repository
+            .load_work_unit_snapshot(child_work_unit_id.as_str())?
+            .ok_or_else(|| {
+                format!("child work unit `{child_work_unit_id}` disappeared while loading order")
+            })?;
+        children.push(child);
+    }
+
+    Ok(children)
+}
+
 fn usize_from_i64(value: i64, label: &str) -> Result<usize, String> {
     usize::try_from(value).map_err(|error| format!("{label} overflowed usize: {error}"))
 }
@@ -3262,15 +3488,16 @@ mod tests {
         AcquireWorkUnitLeaseRequest, AddWorkUnitDependencyRequest, AppendWorkUnitNoteRequest,
         ArchiveWorkUnitRequest, AssignWorkUnitRequest, CompleteWorkUnitRequest,
         CreateChildWorkUnitRequest, NewWorkUnitRecord, RecordWorkUnitReviewDecisionRequest,
-        RemoveWorkUnitDependencyRequest, RequestWorkUnitReviewRequest, SplitWorkUnitChildRequest,
-        SplitWorkUnitRequest, StartWorkUnitLeaseRequest, SupersedeWorkUnitRequest,
-        UpdateWorkUnitRequest, WORK_UNIT_ASSIGNED_EVENT_KIND, WORK_UNIT_CHILD_CREATED_EVENT_KIND,
+        RemoveWorkUnitDependencyRequest, RequestWorkUnitReviewRequest,
+        ResequenceChildWorkUnitsRequest, SplitWorkUnitChildRequest, SplitWorkUnitRequest,
+        StartWorkUnitLeaseRequest, SupersedeWorkUnitRequest, UpdateWorkUnitRequest,
+        WORK_UNIT_ASSIGNED_EVENT_KIND, WORK_UNIT_CHILD_CREATED_EVENT_KIND,
         WORK_UNIT_DEPENDENCY_ADDED_EVENT_KIND, WORK_UNIT_DEPENDENCY_REMOVED_EVENT_KIND,
-        WORK_UNIT_NOTE_ADDED_EVENT_KIND, WORK_UNIT_REVIEW_RECORDED_EVENT_KIND,
-        WORK_UNIT_REVIEW_REQUESTED_EVENT_KIND, WORK_UNIT_SPLIT_APPLIED_EVENT_KIND,
-        WORK_UNIT_SUPERSEDED_EVENT_KIND, WORK_UNIT_UPDATED_EVENT_KIND,
-        WorkUnitCompletionDisposition, WorkUnitHeartbeatRequest, WorkUnitListQuery,
-        WorkUnitRepository, WorkUnitReviewDecision,
+        WORK_UNIT_NOTE_ADDED_EVENT_KIND, WORK_UNIT_RESEQUENCED_EVENT_KIND,
+        WORK_UNIT_REVIEW_RECORDED_EVENT_KIND, WORK_UNIT_REVIEW_REQUESTED_EVENT_KIND,
+        WORK_UNIT_SPLIT_APPLIED_EVENT_KIND, WORK_UNIT_SUPERSEDED_EVENT_KIND,
+        WORK_UNIT_UPDATED_EVENT_KIND, WorkUnitCompletionDisposition, WorkUnitHeartbeatRequest,
+        WorkUnitListQuery, WorkUnitRepository, WorkUnitReviewDecision,
     };
     use loongclaw_contracts::{
         WorkSourceKind, WorkUnitKind, WorkUnitPriority, WorkUnitRetryPolicy, WorkUnitReviewStatus,
@@ -3318,6 +3545,7 @@ mod tests {
                 max_backoff_ms: 8_000,
             },
             parent_work_unit_id: None,
+            plan_position: None,
             next_run_at_ms: Some(1_000),
         }
     }
@@ -3374,6 +3602,7 @@ mod tests {
             priority: WorkUnitPriority::Normal,
             retry_policy: WorkUnitRetryPolicy::default(),
             parent_work_unit_id: None,
+            plan_position: None,
             next_run_at_ms: Some(1_100),
         };
         let child_snapshot = repository
@@ -3469,6 +3698,7 @@ mod tests {
             priority: WorkUnitPriority::Normal,
             retry_policy: child_retry_policy.clone(),
             parent_work_unit_id: None,
+            plan_position: None,
             next_run_at_ms: Some(1_200),
         };
         let child_snapshot = repository
@@ -3529,6 +3759,7 @@ mod tests {
                 priority: WorkUnitPriority::Normal,
                 retry_policy: WorkUnitRetryPolicy::default(),
                 parent_work_unit_id: None,
+                plan_position: None,
                 next_run_at_ms: Some(1_010),
             },
             inherit_parent_source_ref: true,
@@ -3546,6 +3777,7 @@ mod tests {
                 priority: WorkUnitPriority::Normal,
                 retry_policy: WorkUnitRetryPolicy::default(),
                 parent_work_unit_id: None,
+                plan_position: None,
                 next_run_at_ms: Some(1_020),
             },
             inherit_parent_source_ref: true,
@@ -3579,6 +3811,8 @@ mod tests {
             split.children[1].work_unit.blocks_work_unit_ids,
             vec!["wu-parent".to_owned()]
         );
+        assert_eq!(split.children[0].work_unit.plan_position, Some(1));
+        assert_eq!(split.children[1].work_unit.plan_position, Some(2));
 
         let claimed_child_a = repository
             .acquire_next_ready_lease(AcquireWorkUnitLeaseRequest {
@@ -3672,6 +3906,7 @@ mod tests {
                         priority: WorkUnitPriority::Normal,
                         retry_policy: WorkUnitRetryPolicy::default(),
                         parent_work_unit_id: None,
+                        plan_position: None,
                         next_run_at_ms: Some(1_010),
                     },
                     inherit_parent_source_ref: true,
@@ -3705,6 +3940,7 @@ mod tests {
                 priority: WorkUnitPriority::Normal,
                 retry_policy: WorkUnitRetryPolicy::default(),
                 parent_work_unit_id: None,
+                plan_position: None,
                 next_run_at_ms: Some(1_010),
             },
             inherit_parent_source_ref: true,
@@ -3724,6 +3960,92 @@ mod tests {
     }
 
     #[test]
+    fn resequence_child_work_units_updates_parent_order_and_plan_positions() {
+        let config = isolated_memory_config("resequence-child-work-units");
+        let repository = WorkUnitRepository::new(&config).expect("repository");
+        let parent = NewWorkUnitRecord {
+            work_unit_id: Some("wu-parent".to_owned()),
+            title: "Parent".to_owned(),
+            description: "Coordinate child work".to_owned(),
+            ..sample_work_unit(WorkUnitStatus::Ready)
+        };
+        repository
+            .create_work_unit(parent, Some("operator"))
+            .expect("create parent work unit");
+
+        let child_a = SplitWorkUnitChildRequest {
+            child: NewWorkUnitRecord {
+                work_unit_id: Some("wu-child-a".to_owned()),
+                kind: WorkUnitKind::Issue,
+                title: "Child A".to_owned(),
+                description: "Handle dependency A".to_owned(),
+                source_ref: WorkUnitSourceRef::default(),
+                status: WorkUnitStatus::Ready,
+                priority: WorkUnitPriority::Normal,
+                retry_policy: WorkUnitRetryPolicy::default(),
+                parent_work_unit_id: None,
+                plan_position: None,
+                next_run_at_ms: Some(1_010),
+            },
+            inherit_parent_source_ref: true,
+            inherit_parent_retry_policy: true,
+            inherit_parent_priority: true,
+        };
+        let child_b = SplitWorkUnitChildRequest {
+            child: NewWorkUnitRecord {
+                work_unit_id: Some("wu-child-b".to_owned()),
+                kind: WorkUnitKind::Issue,
+                title: "Child B".to_owned(),
+                description: "Handle dependency B".to_owned(),
+                source_ref: WorkUnitSourceRef::default(),
+                status: WorkUnitStatus::Ready,
+                priority: WorkUnitPriority::Normal,
+                retry_policy: WorkUnitRetryPolicy::default(),
+                parent_work_unit_id: None,
+                plan_position: None,
+                next_run_at_ms: Some(1_020),
+            },
+            inherit_parent_source_ref: true,
+            inherit_parent_retry_policy: true,
+            inherit_parent_priority: true,
+        };
+        repository
+            .split_work_unit(SplitWorkUnitRequest {
+                parent_work_unit_id: "wu-parent".to_owned(),
+                children: vec![child_a, child_b],
+                block_parent: true,
+                actor: Some("planner".to_owned()),
+            })
+            .expect("split work unit");
+
+        let resequenced = repository
+            .resequence_child_work_units(ResequenceChildWorkUnitsRequest {
+                parent_work_unit_id: "wu-parent".to_owned(),
+                ordered_child_work_unit_ids: vec!["wu-child-b".to_owned(), "wu-child-a".to_owned()],
+                actor: Some("planner".to_owned()),
+                now_ms: Some(2_000),
+            })
+            .expect("resequence children");
+
+        assert_eq!(
+            resequenced.parent.work_unit.child_work_unit_ids,
+            vec!["wu-child-b".to_owned(), "wu-child-a".to_owned()]
+        );
+        assert_eq!(resequenced.children[0].work_unit.plan_position, Some(1));
+        assert_eq!(resequenced.children[1].work_unit.plan_position, Some(2));
+
+        let events = repository
+            .list_work_unit_events("wu-parent", 20)
+            .expect("list parent events");
+        assert!(
+            events
+                .iter()
+                .any(|event| event.event_kind == WORK_UNIT_RESEQUENCED_EVENT_KIND),
+            "expected resequenced event on parent"
+        );
+    }
+
+    #[test]
     fn supersede_work_unit_transfers_dependency_context_to_replacement() {
         let config = isolated_memory_config("supersede-work-unit");
         let repository = WorkUnitRepository::new(&config).expect("repository");
@@ -3737,6 +4059,7 @@ mod tests {
             priority: WorkUnitPriority::Low,
             retry_policy: WorkUnitRetryPolicy::default(),
             parent_work_unit_id: None,
+            plan_position: None,
             next_run_at_ms: Some(1_000),
         };
         let obsolete = NewWorkUnitRecord {
@@ -3761,6 +4084,7 @@ mod tests {
             priority: WorkUnitPriority::Normal,
             retry_policy: WorkUnitRetryPolicy::default(),
             parent_work_unit_id: None,
+            plan_position: None,
             next_run_at_ms: Some(1_020),
         };
         repository

@@ -267,6 +267,7 @@ pub struct WorkUnitRecord {
     pub last_error: Option<String>,
     pub blocking_reason: Option<String>,
     pub parent_work_unit_id: Option<String>,
+    pub plan_position: Option<i64>,
     pub superseded_by_work_unit_id: Option<String>,
     pub child_work_unit_ids: Vec<String>,
     pub supersedes_work_unit_ids: Vec<String>,

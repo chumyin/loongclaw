@@ -75,6 +75,10 @@ fn cli_work_unit_help_mentions_durable_runtime_commands() {
         "work-unit help should expose multi-child decomposition: {help}"
     );
     assert!(
+        help.contains("resequence"),
+        "work-unit help should expose plan-order changes: {help}"
+    );
+    assert!(
         help.contains("supersede"),
         "work-unit help should expose replacement orchestration: {help}"
     );
@@ -362,6 +366,45 @@ fn cli_work_unit_parse_accepts_supersede_shape() {
     assert_eq!(options.replacement_id, "wu-new");
     assert_eq!(options.actor.as_deref(), Some("planner"));
     assert_eq!(options.now_ms, Some(4242));
+    assert!(options.json);
+}
+
+#[test]
+fn cli_work_unit_parse_accepts_resequence_shape() {
+    let ordered_child_ids_json = r#"["wu-child-b","wu-child-a"]"#;
+    let cli = try_parse_cli([
+        "loongclaw",
+        "work-unit",
+        "resequence",
+        "--config",
+        "/tmp/loongclaw.toml",
+        "--parent-id",
+        "wu-parent",
+        "--ordered-child-ids-json",
+        ordered_child_ids_json,
+        "--actor",
+        "planner",
+        "--now-ms",
+        "5151",
+        "--json",
+    ])
+    .expect("work-unit resequence CLI should parse");
+
+    let command = cli.command.expect("CLI should parse a subcommand");
+    let Commands::WorkUnit { command } = command else {
+        panic!("unexpected CLI parse result: {command:?}");
+    };
+    let work_unit_runtime::WorkUnitCommands::Resequence(options) = command else {
+        panic!("unexpected resequence parse result: {command:?}");
+    };
+
+    assert_eq!(options.parent_id, "wu-parent");
+    assert_eq!(
+        options.ordered_child_ids_json.as_deref(),
+        Some(ordered_child_ids_json)
+    );
+    assert_eq!(options.actor.as_deref(), Some("planner"));
+    assert_eq!(options.now_ms, Some(5151));
     assert!(options.json);
 }
 
@@ -1018,6 +1061,107 @@ fn work_unit_cli_split_blocks_parent_until_all_children_complete() {
 }
 
 #[test]
+fn work_unit_cli_resequence_reorders_parent_child_plan() {
+    let _env = work_unit_environment_guard();
+    let root = unique_temp_dir("loongclaw-work-unit-resequence-cli");
+    let config_path = write_work_unit_config(&root);
+    let config_path_string = config_path.display().to_string();
+
+    work_unit_runtime::run_work_unit_cli(work_unit_runtime::WorkUnitCommands::Create(
+        work_unit_runtime::WorkUnitCreateCommandOptions {
+            config: Some(config_path_string.clone()),
+            id: Some("wu-parent".to_owned()),
+            kind: work_unit_runtime::WorkUnitKindArg::Feature,
+            title: "Parent work".to_owned(),
+            description: "Coordinate child items".to_owned(),
+            status: work_unit_runtime::WorkUnitStatusArg::Ready,
+            priority: work_unit_runtime::WorkUnitPriorityArg::High,
+            max_attempts: 3,
+            initial_backoff_ms: 1_000,
+            max_backoff_ms: 8_000,
+            next_run_at_ms: Some(1_000),
+            actor: Some("operator".to_owned()),
+            source_kind: work_unit_runtime::WorkSourceKindArg::Discord,
+            project_id: Some("loongclaw-ai/server".to_owned()),
+            channel_id: Some("feature".to_owned()),
+            thread_id: Some("thread-parent".to_owned()),
+            message_id: Some("message-parent".to_owned()),
+            external_ref: Some("parent-thread".to_owned()),
+            source_url: None,
+            parent_work_unit_id: None,
+            json: true,
+        },
+    ))
+    .expect("create parent work unit via CLI");
+
+    let children_json = r#"
+[
+  {
+    "id": "wu-child-a",
+    "kind": "issue",
+    "title": "Child A",
+    "description": "Handle dependency A",
+    "next_run_at_ms": 1010
+  },
+  {
+    "id": "wu-child-b",
+    "kind": "issue",
+    "title": "Child B",
+    "description": "Handle dependency B",
+    "next_run_at_ms": 1020
+  }
+]
+"#;
+    work_unit_runtime::run_work_unit_cli(work_unit_runtime::WorkUnitCommands::Split(
+        work_unit_runtime::WorkUnitSplitCommandOptions {
+            config: Some(config_path_string.clone()),
+            parent_id: "wu-parent".to_owned(),
+            children_json: Some(children_json.to_owned()),
+            children_path: None,
+            block_parent: true,
+            actor: Some("planner".to_owned()),
+            json: true,
+        },
+    ))
+    .expect("split parent work unit via CLI");
+
+    let ordered_child_ids_json = r#"["wu-child-b","wu-child-a"]"#;
+    work_unit_runtime::run_work_unit_cli(work_unit_runtime::WorkUnitCommands::Resequence(
+        work_unit_runtime::WorkUnitResequenceCommandOptions {
+            config: Some(config_path_string),
+            parent_id: "wu-parent".to_owned(),
+            ordered_child_ids_json: Some(ordered_child_ids_json.to_owned()),
+            ordered_child_ids_path: None,
+            actor: Some("planner".to_owned()),
+            now_ms: Some(1_030),
+            json: true,
+        },
+    ))
+    .expect("resequence child work units via CLI");
+
+    let repository = load_work_unit_repository(&config_path);
+    let parent_snapshot = repository
+        .load_work_unit_snapshot("wu-parent")
+        .expect("load parent snapshot")
+        .expect("parent snapshot");
+    assert_eq!(
+        parent_snapshot.work_unit.child_work_unit_ids,
+        vec!["wu-child-b".to_owned(), "wu-child-a".to_owned()]
+    );
+
+    let child_a = repository
+        .load_work_unit_snapshot("wu-child-a")
+        .expect("load child a")
+        .expect("child a");
+    let child_b = repository
+        .load_work_unit_snapshot("wu-child-b")
+        .expect("load child b")
+        .expect("child b");
+    assert_eq!(child_a.work_unit.plan_position, Some(2));
+    assert_eq!(child_b.work_unit.plan_position, Some(1));
+}
+
+#[test]
 fn work_unit_cli_supersede_transfers_dependencies_to_replacement() {
     let _env = work_unit_environment_guard();
     let root = unique_temp_dir("loongclaw-work-unit-supersede-cli");
@@ -1320,6 +1464,7 @@ fn work_unit_cli_update_text_output_uses_snake_case_status_labels() {
         priority: loongclaw_contracts::WorkUnitPriority::Normal,
         retry_policy,
         parent_work_unit_id: None,
+        plan_position: None,
         next_run_at_ms: Some(1_000),
     };
     repository

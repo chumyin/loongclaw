@@ -36,6 +36,8 @@ pub enum WorkUnitCommands {
     SpawnChild(WorkUnitSpawnChildCommandOptions),
     /// Split one parent work unit into multiple child work units
     Split(WorkUnitSplitCommandOptions),
+    /// Reorder the existing child work units beneath one parent work unit
+    Resequence(WorkUnitResequenceCommandOptions),
     /// Replace one obsolete work unit with another durable work unit
     Supersede(WorkUnitSupersedeCommandOptions),
     /// Assign or clear a durable work-unit owner without taking a runtime lease
@@ -324,6 +326,24 @@ pub struct WorkUnitSupersedeCommandOptions {
     pub obsolete_id: String,
     #[arg(long)]
     pub replacement_id: String,
+    #[arg(long)]
+    pub actor: Option<String>,
+    #[arg(long)]
+    pub now_ms: Option<i64>,
+    #[arg(long, default_value_t = false)]
+    pub json: bool,
+}
+
+#[derive(Args, Debug, Clone, PartialEq, Eq)]
+pub struct WorkUnitResequenceCommandOptions {
+    #[arg(long)]
+    pub config: Option<String>,
+    #[arg(long)]
+    pub parent_id: String,
+    #[arg(long)]
+    pub ordered_child_ids_json: Option<String>,
+    #[arg(long)]
+    pub ordered_child_ids_path: Option<String>,
     #[arg(long)]
     pub actor: Option<String>,
     #[arg(long)]
@@ -626,6 +646,12 @@ struct WorkUnitSplitView {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
+struct WorkUnitResequenceView {
+    parent: WorkUnitSnapshot,
+    children: Vec<WorkUnitSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
 struct WorkUnitSupersedeView {
     obsolete: WorkUnitSnapshot,
     replacement: WorkUnitSnapshot,
@@ -645,6 +671,7 @@ pub fn run_work_unit_cli(command: WorkUnitCommands) -> CliResult<()> {
         WorkUnitCommands::Archive(options) => run_archive_command(options),
         WorkUnitCommands::SpawnChild(options) => run_spawn_child_command(options),
         WorkUnitCommands::Split(options) => run_split_command(options),
+        WorkUnitCommands::Resequence(options) => run_resequence_command(options),
         WorkUnitCommands::Supersede(options) => run_supersede_command(options),
         WorkUnitCommands::Assign(options) => run_assign_command(options),
         WorkUnitCommands::Update(options) => run_update_command(options),
@@ -683,6 +710,7 @@ fn run_create_command(options: WorkUnitCreateCommandOptions) -> CliResult<()> {
         priority: options.priority.into(),
         retry_policy,
         parent_work_unit_id: options.parent_work_unit_id,
+        plan_position: None,
         next_run_at_ms: options.next_run_at_ms,
     };
     let snapshot = repository.create_work_unit(new_work_unit, options.actor.as_deref())?;
@@ -851,6 +879,7 @@ fn run_spawn_child_command(options: WorkUnitSpawnChildCommandOptions) -> CliResu
             .unwrap_or(WorkUnitPriority::Normal),
         retry_policy,
         parent_work_unit_id: None,
+        plan_position: None,
         next_run_at_ms: options.next_run_at_ms,
     };
     let request = mvp::work::repository::CreateChildWorkUnitRequest {
@@ -888,6 +917,7 @@ fn run_split_command(options: WorkUnitSplitCommandOptions) -> CliResult<()> {
             priority: child_input.priority.unwrap_or(WorkUnitPriority::Normal),
             retry_policy: child_input.retry_policy.unwrap_or_default(),
             parent_work_unit_id: None,
+            plan_position: None,
             next_run_at_ms: child_input.next_run_at_ms,
         };
         let child_request = mvp::work::repository::SplitWorkUnitChildRequest {
@@ -910,6 +940,26 @@ fn run_split_command(options: WorkUnitSplitCommandOptions) -> CliResult<()> {
         children: result.children,
     };
     render_json_or_text(&view, options.json, render_work_unit_split_text)
+}
+
+fn run_resequence_command(options: WorkUnitResequenceCommandOptions) -> CliResult<()> {
+    let ordered_child_work_unit_ids = parse_resequence_child_ids(
+        options.ordered_child_ids_json.as_deref(),
+        options.ordered_child_ids_path.as_deref(),
+    )?;
+    let repository = load_work_unit_repository(options.config.as_deref())?;
+    let request = mvp::work::repository::ResequenceChildWorkUnitsRequest {
+        parent_work_unit_id: options.parent_id,
+        ordered_child_work_unit_ids,
+        actor: options.actor,
+        now_ms: options.now_ms,
+    };
+    let result = repository.resequence_child_work_units(request)?;
+    let view = WorkUnitResequenceView {
+        parent: result.parent,
+        children: result.children,
+    };
+    render_json_or_text(&view, options.json, render_work_unit_resequence_text)
 }
 
 fn run_supersede_command(options: WorkUnitSupersedeCommandOptions) -> CliResult<()> {
@@ -1169,6 +1219,46 @@ fn decode_split_children_inputs(
     Ok(children)
 }
 
+fn parse_resequence_child_ids(
+    ordered_child_ids_json: Option<&str>,
+    ordered_child_ids_path: Option<&str>,
+) -> CliResult<Vec<String>> {
+    match (ordered_child_ids_json, ordered_child_ids_path) {
+        (Some(_), Some(_)) => Err(
+            "provide either --ordered-child-ids-json or --ordered-child-ids-path, but not both"
+                .to_owned(),
+        ),
+        (None, None) => Err(
+            "resequence requires either --ordered-child-ids-json or --ordered-child-ids-path"
+                .to_owned(),
+        ),
+        (Some(ordered_child_ids_json), None) => decode_resequence_child_ids(
+            ordered_child_ids_json,
+            "parse resequence child ids json failed",
+        ),
+        (None, Some(ordered_child_ids_path)) => {
+            let raw_child_ids = fs::read_to_string(ordered_child_ids_path)
+                .map_err(|error| format!("read resequence child ids path failed: {error}"))?;
+            decode_resequence_child_ids(
+                raw_child_ids.as_str(),
+                "parse resequence child ids path json failed",
+            )
+        }
+    }
+}
+
+fn decode_resequence_child_ids(raw_child_ids: &str, context: &str) -> CliResult<Vec<String>> {
+    let ordered_child_ids = serde_json::from_str::<Vec<String>>(raw_child_ids)
+        .map_err(|error| format!("{context}: {error}"))?;
+    let child_count = ordered_child_ids.len();
+    if child_count < WORK_UNIT_SPLIT_MIN_CHILDREN {
+        return Err(format!(
+            "resequence child ids payload must contain at least {WORK_UNIT_SPLIT_MIN_CHILDREN} child ids"
+        ));
+    }
+    Ok(ordered_child_ids)
+}
+
 fn render_work_unit_snapshot_text(snapshot: &WorkUnitSnapshot) -> String {
     let work_unit = &snapshot.work_unit;
     let lease_text = snapshot
@@ -1189,6 +1279,7 @@ fn render_work_unit_snapshot_text(snapshot: &WorkUnitSnapshot) -> String {
     let last_error = work_unit.last_error.as_deref().unwrap_or("-");
     let blocking_reason = work_unit.blocking_reason.as_deref().unwrap_or("-");
     let parent = work_unit.parent_work_unit_id.as_deref().unwrap_or("-");
+    let plan_position = render_optional_i64(work_unit.plan_position);
     let superseded_by = work_unit
         .superseded_by_work_unit_id
         .as_deref()
@@ -1201,7 +1292,7 @@ fn render_work_unit_snapshot_text(snapshot: &WorkUnitSnapshot) -> String {
     let source = render_source_ref(&work_unit.source_ref);
     let retry = render_retry_policy(&work_unit.retry_policy);
     format!(
-        "id={} kind={} status={} priority={} attempts={} next_run_at_ms={} archived_at_ms={}\nsource={}\nretry={}\nparent_work_unit_id={}\nsuperseded_by_work_unit_id={}\nchild_work_unit_ids={}\nsupersedes_work_unit_ids={}\nassigned_to={}\nblocks_work_unit_ids={}\nblocked_by_work_unit_ids={}\ntitle={}\ndescription={}\nlast_error={}\nblocking_reason={}\nresult_payload_json={}\n{}\n{}\n",
+        "id={} kind={} status={} priority={} attempts={} next_run_at_ms={} archived_at_ms={}\nsource={}\nretry={}\nparent_work_unit_id={}\nplan_position={}\nsuperseded_by_work_unit_id={}\nchild_work_unit_ids={}\nsupersedes_work_unit_ids={}\nassigned_to={}\nblocks_work_unit_ids={}\nblocked_by_work_unit_ids={}\ntitle={}\ndescription={}\nlast_error={}\nblocking_reason={}\nresult_payload_json={}\n{}\n{}\n",
         work_unit.work_unit_id,
         work_unit.kind.as_str(),
         work_unit.status.as_str(),
@@ -1212,6 +1303,7 @@ fn render_work_unit_snapshot_text(snapshot: &WorkUnitSnapshot) -> String {
         source,
         retry,
         parent,
+        plan_position,
         superseded_by,
         children,
         supersedes,
@@ -1260,6 +1352,22 @@ fn render_work_unit_supersede_text(view: &WorkUnitSupersedeView) -> String {
     )
 }
 
+fn render_work_unit_resequence_text(view: &WorkUnitResequenceView) -> String {
+    let ordered_child_work_unit_ids = view
+        .children
+        .iter()
+        .map(|child| child.work_unit.work_unit_id.as_str())
+        .collect::<Vec<_>>();
+    let ordered_child_work_unit_ids = ordered_child_work_unit_ids.join(",");
+    format!(
+        "resequence_parent_id={} ordered_child_work_unit_ids={}\n{}{}",
+        view.parent.work_unit.work_unit_id,
+        ordered_child_work_unit_ids,
+        render_work_unit_snapshot_text(&view.parent),
+        render_work_unit_list_text(view.children.as_slice()),
+    )
+}
+
 fn render_work_unit_list_text(snapshots: &[WorkUnitSnapshot]) -> String {
     if snapshots.is_empty() {
         return "work_units: (none)\n".to_owned();
@@ -1276,14 +1384,16 @@ fn render_work_unit_list_text(snapshots: &[WorkUnitSnapshot]) -> String {
         let assigned_to = work_unit.assigned_to.as_deref().unwrap_or("-");
         let blocked_by_count = work_unit.blocked_by_work_unit_ids.len();
         let child_count = work_unit.child_work_unit_ids.len();
+        let plan_position = render_optional_i64(work_unit.plan_position);
         let line = format!(
-            "- id={} kind={} status={} priority={} attempts={} next_run_at_ms={} lease_owner={} assigned_to={} child_count={} blocked_by_count={}",
+            "- id={} kind={} status={} priority={} attempts={} next_run_at_ms={} plan_position={} lease_owner={} assigned_to={} child_count={} blocked_by_count={}",
             work_unit.work_unit_id,
             work_unit.kind.as_str(),
             work_unit.status.as_str(),
             work_unit.priority.as_str(),
             work_unit.attempt_count,
             work_unit.next_run_at_ms,
+            plan_position,
             lease_owner,
             assigned_to,
             child_count,
