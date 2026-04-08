@@ -75,6 +75,10 @@ fn cli_work_unit_help_mentions_durable_runtime_commands() {
         "work-unit help should expose multi-child decomposition: {help}"
     );
     assert!(
+        help.contains("replan"),
+        "work-unit help should expose plan revision: {help}"
+    );
+    assert!(
         help.contains("resequence"),
         "work-unit help should expose plan-order changes: {help}"
     );
@@ -405,6 +409,69 @@ fn cli_work_unit_parse_accepts_resequence_shape() {
     );
     assert_eq!(options.actor.as_deref(), Some("planner"));
     assert_eq!(options.now_ms, Some(5151));
+    assert!(options.json);
+}
+
+#[test]
+fn cli_work_unit_parse_accepts_replan_shape() {
+    let ordered_child_ids_json = r#"["wu-child-b","wu-child-a"]"#;
+    let cli = try_parse_cli([
+        "loongclaw",
+        "work-unit",
+        "replan",
+        "--config",
+        "/tmp/loongclaw.toml",
+        "--id",
+        "wu-parent",
+        "--title",
+        "Replanned parent",
+        "--description",
+        "New plan summary",
+        "--priority",
+        "critical",
+        "--status",
+        "triaged",
+        "--blocking-reason",
+        "waiting on revised plan",
+        "--ordered-child-ids-json",
+        ordered_child_ids_json,
+        "--actor",
+        "planner",
+        "--now-ms",
+        "6161",
+        "--json",
+    ])
+    .expect("work-unit replan CLI should parse");
+
+    let command = cli.command.expect("CLI should parse a subcommand");
+    let Commands::WorkUnit { command } = command else {
+        panic!("unexpected CLI parse result: {command:?}");
+    };
+    let work_unit_runtime::WorkUnitCommands::Replan(options) = command else {
+        panic!("unexpected replan parse result: {command:?}");
+    };
+
+    assert_eq!(options.id, "wu-parent");
+    assert_eq!(options.title.as_deref(), Some("Replanned parent"));
+    assert_eq!(options.description.as_deref(), Some("New plan summary"));
+    assert_eq!(
+        options.priority,
+        Some(work_unit_runtime::WorkUnitPriorityArg::Critical)
+    );
+    assert_eq!(
+        options.status,
+        Some(work_unit_runtime::WorkUnitStatusArg::Triaged)
+    );
+    assert_eq!(
+        options.blocking_reason.as_deref(),
+        Some("waiting on revised plan")
+    );
+    assert_eq!(
+        options.ordered_child_ids_json.as_deref(),
+        Some(ordered_child_ids_json)
+    );
+    assert_eq!(options.actor.as_deref(), Some("planner"));
+    assert_eq!(options.now_ms, Some(6161));
     assert!(options.json);
 }
 
@@ -1159,6 +1226,121 @@ fn work_unit_cli_resequence_reorders_parent_child_plan() {
         .expect("child b");
     assert_eq!(child_a.work_unit.plan_position, Some(2));
     assert_eq!(child_b.work_unit.plan_position, Some(1));
+}
+
+#[test]
+fn work_unit_cli_replan_updates_parent_summary_and_child_order() {
+    let _env = work_unit_environment_guard();
+    let root = unique_temp_dir("loongclaw-work-unit-replan-cli");
+    let config_path = write_work_unit_config(&root);
+    let config_path_string = config_path.display().to_string();
+
+    work_unit_runtime::run_work_unit_cli(work_unit_runtime::WorkUnitCommands::Create(
+        work_unit_runtime::WorkUnitCreateCommandOptions {
+            config: Some(config_path_string.clone()),
+            id: Some("wu-parent".to_owned()),
+            kind: work_unit_runtime::WorkUnitKindArg::Feature,
+            title: "Parent work".to_owned(),
+            description: "Coordinate child items".to_owned(),
+            status: work_unit_runtime::WorkUnitStatusArg::Ready,
+            priority: work_unit_runtime::WorkUnitPriorityArg::High,
+            max_attempts: 3,
+            initial_backoff_ms: 1_000,
+            max_backoff_ms: 8_000,
+            next_run_at_ms: Some(1_000),
+            actor: Some("operator".to_owned()),
+            source_kind: work_unit_runtime::WorkSourceKindArg::Discord,
+            project_id: Some("loongclaw-ai/server".to_owned()),
+            channel_id: Some("feature".to_owned()),
+            thread_id: Some("thread-parent".to_owned()),
+            message_id: Some("message-parent".to_owned()),
+            external_ref: Some("parent-thread".to_owned()),
+            source_url: None,
+            parent_work_unit_id: None,
+            json: true,
+        },
+    ))
+    .expect("create parent work unit via CLI");
+
+    let children_json = r#"
+[
+  {
+    "id": "wu-child-a",
+    "kind": "issue",
+    "title": "Child A",
+    "description": "Handle dependency A",
+    "next_run_at_ms": 1010
+  },
+  {
+    "id": "wu-child-b",
+    "kind": "issue",
+    "title": "Child B",
+    "description": "Handle dependency B",
+    "next_run_at_ms": 1020
+  }
+]
+"#;
+    work_unit_runtime::run_work_unit_cli(work_unit_runtime::WorkUnitCommands::Split(
+        work_unit_runtime::WorkUnitSplitCommandOptions {
+            config: Some(config_path_string.clone()),
+            parent_id: "wu-parent".to_owned(),
+            children_json: Some(children_json.to_owned()),
+            children_path: None,
+            block_parent: true,
+            actor: Some("planner".to_owned()),
+            json: true,
+        },
+    ))
+    .expect("split parent work unit via CLI");
+
+    let ordered_child_ids_json = r#"["wu-child-b","wu-child-a"]"#;
+    work_unit_runtime::run_work_unit_cli(work_unit_runtime::WorkUnitCommands::Replan(
+        work_unit_runtime::WorkUnitReplanCommandOptions {
+            config: Some(config_path_string),
+            id: "wu-parent".to_owned(),
+            title: Some("Replanned parent".to_owned()),
+            description: Some("Updated plan summary".to_owned()),
+            status: Some(work_unit_runtime::WorkUnitStatusArg::Triaged),
+            priority: Some(work_unit_runtime::WorkUnitPriorityArg::Critical),
+            next_run_at_ms: Some(1_111),
+            blocking_reason: Some("awaiting revised execution".to_owned()),
+            clear_blocking_reason: false,
+            ordered_child_ids_json: Some(ordered_child_ids_json.to_owned()),
+            ordered_child_ids_path: None,
+            actor: Some("planner".to_owned()),
+            now_ms: Some(1_030),
+            json: true,
+        },
+    ))
+    .expect("replan parent work unit via CLI");
+
+    let repository = load_work_unit_repository(&config_path);
+    let parent_snapshot = repository
+        .load_work_unit_snapshot("wu-parent")
+        .expect("load parent snapshot")
+        .expect("parent snapshot");
+    assert_eq!(parent_snapshot.work_unit.title, "Replanned parent");
+    assert_eq!(
+        parent_snapshot.work_unit.description,
+        "Updated plan summary"
+    );
+    assert_eq!(
+        parent_snapshot.work_unit.priority,
+        loongclaw_contracts::WorkUnitPriority::Critical
+    );
+    assert_eq!(
+        parent_snapshot.work_unit.status,
+        loongclaw_contracts::WorkUnitStatus::Triaged
+    );
+    assert_eq!(parent_snapshot.work_unit.next_run_at_ms, 1_111);
+    assert_eq!(
+        parent_snapshot.work_unit.blocking_reason.as_deref(),
+        Some("awaiting revised execution")
+    );
+    assert_eq!(
+        parent_snapshot.work_unit.child_work_unit_ids,
+        vec!["wu-child-b".to_owned(), "wu-child-a".to_owned()]
+    );
 }
 
 #[test]

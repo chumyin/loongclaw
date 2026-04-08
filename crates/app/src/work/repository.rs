@@ -35,6 +35,7 @@ const WORK_UNIT_REVIEW_RECORDED_EVENT_KIND: &str = "work_unit_review_recorded";
 const WORK_UNIT_CHILD_CREATED_EVENT_KIND: &str = "work_unit_child_created";
 const WORK_UNIT_SPLIT_APPLIED_EVENT_KIND: &str = "work_unit_split_applied";
 const WORK_UNIT_SUPERSEDED_EVENT_KIND: &str = "work_unit_superseded";
+const WORK_UNIT_REPLANNED_EVENT_KIND: &str = "work_unit_replanned";
 const WORK_UNIT_RESEQUENCED_EVENT_KIND: &str = "work_unit_resequenced";
 
 #[derive(Debug, Clone, PartialEq)]
@@ -240,6 +241,27 @@ pub struct SupersedeWorkUnitResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplanWorkUnitRequest {
+    pub work_unit_id: String,
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub status: Option<WorkUnitStatus>,
+    pub priority: Option<WorkUnitPriority>,
+    pub next_run_at_ms: Option<i64>,
+    pub blocking_reason: Option<String>,
+    pub clear_blocking_reason: bool,
+    pub ordered_child_work_unit_ids: Option<Vec<String>>,
+    pub actor: Option<String>,
+    pub now_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ReplanWorkUnitResult {
+    pub parent: WorkUnitSnapshot,
+    pub children: Vec<WorkUnitSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResequenceChildWorkUnitsRequest {
     pub parent_work_unit_id: String,
     pub ordered_child_work_unit_ids: Vec<String>,
@@ -290,6 +312,18 @@ struct RawWorkUnitRecord {
     created_at_ms: i64,
     updated_at_ms: i64,
     archived_at_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedWorkUnitUpdate {
+    changed_fields: Vec<String>,
+    next_title: String,
+    next_description: String,
+    next_status: String,
+    next_priority: String,
+    next_priority_rank: i64,
+    next_next_run_at_ms: i64,
+    next_blocking_reason: Option<String>,
 }
 
 impl WorkUnitRepository {
@@ -811,6 +845,125 @@ impl WorkUnitRepository {
         Ok(ResequenceChildWorkUnitsResult { parent, children })
     }
 
+    pub fn replan_work_unit(
+        &self,
+        request: ReplanWorkUnitRequest,
+    ) -> Result<Option<ReplanWorkUnitResult>, String> {
+        let work_unit_id = normalize_required_text(&request.work_unit_id, "work_unit_id")?;
+        let actor = normalize_optional_text(request.actor);
+        let now_ms = request.now_ms.unwrap_or_else(current_unix_ms);
+        let ordered_child_work_unit_ids = request
+            .ordered_child_work_unit_ids
+            .as_ref()
+            .map(|ids| normalize_resequence_child_ids(ids.as_slice()))
+            .transpose()?;
+        let mut connection = self.open_connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| format!("open work unit replan transaction failed: {error}"))?;
+        let Some(raw_record) = load_raw_work_unit_with_conn(&transaction, &work_unit_id)? else {
+            return Ok(None);
+        };
+        if raw_record.archived_at_ms.is_some() {
+            return Ok(None);
+        }
+
+        let resolved_update = resolve_work_unit_update(
+            &raw_record,
+            request.title.as_deref(),
+            request.description.as_deref(),
+            request.status,
+            request.priority,
+            request.next_run_at_ms,
+            request.blocking_reason.as_deref(),
+            request.clear_blocking_reason,
+        )?;
+        let previous_child_work_unit_ids = raw_record.child_work_unit_ids.clone();
+        let next_child_work_unit_ids = match ordered_child_work_unit_ids {
+            Some(ordered_child_work_unit_ids) => {
+                validate_resequence_child_ids(
+                    work_unit_id.as_str(),
+                    previous_child_work_unit_ids.as_slice(),
+                    ordered_child_work_unit_ids.as_slice(),
+                )?;
+                apply_resequence_in_tx(
+                    &transaction,
+                    ordered_child_work_unit_ids.as_slice(),
+                    now_ms,
+                )?;
+                ordered_child_work_unit_ids
+            }
+            None => previous_child_work_unit_ids.clone(),
+        };
+        let child_order_changed = previous_child_work_unit_ids != next_child_work_unit_ids;
+        let update_changed = !resolved_update.changed_fields.is_empty();
+        let changed = child_order_changed || update_changed;
+        if !changed {
+            transaction.commit().map_err(|error| {
+                format!("commit unchanged work unit replan transaction failed: {error}")
+            })?;
+            let parent = self.load_work_unit_snapshot(work_unit_id.as_str())?;
+            let parent =
+                parent.ok_or_else(|| "work unit disappeared after unchanged replan".to_owned())?;
+            let children = load_ordered_child_snapshots(
+                self,
+                parent.work_unit.child_work_unit_ids.as_slice(),
+            )?;
+            return Ok(Some(ReplanWorkUnitResult { parent, children }));
+        }
+
+        if update_changed {
+            apply_resolved_work_unit_update_in_tx(
+                &transaction,
+                work_unit_id.as_str(),
+                &resolved_update,
+                now_ms,
+            )?;
+        } else {
+            touch_work_unit(&transaction, work_unit_id.as_str(), now_ms)?;
+        }
+
+        let event_payload = json!({
+            "changed_fields": resolved_update.changed_fields,
+            "previous": {
+                "title": raw_record.title,
+                "description": raw_record.description,
+                "status": raw_record.status,
+                "priority": raw_record.priority,
+                "next_run_at_ms": raw_record.next_run_at_ms,
+                "blocking_reason": raw_record.blocking_reason,
+                "ordered_child_work_unit_ids": previous_child_work_unit_ids,
+            },
+            "current": {
+                "title": resolved_update.next_title,
+                "description": resolved_update.next_description,
+                "status": resolved_update.next_status,
+                "priority": resolved_update.next_priority,
+                "next_run_at_ms": resolved_update.next_next_run_at_ms,
+                "blocking_reason": resolved_update.next_blocking_reason,
+                "ordered_child_work_unit_ids": next_child_work_unit_ids,
+            }
+        });
+        insert_event_in_tx(
+            &transaction,
+            work_unit_id.as_str(),
+            WORK_UNIT_REPLANNED_EVENT_KIND,
+            actor.as_deref(),
+            &event_payload,
+            now_ms,
+        )?;
+        transaction
+            .commit()
+            .map_err(|error| format!("commit work unit replan transaction failed: {error}"))?;
+
+        let parent = self.load_work_unit_snapshot(work_unit_id.as_str())?;
+        let parent = parent.ok_or_else(|| "work unit disappeared after replan".to_owned())?;
+        let children =
+            load_ordered_child_snapshots(self, parent.work_unit.child_work_unit_ids.as_slice())?;
+
+        Ok(Some(ReplanWorkUnitResult { parent, children }))
+    }
+
     pub fn load_work_unit_snapshot(
         &self,
         work_unit_id: &str,
@@ -1259,120 +1412,33 @@ impl WorkUnitRepository {
         if raw_record.archived_at_ms.is_some() {
             return Ok(None);
         }
+        let resolved_update = resolve_work_unit_update(
+            &raw_record,
+            request.title.as_deref(),
+            request.description.as_deref(),
+            request.status,
+            request.priority,
+            request.next_run_at_ms,
+            request.blocking_reason.as_deref(),
+            request.clear_blocking_reason,
+        )?;
 
-        let current_status = WorkUnitStatus::parse(&raw_record.status)
-            .ok_or_else(|| format!("unknown work unit status `{}`", raw_record.status))?;
-        let mut changed_fields = Vec::new();
-
-        let next_title = match request.title {
-            Some(title) => {
-                let title = normalize_required_text(title.as_str(), "title")?;
-                if title != raw_record.title {
-                    changed_fields.push("title".to_owned());
-                }
-                title
-            }
-            None => raw_record.title.clone(),
-        };
-
-        let next_description = match request.description {
-            Some(description) => {
-                let description = normalize_required_text(description.as_str(), "description")?;
-                if description != raw_record.description {
-                    changed_fields.push("description".to_owned());
-                }
-                description
-            }
-            None => raw_record.description.clone(),
-        };
-
-        let next_status = match request.status {
-            Some(status) => {
-                validate_manual_update_status(current_status, status)?;
-                let status_label = status.as_str().to_owned();
-                if status_label != raw_record.status {
-                    changed_fields.push("status".to_owned());
-                }
-                status_label
-            }
-            None => raw_record.status.clone(),
-        };
-
-        let next_priority = match request.priority {
-            Some(priority) => {
-                let priority_label = priority.as_str().to_owned();
-                if priority_label != raw_record.priority {
-                    changed_fields.push("priority".to_owned());
-                }
-                priority_label
-            }
-            None => raw_record.priority.clone(),
-        };
-        let next_priority_rank = priority_rank(
-            WorkUnitPriority::parse(next_priority.as_str())
-                .ok_or_else(|| format!("unknown work unit priority `{}`", next_priority))?,
-        );
-
-        let next_next_run_at_ms = match request.next_run_at_ms {
-            Some(next_run_at_ms) => {
-                if next_run_at_ms != raw_record.next_run_at_ms {
-                    changed_fields.push("next_run_at_ms".to_owned());
-                }
-                next_run_at_ms
-            }
-            None => raw_record.next_run_at_ms,
-        };
-
-        let explicit_blocking_reason = request
-            .blocking_reason
-            .map(Some)
-            .unwrap_or_else(|| raw_record.blocking_reason.clone());
-        let normalized_blocking_reason = normalize_optional_text(explicit_blocking_reason);
-        let next_blocking_reason = if request.clear_blocking_reason {
-            None
-        } else {
-            normalized_blocking_reason
-        };
-        if next_blocking_reason != raw_record.blocking_reason {
-            changed_fields.push("blocking_reason".to_owned());
-        }
-
-        if changed_fields.is_empty() {
+        if resolved_update.changed_fields.is_empty() {
             transaction.commit().map_err(|error| {
                 format!("commit unchanged work unit update transaction failed: {error}")
             })?;
             return self.load_work_unit_snapshot(&work_unit_id);
         }
 
-        transaction
-            .execute(
-                "UPDATE work_units
-                 SET title = ?1,
-                     description = ?2,
-                     status = ?3,
-                     priority = ?4,
-                     priority_rank = ?5,
-                     next_run_at_ms = ?6,
-                     blocking_reason = ?7,
-                     updated_at_ms = ?8
-                 WHERE work_unit_id = ?9
-                   AND archived_at_ms IS NULL",
-                params![
-                    next_title,
-                    next_description,
-                    next_status,
-                    next_priority,
-                    next_priority_rank,
-                    next_next_run_at_ms,
-                    next_blocking_reason,
-                    now_ms,
-                    work_unit_id,
-                ],
-            )
-            .map_err(|error| format!("update work unit fields failed: {error}"))?;
+        apply_resolved_work_unit_update_in_tx(
+            &transaction,
+            &work_unit_id,
+            &resolved_update,
+            now_ms,
+        )?;
 
         let event_payload = json!({
-            "changed_fields": changed_fields,
+            "changed_fields": resolved_update.changed_fields,
             "previous": {
                 "title": raw_record.title,
                 "description": raw_record.description,
@@ -1382,12 +1448,12 @@ impl WorkUnitRepository {
                 "blocking_reason": raw_record.blocking_reason,
             },
             "current": {
-                "title": next_title,
-                "description": next_description,
-                "status": next_status,
-                "priority": next_priority,
-                "next_run_at_ms": next_next_run_at_ms,
-                "blocking_reason": next_blocking_reason,
+                "title": resolved_update.next_title,
+                "description": resolved_update.next_description,
+                "status": resolved_update.next_status,
+                "priority": resolved_update.next_priority,
+                "next_run_at_ms": resolved_update.next_next_run_at_ms,
+                "blocking_reason": resolved_update.next_blocking_reason,
             }
         });
         insert_event_in_tx(
@@ -3454,6 +3520,153 @@ fn validate_resequence_child_ids(
     Ok(())
 }
 
+fn apply_resequence_in_tx(
+    transaction: &Transaction<'_>,
+    ordered_child_work_unit_ids: &[String],
+    now_ms: i64,
+) -> Result<(), String> {
+    for (index, child_work_unit_id) in ordered_child_work_unit_ids.iter().enumerate() {
+        let plan_position = i64::try_from(index + 1)
+            .map_err(|error| format!("plan position overflowed i64: {error}"))?;
+        set_child_plan_position_in_tx(
+            transaction,
+            child_work_unit_id.as_str(),
+            plan_position,
+            now_ms,
+        )?;
+    }
+
+    Ok(())
+}
+
+fn resolve_work_unit_update(
+    raw_record: &RawWorkUnitRecord,
+    title: Option<&str>,
+    description: Option<&str>,
+    status: Option<WorkUnitStatus>,
+    priority: Option<WorkUnitPriority>,
+    next_run_at_ms: Option<i64>,
+    blocking_reason: Option<&str>,
+    clear_blocking_reason: bool,
+) -> Result<ResolvedWorkUnitUpdate, String> {
+    let current_status = WorkUnitStatus::parse(&raw_record.status)
+        .ok_or_else(|| format!("unknown work unit status `{}`", raw_record.status))?;
+    let mut changed_fields = Vec::new();
+
+    let next_title = match title {
+        Some(title) => {
+            let title = normalize_required_text(title, "title")?;
+            if title != raw_record.title {
+                changed_fields.push("title".to_owned());
+            }
+            title
+        }
+        None => raw_record.title.clone(),
+    };
+    let next_description = match description {
+        Some(description) => {
+            let description = normalize_required_text(description, "description")?;
+            if description != raw_record.description {
+                changed_fields.push("description".to_owned());
+            }
+            description
+        }
+        None => raw_record.description.clone(),
+    };
+    let next_status = match status {
+        Some(status) => {
+            validate_manual_update_status(current_status, status)?;
+            let status_label = status.as_str().to_owned();
+            if status_label != raw_record.status {
+                changed_fields.push("status".to_owned());
+            }
+            status_label
+        }
+        None => raw_record.status.clone(),
+    };
+    let next_priority = match priority {
+        Some(priority) => {
+            let priority_label = priority.as_str().to_owned();
+            if priority_label != raw_record.priority {
+                changed_fields.push("priority".to_owned());
+            }
+            priority_label
+        }
+        None => raw_record.priority.clone(),
+    };
+    let parsed_priority = WorkUnitPriority::parse(next_priority.as_str())
+        .ok_or_else(|| format!("unknown work unit priority `{}`", next_priority))?;
+    let next_priority_rank = priority_rank(parsed_priority);
+    let next_next_run_at_ms = match next_run_at_ms {
+        Some(next_run_at_ms) => {
+            if next_run_at_ms != raw_record.next_run_at_ms {
+                changed_fields.push("next_run_at_ms".to_owned());
+            }
+            next_run_at_ms
+        }
+        None => raw_record.next_run_at_ms,
+    };
+    let explicit_blocking_reason = blocking_reason
+        .map(str::to_owned)
+        .map(Some)
+        .unwrap_or_else(|| raw_record.blocking_reason.clone());
+    let normalized_blocking_reason = normalize_optional_text(explicit_blocking_reason);
+    let next_blocking_reason = if clear_blocking_reason {
+        None
+    } else {
+        normalized_blocking_reason
+    };
+    if next_blocking_reason != raw_record.blocking_reason {
+        changed_fields.push("blocking_reason".to_owned());
+    }
+
+    Ok(ResolvedWorkUnitUpdate {
+        changed_fields,
+        next_title,
+        next_description,
+        next_status,
+        next_priority,
+        next_priority_rank,
+        next_next_run_at_ms,
+        next_blocking_reason,
+    })
+}
+
+fn apply_resolved_work_unit_update_in_tx(
+    transaction: &Transaction<'_>,
+    work_unit_id: &str,
+    resolved_update: &ResolvedWorkUnitUpdate,
+    now_ms: i64,
+) -> Result<(), String> {
+    transaction
+        .execute(
+            "UPDATE work_units
+             SET title = ?1,
+                 description = ?2,
+                 status = ?3,
+                 priority = ?4,
+                 priority_rank = ?5,
+                 next_run_at_ms = ?6,
+                 blocking_reason = ?7,
+                 updated_at_ms = ?8
+             WHERE work_unit_id = ?9
+               AND archived_at_ms IS NULL",
+            params![
+                resolved_update.next_title,
+                resolved_update.next_description,
+                resolved_update.next_status,
+                resolved_update.next_priority,
+                resolved_update.next_priority_rank,
+                resolved_update.next_next_run_at_ms,
+                resolved_update.next_blocking_reason,
+                now_ms,
+                work_unit_id,
+            ],
+        )
+        .map_err(|error| format!("update work unit fields failed: {error}"))?;
+    Ok(())
+}
+
 fn load_ordered_child_snapshots(
     repository: &WorkUnitRepository,
     child_work_unit_ids: &[String],
@@ -3488,16 +3701,17 @@ mod tests {
         AcquireWorkUnitLeaseRequest, AddWorkUnitDependencyRequest, AppendWorkUnitNoteRequest,
         ArchiveWorkUnitRequest, AssignWorkUnitRequest, CompleteWorkUnitRequest,
         CreateChildWorkUnitRequest, NewWorkUnitRecord, RecordWorkUnitReviewDecisionRequest,
-        RemoveWorkUnitDependencyRequest, RequestWorkUnitReviewRequest,
+        RemoveWorkUnitDependencyRequest, ReplanWorkUnitRequest, RequestWorkUnitReviewRequest,
         ResequenceChildWorkUnitsRequest, SplitWorkUnitChildRequest, SplitWorkUnitRequest,
         StartWorkUnitLeaseRequest, SupersedeWorkUnitRequest, UpdateWorkUnitRequest,
         WORK_UNIT_ASSIGNED_EVENT_KIND, WORK_UNIT_CHILD_CREATED_EVENT_KIND,
         WORK_UNIT_DEPENDENCY_ADDED_EVENT_KIND, WORK_UNIT_DEPENDENCY_REMOVED_EVENT_KIND,
-        WORK_UNIT_NOTE_ADDED_EVENT_KIND, WORK_UNIT_RESEQUENCED_EVENT_KIND,
-        WORK_UNIT_REVIEW_RECORDED_EVENT_KIND, WORK_UNIT_REVIEW_REQUESTED_EVENT_KIND,
-        WORK_UNIT_SPLIT_APPLIED_EVENT_KIND, WORK_UNIT_SUPERSEDED_EVENT_KIND,
-        WORK_UNIT_UPDATED_EVENT_KIND, WorkUnitCompletionDisposition, WorkUnitHeartbeatRequest,
-        WorkUnitListQuery, WorkUnitRepository, WorkUnitReviewDecision,
+        WORK_UNIT_NOTE_ADDED_EVENT_KIND, WORK_UNIT_REPLANNED_EVENT_KIND,
+        WORK_UNIT_RESEQUENCED_EVENT_KIND, WORK_UNIT_REVIEW_RECORDED_EVENT_KIND,
+        WORK_UNIT_REVIEW_REQUESTED_EVENT_KIND, WORK_UNIT_SPLIT_APPLIED_EVENT_KIND,
+        WORK_UNIT_SUPERSEDED_EVENT_KIND, WORK_UNIT_UPDATED_EVENT_KIND,
+        WorkUnitCompletionDisposition, WorkUnitHeartbeatRequest, WorkUnitListQuery,
+        WorkUnitRepository, WorkUnitReviewDecision,
     };
     use loongclaw_contracts::{
         WorkSourceKind, WorkUnitKind, WorkUnitPriority, WorkUnitRetryPolicy, WorkUnitReviewStatus,
@@ -4042,6 +4256,118 @@ mod tests {
                 .iter()
                 .any(|event| event.event_kind == WORK_UNIT_RESEQUENCED_EVENT_KIND),
             "expected resequenced event on parent"
+        );
+    }
+
+    #[test]
+    fn replan_work_unit_updates_parent_fields_and_child_order_atomically() {
+        let config = isolated_memory_config("replan-work-unit");
+        let repository = WorkUnitRepository::new(&config).expect("repository");
+        let parent = NewWorkUnitRecord {
+            work_unit_id: Some("wu-parent".to_owned()),
+            title: "Parent".to_owned(),
+            description: "Original plan".to_owned(),
+            ..sample_work_unit(WorkUnitStatus::Ready)
+        };
+        repository
+            .create_work_unit(parent, Some("operator"))
+            .expect("create parent work unit");
+
+        let child_a = SplitWorkUnitChildRequest {
+            child: NewWorkUnitRecord {
+                work_unit_id: Some("wu-child-a".to_owned()),
+                kind: WorkUnitKind::Issue,
+                title: "Child A".to_owned(),
+                description: "Handle dependency A".to_owned(),
+                source_ref: WorkUnitSourceRef::default(),
+                status: WorkUnitStatus::Ready,
+                priority: WorkUnitPriority::Normal,
+                retry_policy: WorkUnitRetryPolicy::default(),
+                parent_work_unit_id: None,
+                plan_position: None,
+                next_run_at_ms: Some(1_010),
+            },
+            inherit_parent_source_ref: true,
+            inherit_parent_retry_policy: true,
+            inherit_parent_priority: true,
+        };
+        let child_b = SplitWorkUnitChildRequest {
+            child: NewWorkUnitRecord {
+                work_unit_id: Some("wu-child-b".to_owned()),
+                kind: WorkUnitKind::Issue,
+                title: "Child B".to_owned(),
+                description: "Handle dependency B".to_owned(),
+                source_ref: WorkUnitSourceRef::default(),
+                status: WorkUnitStatus::Ready,
+                priority: WorkUnitPriority::Normal,
+                retry_policy: WorkUnitRetryPolicy::default(),
+                parent_work_unit_id: None,
+                plan_position: None,
+                next_run_at_ms: Some(1_020),
+            },
+            inherit_parent_source_ref: true,
+            inherit_parent_retry_policy: true,
+            inherit_parent_priority: true,
+        };
+        repository
+            .split_work_unit(SplitWorkUnitRequest {
+                parent_work_unit_id: "wu-parent".to_owned(),
+                children: vec![child_a, child_b],
+                block_parent: true,
+                actor: Some("planner".to_owned()),
+            })
+            .expect("split work unit");
+
+        let replanned = repository
+            .replan_work_unit(ReplanWorkUnitRequest {
+                work_unit_id: "wu-parent".to_owned(),
+                title: Some("Replanned parent".to_owned()),
+                description: Some("Updated plan summary".to_owned()),
+                status: Some(WorkUnitStatus::Triaged),
+                priority: Some(WorkUnitPriority::Critical),
+                next_run_at_ms: Some(1_111),
+                blocking_reason: Some("waiting on revised execution".to_owned()),
+                clear_blocking_reason: false,
+                ordered_child_work_unit_ids: Some(vec![
+                    "wu-child-b".to_owned(),
+                    "wu-child-a".to_owned(),
+                ]),
+                actor: Some("planner".to_owned()),
+                now_ms: Some(2_000),
+            })
+            .expect("replan work unit")
+            .expect("replanned result");
+
+        assert_eq!(replanned.parent.work_unit.title, "Replanned parent");
+        assert_eq!(
+            replanned.parent.work_unit.description,
+            "Updated plan summary"
+        );
+        assert_eq!(replanned.parent.work_unit.status, WorkUnitStatus::Triaged);
+        assert_eq!(
+            replanned.parent.work_unit.priority,
+            WorkUnitPriority::Critical
+        );
+        assert_eq!(replanned.parent.work_unit.next_run_at_ms, 1_111);
+        assert_eq!(
+            replanned.parent.work_unit.blocking_reason.as_deref(),
+            Some("waiting on revised execution")
+        );
+        assert_eq!(
+            replanned.parent.work_unit.child_work_unit_ids,
+            vec!["wu-child-b".to_owned(), "wu-child-a".to_owned()]
+        );
+        assert_eq!(replanned.children[0].work_unit.plan_position, Some(1));
+        assert_eq!(replanned.children[1].work_unit.plan_position, Some(2));
+
+        let events = repository
+            .list_work_unit_events("wu-parent", 20)
+            .expect("list parent events");
+        assert!(
+            events
+                .iter()
+                .any(|event| event.event_kind == WORK_UNIT_REPLANNED_EVENT_KIND),
+            "expected replanned event on parent"
         );
     }
 

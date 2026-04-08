@@ -36,6 +36,8 @@ pub enum WorkUnitCommands {
     SpawnChild(WorkUnitSpawnChildCommandOptions),
     /// Split one parent work unit into multiple child work units
     Split(WorkUnitSplitCommandOptions),
+    /// Update one parent plan and optionally reorder its child work units
+    Replan(WorkUnitReplanCommandOptions),
     /// Reorder the existing child work units beneath one parent work unit
     Resequence(WorkUnitResequenceCommandOptions),
     /// Replace one obsolete work unit with another durable work unit
@@ -353,6 +355,38 @@ pub struct WorkUnitResequenceCommandOptions {
 }
 
 #[derive(Args, Debug, Clone, PartialEq, Eq)]
+pub struct WorkUnitReplanCommandOptions {
+    #[arg(long)]
+    pub config: Option<String>,
+    #[arg(long)]
+    pub id: String,
+    #[arg(long)]
+    pub title: Option<String>,
+    #[arg(long)]
+    pub description: Option<String>,
+    #[arg(long, value_enum)]
+    pub status: Option<WorkUnitStatusArg>,
+    #[arg(long, value_enum)]
+    pub priority: Option<WorkUnitPriorityArg>,
+    #[arg(long)]
+    pub next_run_at_ms: Option<i64>,
+    #[arg(long)]
+    pub blocking_reason: Option<String>,
+    #[arg(long, default_value_t = false)]
+    pub clear_blocking_reason: bool,
+    #[arg(long)]
+    pub ordered_child_ids_json: Option<String>,
+    #[arg(long)]
+    pub ordered_child_ids_path: Option<String>,
+    #[arg(long)]
+    pub actor: Option<String>,
+    #[arg(long)]
+    pub now_ms: Option<i64>,
+    #[arg(long, default_value_t = false)]
+    pub json: bool,
+}
+
+#[derive(Args, Debug, Clone, PartialEq, Eq)]
 pub struct WorkUnitAssignCommandOptions {
     #[arg(long)]
     pub config: Option<String>,
@@ -646,6 +680,12 @@ struct WorkUnitSplitView {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
+struct WorkUnitReplanView {
+    parent: WorkUnitSnapshot,
+    children: Vec<WorkUnitSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
 struct WorkUnitResequenceView {
     parent: WorkUnitSnapshot,
     children: Vec<WorkUnitSnapshot>,
@@ -671,6 +711,7 @@ pub fn run_work_unit_cli(command: WorkUnitCommands) -> CliResult<()> {
         WorkUnitCommands::Archive(options) => run_archive_command(options),
         WorkUnitCommands::SpawnChild(options) => run_spawn_child_command(options),
         WorkUnitCommands::Split(options) => run_split_command(options),
+        WorkUnitCommands::Replan(options) => run_replan_command(options),
         WorkUnitCommands::Resequence(options) => run_resequence_command(options),
         WorkUnitCommands::Supersede(options) => run_supersede_command(options),
         WorkUnitCommands::Assign(options) => run_assign_command(options),
@@ -940,6 +981,42 @@ fn run_split_command(options: WorkUnitSplitCommandOptions) -> CliResult<()> {
         children: result.children,
     };
     render_json_or_text(&view, options.json, render_work_unit_split_text)
+}
+
+fn run_replan_command(options: WorkUnitReplanCommandOptions) -> CliResult<()> {
+    let ordered_child_work_unit_ids = match (
+        options.ordered_child_ids_json.as_deref(),
+        options.ordered_child_ids_path.as_deref(),
+    ) {
+        (None, None) => None,
+        _ => Some(parse_resequence_child_ids(
+            options.ordered_child_ids_json.as_deref(),
+            options.ordered_child_ids_path.as_deref(),
+        )?),
+    };
+    let repository = load_work_unit_repository(options.config.as_deref())?;
+    let request = mvp::work::repository::ReplanWorkUnitRequest {
+        work_unit_id: options.id,
+        title: options.title,
+        description: options.description,
+        status: options.status.map(WorkUnitStatus::from),
+        priority: options.priority.map(WorkUnitPriority::from),
+        next_run_at_ms: options.next_run_at_ms,
+        blocking_reason: options.blocking_reason,
+        clear_blocking_reason: options.clear_blocking_reason,
+        ordered_child_work_unit_ids,
+        actor: options.actor,
+        now_ms: options.now_ms,
+    };
+    let result = repository.replan_work_unit(request)?;
+    let Some(result) = result else {
+        return Err("replan failed: work unit not found or archived".to_owned());
+    };
+    let view = WorkUnitReplanView {
+        parent: result.parent,
+        children: result.children,
+    };
+    render_json_or_text(&view, options.json, render_work_unit_replan_text)
 }
 
 fn run_resequence_command(options: WorkUnitResequenceCommandOptions) -> CliResult<()> {
@@ -1349,6 +1426,16 @@ fn render_work_unit_supersede_text(view: &WorkUnitSupersedeView) -> String {
         view.replacement.work_unit.work_unit_id,
         render_work_unit_snapshot_text(&view.obsolete),
         render_work_unit_snapshot_text(&view.replacement),
+    )
+}
+
+fn render_work_unit_replan_text(view: &WorkUnitReplanView) -> String {
+    format!(
+        "replan_parent_id={} child_count={}\n{}{}",
+        view.parent.work_unit.work_unit_id,
+        view.children.len(),
+        render_work_unit_snapshot_text(&view.parent),
+        render_work_unit_list_text(view.children.as_slice()),
     )
 }
 
