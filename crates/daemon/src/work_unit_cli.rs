@@ -29,6 +29,8 @@ pub enum WorkUnitCommands {
     Recover(WorkUnitRecoverCommandOptions),
     /// Archive one terminal work unit
     Archive(WorkUnitArchiveCommandOptions),
+    /// Create a child work unit beneath an existing parent work unit
+    SpawnChild(WorkUnitSpawnChildCommandOptions),
     /// Assign or clear a durable work-unit owner without taking a runtime lease
     Assign(WorkUnitAssignCommandOptions),
     /// Update mutable orchestration fields on a durable work unit
@@ -225,6 +227,60 @@ pub struct WorkUnitArchiveCommandOptions {
     pub actor: Option<String>,
     #[arg(long)]
     pub now_ms: Option<i64>,
+    #[arg(long, default_value_t = false)]
+    pub json: bool,
+}
+
+#[derive(Args, Debug, Clone, PartialEq, Eq)]
+pub struct WorkUnitSpawnChildCommandOptions {
+    #[arg(long)]
+    pub config: Option<String>,
+    #[arg(long)]
+    pub parent_id: String,
+    #[arg(long)]
+    pub id: Option<String>,
+    #[arg(long, value_enum)]
+    pub kind: WorkUnitKindArg,
+    #[arg(long)]
+    pub title: String,
+    #[arg(long)]
+    pub description: String,
+    #[arg(long, value_enum, default_value_t = WorkUnitStatusArg::Ready)]
+    pub status: WorkUnitStatusArg,
+    #[arg(long, value_enum)]
+    pub priority: Option<WorkUnitPriorityArg>,
+    #[arg(long)]
+    pub max_attempts: Option<u32>,
+    #[arg(long)]
+    pub initial_backoff_ms: Option<u64>,
+    #[arg(long)]
+    pub max_backoff_ms: Option<u64>,
+    #[arg(long)]
+    pub next_run_at_ms: Option<i64>,
+    #[arg(long)]
+    pub actor: Option<String>,
+    #[arg(
+        long,
+        default_value_t = true,
+        action = clap::ArgAction::Set,
+        num_args = 0..=1,
+        default_missing_value = "true"
+    )]
+    pub block_parent: bool,
+    #[arg(long, value_enum)]
+    pub source_kind: Option<WorkSourceKindArg>,
+    #[arg(long)]
+    pub project_id: Option<String>,
+    #[arg(long)]
+    pub channel_id: Option<String>,
+    #[arg(long)]
+    pub thread_id: Option<String>,
+    #[arg(long)]
+    pub message_id: Option<String>,
+    #[arg(long)]
+    pub external_ref: Option<String>,
+    #[arg(long)]
+    pub source_url: Option<String>,
     #[arg(long, default_value_t = false)]
     pub json: bool,
 }
@@ -508,6 +564,7 @@ pub fn run_work_unit_cli(command: WorkUnitCommands) -> CliResult<()> {
         WorkUnitCommands::Complete(options) => run_complete_command(options),
         WorkUnitCommands::Recover(options) => run_recover_command(options),
         WorkUnitCommands::Archive(options) => run_archive_command(options),
+        WorkUnitCommands::SpawnChild(options) => run_spawn_child_command(options),
         WorkUnitCommands::Assign(options) => run_assign_command(options),
         WorkUnitCommands::Update(options) => run_update_command(options),
         WorkUnitCommands::RequestReview(options) => run_request_review_command(options),
@@ -673,6 +730,61 @@ fn run_archive_command(options: WorkUnitArchiveCommandOptions) -> CliResult<()> 
     render_optional_snapshot(snapshot, options.json, missing_message)
 }
 
+fn run_spawn_child_command(options: WorkUnitSpawnChildCommandOptions) -> CliResult<()> {
+    let repository = load_work_unit_repository(options.config.as_deref())?;
+    let priority_is_overridden = options.priority.is_some();
+    let retry_policy_is_overridden = options.max_attempts.is_some()
+        || options.initial_backoff_ms.is_some()
+        || options.max_backoff_ms.is_some();
+    let source_ref_is_overridden = options.source_kind.is_some()
+        || options.project_id.is_some()
+        || options.channel_id.is_some()
+        || options.thread_id.is_some()
+        || options.message_id.is_some()
+        || options.external_ref.is_some()
+        || options.source_url.is_some();
+    let retry_policy = build_retry_policy_for_child(
+        options.max_attempts,
+        options.initial_backoff_ms,
+        options.max_backoff_ms,
+    );
+    let source_ref = build_source_ref_for_child(
+        options.source_kind,
+        options.project_id,
+        options.channel_id,
+        options.thread_id,
+        options.message_id,
+        options.external_ref,
+        options.source_url,
+    );
+    let child = mvp::work::repository::NewWorkUnitRecord {
+        work_unit_id: options.id,
+        kind: options.kind.into(),
+        title: options.title,
+        description: options.description,
+        source_ref,
+        status: options.status.into(),
+        priority: options
+            .priority
+            .map(WorkUnitPriority::from)
+            .unwrap_or(WorkUnitPriority::Normal),
+        retry_policy,
+        parent_work_unit_id: None,
+        next_run_at_ms: options.next_run_at_ms,
+    };
+    let request = mvp::work::repository::CreateChildWorkUnitRequest {
+        parent_work_unit_id: options.parent_id,
+        child,
+        inherit_parent_source_ref: !source_ref_is_overridden,
+        inherit_parent_retry_policy: !retry_policy_is_overridden,
+        inherit_parent_priority: !priority_is_overridden,
+        block_parent: options.block_parent,
+        actor: options.actor,
+    };
+    let snapshot = repository.create_child_work_unit(request)?;
+    render_json_or_text(&snapshot, options.json, render_work_unit_snapshot_text)
+}
+
 fn run_assign_command(options: WorkUnitAssignCommandOptions) -> CliResult<()> {
     let repository = load_work_unit_repository(options.config.as_deref())?;
     let request = mvp::work::repository::AssignWorkUnitRequest {
@@ -715,7 +827,7 @@ fn run_request_review_command(options: WorkUnitRequestReviewCommandOptions) -> C
         now_ms: options.now_ms,
     };
     let snapshot = repository.request_work_unit_review(request)?;
-    render_optional_snapshot("request-review", snapshot, options.json)
+    render_optional_snapshot(snapshot, options.json, "request-review")
 }
 
 fn run_review_decision_command(options: WorkUnitReviewDecisionCommandOptions) -> CliResult<()> {
@@ -728,7 +840,7 @@ fn run_review_decision_command(options: WorkUnitReviewDecisionCommandOptions) ->
         now_ms: options.now_ms,
     };
     let snapshot = repository.record_work_unit_review_decision(request)?;
-    render_optional_snapshot("review", snapshot, options.json)
+    render_optional_snapshot(snapshot, options.json, "review")
 }
 
 fn run_depend_command(options: WorkUnitDependCommandOptions) -> CliResult<()> {
@@ -796,6 +908,46 @@ fn load_work_unit_repository(
     }
 }
 
+fn build_retry_policy_for_child(
+    max_attempts: Option<u32>,
+    initial_backoff_ms: Option<u64>,
+    max_backoff_ms: Option<u64>,
+) -> WorkUnitRetryPolicy {
+    let mut retry_policy = WorkUnitRetryPolicy::default();
+    if let Some(max_attempts) = max_attempts {
+        retry_policy.max_attempts = max_attempts;
+    }
+    if let Some(initial_backoff_ms) = initial_backoff_ms {
+        retry_policy.initial_backoff_ms = initial_backoff_ms;
+    }
+    if let Some(max_backoff_ms) = max_backoff_ms {
+        retry_policy.max_backoff_ms = max_backoff_ms;
+    }
+    retry_policy
+}
+
+fn build_source_ref_for_child(
+    source_kind: Option<WorkSourceKindArg>,
+    project_id: Option<String>,
+    channel_id: Option<String>,
+    thread_id: Option<String>,
+    message_id: Option<String>,
+    external_ref: Option<String>,
+    source_url: Option<String>,
+) -> WorkUnitSourceRef {
+    let mut source_ref = WorkUnitSourceRef::default();
+    if let Some(source_kind) = source_kind {
+        source_ref.source_kind = source_kind.into();
+    }
+    source_ref.project_id = project_id;
+    source_ref.channel_id = channel_id;
+    source_ref.thread_id = thread_id;
+    source_ref.message_id = message_id;
+    source_ref.external_ref = external_ref;
+    source_ref.source_url = source_url;
+    source_ref
+}
+
 fn render_optional_snapshot(
     snapshot: Option<WorkUnitSnapshot>,
     as_json: bool,
@@ -857,12 +1009,13 @@ fn render_work_unit_snapshot_text(snapshot: &WorkUnitSnapshot) -> String {
     let blocking_reason = work_unit.blocking_reason.as_deref().unwrap_or("-");
     let parent = work_unit.parent_work_unit_id.as_deref().unwrap_or("-");
     let assigned_to = work_unit.assigned_to.as_deref().unwrap_or("-");
+    let children = render_string_list(work_unit.child_work_unit_ids.as_slice());
     let blocks = render_string_list(work_unit.blocks_work_unit_ids.as_slice());
     let blocked_by = render_string_list(work_unit.blocked_by_work_unit_ids.as_slice());
     let source = render_source_ref(&work_unit.source_ref);
     let retry = render_retry_policy(&work_unit.retry_policy);
     format!(
-        "id={} kind={} status={} priority={} attempts={} next_run_at_ms={} archived_at_ms={}\nsource={}\nretry={}\nparent_work_unit_id={}\nassigned_to={}\nblocks_work_unit_ids={}\nblocked_by_work_unit_ids={}\ntitle={}\ndescription={}\nlast_error={}\nblocking_reason={}\nresult_payload_json={}\n{}\n{}\n",
+        "id={} kind={} status={} priority={} attempts={} next_run_at_ms={} archived_at_ms={}\nsource={}\nretry={}\nparent_work_unit_id={}\nchild_work_unit_ids={}\nassigned_to={}\nblocks_work_unit_ids={}\nblocked_by_work_unit_ids={}\ntitle={}\ndescription={}\nlast_error={}\nblocking_reason={}\nresult_payload_json={}\n{}\n{}\n",
         work_unit.work_unit_id,
         work_unit.kind.as_str(),
         work_unit.status.as_str(),
@@ -873,6 +1026,7 @@ fn render_work_unit_snapshot_text(snapshot: &WorkUnitSnapshot) -> String {
         source,
         retry,
         parent,
+        children,
         assigned_to,
         blocks,
         blocked_by,
@@ -901,8 +1055,9 @@ fn render_work_unit_list_text(snapshots: &[WorkUnitSnapshot]) -> String {
             .unwrap_or("-");
         let assigned_to = work_unit.assigned_to.as_deref().unwrap_or("-");
         let blocked_by_count = work_unit.blocked_by_work_unit_ids.len();
+        let child_count = work_unit.child_work_unit_ids.len();
         let line = format!(
-            "- id={} kind={} status={} priority={} attempts={} next_run_at_ms={} lease_owner={} assigned_to={} blocked_by_count={}",
+            "- id={} kind={} status={} priority={} attempts={} next_run_at_ms={} lease_owner={} assigned_to={} child_count={} blocked_by_count={}",
             work_unit.work_unit_id,
             work_unit.kind.as_str(),
             work_unit.status.as_str(),
@@ -911,6 +1066,7 @@ fn render_work_unit_list_text(snapshots: &[WorkUnitSnapshot]) -> String {
             work_unit.next_run_at_ms,
             lease_owner,
             assigned_to,
+            child_count,
             blocked_by_count,
         );
         lines.push(line);

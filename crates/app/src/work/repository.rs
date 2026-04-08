@@ -30,6 +30,7 @@ const WORK_UNIT_NOTE_ADDED_EVENT_KIND: &str = "work_unit_note_added";
 const WORK_UNIT_UPDATED_EVENT_KIND: &str = "work_unit_updated";
 const WORK_UNIT_REVIEW_REQUESTED_EVENT_KIND: &str = "work_unit_review_requested";
 const WORK_UNIT_REVIEW_RECORDED_EVENT_KIND: &str = "work_unit_review_recorded";
+const WORK_UNIT_CHILD_CREATED_EVENT_KIND: &str = "work_unit_child_created";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct NewWorkUnitRecord {
@@ -185,6 +186,17 @@ pub struct RecordWorkUnitReviewDecisionRequest {
     pub now_ms: Option<i64>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct CreateChildWorkUnitRequest {
+    pub parent_work_unit_id: String,
+    pub child: NewWorkUnitRecord,
+    pub inherit_parent_source_ref: bool,
+    pub inherit_parent_retry_policy: bool,
+    pub inherit_parent_priority: bool,
+    pub block_parent: bool,
+    pub actor: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct WorkUnitRepository {
     db_path: PathBuf,
@@ -206,6 +218,7 @@ struct RawWorkUnitRecord {
     blocking_reason: Option<String>,
     parent_work_unit_id: Option<String>,
     assigned_to: Option<String>,
+    child_work_unit_ids: Vec<String>,
     blocks_work_unit_ids: Vec<String>,
     blocked_by_work_unit_ids: Vec<String>,
     review_json: Option<String>,
@@ -233,6 +246,30 @@ impl WorkUnitRepository {
         record: NewWorkUnitRecord,
         actor: Option<&str>,
     ) -> Result<WorkUnitSnapshot, String> {
+        let mut connection = self.open_connection()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| format!("open work unit create transaction failed: {error}"))?;
+        let snapshot = self.create_work_unit_in_tx(&transaction, record, actor)?;
+        transaction
+            .commit()
+            .map_err(|error| format!("commit work unit create transaction failed: {error}"))?;
+
+        self.load_work_unit_snapshot(snapshot.work_unit.work_unit_id.as_str())?
+            .ok_or_else(|| {
+                format!(
+                    "work unit `{}` disappeared after insert",
+                    snapshot.work_unit.work_unit_id
+                )
+            })
+    }
+
+    fn create_work_unit_in_tx(
+        &self,
+        transaction: &Transaction<'_>,
+        record: NewWorkUnitRecord,
+        actor: Option<&str>,
+    ) -> Result<WorkUnitSnapshot, String> {
         validate_initial_status(record.status)?;
         validate_retry_policy(&record.retry_policy)?;
 
@@ -253,11 +290,6 @@ impl WorkUnitRepository {
         let next_run_at_ms = record.next_run_at_ms.unwrap_or(now_ms);
         let priority_rank = priority_rank(record.priority);
         let normalized_actor = normalize_optional_text(actor.map(str::to_owned));
-
-        let mut connection = self.open_connection()?;
-        let transaction = connection
-            .transaction()
-            .map_err(|error| format!("open work unit create transaction failed: {error}"))?;
 
         transaction
             .execute(
@@ -313,20 +345,85 @@ impl WorkUnitRepository {
             "source_ref": source_ref,
         });
         insert_event_in_tx(
-            &transaction,
+            transaction,
             &work_unit_id,
             WORK_UNIT_CREATED_EVENT_KIND,
             normalized_actor.as_deref(),
             &event_payload,
             now_ms,
         )?;
+        self.load_work_unit_snapshot_with_conn(transaction, &work_unit_id)?
+            .ok_or_else(|| format!("work unit `{work_unit_id}` disappeared after insert"))
+    }
+
+    pub fn create_child_work_unit(
+        &self,
+        request: CreateChildWorkUnitRequest,
+    ) -> Result<WorkUnitSnapshot, String> {
+        let parent_work_unit_id =
+            normalize_required_text(&request.parent_work_unit_id, "parent_work_unit_id")?;
+        let actor = normalize_optional_text(request.actor);
+        let mut child = request.child;
+        let mut connection = self.open_connection()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| format!("open child work-unit transaction failed: {error}"))?;
+        let Some(parent_snapshot) =
+            self.load_work_unit_snapshot_with_conn(&transaction, parent_work_unit_id.as_str())?
+        else {
+            return Err(format!(
+                "parent work unit `{parent_work_unit_id}` not found"
+            ));
+        };
+        if parent_snapshot.work_unit.archived_at_ms.is_some() {
+            return Err(format!(
+                "cannot create child work for archived parent `{}`",
+                parent_work_unit_id
+            ));
+        }
+
+        child.parent_work_unit_id = Some(parent_work_unit_id.clone());
+        if request.inherit_parent_source_ref {
+            child.source_ref = parent_snapshot.work_unit.source_ref.clone();
+        }
+        if request.inherit_parent_retry_policy {
+            child.retry_policy = parent_snapshot.work_unit.retry_policy.clone();
+        }
+        if request.inherit_parent_priority {
+            child.priority = parent_snapshot.work_unit.priority;
+        }
+        let child_snapshot = self.create_work_unit_in_tx(&transaction, child, actor.as_deref())?;
+
+        if request.block_parent {
+            self.add_dependency_in_tx(
+                &transaction,
+                child_snapshot.work_unit.work_unit_id.as_str(),
+                parent_work_unit_id.as_str(),
+                actor.as_deref(),
+                child_snapshot.work_unit.created_at_ms,
+            )?;
+        }
+
+        let event_payload = json!({
+            "parent_work_unit_id": parent_work_unit_id,
+            "child_work_unit_id": child_snapshot.work_unit.work_unit_id,
+            "block_parent": request.block_parent,
+        });
+        insert_event_in_tx(
+            &transaction,
+            child_snapshot.work_unit.work_unit_id.as_str(),
+            WORK_UNIT_CHILD_CREATED_EVENT_KIND,
+            actor.as_deref(),
+            &event_payload,
+            child_snapshot.work_unit.created_at_ms,
+        )?;
 
         transaction
             .commit()
-            .map_err(|error| format!("commit work unit create transaction failed: {error}"))?;
+            .map_err(|error| format!("commit child work-unit transaction failed: {error}"))?;
 
-        self.load_work_unit_snapshot(&work_unit_id)?
-            .ok_or_else(|| format!("work unit `{work_unit_id}` disappeared after insert"))
+        self.load_work_unit_snapshot(child_snapshot.work_unit.work_unit_id.as_str())?
+            .ok_or_else(|| "child work unit disappeared after create".to_owned())
     }
 
     pub fn load_work_unit_snapshot(
@@ -335,7 +432,15 @@ impl WorkUnitRepository {
     ) -> Result<Option<WorkUnitSnapshot>, String> {
         let work_unit_id = normalize_required_text(work_unit_id, "work_unit_id")?;
         let connection = self.open_connection()?;
-        let raw = load_raw_work_unit_with_conn(&connection, &work_unit_id)?;
+        self.load_work_unit_snapshot_with_conn(&connection, &work_unit_id)
+    }
+
+    fn load_work_unit_snapshot_with_conn(
+        &self,
+        connection: &Connection,
+        work_unit_id: &str,
+    ) -> Result<Option<WorkUnitSnapshot>, String> {
+        let raw = load_raw_work_unit_with_conn(connection, work_unit_id)?;
         raw.map(try_work_unit_snapshot_from_raw).transpose()
     }
 
@@ -1177,12 +1282,35 @@ impl WorkUnitRepository {
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| format!("open work unit dependency transaction failed: {error}"))?;
-        ensure_work_unit_exists(&transaction, blocking_work_unit_id.as_str())?;
-        ensure_work_unit_exists(&transaction, blocked_work_unit_id.as_str())?;
-        let creates_cycle = would_create_dependency_cycle(
+        self.add_dependency_in_tx(
             &transaction,
             blocking_work_unit_id.as_str(),
             blocked_work_unit_id.as_str(),
+            actor.as_deref(),
+            now_ms,
+        )?;
+
+        transaction
+            .commit()
+            .map_err(|error| format!("commit work unit dependency transaction failed: {error}"))?;
+
+        self.load_work_unit_snapshot(&blocked_work_unit_id)
+    }
+
+    fn add_dependency_in_tx(
+        &self,
+        transaction: &Transaction<'_>,
+        blocking_work_unit_id: &str,
+        blocked_work_unit_id: &str,
+        actor: Option<&str>,
+        now_ms: i64,
+    ) -> Result<(), String> {
+        ensure_work_unit_exists(transaction, blocking_work_unit_id)?;
+        ensure_work_unit_exists(transaction, blocked_work_unit_id)?;
+        let creates_cycle = would_create_dependency_cycle(
+            transaction,
+            blocking_work_unit_id,
+            blocked_work_unit_id,
         )?;
         if creates_cycle {
             return Err(format!(
@@ -1199,36 +1327,29 @@ impl WorkUnitRepository {
                     created_at_ms,
                     created_by
                  ) VALUES (?1, ?2, ?3, ?4)",
-                params![
-                    blocking_work_unit_id,
-                    blocked_work_unit_id,
-                    now_ms,
-                    actor.as_deref(),
-                ],
+                params![blocking_work_unit_id, blocked_work_unit_id, now_ms, actor],
             )
             .map_err(|error| format!("insert work unit dependency failed: {error}"))?;
-
-        if inserted_rows > 0 {
-            touch_work_unit(&transaction, blocked_work_unit_id.as_str(), now_ms)?;
-            let event_payload = json!({
-                "blocking_work_unit_id": blocking_work_unit_id,
-                "blocked_work_unit_id": blocked_work_unit_id,
-            });
-            insert_event_in_tx(
-                &transaction,
-                blocked_work_unit_id.as_str(),
-                WORK_UNIT_DEPENDENCY_ADDED_EVENT_KIND,
-                actor.as_deref(),
-                &event_payload,
-                now_ms,
-            )?;
+        if inserted_rows == 0 {
+            return Ok(());
         }
 
-        transaction
-            .commit()
-            .map_err(|error| format!("commit work unit dependency transaction failed: {error}"))?;
+        touch_work_unit(transaction, blocked_work_unit_id, now_ms)?;
+        touch_work_unit(transaction, blocking_work_unit_id, now_ms)?;
+        let event_payload = json!({
+            "blocking_work_unit_id": blocking_work_unit_id,
+            "blocked_work_unit_id": blocked_work_unit_id,
+        });
+        insert_event_in_tx(
+            transaction,
+            blocked_work_unit_id,
+            WORK_UNIT_DEPENDENCY_ADDED_EVENT_KIND,
+            actor,
+            &event_payload,
+            now_ms,
+        )?;
 
-        self.load_work_unit_snapshot(&blocked_work_unit_id)
+        Ok(())
     }
 
     pub fn remove_dependency(
@@ -1640,6 +1761,7 @@ fn load_raw_work_unit_with_conn(
                     blocking_reason: row.get(11)?,
                     parent_work_unit_id: row.get(12)?,
                     assigned_to: row.get(13)?,
+                    child_work_unit_ids: Vec::new(),
                     blocks_work_unit_ids: Vec::new(),
                     blocked_by_work_unit_ids: Vec::new(),
                     review_json: row.get(14)?,
@@ -1817,6 +1939,7 @@ fn load_raw_work_units_with_query(
             blocking_reason: row.get(11)?,
             parent_work_unit_id: row.get(12)?,
             assigned_to: row.get(13)?,
+            child_work_unit_ids: Vec::new(),
             blocks_work_unit_ids: Vec::new(),
             blocked_by_work_unit_ids: Vec::new(),
             review_json: row.get(14)?,
@@ -1855,13 +1978,42 @@ fn hydrate_raw_work_unit_relationships(
     connection: &Connection,
     mut raw_record: RawWorkUnitRecord,
 ) -> Result<RawWorkUnitRecord, String> {
+    let child_work_unit_ids =
+        load_child_work_unit_ids(connection, raw_record.work_unit_id.as_str())?;
     let blocks_work_unit_ids =
         load_blocked_work_unit_ids(connection, raw_record.work_unit_id.as_str())?;
     let blocked_by_work_unit_ids =
         load_blocking_work_unit_ids(connection, raw_record.work_unit_id.as_str())?;
+    raw_record.child_work_unit_ids = child_work_unit_ids;
     raw_record.blocks_work_unit_ids = blocks_work_unit_ids;
     raw_record.blocked_by_work_unit_ids = blocked_by_work_unit_ids;
     Ok(raw_record)
+}
+
+fn load_child_work_unit_ids(
+    connection: &Connection,
+    work_unit_id: &str,
+) -> Result<Vec<String>, String> {
+    let mut statement = connection
+        .prepare(
+            "SELECT work_unit_id
+             FROM work_units
+             WHERE parent_work_unit_id = ?1
+             ORDER BY work_unit_id ASC",
+        )
+        .map_err(|error| format!("prepare child work unit query failed: {error}"))?;
+    let rows = statement
+        .query_map(params![work_unit_id], |row| row.get::<_, String>(0))
+        .map_err(|error| format!("query child work units failed: {error}"))?;
+    let mut work_unit_ids = Vec::new();
+
+    for row in rows {
+        let child_work_unit_id =
+            row.map_err(|error| format!("decode child work unit row failed: {error}"))?;
+        work_unit_ids.push(child_work_unit_id);
+    }
+
+    Ok(work_unit_ids)
 }
 
 fn load_blocked_work_unit_ids(
@@ -1981,6 +2133,7 @@ fn select_next_ready_raw_work_unit(
                 blocking_reason: row.get(11)?,
                 parent_work_unit_id: row.get(12)?,
                 assigned_to: row.get(13)?,
+                child_work_unit_ids: Vec::new(),
                 blocks_work_unit_ids: Vec::new(),
                 blocked_by_work_unit_ids: Vec::new(),
                 review_json: row.get(14)?,
@@ -2058,6 +2211,7 @@ fn load_expired_raw_work_units_with_conn(
                 blocking_reason: row.get(11)?,
                 parent_work_unit_id: row.get(12)?,
                 assigned_to: row.get(13)?,
+                child_work_unit_ids: Vec::new(),
                 blocks_work_unit_ids: Vec::new(),
                 blocked_by_work_unit_ids: Vec::new(),
                 review_json: row.get(14)?,
@@ -2125,6 +2279,7 @@ fn try_work_unit_snapshot_from_raw(
         last_error: raw_record.last_error.clone(),
         blocking_reason: raw_record.blocking_reason.clone(),
         parent_work_unit_id: raw_record.parent_work_unit_id.clone(),
+        child_work_unit_ids: raw_record.child_work_unit_ids.clone(),
         blocks_work_unit_ids: raw_record.blocks_work_unit_ids.clone(),
         blocked_by_work_unit_ids: raw_record.blocked_by_work_unit_ids.clone(),
         review,
@@ -2588,14 +2743,15 @@ mod tests {
 
     use super::{
         AcquireWorkUnitLeaseRequest, AddWorkUnitDependencyRequest, AppendWorkUnitNoteRequest,
-        ArchiveWorkUnitRequest, AssignWorkUnitRequest, CompleteWorkUnitRequest, NewWorkUnitRecord,
-        RecordWorkUnitReviewDecisionRequest, RemoveWorkUnitDependencyRequest,
-        RequestWorkUnitReviewRequest, StartWorkUnitLeaseRequest, UpdateWorkUnitRequest,
-        WORK_UNIT_ASSIGNED_EVENT_KIND, WORK_UNIT_DEPENDENCY_ADDED_EVENT_KIND,
-        WORK_UNIT_DEPENDENCY_REMOVED_EVENT_KIND, WORK_UNIT_NOTE_ADDED_EVENT_KIND,
-        WORK_UNIT_REVIEW_RECORDED_EVENT_KIND, WORK_UNIT_REVIEW_REQUESTED_EVENT_KIND,
-        WORK_UNIT_UPDATED_EVENT_KIND, WorkUnitCompletionDisposition, WorkUnitHeartbeatRequest,
-        WorkUnitListQuery, WorkUnitRepository, WorkUnitReviewDecision,
+        ArchiveWorkUnitRequest, AssignWorkUnitRequest, CompleteWorkUnitRequest,
+        CreateChildWorkUnitRequest, NewWorkUnitRecord, RecordWorkUnitReviewDecisionRequest,
+        RemoveWorkUnitDependencyRequest, RequestWorkUnitReviewRequest, StartWorkUnitLeaseRequest,
+        UpdateWorkUnitRequest, WORK_UNIT_ASSIGNED_EVENT_KIND, WORK_UNIT_CHILD_CREATED_EVENT_KIND,
+        WORK_UNIT_DEPENDENCY_ADDED_EVENT_KIND, WORK_UNIT_DEPENDENCY_REMOVED_EVENT_KIND,
+        WORK_UNIT_NOTE_ADDED_EVENT_KIND, WORK_UNIT_REVIEW_RECORDED_EVENT_KIND,
+        WORK_UNIT_REVIEW_REQUESTED_EVENT_KIND, WORK_UNIT_UPDATED_EVENT_KIND,
+        WorkUnitCompletionDisposition, WorkUnitHeartbeatRequest, WorkUnitListQuery,
+        WorkUnitRepository, WorkUnitReviewDecision,
     };
     use loongclaw_contracts::{
         WorkSourceKind, WorkUnitKind, WorkUnitPriority, WorkUnitRetryPolicy, WorkUnitReviewStatus,
@@ -2673,6 +2829,160 @@ mod tests {
             .expect("list work unit events");
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].event_kind, "work_unit_created");
+    }
+
+    #[test]
+    fn create_child_work_unit_inherits_parent_shape_and_blocks_parent_when_requested() {
+        let config = isolated_memory_config("create-child-work-unit");
+        let repository = WorkUnitRepository::new(&config).expect("repository");
+        let parent = NewWorkUnitRecord {
+            work_unit_id: Some("wu-parent".to_owned()),
+            title: "Parent".to_owned(),
+            description: "Coordinate child work".to_owned(),
+            ..sample_work_unit(WorkUnitStatus::Ready)
+        };
+        repository
+            .create_work_unit(parent, Some("operator"))
+            .expect("create parent work unit");
+
+        let child = NewWorkUnitRecord {
+            work_unit_id: Some("wu-child".to_owned()),
+            kind: WorkUnitKind::Issue,
+            title: "Child".to_owned(),
+            description: "Handle child work".to_owned(),
+            source_ref: WorkUnitSourceRef::default(),
+            status: WorkUnitStatus::Ready,
+            priority: WorkUnitPriority::Normal,
+            retry_policy: WorkUnitRetryPolicy::default(),
+            parent_work_unit_id: None,
+            next_run_at_ms: Some(1_100),
+        };
+        let child_snapshot = repository
+            .create_child_work_unit(CreateChildWorkUnitRequest {
+                parent_work_unit_id: "wu-parent".to_owned(),
+                child,
+                inherit_parent_source_ref: true,
+                inherit_parent_retry_policy: true,
+                inherit_parent_priority: true,
+                block_parent: true,
+                actor: Some("planner".to_owned()),
+            })
+            .expect("create child work unit");
+
+        assert_eq!(
+            child_snapshot.work_unit.parent_work_unit_id.as_deref(),
+            Some("wu-parent")
+        );
+        assert_eq!(
+            child_snapshot.work_unit.source_ref.source_kind,
+            WorkSourceKind::Discord
+        );
+        assert_eq!(child_snapshot.work_unit.priority, WorkUnitPriority::High);
+        assert_eq!(
+            child_snapshot.work_unit.retry_policy.max_attempts,
+            sample_work_unit(WorkUnitStatus::Ready)
+                .retry_policy
+                .max_attempts
+        );
+
+        let parent_snapshot = repository
+            .load_work_unit_snapshot("wu-parent")
+            .expect("load parent snapshot")
+            .expect("parent snapshot");
+        assert_eq!(
+            parent_snapshot.work_unit.child_work_unit_ids,
+            vec!["wu-child".to_owned()]
+        );
+        assert_eq!(
+            parent_snapshot.work_unit.blocked_by_work_unit_ids,
+            vec!["wu-child".to_owned()]
+        );
+
+        let claimed_parent = repository
+            .acquire_next_ready_lease(AcquireWorkUnitLeaseRequest {
+                owner: "worker-a".to_owned(),
+                ttl_ms: 5_000,
+                actor: Some("scheduler".to_owned()),
+                now_ms: Some(2_000),
+            })
+            .expect("claim next ready");
+        assert_eq!(
+            claimed_parent
+                .as_ref()
+                .map(|snapshot| snapshot.work_unit.work_unit_id.as_str()),
+            Some("wu-child")
+        );
+
+        let events = repository
+            .list_work_unit_events("wu-child", 10)
+            .expect("list child events");
+        assert!(
+            events
+                .iter()
+                .any(|event| event.event_kind == WORK_UNIT_CHILD_CREATED_EVENT_KIND),
+            "expected child-created event"
+        );
+    }
+
+    #[test]
+    fn create_child_work_unit_respects_explicit_default_overrides() {
+        let config = isolated_memory_config("create-child-work-unit-explicit-overrides");
+        let repository = WorkUnitRepository::new(&config).expect("repository");
+        let parent = NewWorkUnitRecord {
+            work_unit_id: Some("wu-parent".to_owned()),
+            title: "Parent".to_owned(),
+            description: "Coordinate child work".to_owned(),
+            ..sample_work_unit(WorkUnitStatus::Ready)
+        };
+        repository
+            .create_work_unit(parent, Some("operator"))
+            .expect("create parent work unit");
+
+        let child_retry_policy = WorkUnitRetryPolicy::default();
+        let child_source_ref = WorkUnitSourceRef::default();
+        let child = NewWorkUnitRecord {
+            work_unit_id: Some("wu-child-manual".to_owned()),
+            kind: WorkUnitKind::Issue,
+            title: "Child".to_owned(),
+            description: "Stay manual and normal".to_owned(),
+            source_ref: child_source_ref.clone(),
+            status: WorkUnitStatus::Ready,
+            priority: WorkUnitPriority::Normal,
+            retry_policy: child_retry_policy.clone(),
+            parent_work_unit_id: None,
+            next_run_at_ms: Some(1_200),
+        };
+        let child_snapshot = repository
+            .create_child_work_unit(CreateChildWorkUnitRequest {
+                parent_work_unit_id: "wu-parent".to_owned(),
+                child,
+                inherit_parent_source_ref: false,
+                inherit_parent_retry_policy: false,
+                inherit_parent_priority: false,
+                block_parent: false,
+                actor: Some("planner".to_owned()),
+            })
+            .expect("create child work unit with explicit overrides");
+
+        assert_eq!(child_snapshot.work_unit.priority, WorkUnitPriority::Normal);
+        assert_eq!(child_snapshot.work_unit.retry_policy, child_retry_policy);
+        assert_eq!(child_snapshot.work_unit.source_ref, child_source_ref);
+        assert!(child_snapshot.work_unit.blocks_work_unit_ids.is_empty());
+
+        let parent_snapshot = repository
+            .load_work_unit_snapshot("wu-parent")
+            .expect("load parent snapshot")
+            .expect("parent snapshot");
+        assert_eq!(
+            parent_snapshot.work_unit.child_work_unit_ids,
+            vec!["wu-child-manual".to_owned()]
+        );
+        assert!(
+            parent_snapshot
+                .work_unit
+                .blocked_by_work_unit_ids
+                .is_empty()
+        );
     }
 
     #[test]

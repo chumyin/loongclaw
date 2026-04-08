@@ -5,16 +5,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::Command,
-    time::{SystemTime, UNIX_EPOCH},
 };
-
-fn unique_temp_dir(prefix: &str) -> PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("clock should be after epoch")
-        .as_nanos();
-    std::env::temp_dir().join(format!("{prefix}-{nanos}"))
-}
 
 fn write_work_unit_config(root: &Path) -> PathBuf {
     fs::create_dir_all(root).expect("create fixture root");
@@ -37,6 +28,10 @@ fn load_work_unit_repository(config_path: &Path) -> mvp::work::repository::WorkU
     let memory_config =
         mvp::memory::runtime_config::MemoryRuntimeConfig::from_memory_config(&config.memory);
     mvp::work::repository::WorkUnitRepository::new(&memory_config).expect("work unit repository")
+}
+
+fn work_unit_environment_guard() -> super::tasks_cli::TasksCliEnvironmentGuard {
+    super::tasks_cli::TasksCliEnvironmentGuard::set(&[])
 }
 
 fn render_output(bytes: &[u8]) -> String {
@@ -70,6 +65,10 @@ fn cli_work_unit_help_mentions_durable_runtime_commands() {
     assert!(
         help.contains("request-review"),
         "work-unit help should expose review orchestration: {help}"
+    );
+    assert!(
+        help.contains("spawn-child"),
+        "work-unit help should expose child-work decomposition: {help}"
     );
 }
 
@@ -248,7 +247,48 @@ fn cli_work_unit_parse_accepts_review_command_shapes() {
 }
 
 #[test]
+fn cli_work_unit_parse_accepts_spawn_child_shape() {
+    let cli = try_parse_cli([
+        "loongclaw",
+        "work-unit",
+        "spawn-child",
+        "--config",
+        "/tmp/loongclaw.toml",
+        "--parent-id",
+        "wu-parent",
+        "--id",
+        "wu-child",
+        "--kind",
+        "issue",
+        "--title",
+        "Child work",
+        "--description",
+        "Follow-up item",
+        "--block-parent",
+        "false",
+        "--json",
+    ])
+    .expect("work-unit spawn-child CLI should parse");
+
+    let command = cli.command.expect("CLI should parse a subcommand");
+    let Commands::WorkUnit { command } = command else {
+        panic!("unexpected CLI parse result: {command:?}");
+    };
+    let work_unit_runtime::WorkUnitCommands::SpawnChild(options) = command else {
+        panic!("unexpected spawn-child parse result: {command:?}");
+    };
+
+    assert_eq!(options.parent_id, "wu-parent");
+    assert_eq!(options.id.as_deref(), Some("wu-child"));
+    assert_eq!(options.kind, work_unit_runtime::WorkUnitKindArg::Issue);
+    assert_eq!(options.title, "Child work");
+    assert!(!options.block_parent);
+    assert!(options.json);
+}
+
+#[test]
 fn work_unit_cli_create_claim_complete_and_archive_round_trip() {
+    let _env = work_unit_environment_guard();
     let root = unique_temp_dir("loongclaw-work-unit-cli");
     let config_path = write_work_unit_config(&root);
     let config_path_string = config_path.display().to_string();
@@ -576,7 +616,232 @@ fn work_unit_cli_create_claim_complete_and_archive_round_trip() {
 }
 
 #[test]
+fn work_unit_cli_spawn_child_blocks_parent_until_child_completes() {
+    let _env = work_unit_environment_guard();
+    let root = unique_temp_dir("loongclaw-work-unit-child-cli");
+    let config_path = write_work_unit_config(&root);
+    let config_path_string = config_path.display().to_string();
+
+    work_unit_runtime::run_work_unit_cli(work_unit_runtime::WorkUnitCommands::Create(
+        work_unit_runtime::WorkUnitCreateCommandOptions {
+            config: Some(config_path_string.clone()),
+            id: Some("wu-parent".to_owned()),
+            kind: work_unit_runtime::WorkUnitKindArg::Feature,
+            title: "Parent work".to_owned(),
+            description: "Coordinate child items".to_owned(),
+            status: work_unit_runtime::WorkUnitStatusArg::Ready,
+            priority: work_unit_runtime::WorkUnitPriorityArg::High,
+            max_attempts: 3,
+            initial_backoff_ms: 1_000,
+            max_backoff_ms: 8_000,
+            next_run_at_ms: Some(1_000),
+            actor: Some("operator".to_owned()),
+            source_kind: work_unit_runtime::WorkSourceKindArg::Discord,
+            project_id: Some("loongclaw-ai/server".to_owned()),
+            channel_id: Some("feature".to_owned()),
+            thread_id: Some("thread-parent".to_owned()),
+            message_id: Some("message-parent".to_owned()),
+            external_ref: Some("parent-thread".to_owned()),
+            source_url: None,
+            parent_work_unit_id: None,
+            json: true,
+        },
+    ))
+    .expect("create parent work unit via CLI");
+
+    work_unit_runtime::run_work_unit_cli(work_unit_runtime::WorkUnitCommands::SpawnChild(
+        work_unit_runtime::WorkUnitSpawnChildCommandOptions {
+            config: Some(config_path_string.clone()),
+            parent_id: "wu-parent".to_owned(),
+            id: Some("wu-child".to_owned()),
+            kind: work_unit_runtime::WorkUnitKindArg::Issue,
+            title: "Child work".to_owned(),
+            description: "Complete child task".to_owned(),
+            status: work_unit_runtime::WorkUnitStatusArg::Ready,
+            priority: None,
+            max_attempts: None,
+            initial_backoff_ms: None,
+            max_backoff_ms: None,
+            next_run_at_ms: Some(1_010),
+            actor: Some("planner".to_owned()),
+            block_parent: true,
+            source_kind: None,
+            project_id: None,
+            channel_id: None,
+            thread_id: None,
+            message_id: None,
+            external_ref: None,
+            source_url: None,
+            json: true,
+        },
+    ))
+    .expect("spawn child work unit via CLI");
+
+    let repository = load_work_unit_repository(&config_path);
+    let parent_snapshot = repository
+        .load_work_unit_snapshot("wu-parent")
+        .expect("load parent snapshot")
+        .expect("parent snapshot");
+    assert_eq!(
+        parent_snapshot.work_unit.child_work_unit_ids,
+        vec!["wu-child".to_owned()]
+    );
+    assert_eq!(
+        parent_snapshot.work_unit.blocked_by_work_unit_ids,
+        vec!["wu-child".to_owned()]
+    );
+
+    work_unit_runtime::run_work_unit_cli(work_unit_runtime::WorkUnitCommands::Claim(
+        work_unit_runtime::WorkUnitClaimCommandOptions {
+            config: Some(config_path_string.clone()),
+            owner: "worker-a".to_owned(),
+            ttl_ms: 5_000,
+            actor: Some("scheduler".to_owned()),
+            now_ms: Some(1_020),
+            json: true,
+        },
+    ))
+    .expect("claim next ready work via CLI");
+
+    let child_snapshot = repository
+        .load_work_unit_snapshot("wu-child")
+        .expect("load child snapshot")
+        .expect("child snapshot");
+    assert_eq!(
+        child_snapshot
+            .lease
+            .as_ref()
+            .map(|lease| lease.owner.as_str()),
+        Some("worker-a")
+    );
+
+    work_unit_runtime::run_work_unit_cli(work_unit_runtime::WorkUnitCommands::Complete(
+        work_unit_runtime::WorkUnitCompleteCommandOptions {
+            config: Some(config_path_string.clone()),
+            id: "wu-child".to_owned(),
+            owner: "worker-a".to_owned(),
+            disposition: work_unit_runtime::WorkUnitDispositionArg::Completed,
+            actor: Some("worker-a".to_owned()),
+            now_ms: Some(1_030),
+            next_run_at_ms: None,
+            result_payload_json: None,
+            error: None,
+            json: true,
+        },
+    ))
+    .expect("complete child work unit via CLI");
+
+    work_unit_runtime::run_work_unit_cli(work_unit_runtime::WorkUnitCommands::Claim(
+        work_unit_runtime::WorkUnitClaimCommandOptions {
+            config: Some(config_path_string),
+            owner: "worker-b".to_owned(),
+            ttl_ms: 5_000,
+            actor: Some("scheduler".to_owned()),
+            now_ms: Some(1_040),
+            json: true,
+        },
+    ))
+    .expect("claim parent after child completion");
+
+    let ready_parent = repository
+        .load_work_unit_snapshot("wu-parent")
+        .expect("reload parent snapshot")
+        .expect("ready parent snapshot");
+    assert_eq!(
+        ready_parent
+            .lease
+            .as_ref()
+            .map(|lease| lease.owner.as_str()),
+        Some("worker-b")
+    );
+}
+
+#[test]
+fn work_unit_cli_spawn_child_preserves_explicit_default_overrides() {
+    let _env = work_unit_environment_guard();
+    let root = unique_temp_dir("loongclaw-work-unit-child-cli-explicit-overrides");
+    let config_path = write_work_unit_config(&root);
+    let config_path_string = config_path.display().to_string();
+
+    work_unit_runtime::run_work_unit_cli(work_unit_runtime::WorkUnitCommands::Create(
+        work_unit_runtime::WorkUnitCreateCommandOptions {
+            config: Some(config_path_string.clone()),
+            id: Some("wu-parent".to_owned()),
+            kind: work_unit_runtime::WorkUnitKindArg::Feature,
+            title: "Parent work".to_owned(),
+            description: "Coordinate child items".to_owned(),
+            status: work_unit_runtime::WorkUnitStatusArg::Ready,
+            priority: work_unit_runtime::WorkUnitPriorityArg::High,
+            max_attempts: 7,
+            initial_backoff_ms: 2_000,
+            max_backoff_ms: 8_000,
+            next_run_at_ms: Some(1_000),
+            actor: Some("operator".to_owned()),
+            source_kind: work_unit_runtime::WorkSourceKindArg::Discord,
+            project_id: Some("loongclaw-ai/server".to_owned()),
+            channel_id: Some("feature".to_owned()),
+            thread_id: Some("thread-parent".to_owned()),
+            message_id: Some("message-parent".to_owned()),
+            external_ref: Some("parent-thread".to_owned()),
+            source_url: None,
+            parent_work_unit_id: None,
+            json: true,
+        },
+    ))
+    .expect("create parent work unit via CLI");
+
+    work_unit_runtime::run_work_unit_cli(work_unit_runtime::WorkUnitCommands::SpawnChild(
+        work_unit_runtime::WorkUnitSpawnChildCommandOptions {
+            config: Some(config_path_string),
+            parent_id: "wu-parent".to_owned(),
+            id: Some("wu-child-manual".to_owned()),
+            kind: work_unit_runtime::WorkUnitKindArg::Issue,
+            title: "Child work".to_owned(),
+            description: "Stay manual and normal".to_owned(),
+            status: work_unit_runtime::WorkUnitStatusArg::Ready,
+            priority: Some(work_unit_runtime::WorkUnitPriorityArg::Normal),
+            max_attempts: Some(3),
+            initial_backoff_ms: Some(1_000),
+            max_backoff_ms: Some(60_000),
+            next_run_at_ms: Some(1_010),
+            actor: Some("planner".to_owned()),
+            block_parent: false,
+            source_kind: Some(work_unit_runtime::WorkSourceKindArg::Manual),
+            project_id: None,
+            channel_id: None,
+            thread_id: None,
+            message_id: None,
+            external_ref: None,
+            source_url: None,
+            json: true,
+        },
+    ))
+    .expect("spawn child work unit via CLI");
+
+    let repository = load_work_unit_repository(&config_path);
+    let child_snapshot = repository
+        .load_work_unit_snapshot("wu-child-manual")
+        .expect("load child snapshot")
+        .expect("child snapshot");
+
+    assert_eq!(
+        child_snapshot.work_unit.priority,
+        loongclaw_contracts::WorkUnitPriority::Normal
+    );
+    assert_eq!(
+        child_snapshot.work_unit.retry_policy,
+        loongclaw_contracts::WorkUnitRetryPolicy::default()
+    );
+    assert_eq!(
+        child_snapshot.work_unit.source_ref.source_kind,
+        loongclaw_contracts::WorkSourceKind::Manual
+    );
+    assert!(child_snapshot.work_unit.blocks_work_unit_ids.is_empty());
+}
+
+#[test]
 fn work_unit_cli_update_text_output_uses_snake_case_status_labels() {
+    let _env = work_unit_environment_guard();
     let root = unique_temp_dir("loongclaw-work-unit-cli-text");
     let config_path = write_work_unit_config(&root);
     let repository = load_work_unit_repository(&config_path);

@@ -265,6 +265,7 @@ pub struct WorkUnitRecord {
     pub last_error: Option<String>,
     pub blocking_reason: Option<String>,
     pub parent_work_unit_id: Option<String>,
+    pub child_work_unit_ids: Vec<String>,
     pub blocks_work_unit_ids: Vec<String>,
     pub blocked_by_work_unit_ids: Vec<String>,
     pub review: Option<WorkUnitReviewRecord>,
