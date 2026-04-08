@@ -67,6 +67,10 @@ fn cli_work_unit_help_mentions_durable_runtime_commands() {
         help.contains("update"),
         "work-unit help should expose general work-unit mutation: {help}"
     );
+    assert!(
+        help.contains("request-review"),
+        "work-unit help should expose review orchestration: {help}"
+    );
 }
 
 #[test]
@@ -174,6 +178,76 @@ fn cli_work_unit_parse_accepts_update_command_shape() {
 }
 
 #[test]
+fn cli_work_unit_parse_accepts_review_command_shapes() {
+    let request_cli = try_parse_cli([
+        "loongclaw",
+        "work-unit",
+        "request-review",
+        "--config",
+        "/tmp/loongclaw.toml",
+        "--id",
+        "wu-demo",
+        "--requested-by",
+        "planner",
+        "--reviewer",
+        "reviewer-a",
+        "--summary",
+        "please review",
+        "--now-ms",
+        "2100",
+        "--json",
+    ])
+    .expect("work-unit request-review CLI should parse");
+    let request_command = request_cli.command.expect("request-review command");
+    let Commands::WorkUnit {
+        command: work_unit_runtime::WorkUnitCommands::RequestReview(options),
+    } = request_command
+    else {
+        panic!("unexpected request-review parse result: {request_command:?}");
+    };
+    assert_eq!(options.id, "wu-demo");
+    assert_eq!(options.requested_by.as_deref(), Some("planner"));
+    assert_eq!(options.reviewer.as_deref(), Some("reviewer-a"));
+    assert_eq!(options.summary.as_deref(), Some("please review"));
+    assert_eq!(options.now_ms, Some(2100));
+    assert!(options.json);
+
+    let decision_cli = try_parse_cli([
+        "loongclaw",
+        "work-unit",
+        "review",
+        "--config",
+        "/tmp/loongclaw.toml",
+        "--id",
+        "wu-demo",
+        "--decision",
+        "request-changes",
+        "--reviewer",
+        "reviewer-a",
+        "--summary",
+        "tighten the plan",
+        "--now-ms",
+        "2200",
+    ])
+    .expect("work-unit review CLI should parse");
+    let decision_command = decision_cli.command.expect("review command");
+    let Commands::WorkUnit {
+        command: work_unit_runtime::WorkUnitCommands::Review(options),
+    } = decision_command
+    else {
+        panic!("unexpected review parse result: {decision_command:?}");
+    };
+    assert_eq!(options.id, "wu-demo");
+    assert_eq!(
+        options.decision,
+        work_unit_runtime::WorkUnitReviewDecisionArg::RequestChanges
+    );
+    assert_eq!(options.reviewer.as_deref(), Some("reviewer-a"));
+    assert_eq!(options.summary.as_deref(), Some("tighten the plan"));
+    assert_eq!(options.now_ms, Some(2200));
+}
+
+#[test]
 fn work_unit_cli_create_claim_complete_and_archive_round_trip() {
     let root = unique_temp_dir("loongclaw-work-unit-cli");
     let config_path = write_work_unit_config(&root);
@@ -251,10 +325,10 @@ fn work_unit_cli_create_claim_complete_and_archive_round_trip() {
             id: "wu-cli".to_owned(),
             title: Some("Durable runtime slice v2".to_owned()),
             description: Some("Refine the orchestration-ready slice".to_owned()),
-            status: Some(work_unit_runtime::WorkUnitStatusArg::WaitingReview),
+            status: None,
             priority: Some(work_unit_runtime::WorkUnitPriorityArg::Critical),
             next_run_at_ms: Some(1_060),
-            blocking_reason: Some("needs review before execution".to_owned()),
+            blocking_reason: None,
             clear_blocking_reason: false,
             actor: Some("planner".to_owned()),
             now_ms: Some(1_055),
@@ -262,6 +336,19 @@ fn work_unit_cli_create_claim_complete_and_archive_round_trip() {
         },
     ))
     .expect("update work unit via CLI");
+
+    work_unit_runtime::run_work_unit_cli(work_unit_runtime::WorkUnitCommands::RequestReview(
+        work_unit_runtime::WorkUnitRequestReviewCommandOptions {
+            config: Some(config_path_string.clone()),
+            id: "wu-cli".to_owned(),
+            requested_by: Some("planner".to_owned()),
+            reviewer: Some("reviewer-a".to_owned()),
+            summary: Some("review the revised slice".to_owned()),
+            now_ms: Some(1_057),
+            json: true,
+        },
+    ))
+    .expect("request review via CLI");
 
     work_unit_runtime::run_work_unit_cli(work_unit_runtime::WorkUnitCommands::Depend(
         work_unit_runtime::WorkUnitDependCommandOptions {
@@ -311,8 +398,15 @@ fn work_unit_cli_create_claim_complete_and_archive_round_trip() {
     );
     assert_eq!(
         updated_snapshot.work_unit.blocking_reason.as_deref(),
-        Some("needs review before execution")
+        Some("review the revised slice")
     );
+    let review = updated_snapshot.work_unit.review.expect("pending review");
+    assert_eq!(
+        review.status,
+        loongclaw_contracts::WorkUnitReviewStatus::Pending
+    );
+    assert_eq!(review.requested_by.as_deref(), Some("planner"));
+    assert_eq!(review.reviewer.as_deref(), Some("reviewer-a"));
 
     let blocker_snapshot = repository
         .load_work_unit_snapshot("wu-blocker")
@@ -354,23 +448,18 @@ fn work_unit_cli_create_claim_complete_and_archive_round_trip() {
     ))
     .expect("remove dependency via CLI");
 
-    work_unit_runtime::run_work_unit_cli(work_unit_runtime::WorkUnitCommands::Update(
-        work_unit_runtime::WorkUnitUpdateCommandOptions {
+    work_unit_runtime::run_work_unit_cli(work_unit_runtime::WorkUnitCommands::Review(
+        work_unit_runtime::WorkUnitReviewDecisionCommandOptions {
             config: Some(config_path_string.clone()),
             id: "wu-cli".to_owned(),
-            title: None,
-            description: None,
-            status: Some(work_unit_runtime::WorkUnitStatusArg::Ready),
-            priority: None,
-            next_run_at_ms: Some(1_100),
-            blocking_reason: None,
-            clear_blocking_reason: true,
-            actor: Some("planner".to_owned()),
+            decision: work_unit_runtime::WorkUnitReviewDecisionArg::Approve,
+            reviewer: Some("reviewer-a".to_owned()),
+            summary: Some("approved".to_owned()),
             now_ms: Some(1_095),
             json: true,
         },
     ))
-    .expect("clear review block via CLI");
+    .expect("approve review via CLI");
 
     work_unit_runtime::run_work_unit_cli(work_unit_runtime::WorkUnitCommands::Claim(
         work_unit_runtime::WorkUnitClaimCommandOptions {
@@ -453,6 +542,18 @@ fn work_unit_cli_create_claim_complete_and_archive_round_trip() {
             .iter()
             .any(|event| event.event_kind == "work_unit_updated"),
         "expected update event in work-unit ledger"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| event.event_kind == "work_unit_review_requested"),
+        "expected review request event in work-unit ledger"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| event.event_kind == "work_unit_review_recorded"),
+        "expected review decision event in work-unit ledger"
     );
     assert!(
         events

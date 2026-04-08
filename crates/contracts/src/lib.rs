@@ -55,8 +55,9 @@ pub use tool_types::{
 };
 pub use work_types::{
     WorkRuntimeHealthSnapshot, WorkSourceKind, WorkUnitEventRecord, WorkUnitKind,
-    WorkUnitLeaseRecord, WorkUnitPriority, WorkUnitRecord, WorkUnitRetryPolicy, WorkUnitSnapshot,
-    WorkUnitSourceRef, WorkUnitStatus,
+    WorkUnitLeaseRecord, WorkUnitPriority, WorkUnitRecord, WorkUnitRetryPolicy,
+    WorkUnitReviewRecord, WorkUnitReviewStatus, WorkUnitSnapshot, WorkUnitSourceRef,
+    WorkUnitStatus,
 };
 pub use workflow_types::{
     GovernedSessionBindingDescriptor, GovernedSessionMode, TaskScopeDescriptor,

@@ -3,8 +3,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use loongclaw_contracts::{
     WorkRuntimeHealthSnapshot, WorkUnitEventRecord, WorkUnitKind, WorkUnitLeaseRecord,
-    WorkUnitPriority, WorkUnitRecord, WorkUnitRetryPolicy, WorkUnitSnapshot, WorkUnitSourceRef,
-    WorkUnitStatus,
+    WorkUnitPriority, WorkUnitRecord, WorkUnitRetryPolicy, WorkUnitReviewRecord,
+    WorkUnitReviewStatus, WorkUnitSnapshot, WorkUnitSourceRef, WorkUnitStatus,
 };
 use rand::random;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
@@ -28,6 +28,8 @@ const WORK_UNIT_DEPENDENCY_ADDED_EVENT_KIND: &str = "work_unit_dependency_added"
 const WORK_UNIT_DEPENDENCY_REMOVED_EVENT_KIND: &str = "work_unit_dependency_removed";
 const WORK_UNIT_NOTE_ADDED_EVENT_KIND: &str = "work_unit_note_added";
 const WORK_UNIT_UPDATED_EVENT_KIND: &str = "work_unit_updated";
+const WORK_UNIT_REVIEW_REQUESTED_EVENT_KIND: &str = "work_unit_review_requested";
+const WORK_UNIT_REVIEW_RECORDED_EVENT_KIND: &str = "work_unit_review_recorded";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct NewWorkUnitRecord {
@@ -158,6 +160,31 @@ pub struct UpdateWorkUnitRequest {
     pub now_ms: Option<i64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequestWorkUnitReviewRequest {
+    pub work_unit_id: String,
+    pub requested_by: Option<String>,
+    pub reviewer: Option<String>,
+    pub summary: Option<String>,
+    pub now_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkUnitReviewDecision {
+    Approve,
+    RequestChanges,
+    Reject,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordWorkUnitReviewDecisionRequest {
+    pub work_unit_id: String,
+    pub reviewer: Option<String>,
+    pub decision: WorkUnitReviewDecision,
+    pub summary: Option<String>,
+    pub now_ms: Option<i64>,
+}
+
 #[derive(Debug, Clone)]
 pub struct WorkUnitRepository {
     db_path: PathBuf,
@@ -181,6 +208,7 @@ struct RawWorkUnitRecord {
     assigned_to: Option<String>,
     blocks_work_unit_ids: Vec<String>,
     blocked_by_work_unit_ids: Vec<String>,
+    review_json: Option<String>,
     result_payload_json: Option<String>,
     lease_owner: Option<String>,
     lease_version: i64,
@@ -249,6 +277,7 @@ impl WorkUnitRepository {
                     blocking_reason,
                     parent_work_unit_id,
                     assigned_to,
+                    review_json,
                     result_payload_json,
                     lease_owner,
                     lease_version,
@@ -258,7 +287,7 @@ impl WorkUnitRepository {
                     created_at_ms,
                     updated_at_ms,
                     archived_at_ms
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, NULL, NULL, ?11, NULL, NULL, NULL, 0, NULL, NULL, NULL, ?12, ?12, NULL)",
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, NULL, NULL, ?11, NULL, NULL, NULL, NULL, 0, NULL, NULL, NULL, ?12, ?12, NULL)",
                 params![
                     work_unit_id,
                     record.kind.as_str(),
@@ -887,6 +916,190 @@ impl WorkUnitRepository {
         self.load_work_unit_snapshot(&work_unit_id)
     }
 
+    pub fn request_work_unit_review(
+        &self,
+        request: RequestWorkUnitReviewRequest,
+    ) -> Result<Option<WorkUnitSnapshot>, String> {
+        let work_unit_id = normalize_required_text(&request.work_unit_id, "work_unit_id")?;
+        let requested_by = normalize_optional_text(request.requested_by);
+        let reviewer = normalize_optional_text(request.reviewer);
+        let summary = normalize_optional_text(request.summary);
+        let now_ms = request.now_ms.unwrap_or_else(current_unix_ms);
+        let mut connection = self.open_connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| {
+                format!("open work unit review request transaction failed: {error}")
+            })?;
+        let Some(raw_record) = load_raw_work_unit_with_conn(&transaction, &work_unit_id)? else {
+            return Ok(None);
+        };
+        if raw_record.archived_at_ms.is_some() {
+            return Ok(None);
+        }
+
+        let current_status = WorkUnitStatus::parse(&raw_record.status)
+            .ok_or_else(|| format!("unknown work unit status `{}`", raw_record.status))?;
+        validate_review_request_status(current_status)?;
+        let review = WorkUnitReviewRecord {
+            status: WorkUnitReviewStatus::Pending,
+            requested_by: requested_by.clone(),
+            reviewer: reviewer.clone(),
+            requested_at_ms: now_ms,
+            decided_at_ms: None,
+            summary: summary.clone(),
+        };
+        let review_json = encode_json(&review, "review")?;
+        let next_blocking_reason = summary
+            .clone()
+            .or_else(|| Some("waiting for review".to_owned()));
+
+        transaction
+            .execute(
+                "UPDATE work_units
+                 SET status = ?1,
+                     review_json = ?2,
+                     blocking_reason = ?3,
+                     updated_at_ms = ?4
+                 WHERE work_unit_id = ?5
+                   AND archived_at_ms IS NULL",
+                params![
+                    WorkUnitStatus::WaitingReview.as_str(),
+                    review_json,
+                    next_blocking_reason,
+                    now_ms,
+                    work_unit_id,
+                ],
+            )
+            .map_err(|error| format!("request work unit review failed: {error}"))?;
+
+        let event_payload = json!({
+            "requested_by": requested_by,
+            "reviewer": reviewer,
+            "summary": summary,
+            "previous_status": raw_record.status,
+            "next_status": WorkUnitStatus::WaitingReview.as_str(),
+        });
+        insert_event_in_tx(
+            &transaction,
+            &work_unit_id,
+            WORK_UNIT_REVIEW_REQUESTED_EVENT_KIND,
+            review.requested_by.as_deref(),
+            &event_payload,
+            now_ms,
+        )?;
+
+        transaction.commit().map_err(|error| {
+            format!("commit work unit review request transaction failed: {error}")
+        })?;
+
+        self.load_work_unit_snapshot(&work_unit_id)
+    }
+
+    pub fn record_work_unit_review_decision(
+        &self,
+        request: RecordWorkUnitReviewDecisionRequest,
+    ) -> Result<Option<WorkUnitSnapshot>, String> {
+        let work_unit_id = normalize_required_text(&request.work_unit_id, "work_unit_id")?;
+        let reviewer = normalize_optional_text(request.reviewer);
+        let summary = normalize_optional_text(request.summary);
+        let now_ms = request.now_ms.unwrap_or_else(current_unix_ms);
+        let mut connection = self.open_connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| {
+                format!("open work unit review decision transaction failed: {error}")
+            })?;
+        let Some(raw_record) = load_raw_work_unit_with_conn(&transaction, &work_unit_id)? else {
+            return Ok(None);
+        };
+        if raw_record.archived_at_ms.is_some() {
+            return Ok(None);
+        }
+
+        let review = raw_record
+            .review_json
+            .as_deref()
+            .map(|value| decode_json::<WorkUnitReviewRecord>(value, "review"))
+            .transpose()?;
+        let Some(previous_review) = review else {
+            return Err(format!(
+                "work unit `{}` does not have a pending review request",
+                work_unit_id
+            ));
+        };
+        if previous_review.status != WorkUnitReviewStatus::Pending {
+            return Err(format!(
+                "work unit `{}` review is no longer pending",
+                work_unit_id
+            ));
+        }
+
+        let current_status = WorkUnitStatus::parse(&raw_record.status)
+            .ok_or_else(|| format!("unknown work unit status `{}`", raw_record.status))?;
+        if current_status != WorkUnitStatus::WaitingReview {
+            return Err(format!(
+                "work unit `{}` is not currently waiting for review",
+                work_unit_id
+            ));
+        }
+
+        let next_review_status = review_status_from_decision(request.decision);
+        let next_status = work_unit_status_from_review_decision(request.decision);
+        let next_blocking_reason =
+            blocking_reason_from_review_decision(request.decision, summary.as_deref());
+        let next_review = WorkUnitReviewRecord {
+            status: next_review_status,
+            requested_by: previous_review.requested_by.clone(),
+            reviewer: reviewer.or(previous_review.reviewer),
+            requested_at_ms: previous_review.requested_at_ms,
+            decided_at_ms: Some(now_ms),
+            summary: summary.or(previous_review.summary),
+        };
+        let next_review_json = encode_json(&next_review, "review")?;
+
+        transaction
+            .execute(
+                "UPDATE work_units
+                 SET status = ?1,
+                     review_json = ?2,
+                     blocking_reason = ?3,
+                     updated_at_ms = ?4
+                 WHERE work_unit_id = ?5
+                   AND archived_at_ms IS NULL",
+                params![
+                    next_status.as_str(),
+                    next_review_json,
+                    next_blocking_reason,
+                    now_ms,
+                    work_unit_id,
+                ],
+            )
+            .map_err(|error| format!("record work unit review decision failed: {error}"))?;
+
+        let event_payload = json!({
+            "review_status": next_review_status.as_str(),
+            "reviewer": next_review.reviewer,
+            "summary": next_review.summary,
+            "previous_status": raw_record.status,
+            "next_status": next_status.as_str(),
+        });
+        insert_event_in_tx(
+            &transaction,
+            &work_unit_id,
+            WORK_UNIT_REVIEW_RECORDED_EVENT_KIND,
+            next_review.reviewer.as_deref(),
+            &event_payload,
+            now_ms,
+        )?;
+
+        transaction.commit().map_err(|error| {
+            format!("commit work unit review decision transaction failed: {error}")
+        })?;
+
+        self.load_work_unit_snapshot(&work_unit_id)
+    }
+
     pub fn assign_work_unit(
         &self,
         request: AssignWorkUnitRequest,
@@ -1291,6 +1504,7 @@ impl WorkUnitRepository {
                     blocking_reason TEXT NULL,
                     parent_work_unit_id TEXT NULL,
                     assigned_to TEXT NULL,
+                    review_json TEXT NULL,
                     result_payload_json TEXT NULL,
                     lease_owner TEXT NULL,
                     lease_version INTEGER NOT NULL DEFAULT 0,
@@ -1397,6 +1611,7 @@ fn load_raw_work_unit_with_conn(
                 blocking_reason,
                 parent_work_unit_id,
                 assigned_to,
+                review_json,
                 result_payload_json,
                 lease_owner,
                 lease_version,
@@ -1427,15 +1642,16 @@ fn load_raw_work_unit_with_conn(
                     assigned_to: row.get(13)?,
                     blocks_work_unit_ids: Vec::new(),
                     blocked_by_work_unit_ids: Vec::new(),
-                    result_payload_json: row.get(14)?,
-                    lease_owner: row.get(15)?,
-                    lease_version: row.get(16)?,
-                    lease_acquired_at_ms: row.get(17)?,
-                    lease_heartbeat_at_ms: row.get(18)?,
-                    lease_expires_at_ms: row.get(19)?,
-                    created_at_ms: row.get(20)?,
-                    updated_at_ms: row.get(21)?,
-                    archived_at_ms: row.get(22)?,
+                    review_json: row.get(14)?,
+                    result_payload_json: row.get(15)?,
+                    lease_owner: row.get(16)?,
+                    lease_version: row.get(17)?,
+                    lease_acquired_at_ms: row.get(18)?,
+                    lease_heartbeat_at_ms: row.get(19)?,
+                    lease_expires_at_ms: row.get(20)?,
+                    created_at_ms: row.get(21)?,
+                    updated_at_ms: row.get(22)?,
+                    archived_at_ms: row.get(23)?,
                 })
             },
         )
@@ -1473,6 +1689,7 @@ fn load_raw_work_units_with_query(
                 blocking_reason,
                 parent_work_unit_id,
                 assigned_to,
+                review_json,
                 result_payload_json,
                 lease_owner,
                 lease_version,
@@ -1504,6 +1721,7 @@ fn load_raw_work_units_with_query(
                 blocking_reason,
                 parent_work_unit_id,
                 assigned_to,
+                review_json,
                 result_payload_json,
                 lease_owner,
                 lease_version,
@@ -1534,6 +1752,7 @@ fn load_raw_work_units_with_query(
                 blocking_reason,
                 parent_work_unit_id,
                 assigned_to,
+                review_json,
                 result_payload_json,
                 lease_owner,
                 lease_version,
@@ -1564,6 +1783,7 @@ fn load_raw_work_units_with_query(
                 blocking_reason,
                 parent_work_unit_id,
                 assigned_to,
+                review_json,
                 result_payload_json,
                 lease_owner,
                 lease_version,
@@ -1599,15 +1819,16 @@ fn load_raw_work_units_with_query(
             assigned_to: row.get(13)?,
             blocks_work_unit_ids: Vec::new(),
             blocked_by_work_unit_ids: Vec::new(),
-            result_payload_json: row.get(14)?,
-            lease_owner: row.get(15)?,
-            lease_version: row.get(16)?,
-            lease_acquired_at_ms: row.get(17)?,
-            lease_heartbeat_at_ms: row.get(18)?,
-            lease_expires_at_ms: row.get(19)?,
-            created_at_ms: row.get(20)?,
-            updated_at_ms: row.get(21)?,
-            archived_at_ms: row.get(22)?,
+            review_json: row.get(14)?,
+            result_payload_json: row.get(15)?,
+            lease_owner: row.get(16)?,
+            lease_version: row.get(17)?,
+            lease_acquired_at_ms: row.get(18)?,
+            lease_heartbeat_at_ms: row.get(19)?,
+            lease_expires_at_ms: row.get(20)?,
+            created_at_ms: row.get(21)?,
+            updated_at_ms: row.get(22)?,
+            archived_at_ms: row.get(23)?,
         })
     };
     let rows = match status {
@@ -1716,6 +1937,7 @@ fn select_next_ready_raw_work_unit(
                 blocking_reason,
                 parent_work_unit_id,
                 assigned_to,
+                review_json,
                 result_payload_json,
                 lease_owner,
                 lease_version,
@@ -1761,15 +1983,16 @@ fn select_next_ready_raw_work_unit(
                 assigned_to: row.get(13)?,
                 blocks_work_unit_ids: Vec::new(),
                 blocked_by_work_unit_ids: Vec::new(),
-                result_payload_json: row.get(14)?,
-                lease_owner: row.get(15)?,
-                lease_version: row.get(16)?,
-                lease_acquired_at_ms: row.get(17)?,
-                lease_heartbeat_at_ms: row.get(18)?,
-                lease_expires_at_ms: row.get(19)?,
-                created_at_ms: row.get(20)?,
-                updated_at_ms: row.get(21)?,
-                archived_at_ms: row.get(22)?,
+                review_json: row.get(14)?,
+                result_payload_json: row.get(15)?,
+                lease_owner: row.get(16)?,
+                lease_version: row.get(17)?,
+                lease_acquired_at_ms: row.get(18)?,
+                lease_heartbeat_at_ms: row.get(19)?,
+                lease_expires_at_ms: row.get(20)?,
+                created_at_ms: row.get(21)?,
+                updated_at_ms: row.get(22)?,
+                archived_at_ms: row.get(23)?,
             })
         })
         .optional()
@@ -1801,6 +2024,7 @@ fn load_expired_raw_work_units_with_conn(
                 blocking_reason,
                 parent_work_unit_id,
                 assigned_to,
+                review_json,
                 result_payload_json,
                 lease_owner,
                 lease_version,
@@ -1836,15 +2060,16 @@ fn load_expired_raw_work_units_with_conn(
                 assigned_to: row.get(13)?,
                 blocks_work_unit_ids: Vec::new(),
                 blocked_by_work_unit_ids: Vec::new(),
-                result_payload_json: row.get(14)?,
-                lease_owner: row.get(15)?,
-                lease_version: row.get(16)?,
-                lease_acquired_at_ms: row.get(17)?,
-                lease_heartbeat_at_ms: row.get(18)?,
-                lease_expires_at_ms: row.get(19)?,
-                created_at_ms: row.get(20)?,
-                updated_at_ms: row.get(21)?,
-                archived_at_ms: row.get(22)?,
+                review_json: row.get(14)?,
+                result_payload_json: row.get(15)?,
+                lease_owner: row.get(16)?,
+                lease_version: row.get(17)?,
+                lease_acquired_at_ms: row.get(18)?,
+                lease_heartbeat_at_ms: row.get(19)?,
+                lease_expires_at_ms: row.get(20)?,
+                created_at_ms: row.get(21)?,
+                updated_at_ms: row.get(22)?,
+                archived_at_ms: row.get(23)?,
             })
         })
         .map_err(|error| format!("query expired work units failed: {error}"))?;
@@ -1879,6 +2104,11 @@ fn try_work_unit_snapshot_from_raw(
         .as_deref()
         .map(|value| decode_json::<Value>(value, "result_payload"))
         .transpose()?;
+    let review = raw_record
+        .review_json
+        .as_deref()
+        .map(|value| decode_json::<WorkUnitReviewRecord>(value, "review"))
+        .transpose()?;
     let lease = build_lease_record(&raw_record)?;
     let work_unit = WorkUnitRecord {
         work_unit_id: raw_record.work_unit_id.clone(),
@@ -1897,6 +2127,7 @@ fn try_work_unit_snapshot_from_raw(
         parent_work_unit_id: raw_record.parent_work_unit_id.clone(),
         blocks_work_unit_ids: raw_record.blocks_work_unit_ids.clone(),
         blocked_by_work_unit_ids: raw_record.blocked_by_work_unit_ids.clone(),
+        review,
         result_payload_json,
         created_at_ms: raw_record.created_at_ms,
         updated_at_ms: raw_record.updated_at_ms,
@@ -2171,6 +2402,59 @@ fn validate_manual_update_status(
     Ok(())
 }
 
+fn validate_review_request_status(status: WorkUnitStatus) -> Result<(), String> {
+    let is_allowed = matches!(
+        status,
+        WorkUnitStatus::Captured
+            | WorkUnitStatus::Triaged
+            | WorkUnitStatus::Ready
+            | WorkUnitStatus::RetryPending
+            | WorkUnitStatus::WaitingExternal
+    );
+    if !is_allowed {
+        return Err(format!(
+            "work unit review cannot be requested from `{}`",
+            status.as_str()
+        ));
+    }
+    Ok(())
+}
+
+fn review_status_from_decision(decision: WorkUnitReviewDecision) -> WorkUnitReviewStatus {
+    match decision {
+        WorkUnitReviewDecision::Approve => WorkUnitReviewStatus::Approved,
+        WorkUnitReviewDecision::RequestChanges => WorkUnitReviewStatus::ChangesRequested,
+        WorkUnitReviewDecision::Reject => WorkUnitReviewStatus::Rejected,
+    }
+}
+
+fn work_unit_status_from_review_decision(decision: WorkUnitReviewDecision) -> WorkUnitStatus {
+    match decision {
+        WorkUnitReviewDecision::Approve => WorkUnitStatus::Ready,
+        WorkUnitReviewDecision::RequestChanges => WorkUnitStatus::Triaged,
+        WorkUnitReviewDecision::Reject => WorkUnitStatus::Cancelled,
+    }
+}
+
+fn blocking_reason_from_review_decision(
+    decision: WorkUnitReviewDecision,
+    summary: Option<&str>,
+) -> Option<String> {
+    match decision {
+        WorkUnitReviewDecision::Approve => None,
+        WorkUnitReviewDecision::RequestChanges => summary
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+            .or_else(|| Some("changes requested".to_owned())),
+        WorkUnitReviewDecision::Reject => summary
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+            .or_else(|| Some("review rejected".to_owned())),
+    }
+}
+
 fn validate_retry_policy(retry_policy: &WorkUnitRetryPolicy) -> Result<(), String> {
     if retry_policy.max_attempts == 0 {
         return Err("work unit retry policy requires max_attempts >= 1".to_owned());
@@ -2305,15 +2589,17 @@ mod tests {
     use super::{
         AcquireWorkUnitLeaseRequest, AddWorkUnitDependencyRequest, AppendWorkUnitNoteRequest,
         ArchiveWorkUnitRequest, AssignWorkUnitRequest, CompleteWorkUnitRequest, NewWorkUnitRecord,
-        RemoveWorkUnitDependencyRequest, StartWorkUnitLeaseRequest, UpdateWorkUnitRequest,
+        RecordWorkUnitReviewDecisionRequest, RemoveWorkUnitDependencyRequest,
+        RequestWorkUnitReviewRequest, StartWorkUnitLeaseRequest, UpdateWorkUnitRequest,
         WORK_UNIT_ASSIGNED_EVENT_KIND, WORK_UNIT_DEPENDENCY_ADDED_EVENT_KIND,
         WORK_UNIT_DEPENDENCY_REMOVED_EVENT_KIND, WORK_UNIT_NOTE_ADDED_EVENT_KIND,
+        WORK_UNIT_REVIEW_RECORDED_EVENT_KIND, WORK_UNIT_REVIEW_REQUESTED_EVENT_KIND,
         WORK_UNIT_UPDATED_EVENT_KIND, WorkUnitCompletionDisposition, WorkUnitHeartbeatRequest,
-        WorkUnitListQuery, WorkUnitRepository,
+        WorkUnitListQuery, WorkUnitRepository, WorkUnitReviewDecision,
     };
     use loongclaw_contracts::{
-        WorkSourceKind, WorkUnitKind, WorkUnitPriority, WorkUnitRetryPolicy, WorkUnitSourceRef,
-        WorkUnitStatus,
+        WorkSourceKind, WorkUnitKind, WorkUnitPriority, WorkUnitRetryPolicy, WorkUnitReviewStatus,
+        WorkUnitSourceRef, WorkUnitStatus,
     };
 
     fn isolated_memory_config(test_name: &str) -> MemoryRuntimeConfig {
@@ -2487,6 +2773,138 @@ mod tests {
             .expect_err("runtime-owned status transition should be rejected");
 
         assert!(error.contains("cannot change status from `leased`"));
+    }
+
+    #[test]
+    fn review_request_and_decision_round_trip_through_snapshot() {
+        let config = isolated_memory_config("review-round-trip");
+        let repository = WorkUnitRepository::new(&config).expect("repository");
+        repository
+            .create_work_unit(sample_work_unit(WorkUnitStatus::Ready), Some("operator"))
+            .expect("create work unit");
+
+        let pending = repository
+            .request_work_unit_review(RequestWorkUnitReviewRequest {
+                work_unit_id: "wu-test".to_owned(),
+                requested_by: Some("planner".to_owned()),
+                reviewer: Some("reviewer-a".to_owned()),
+                summary: Some("Please verify the plan".to_owned()),
+                now_ms: Some(3_000),
+            })
+            .expect("request review")
+            .expect("pending review snapshot");
+        assert_eq!(pending.work_unit.status, WorkUnitStatus::WaitingReview);
+        let pending_review = pending.work_unit.review.expect("pending review");
+        assert_eq!(pending_review.status, WorkUnitReviewStatus::Pending);
+        assert_eq!(pending_review.requested_by.as_deref(), Some("planner"));
+        assert_eq!(pending_review.reviewer.as_deref(), Some("reviewer-a"));
+
+        let approved = repository
+            .record_work_unit_review_decision(RecordWorkUnitReviewDecisionRequest {
+                work_unit_id: "wu-test".to_owned(),
+                reviewer: Some("reviewer-a".to_owned()),
+                decision: WorkUnitReviewDecision::Approve,
+                summary: Some("looks good".to_owned()),
+                now_ms: Some(3_100),
+            })
+            .expect("record review decision")
+            .expect("approved snapshot");
+        assert_eq!(approved.work_unit.status, WorkUnitStatus::Ready);
+        assert_eq!(approved.work_unit.blocking_reason, None);
+        let approved_review = approved.work_unit.review.expect("approved review");
+        assert_eq!(approved_review.status, WorkUnitReviewStatus::Approved);
+        assert_eq!(approved_review.decided_at_ms, Some(3_100));
+        assert_eq!(approved_review.summary.as_deref(), Some("looks good"));
+
+        let events = repository
+            .list_work_unit_events("wu-test", 10)
+            .expect("list work unit events");
+        assert!(
+            events
+                .iter()
+                .any(|event| event.event_kind == WORK_UNIT_REVIEW_REQUESTED_EVENT_KIND),
+            "expected review request event"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| event.event_kind == WORK_UNIT_REVIEW_RECORDED_EVENT_KIND),
+            "expected review decision event"
+        );
+    }
+
+    #[test]
+    fn review_decision_can_request_changes_and_reject() {
+        let config = isolated_memory_config("review-decision-variants");
+        let repository = WorkUnitRepository::new(&config).expect("repository");
+
+        let triage = NewWorkUnitRecord {
+            work_unit_id: Some("wu-triage".to_owned()),
+            ..sample_work_unit(WorkUnitStatus::Ready)
+        };
+        let reject = NewWorkUnitRecord {
+            work_unit_id: Some("wu-reject".to_owned()),
+            ..sample_work_unit(WorkUnitStatus::Ready)
+        };
+
+        repository
+            .create_work_unit(triage, Some("operator"))
+            .expect("create review triage work unit");
+        repository
+            .create_work_unit(reject, Some("operator"))
+            .expect("create review reject work unit");
+
+        repository
+            .request_work_unit_review(RequestWorkUnitReviewRequest {
+                work_unit_id: "wu-triage".to_owned(),
+                requested_by: Some("planner".to_owned()),
+                reviewer: Some("reviewer-a".to_owned()),
+                summary: Some("needs plan review".to_owned()),
+                now_ms: Some(4_000),
+            })
+            .expect("request triage review")
+            .expect("triage pending review");
+        let triaged = repository
+            .record_work_unit_review_decision(RecordWorkUnitReviewDecisionRequest {
+                work_unit_id: "wu-triage".to_owned(),
+                reviewer: Some("reviewer-a".to_owned()),
+                decision: WorkUnitReviewDecision::RequestChanges,
+                summary: Some("tighten acceptance criteria".to_owned()),
+                now_ms: Some(4_100),
+            })
+            .expect("record change request")
+            .expect("triaged snapshot");
+        assert_eq!(triaged.work_unit.status, WorkUnitStatus::Triaged);
+        assert_eq!(
+            triaged.work_unit.blocking_reason.as_deref(),
+            Some("tighten acceptance criteria")
+        );
+
+        repository
+            .request_work_unit_review(RequestWorkUnitReviewRequest {
+                work_unit_id: "wu-reject".to_owned(),
+                requested_by: Some("planner".to_owned()),
+                reviewer: Some("reviewer-b".to_owned()),
+                summary: Some("needs go/no-go".to_owned()),
+                now_ms: Some(4_200),
+            })
+            .expect("request reject review")
+            .expect("reject pending review");
+        let rejected = repository
+            .record_work_unit_review_decision(RecordWorkUnitReviewDecisionRequest {
+                work_unit_id: "wu-reject".to_owned(),
+                reviewer: Some("reviewer-b".to_owned()),
+                decision: WorkUnitReviewDecision::Reject,
+                summary: Some("not worth pursuing".to_owned()),
+                now_ms: Some(4_300),
+            })
+            .expect("record reject decision")
+            .expect("rejected snapshot");
+        assert_eq!(rejected.work_unit.status, WorkUnitStatus::Cancelled);
+        assert_eq!(
+            rejected.work_unit.blocking_reason.as_deref(),
+            Some("not worth pursuing")
+        );
     }
 
     #[test]

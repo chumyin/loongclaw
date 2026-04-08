@@ -207,6 +207,48 @@ impl Default for WorkUnitRetryPolicy {
     }
 }
 
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkUnitReviewStatus {
+    Pending,
+    Approved,
+    ChangesRequested,
+    Rejected,
+}
+
+impl WorkUnitReviewStatus {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Approved => "approved",
+            Self::ChangesRequested => "changes_requested",
+            Self::Rejected => "rejected",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Option<Self> {
+        let normalized = raw.trim().to_ascii_lowercase();
+        match normalized.as_str() {
+            "pending" => Some(Self::Pending),
+            "approved" => Some(Self::Approved),
+            "changes_requested" => Some(Self::ChangesRequested),
+            "rejected" => Some(Self::Rejected),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkUnitReviewRecord {
+    pub status: WorkUnitReviewStatus,
+    pub requested_by: Option<String>,
+    pub reviewer: Option<String>,
+    pub requested_at_ms: i64,
+    pub decided_at_ms: Option<i64>,
+    pub summary: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkUnitRecord {
     pub work_unit_id: String,
@@ -225,6 +267,7 @@ pub struct WorkUnitRecord {
     pub parent_work_unit_id: Option<String>,
     pub blocks_work_unit_ids: Vec<String>,
     pub blocked_by_work_unit_ids: Vec<String>,
+    pub review: Option<WorkUnitReviewRecord>,
     pub result_payload_json: Option<Value>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,

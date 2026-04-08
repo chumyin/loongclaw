@@ -33,6 +33,10 @@ pub enum WorkUnitCommands {
     Assign(WorkUnitAssignCommandOptions),
     /// Update mutable orchestration fields on a durable work unit
     Update(WorkUnitUpdateCommandOptions),
+    /// Request review on a durable work unit and move it into review-wait state
+    RequestReview(WorkUnitRequestReviewCommandOptions),
+    /// Record a review decision for a durable work unit
+    Review(WorkUnitReviewDecisionCommandOptions),
     /// Add one blocking dependency edge between two durable work units
     Depend(WorkUnitDependCommandOptions),
     /// Remove one blocking dependency edge between two durable work units
@@ -270,6 +274,42 @@ pub struct WorkUnitUpdateCommandOptions {
 }
 
 #[derive(Args, Debug, Clone, PartialEq, Eq)]
+pub struct WorkUnitRequestReviewCommandOptions {
+    #[arg(long)]
+    pub config: Option<String>,
+    #[arg(long)]
+    pub id: String,
+    #[arg(long)]
+    pub requested_by: Option<String>,
+    #[arg(long)]
+    pub reviewer: Option<String>,
+    #[arg(long)]
+    pub summary: Option<String>,
+    #[arg(long)]
+    pub now_ms: Option<i64>,
+    #[arg(long, default_value_t = false)]
+    pub json: bool,
+}
+
+#[derive(Args, Debug, Clone, PartialEq, Eq)]
+pub struct WorkUnitReviewDecisionCommandOptions {
+    #[arg(long)]
+    pub config: Option<String>,
+    #[arg(long)]
+    pub id: String,
+    #[arg(long, value_enum)]
+    pub decision: WorkUnitReviewDecisionArg,
+    #[arg(long)]
+    pub reviewer: Option<String>,
+    #[arg(long)]
+    pub summary: Option<String>,
+    #[arg(long)]
+    pub now_ms: Option<i64>,
+    #[arg(long, default_value_t = false)]
+    pub json: bool,
+}
+
+#[derive(Args, Debug, Clone, PartialEq, Eq)]
 pub struct WorkUnitDependCommandOptions {
     #[arg(long)]
     pub config: Option<String>,
@@ -377,6 +417,13 @@ pub enum WorkUnitDispositionArg {
     Cancelled,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum WorkUnitReviewDecisionArg {
+    Approve,
+    RequestChanges,
+    Reject,
+}
+
 impl From<WorkUnitKindArg> for WorkUnitKind {
     fn from(value: WorkUnitKindArg) -> Self {
         match value {
@@ -439,6 +486,16 @@ impl From<WorkUnitDispositionArg> for mvp::work::repository::WorkUnitCompletionD
     }
 }
 
+impl From<WorkUnitReviewDecisionArg> for mvp::work::repository::WorkUnitReviewDecision {
+    fn from(value: WorkUnitReviewDecisionArg) -> Self {
+        match value {
+            WorkUnitReviewDecisionArg::Approve => Self::Approve,
+            WorkUnitReviewDecisionArg::RequestChanges => Self::RequestChanges,
+            WorkUnitReviewDecisionArg::Reject => Self::Reject,
+        }
+    }
+}
+
 pub fn run_work_unit_cli(command: WorkUnitCommands) -> CliResult<()> {
     match command {
         WorkUnitCommands::Create(options) => run_create_command(options),
@@ -453,6 +510,8 @@ pub fn run_work_unit_cli(command: WorkUnitCommands) -> CliResult<()> {
         WorkUnitCommands::Archive(options) => run_archive_command(options),
         WorkUnitCommands::Assign(options) => run_assign_command(options),
         WorkUnitCommands::Update(options) => run_update_command(options),
+        WorkUnitCommands::RequestReview(options) => run_request_review_command(options),
+        WorkUnitCommands::Review(options) => run_review_decision_command(options),
         WorkUnitCommands::Depend(options) => run_depend_command(options),
         WorkUnitCommands::Undepend(options) => run_undepend_command(options),
         WorkUnitCommands::Note(options) => run_note_command(options),
@@ -646,6 +705,32 @@ fn run_update_command(options: WorkUnitUpdateCommandOptions) -> CliResult<()> {
     render_optional_snapshot(snapshot, options.json, missing_message)
 }
 
+fn run_request_review_command(options: WorkUnitRequestReviewCommandOptions) -> CliResult<()> {
+    let repository = load_work_unit_repository(options.config.as_deref())?;
+    let request = mvp::work::repository::RequestWorkUnitReviewRequest {
+        work_unit_id: options.id,
+        requested_by: options.requested_by,
+        reviewer: options.reviewer,
+        summary: options.summary,
+        now_ms: options.now_ms,
+    };
+    let snapshot = repository.request_work_unit_review(request)?;
+    render_optional_snapshot("request-review", snapshot, options.json)
+}
+
+fn run_review_decision_command(options: WorkUnitReviewDecisionCommandOptions) -> CliResult<()> {
+    let repository = load_work_unit_repository(options.config.as_deref())?;
+    let request = mvp::work::repository::RecordWorkUnitReviewDecisionRequest {
+        work_unit_id: options.id,
+        reviewer: options.reviewer,
+        decision: options.decision.into(),
+        summary: options.summary,
+        now_ms: options.now_ms,
+    };
+    let snapshot = repository.record_work_unit_review_decision(request)?;
+    render_optional_snapshot("review", snapshot, options.json)
+}
+
 fn run_depend_command(options: WorkUnitDependCommandOptions) -> CliResult<()> {
     let repository = load_work_unit_repository(options.config.as_deref())?;
     let request = mvp::work::repository::AddWorkUnitDependencyRequest {
@@ -758,6 +843,11 @@ fn render_work_unit_snapshot_text(snapshot: &WorkUnitSnapshot) -> String {
         .as_ref()
         .map(render_lease_text)
         .unwrap_or_else(|| "lease: (none)".to_owned());
+    let review_text = work_unit
+        .review
+        .as_ref()
+        .map(render_review_text)
+        .unwrap_or_else(|| "review: (none)".to_owned());
     let result_payload = work_unit
         .result_payload_json
         .as_ref()
@@ -772,7 +862,7 @@ fn render_work_unit_snapshot_text(snapshot: &WorkUnitSnapshot) -> String {
     let source = render_source_ref(&work_unit.source_ref);
     let retry = render_retry_policy(&work_unit.retry_policy);
     format!(
-        "id={} kind={} status={} priority={} attempts={} next_run_at_ms={} archived_at_ms={}\nsource={}\nretry={}\nparent_work_unit_id={}\nassigned_to={}\nblocks_work_unit_ids={}\nblocked_by_work_unit_ids={}\ntitle={}\ndescription={}\nlast_error={}\nblocking_reason={}\nresult_payload_json={}\n{}\n",
+        "id={} kind={} status={} priority={} attempts={} next_run_at_ms={} archived_at_ms={}\nsource={}\nretry={}\nparent_work_unit_id={}\nassigned_to={}\nblocks_work_unit_ids={}\nblocked_by_work_unit_ids={}\ntitle={}\ndescription={}\nlast_error={}\nblocking_reason={}\nresult_payload_json={}\n{}\n{}\n",
         work_unit.work_unit_id,
         work_unit.kind.as_str(),
         work_unit.status.as_str(),
@@ -791,6 +881,7 @@ fn render_work_unit_snapshot_text(snapshot: &WorkUnitSnapshot) -> String {
         last_error,
         blocking_reason,
         result_payload,
+        review_text,
         lease_text,
     )
 }
@@ -867,6 +958,22 @@ fn render_work_unit_health_text(health: &loongclaw_contracts::WorkRuntimeHealthS
         health.terminal_count,
         health.archived_count,
         health.expired_lease_count,
+    )
+}
+
+fn render_review_text(review: &loongclaw_contracts::WorkUnitReviewRecord) -> String {
+    let requested_by = review.requested_by.as_deref().unwrap_or("-");
+    let reviewer = review.reviewer.as_deref().unwrap_or("-");
+    let decided_at_ms = render_optional_i64(review.decided_at_ms);
+    let summary = review.summary.as_deref().unwrap_or("-");
+    format!(
+        "review: status={} requested_by={} reviewer={} requested_at_ms={} decided_at_ms={} summary={}",
+        review.status.as_str(),
+        requested_by,
+        reviewer,
+        review.requested_at_ms,
+        decided_at_ms,
+        summary,
     )
 }
 
