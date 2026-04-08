@@ -964,7 +964,7 @@ fn attach_provider_parse_telemetry(
     }
 
     let provider_parse = message
-        .entry("loongclaw_provider_parse".to_owned())
+        .entry("loong_provider_parse".to_owned())
         .or_insert_with(|| Value::Object(serde_json::Map::new()));
     let Some(provider_parse) = provider_parse.as_object_mut() else {
         return;
@@ -2699,11 +2699,11 @@ mod tests {
             "lease-shell-inline"
         );
         assert_eq!(
-            turn.raw_meta["loongclaw_provider_parse"]["inline_function"]["status"],
+            turn.raw_meta["loong_provider_parse"]["inline_function"]["status"],
             "parsed"
         );
         assert_eq!(
-            turn.raw_meta["loongclaw_provider_parse"]["inline_function"]["tool_count"],
+            turn.raw_meta["loong_provider_parse"]["inline_function"]["tool_count"],
             1
         );
     }
@@ -2767,11 +2767,11 @@ mod tests {
             })
         );
         assert_eq!(
-            turn.raw_meta["loongclaw_provider_parse"]["json_tool_block"]["status"],
+            turn.raw_meta["loong_provider_parse"]["json_tool_block"]["status"],
             "parsed"
         );
         assert_eq!(
-            turn.raw_meta["loongclaw_provider_parse"]["json_tool_block"]["tool_count"],
+            turn.raw_meta["loong_provider_parse"]["json_tool_block"]["tool_count"],
             1
         );
     }
@@ -3002,11 +3002,11 @@ mod tests {
             "let me search for the right tool first.\n{\n  \"name\": \"tool_search\",\n  \"arguments\": \"{bad\"\n}"
         );
         assert_eq!(
-            turn.raw_meta["loongclaw_provider_parse"]["json_tool_block"]["status"],
+            turn.raw_meta["loong_provider_parse"]["json_tool_block"]["status"],
             "malformed"
         );
         assert_eq!(
-            turn.raw_meta["loongclaw_provider_parse"]["json_tool_block"]["error_code"],
+            turn.raw_meta["loong_provider_parse"]["json_tool_block"]["error_code"],
             "invalid_json"
         );
     }
@@ -3232,11 +3232,11 @@ mod tests {
         );
         assert!(turn.tool_intents.is_empty());
         assert_eq!(
-            turn.raw_meta["loongclaw_provider_parse"]["inline_function"]["status"],
+            turn.raw_meta["loong_provider_parse"]["inline_function"]["status"],
             "malformed"
         );
         assert_eq!(
-            turn.raw_meta["loongclaw_provider_parse"]["inline_function"]["error_code"],
+            turn.raw_meta["loong_provider_parse"]["inline_function"]["error_code"],
             "missing_function_close"
         );
     }

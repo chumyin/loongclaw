@@ -14,8 +14,8 @@ fn unique_temp_dir(prefix: &str) -> PathBuf {
 fn write_gateway_test_config(root: &std::path::Path) -> PathBuf {
     fs::create_dir_all(root).expect("create gateway test root");
 
-    let config = mvp::config::LoongClawConfig::default();
-    let config_path = root.join("loongclaw.toml");
+    let config = mvp::config::LoongConfig::default();
+    let config_path = root.join("loong.toml");
     let config_path_text = config_path
         .to_str()
         .expect("config path should be valid utf-8");
@@ -111,14 +111,14 @@ fn legacy_acp_dispatch_payload_json(
 }
 #[test]
 fn gateway_read_model_channel_inventory_matches_channel_cli_contract() {
-    let config = mvp::config::LoongClawConfig::default();
+    let config = mvp::config::LoongConfig::default();
     let inventory = mvp::channel::channel_inventory(&config);
     let payload =
-        gateway::read_models::build_channel_inventory_read_model("/tmp/loongclaw.toml", &inventory);
+        gateway::read_models::build_channel_inventory_read_model("/tmp/loong.toml", &inventory);
     let encoded = serde_json::to_value(&payload).expect("serialize channel inventory read model");
-    let legacy = legacy_channel_inventory_json("/tmp/loongclaw.toml", &inventory);
+    let legacy = legacy_channel_inventory_json("/tmp/loong.toml", &inventory);
 
-    assert_eq!(payload.config, "/tmp/loongclaw.toml");
+    assert_eq!(payload.config, "/tmp/loong.toml");
     assert_eq!(payload.schema.version, CHANNELS_CLI_JSON_SCHEMA_VERSION);
     assert_eq!(payload.schema.primary_channel_view, "channel_surfaces");
     assert_eq!(payload.schema.catalog_view, "channel_catalog");
@@ -167,7 +167,7 @@ fn gateway_read_model_acp_status_keeps_requested_and_resolved_session_fields() {
     };
 
     let payload = gateway::read_models::build_acp_status_read_model(
-        "/tmp/loongclaw.toml",
+        "/tmp/loong.toml",
         Some("agent:codex:telegram:42"),
         Some("telegram:42"),
         Some("telegram:bot_123456:42"),
@@ -176,7 +176,7 @@ fn gateway_read_model_acp_status_keeps_requested_and_resolved_session_fields() {
     );
     let encoded = serde_json::to_value(&payload).expect("serialize ACP status read model");
     let legacy = legacy_acp_status_payload_json(
-        "/tmp/loongclaw.toml",
+        "/tmp/loong.toml",
         Some("agent:codex:telegram:42"),
         Some("telegram:42"),
         Some("telegram:bot_123456:42"),
@@ -184,7 +184,7 @@ fn gateway_read_model_acp_status_keeps_requested_and_resolved_session_fields() {
         &status,
     );
 
-    assert_eq!(payload.config, "/tmp/loongclaw.toml");
+    assert_eq!(payload.config, "/tmp/loong.toml");
     assert_eq!(payload.resolved_session_key, "agent:codex:telegram:42");
     assert_eq!(payload.status.state, "busy");
     assert_eq!(payload.status.mode, Some("interactive"));
@@ -301,11 +301,11 @@ fn gateway_read_model_acp_observability_keeps_rollups_and_provenance() {
     };
 
     let payload =
-        gateway::read_models::build_acp_observability_read_model("/tmp/loongclaw.toml", &snapshot);
+        gateway::read_models::build_acp_observability_read_model("/tmp/loong.toml", &snapshot);
     let encoded = serde_json::to_value(&payload).expect("serialize ACP observability read model");
-    let legacy = legacy_acp_observability_payload_json("/tmp/loongclaw.toml", &snapshot);
+    let legacy = legacy_acp_observability_payload_json("/tmp/loong.toml", &snapshot);
 
-    assert_eq!(payload.config, "/tmp/loongclaw.toml");
+    assert_eq!(payload.config, "/tmp/loong.toml");
     assert_eq!(payload.snapshot.runtime_cache.active_sessions, 2);
     assert_eq!(payload.snapshot.sessions.bound, 1);
     assert_eq!(payload.snapshot.turns.completed, 8);
@@ -348,20 +348,16 @@ fn gateway_read_model_acp_dispatch_keeps_structured_address_and_target() {
     };
 
     let payload = gateway::read_models::build_acp_dispatch_read_model(
-        "/tmp/loongclaw.toml",
+        "/tmp/loong.toml",
         &address,
         "opaque-session",
         &decision,
     );
     let encoded = serde_json::to_value(&payload).expect("serialize ACP dispatch read model");
-    let legacy = legacy_acp_dispatch_payload_json(
-        "/tmp/loongclaw.toml",
-        &address,
-        "opaque-session",
-        &decision,
-    );
+    let legacy =
+        legacy_acp_dispatch_payload_json("/tmp/loong.toml", &address, "opaque-session", &decision);
 
-    assert_eq!(payload.config, "/tmp/loongclaw.toml");
+    assert_eq!(payload.config, "/tmp/loong.toml");
     assert_eq!(payload.address.channel_id.as_deref(), Some("feishu"));
     assert_eq!(payload.dispatch.session, "opaque-session");
     assert_eq!(payload.dispatch.decision.reason, "allowed");
@@ -378,7 +374,7 @@ fn gateway_read_model_acp_dispatch_keeps_structured_address_and_target() {
 
 #[test]
 fn gateway_read_model_runtime_snapshot_embeds_inventory_and_tool_summary() {
-    let root = unique_temp_dir("loongclaw-gateway-runtime-snapshot");
+    let root = unique_temp_dir("loong-gateway-runtime-snapshot");
     let config_path = write_gateway_test_config(&root);
     let config_path_text = config_path
         .to_str()
@@ -423,7 +419,7 @@ fn gateway_read_model_runtime_snapshot_embeds_inventory_and_tool_summary() {
 
 #[test]
 fn gateway_read_model_operator_summary_keeps_owner_control_and_runtime_rollups() {
-    let root = unique_temp_dir("loongclaw-gateway-operator-summary");
+    let root = unique_temp_dir("loong-gateway-operator-summary");
     let config_path = write_gateway_test_config(&root);
     let config_path_text = config_path
         .to_str()
@@ -437,7 +433,7 @@ fn gateway_read_model_operator_summary_keeps_owner_control_and_runtime_rollups()
     );
     let runtime_snapshot = gateway::read_models::build_runtime_snapshot_read_model(&snapshot);
     let owner_status = gateway::state::GatewayOwnerStatus {
-        runtime_dir: "/tmp/loongclaw-gateway-runtime".to_owned(),
+        runtime_dir: "/tmp/loong-gateway-runtime".to_owned(),
         phase: "running".to_owned(),
         running: true,
         stale: false,
@@ -455,7 +451,7 @@ fn gateway_read_model_operator_summary_keeps_owner_control_and_runtime_rollups()
         running_surface_count: 0,
         bind_address: Some("127.0.0.1".to_owned()),
         port: Some(7777),
-        token_path: Some("/tmp/loongclaw-gateway-runtime/control-token".to_owned()),
+        token_path: Some("/tmp/loong-gateway-runtime/control-token".to_owned()),
     };
 
     let summary = gateway::read_models::build_operator_summary_read_model(

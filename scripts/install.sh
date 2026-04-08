@@ -559,8 +559,8 @@ run_guided_onboarding() {
   local recommendation
   local onboard_status
 
-  if [[ -n "${LOONGCLAW_WEB_SEARCH_PROVIDER:-}" ]]; then
-    selected_provider="${LOONGCLAW_WEB_SEARCH_PROVIDER}"
+  if [[ -n "${LOONG_WEB_SEARCH_PROVIDER:-}" ]]; then
+    selected_provider="${LOONG_WEB_SEARCH_PROVIDER:-${LOONGCLAW_WEB_SEARCH_PROVIDER:-}}"
     provider_source="preconfigured"
   else
     recommendation="$(recommend_onboard_web_search_provider)"
@@ -781,7 +781,7 @@ install_from_source() {
   printf '==> Building loong from source (release)\n'
   (
     cd "${repo_root}"
-    LOONGCLAW_RELEASE_BUILD=1 \
+    LOONG_RELEASE_BUILD="${LOONG_RELEASE_BUILD:-${LOONGCLAW_RELEASE_BUILD:-1}}" \
       cargo build -p loong --bin "${bin_name}" --release --locked
   )
 

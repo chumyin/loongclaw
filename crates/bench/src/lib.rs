@@ -18,10 +18,10 @@ use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
 use tokio::time::{Instant as TokioInstant, sleep};
 
-use loongclaw_spec::programmatic::{
+use loong_spec::programmatic::{
     acquire_programmatic_circuit_slot, record_programmatic_circuit_outcome,
 };
-use loongclaw_spec::{
+use loong_spec::{
     BridgeRuntimePolicy, CliResult, ConnectorCircuitBreakerPolicy, NativeToolExecutor,
     ProgrammaticCircuitBreakerPolicy, ProgrammaticCircuitRuntimeState, RunnerSpec,
     execute_spec_with_native_tool_executor, execute_wasm_component_bridge,
@@ -47,7 +47,7 @@ const DEFAULT_MEMORY_CONTEXT_SPEEDUP_SUITE_NOISE_CLEAR_WIN_SUPPRESSION_MULTIPLIE
 const DEFAULT_MEMORY_CONTEXT_SPEEDUP_SUITE_NOISE_TINY_HOT_PATH_MAX_P50_MS: f64 = 1.0;
 const DEFAULT_MEMORY_CONTEXT_SPEEDUP_SUITE_NOISE_TINY_HOT_PATH_MAX_RANGE_MS: f64 = 1.25;
 const MEMORY_CONTEXT_SUITE_AGGREGATION_MEDIAN_OF_P95: &str = "median_of_suite_p95";
-const BENCHMARK_COPY_STRATEGY_ENV: &str = "LOONGCLAW_BENCHMARK_COPY_STRATEGY";
+const BENCHMARK_COPY_STRATEGY_ENV: &str = "LOONG_BENCHMARK_COPY_STRATEGY";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BenchmarkCopyStrategy {
@@ -3146,7 +3146,7 @@ pub fn run_wasm_cache_benchmark_cli(
     let wasm_source = fs::canonicalize(wasm_source)
         .map_err(|error| format!("failed to canonicalize wasm artifact path: {error}"))?;
     let temp_root = std::env::temp_dir().join(format!(
-        "loongclaw-wasm-cache-benchmark-{}",
+        "loong-wasm-cache-benchmark-{}",
         current_epoch_seconds()
     ));
     fs::create_dir_all(&temp_root)
@@ -4014,7 +4014,7 @@ pub async fn run_spec_pressure_once(
     let requires_native_tool_executor = spec_requires_native_tool_executor(spec);
     if requires_native_tool_executor && native_tool_executor.is_none() {
         return Err(
-            "spec benchmark scenario requires a native tool executor; move this config.import/claw.migrate/claw_migrate run to daemon composition root".to_owned(),
+            "spec benchmark scenario requires a native tool executor; move this config.import/loong.migrate/loong_migrate run to daemon composition root".to_owned(),
         );
     }
     let report = execute_spec_with_native_tool_executor(spec, false, native_tool_executor).await;
@@ -4025,7 +4025,7 @@ pub async fn run_spec_pressure_once(
             .is_some_and(|reason| reason.contains("native tool executor"))
     {
         return Err(
-            "spec benchmark scenario requires a native tool executor that handles the requested native tool; move this config.import/claw.migrate/claw_migrate run to daemon composition root".to_owned(),
+            "spec benchmark scenario requires a native tool executor that handles the requested native tool; move this config.import/loong.migrate/loong_migrate run to daemon composition root".to_owned(),
         );
     }
     let blocked = report.operation_kind == "blocked" || report.blocked_reason.is_some();
@@ -8203,8 +8203,8 @@ mod tests {
 
     #[test]
     fn benchmark_temp_root_uses_unique_suffixes_per_call() {
-        let first = benchmark_temp_root("loongclaw-memory-context-benchmark-test", None);
-        let second = benchmark_temp_root("loongclaw-memory-context-benchmark-test", None);
+        let first = benchmark_temp_root("loong-memory-context-benchmark-test", None);
+        let second = benchmark_temp_root("loong-memory-context-benchmark-test", None);
 
         assert_ne!(first, second);
     }
@@ -8244,9 +8244,9 @@ mod tests {
 
     #[test]
     fn benchmark_temp_root_honors_requested_parent_directory() {
-        let requested_parent = Path::new("/tmp/loongclaw-memory-context-benchmark-parent");
+        let requested_parent = Path::new("/tmp/loong-memory-context-benchmark-parent");
         let root = benchmark_temp_root(
-            "loongclaw-memory-context-benchmark-test",
+            "loong-memory-context-benchmark-test",
             Some(requested_parent),
         );
 
@@ -8255,7 +8255,7 @@ mod tests {
 
     #[test]
     fn memory_context_benchmark_temp_root_prefers_explicit_override() {
-        let explicit = Path::new("/tmp/loongclaw-memory-context-benchmark-explicit");
+        let explicit = Path::new("/tmp/loong-memory-context-benchmark-explicit");
         let resolved = resolve_memory_context_benchmark_temp_root(
             "target/benchmarks/memory-context-benchmark-report.json",
             Some(explicit.to_str().expect("utf-8 explicit path")),
@@ -8306,9 +8306,7 @@ mod tests {
         let resolved = resolve_memory_context_benchmark_temp_root_with_exe(
             "target/benchmarks/memory-context-benchmark-report.json",
             None,
-            Some(Path::new(
-                "/repo/target/codex-memory-bench-red/debug/loongclaw",
-            )),
+            Some(Path::new("/repo/target/codex-memory-bench-red/debug/loong")),
         )
         .expect("resolve temp root from current exe");
 

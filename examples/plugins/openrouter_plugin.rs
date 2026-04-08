@@ -1,4 +1,4 @@
-// LOONGCLAW_PLUGIN_START
+// LOONG_PLUGIN_START
 // {
 //   "plugin_id": "openrouter-community-rs",
 //   "provider_id": "openrouter",
@@ -13,7 +13,7 @@
 //     "language": "rust"
 //   }
 // }
-// LOONGCLAW_PLUGIN_END
+// LOONG_PLUGIN_END
 
 pub fn plugin_placeholder() {
     // This file is intentionally a minimal Rust source that carries

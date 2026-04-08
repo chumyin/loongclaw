@@ -90,7 +90,7 @@ fn fake_acpx_script_helpers_work_with_empty_path() {
     use std::io::Write;
     use std::process::{Command, Stdio};
 
-    let temp_dir = unique_temp_dir("loongclaw-acpx-script-builtins");
+    let temp_dir = unique_temp_dir("loong-acpx-script-builtins");
     let log_path = temp_dir.join("calls.log");
     let script_path = write_fake_acpx_script(
         &temp_dir,

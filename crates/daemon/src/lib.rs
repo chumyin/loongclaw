@@ -22,28 +22,27 @@ use kernel::{
     PluginActivationStatus, PluginScanner, PluginSetupReadinessContext, PluginTranslator,
     TaskIntent, ToolCoreOutcome, ToolCoreRequest, evaluate_plugin_setup_requirements,
 };
-use loongclaw_contracts::SecretRef;
+use loong_contracts::SecretRef;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
-pub use loongclaw_app as mvp;
-pub use loongclaw_spec::spec_execution::*;
-pub use loongclaw_spec::spec_runtime::*;
-pub use loongclaw_spec::{CliResult, DEFAULT_AGENT_ID, DEFAULT_PACK_ID, kernel_bootstrap};
+pub use loong_app as mvp;
+pub use loong_spec::spec_execution::*;
+pub use loong_spec::spec_runtime::*;
+pub use loong_spec::{CliResult, DEFAULT_AGENT_ID, DEFAULT_PACK_ID, kernel_bootstrap};
 
 pub use self::channel_send_target_kind::{
     default_twitch_send_target_kind, parse_twitch_send_target_kind,
 };
 pub use self::cli_json::build_runtime_snapshot_cli_json_payload;
-pub use self::delegate_child_cli::run_detached_delegate_child_cli;
 pub use self::env_compat::make_env_compatible;
 pub use self::mcp_cli::{
     build_mcp_server_detail_cli_json_payload, build_mcp_servers_cli_json_payload,
     run_list_mcp_servers_cli, run_show_mcp_server_cli,
 };
-pub use loongclaw_bench::{
+pub use loong_bench::{
     run_programmatic_pressure_baseline_lint_cli, run_programmatic_pressure_benchmark_cli,
     run_wasm_cache_benchmark_cli,
 };
@@ -82,9 +81,10 @@ pub fn run_memory_context_benchmark_cli(
     Err("benchmark-memory-context requires the daemon `memory-sqlite` feature".to_owned())
 }
 
-pub use {base64, kernel, sha2};
+pub use base64;
+pub use kernel;
+pub use sha2;
 
-pub mod acp_cli;
 pub mod audit_cli;
 mod browser_companion_diagnostics;
 pub mod browser_preview;
@@ -98,7 +98,6 @@ mod command_kind;
 pub mod completions_cli;
 mod control_plane_server;
 mod copilot_onboarding;
-mod delegate_child_cli;
 pub mod doctor_cli;
 pub mod doctor_security_cli;
 mod env_compat;
@@ -138,25 +137,13 @@ pub mod session_cli;
 pub mod sessions_cli;
 pub mod skills_cli;
 pub mod source_presentation;
-pub mod status_cli;
 pub mod supervisor;
 mod task_execution;
 pub mod tasks_cli;
 mod tlon_cli;
-mod tool_calling_readiness;
 pub mod trajectory_cli;
-mod turn_cli;
 pub mod work_unit_cli;
-pub use self::acp_cli::{
-    acp_backend_metadata_json, acp_binding_scope_json, acp_control_plane_json,
-    acp_dispatch_decision_json, acp_dispatch_prediction_provenance_json, acp_doctor_json,
-    acp_event_summary_json, acp_manager_observability_json, acp_session_activation_provenance_json,
-    acp_session_metadata_json, acp_session_mode_label, acp_session_state_label,
-    acp_session_status_json, acp_turn_provenance_json, build_acp_dispatch_address,
-    format_acp_event_summary, resolve_acp_status_session_key, run_acp_dispatch_cli,
-    run_acp_doctor_cli, run_acp_event_summary_cli, run_acp_observability_cli, run_acp_status_cli,
-    run_list_acp_backends_cli, run_list_acp_sessions_cli,
-};
+
 use channel_bridge_render::{
     push_channel_surface_managed_plugin_bridge_discovery,
     push_channel_surface_plugin_bridge_contract,
@@ -165,7 +152,7 @@ pub(crate) use channel_bridge_render::{
     render_line_safe_optional_text_value, render_line_safe_text_value, render_line_safe_text_values,
 };
 pub use gateway::read_models::{ChannelsCliJsonPayload, ChannelsCliJsonSchema};
-pub use loongclaw_spec::programmatic::{
+pub use loong_spec::programmatic::{
     acquire_programmatic_circuit_slot, record_programmatic_circuit_outcome,
 };
 pub use observability::{debug_variant_name, init_tracing, summarize_error};
@@ -186,9 +173,6 @@ use task_execution::execute_daemon_task_with_supervisor;
 pub use task_execution::{DaemonTaskExecution, run_demo, run_task_cli};
 pub use tlon_cli::TLON_SEND_CLI_SPEC;
 use tlon_cli::{default_tlon_send_target_kind, parse_tlon_send_target_kind};
-pub use turn_cli::{TurnCommands, build_cli_chat_options, run_ask_cli, run_chat_cli};
-#[rustfmt::skip]
-use tool_calling_readiness::{RuntimeSnapshotToolCallingState, collect_runtime_snapshot_tool_calling_state};
 pub use trajectory_cli::{
     TRAJECTORY_EXPORT_ARTIFACT_JSON_SCHEMA_VERSION, TrajectoryExportArtifactDocument,
     TrajectoryExportArtifactSchema, TrajectoryExportEvent, TrajectoryExportSessionSummary,
@@ -196,6 +180,7 @@ pub use trajectory_cli::{
     format_trajectory_inspect_text, load_trajectory_export_artifact, run_trajectory_export_cli,
     run_trajectory_inspect_cli,
 };
+
 #[allow(
     clippy::expect_used,
     clippy::panic,
@@ -205,7 +190,7 @@ pub use trajectory_cli::{
 #[doc(hidden)]
 pub mod test_support;
 
-pub const PUBLIC_GITHUB_REPO: &str = "loongclaw-ai/loongclaw";
+pub const PUBLIC_GITHUB_REPO: &str = "eastreams/loong";
 pub const CLI_COMMAND_NAME: &str = mvp::config::CLI_COMMAND_NAME;
 pub const LEGACY_CLI_COMMAND_NAME: &str = mvp::config::LEGACY_CLI_COMMAND_NAME;
 
@@ -215,7 +200,7 @@ pub fn active_cli_command_name() -> &'static str {
 
 fn render_welcome_long_about(command_name: &str) -> String {
     format!(
-        "Show the configured welcome banner and quick commands.\n\nquick commands:\n- {command_name} ask --config <path> --message \"...\"\n- {command_name} chat --config <path>\n- {command_name} personalize --config <path>\n- {command_name} doctor --config <path>\n- {command_name} --help\n\nReplace <path> with your current config path, or set LOONGCLAW_CONFIG_PATH first."
+        "Show the configured welcome banner and quick commands.\n\nquick commands:\n- {command_name} ask --config <path> --message \"...\"\n- {command_name} chat --config <path>\n- {command_name} personalize --config <path>\n- {command_name} doctor --config <path>\n- {command_name} --help\n\nReplace <path> with your current config path, or set LOONG_CONFIG_PATH first."
     )
 }
 
@@ -270,10 +255,7 @@ pub fn native_spec_tool_executor(
     if mvp::tools::canonical_tool_name(request.tool_name.as_str()) != "config.import" {
         return None;
     }
-    Some(mvp::tools::execute_tool_core_with_config(
-        request,
-        &mvp::tools::runtime_config::ToolRuntimeConfig::default(),
-    ))
+    Some(mvp::tools::execute_tool_core(request))
 }
 
 pub type ChannelCliCommandFuture<'a> = Pin<Box<dyn Future<Output = CliResult<()>> + Send + 'a>>;
@@ -360,7 +342,7 @@ impl std::str::FromStr for MultiChannelServeChannelAccount {
 #[derive(Parser, Debug)]
 #[command(
     name = CLI_COMMAND_NAME,
-    about = "LoongClaw low-level runtime daemon",
+    about = "Loong low-level runtime daemon",
     version
 )]
 pub struct Cli {
@@ -378,24 +360,18 @@ pub enum InitSpecPreset {
 #[derive(Subcommand, Debug)]
 pub enum Commands {
     #[command(
-        long_about = "Show the configured welcome banner and quick commands.\n\nquick commands:\n- loong ask --config <path> --message \"...\"\n- loong chat --config <path>\n- loong personalize --config <path>\n- loong doctor --config <path>\n- loong --help\n\nReplace <path> with your current config path, or set LOONGCLAW_CONFIG_PATH first."
+        long_about = "Show the configured welcome banner and quick commands.\n\nquick commands:\n- loong ask --config <path> --message \"...\"\n- loong chat --config <path>\n- loong personalize --config <path>\n- loong doctor --config <path>\n- loong --help\n\nReplace <path> with your current config path, or set LOONG_CONFIG_PATH first."
     )]
     /// Show a welcome banner for an already configured install
     Welcome,
     /// Run the original end-to-end bootstrap demo
     Demo,
-    #[command(hide = true)]
-    /// Deprecated compatibility alias for the generic task runner
+    /// Execute one task through the kernel+harness path
     RunTask {
         #[arg(long)]
         objective: String,
         #[arg(long, default_value = "{}")]
         payload: String,
-    },
-    /// Run agent turns through the unified runtime entry surface
-    Turn {
-        #[command(subcommand)]
-        command: TurnCommands,
     },
     /// Invoke one connector operation through kernel policy gate
     InvokeConnector {
@@ -408,7 +384,7 @@ pub enum Commands {
     AuditDemo,
     /// Generate a runnable JSON spec template for quick vertical customization
     InitSpec {
-        #[arg(long, default_value = "loongclaw.spec.json")]
+        #[arg(long, default_value = "loong.spec.json")]
         output: String,
         #[arg(long, value_enum, default_value_t = InitSpecPreset::Default)]
         preset: InitSpecPreset,
@@ -527,10 +503,10 @@ pub enum Commands {
     },
     #[command(
         about = "Guided onboarding for fast first-chat setup with preflight diagnostics",
-        long_about = "Guided onboarding for fast first-chat setup with preflight diagnostics.\n\nThis is the default path for most users. LoongClaw will detect reusable settings for provider, channels, or workspace guidance, suggest a starting point, and walk through quick review before first chat."
+        long_about = "Guided onboarding for fast first-chat setup with preflight diagnostics.\n\nThis is the default path for most users. Loong will detect reusable settings for provider, channels, or workspace guidance, suggest a starting point, and walk through quick review before first chat."
     )]
     Onboard {
-        /// Write the resulting config to a custom path instead of the default loongclaw config location
+        /// Write the resulting config to a custom path instead of the default loong config location
         #[arg(long)]
         output: Option<String>,
         /// Overwrite an existing target config path instead of stopping for manual review
@@ -590,7 +566,7 @@ pub enum Commands {
         long_about = "Power-user import flow for previewing or applying detected migration sources explicitly.\n\nUse this when you want exact CLI control over which source and domains are reused. If you want the guided path, use `loong onboard` instead. When the same source kind resolves to multiple detected configs, rerun with `--source-path <path>` to choose one exact source."
     )]
     Import {
-        /// Write the imported config to a custom path instead of the default loongclaw config location
+        /// Write the imported config to a custom path instead of the default loong config location
         #[arg(long)]
         output: Option<String>,
         /// Overwrite an existing target config path instead of stopping for manual review
@@ -632,7 +608,7 @@ pub enum Commands {
         /// Path to the legacy agent workspace or root to inspect
         #[arg(long)]
         input: Option<String>,
-        /// Target LoongClaw config path to preview, write, or roll back
+        /// Target Loong config path to preview, write, or roll back
         #[arg(long)]
         output: Option<String>,
         /// Hint the legacy claw-family source kind for single-source plan/apply modes
@@ -706,13 +682,6 @@ pub enum Commands {
         #[command(subcommand)]
         command: tasks_cli::TasksCommands,
     },
-    #[command(hide = true)]
-    DelegateChildRun {
-        #[arg(long)]
-        config_path: String,
-        #[arg(long)]
-        payload_file: String,
-    },
     #[command(
         about = "Inspect and manage persisted runtime sessions through an operator-facing session shell",
         long_about = "Bounded operator-facing session shell for persisted runtime sessions.\n\nUse this surface to list visible sessions, inspect one session's workflow metadata, review lifecycle events, inspect transcript history, and apply bounded recover, cancel, or archive actions without inventing a second session model."
@@ -727,9 +696,6 @@ pub enum Commands {
         #[command(subcommand)]
         command: sessions_cli::SessionsCommands,
     },
-    /// Print one operator-readable runtime summary over gateway, ACP, and durable work-unit health
-    #[rustfmt::skip]
-    Status { #[arg(long)] config: Option<String>, #[arg(long, default_value_t = false)] json: bool },
     #[command(
         visible_alias = "plugin",
         about = "Author manifest-first plugin packages and inspect shared plugin governance truth",
@@ -1582,7 +1548,7 @@ mod multi_channel_serve_tests {
 }
 
 fn resolved_default_entry_config_path() -> PathBuf {
-    std::env::var_os("LOONGCLAW_CONFIG_PATH")
+    std::env::var_os("LOONG_CONFIG_PATH")
         .map(PathBuf::from)
         .filter(|path| !path.as_os_str().is_empty())
         .unwrap_or_else(mvp::config::default_config_path)
@@ -1624,14 +1590,14 @@ fn resolve_welcome_config_path() -> CliResult<PathBuf> {
         Ok(config_path)
     } else {
         Err(format!(
-            "Config file not found at {}. Run `{} onboard` to set up LoongClaw.",
+            "Config file not found at {}. Run `{} onboard` to set up Loong.",
             config_path.display(),
             active_cli_command_name(),
         ))
     }
 }
 
-fn render_welcome_banner(config_path: &Path, config: &mvp::config::LoongClawConfig) -> String {
+fn render_welcome_banner(config_path: &Path, config: &mvp::config::LoongConfig) -> String {
     let config_path_display = config_path.display().to_string();
     let next_actions = next_actions::collect_setup_next_actions(config, &config_path_display);
     let mut quick_command_lines = Vec::new();
@@ -1647,7 +1613,7 @@ fn render_welcome_banner(config_path: &Path, config: &mvp::config::LoongClawConf
     let quick_commands = quick_command_lines.join("\n");
 
     format!(
-        "LoongClaw is configured and ready.\nVersion: {}\nConfig: {}\n\nQuick commands:\n{}",
+        "Loong is configured and ready.\nVersion: {}\nConfig: {}\n\nQuick commands:\n{}",
         env!("CARGO_PKG_VERSION"),
         config_path_display,
         quick_commands,
@@ -1693,13 +1659,13 @@ mod first_run_entry_tests {
         fs::create_dir_all(&home).expect("create isolated home");
         env.set("HOME", &home);
         env.remove("LOONG_HOME");
-        env.remove("LOONGCLAW_CONFIG_PATH");
+        env.remove("LOONG_CONFIG_PATH");
         (env, home)
     }
 
     #[test]
     fn resolve_default_entry_command_routes_to_onboard_when_config_is_missing() {
-        let (_env, _home) = isolated_home("loongclaw-default-entry-missing");
+        let (_env, _home) = isolated_home("loong-default-entry-missing");
 
         assert!(
             matches!(resolve_default_entry_command(), Commands::Onboard { .. }),
@@ -1709,11 +1675,11 @@ mod first_run_entry_tests {
 
     #[test]
     fn resolve_default_entry_command_routes_to_welcome_when_default_config_exists() {
-        let (_env, _home) = isolated_home("loongclaw-default-entry-present");
+        let (_env, _home) = isolated_home("loong-default-entry-present");
         let config_path = mvp::config::default_config_path();
         mvp::config::write(
             Some(config_path.to_str().expect("utf8 config path")),
-            &mvp::config::LoongClawConfig::default(),
+            &mvp::config::LoongConfig::default(),
             true,
         )
         .expect("write default config");
@@ -1725,19 +1691,19 @@ mod first_run_entry_tests {
     }
 
     #[test]
-    fn resolve_default_entry_command_honors_loongclaw_config_path_override() {
+    fn resolve_default_entry_command_honors_loong_config_path_override() {
         let mut env = ScopedEnv::new();
-        let config_path = unique_temp_dir("loongclaw-default-entry-env").join("custom-config.toml");
+        let config_path = unique_temp_dir("loong-default-entry-env").join("custom-config.toml");
         if let Some(parent) = config_path.parent() {
             fs::create_dir_all(parent).expect("create config parent");
         }
         mvp::config::write(
             Some(config_path.to_str().expect("utf8 config path")),
-            &mvp::config::LoongClawConfig::default(),
+            &mvp::config::LoongConfig::default(),
             true,
         )
         .expect("write explicit config");
-        env.set("LOONGCLAW_CONFIG_PATH", &config_path);
+        env.set("LOONG_CONFIG_PATH", &config_path);
 
         assert!(
             matches!(resolve_default_entry_command(), Commands::Welcome),
@@ -1748,9 +1714,9 @@ mod first_run_entry_tests {
     #[test]
     fn resolve_default_entry_command_routes_to_onboard_when_config_path_is_a_directory() {
         let mut env = ScopedEnv::new();
-        let config_dir = unique_temp_dir("loongclaw-default-entry-dir");
+        let config_dir = unique_temp_dir("loong-default-entry-dir");
         fs::create_dir_all(&config_dir).expect("create config directory");
-        env.set("LOONGCLAW_CONFIG_PATH", &config_dir);
+        env.set("LOONG_CONFIG_PATH", &config_dir);
 
         assert!(
             matches!(resolve_default_entry_command(), Commands::Onboard { .. }),
@@ -1760,28 +1726,21 @@ mod first_run_entry_tests {
 
     #[test]
     fn redacted_command_name_omits_sensitive_command_payloads() {
-        let command = Commands::Turn {
-            command: TurnCommands::Run {
-                config: Some("/tmp/private.toml".to_owned()),
-                session: Some("session-secret".to_owned()),
-                message: "secret objective".to_owned(),
-                acp: false,
-                acp_event_stream: false,
-                acp_bootstrap_mcp_server: Vec::new(),
-                acp_cwd: None,
-            },
+        let command = Commands::RunTask {
+            objective: "secret objective".to_owned(),
+            payload: "{\"api_key\":\"secret\"}".to_owned(),
         };
 
         let redacted_name = redacted_command_name(&command);
 
-        assert_eq!(redacted_name, "turn_run");
+        assert_eq!(redacted_name, "run_task");
     }
 
     #[test]
     fn run_welcome_cli_rejects_missing_config_file() {
         let mut env = ScopedEnv::new();
-        let config_path = unique_temp_dir("loongclaw-welcome-missing").join("missing-config.toml");
-        env.set("LOONGCLAW_CONFIG_PATH", &config_path);
+        let config_path = unique_temp_dir("loong-welcome-missing").join("missing-config.toml");
+        env.set("LOONG_CONFIG_PATH", &config_path);
 
         let error = run_welcome_cli().expect_err("missing config should fail welcome");
 
@@ -1798,9 +1757,9 @@ mod first_run_entry_tests {
     #[test]
     fn run_welcome_cli_rejects_directory_config_path() {
         let mut env = ScopedEnv::new();
-        let config_dir = unique_temp_dir("loongclaw-welcome-dir");
+        let config_dir = unique_temp_dir("loong-welcome-dir");
         fs::create_dir_all(&config_dir).expect("create config directory");
-        env.set("LOONGCLAW_CONFIG_PATH", &config_dir);
+        env.set("LOONG_CONFIG_PATH", &config_dir);
 
         let error = run_welcome_cli().expect_err("directory config path should fail welcome");
 
@@ -1812,23 +1771,23 @@ mod first_run_entry_tests {
 
     #[test]
     fn render_welcome_banner_includes_version_and_next_commands() {
-        let config = mvp::config::LoongClawConfig::default();
-        let rendered = render_welcome_banner(Path::new("/tmp/loongclaw's config.toml"), &config);
+        let config = mvp::config::LoongConfig::default();
+        let rendered = render_welcome_banner(Path::new("/tmp/loong's config.toml"), &config);
 
         assert!(
             rendered.contains(env!("CARGO_PKG_VERSION")),
             "welcome banner should include the current version: {rendered}"
         );
         assert!(
-            rendered.contains("loong ask --config '/tmp/loongclaw'\"'\"'s config.toml'"),
+            rendered.contains("loong ask --config '/tmp/loong'\"'\"'s config.toml'"),
             "welcome banner should include a quoted ask command: {rendered}"
         );
         assert!(
-            rendered.contains("loong chat --config '/tmp/loongclaw'\"'\"'s config.toml'"),
+            rendered.contains("loong chat --config '/tmp/loong'\"'\"'s config.toml'"),
             "welcome banner should include a quoted chat command: {rendered}"
         );
         assert!(
-            rendered.contains("loong personalize --config '/tmp/loongclaw'\"'\"'s config.toml'"),
+            rendered.contains("loong personalize --config '/tmp/loong'\"'\"'s config.toml'"),
             "welcome banner should include a quoted personalize command: {rendered}"
         );
         assert!(
@@ -2226,7 +2185,7 @@ pub fn run_validate_config_cli(
         ValidateConfigOutput::ProblemJson => {
             let payload = if diagnostics.is_empty() {
                 json!({
-                    "type": "urn:loongclaw:problem:none",
+                    "type": "urn:loong:problem:none",
                     "title": "Configuration Valid",
                     "detail": "No configuration diagnostics were reported.",
                     "instance": resolved_path.display().to_string(),
@@ -2241,9 +2200,9 @@ pub fn run_validate_config_cli(
             } else {
                 json!({
                     "type": if diagnostics_summary.valid {
-                        "urn:loongclaw:problem:config.validation_warning"
+                        "urn:loong:problem:config.validation_warning"
                     } else {
-                        "urn:loongclaw:problem:config.validation_failed"
+                        "urn:loong:problem:config.validation_failed"
                     },
                     "title": if diagnostics_summary.valid {
                         "Configuration Warnings Reported"
@@ -2347,6 +2306,7 @@ pub async fn run_list_models_cli(config_path: Option<&str>, as_json: bool) -> Cl
 
 pub const RUNTIME_SNAPSHOT_CLI_JSON_SCHEMA_VERSION: u32 = 1;
 pub const RUNTIME_SNAPSHOT_ARTIFACT_JSON_SCHEMA_VERSION: u32 = 2;
+
 #[derive(Debug, Clone)]
 pub struct RuntimeSnapshotCliState {
     pub config: String,
@@ -2361,7 +2321,6 @@ pub struct RuntimeSnapshotCliState {
     pub visible_tool_names: Vec<String>,
     pub capability_snapshot: String,
     pub capability_snapshot_sha256: String,
-    pub tool_calling: RuntimeSnapshotToolCallingState,
     pub runtime_plugins: RuntimeSnapshotRuntimePluginsState,
     pub external_skills: RuntimeSnapshotExternalSkillsState,
     pub restore_spec: RuntimeSnapshotRestoreSpec,
@@ -2595,7 +2554,7 @@ pub(crate) fn collect_runtime_snapshot_cli_state_from_loaded_config(
 
 fn collect_runtime_snapshot_cli_state_from_parts(
     resolved_path: &Path,
-    config: &mvp::config::LoongClawConfig,
+    config: &mvp::config::LoongConfig,
 ) -> CliResult<RuntimeSnapshotCliState> {
     let config_display = resolved_path.display().to_string();
     let provider = collect_runtime_snapshot_provider_state(config);
@@ -2605,23 +2564,23 @@ fn collect_runtime_snapshot_cli_state_from_parts(
     let enabled_channel_ids = config.enabled_channel_ids();
     let enabled_service_channel_ids = config.enabled_service_channel_ids();
     let channels = mvp::channel::channel_inventory(config);
-    let tool_runtime = mvp::tools::runtime_config::ToolRuntimeConfig::from_loongclaw_config(
+    let tool_runtime = mvp::tools::runtime_config::ToolRuntimeConfig::from_loong_config(
         config,
         Some(resolved_path),
     );
     let (external_skills, snapshot_tool_runtime) =
         collect_runtime_snapshot_external_skills_state(&tool_runtime);
     let tool_view = mvp::tools::runtime_tool_view_for_runtime_config(&snapshot_tool_runtime);
-    let visible_tools = tool_view
+    let visible_tool_names = tool_view
         .tool_names()
         .map(str::to_owned)
         .collect::<Vec<_>>();
     let capability_snapshot = mvp::tools::capability_snapshot_with_config(&snapshot_tool_runtime);
     let capability_snapshot_sha256 =
-        runtime_snapshot_tool_digest(&visible_tools, &capability_snapshot)?;
-    let tool_calling = collect_runtime_snapshot_tool_calling_state(config, visible_tools.len());
+        runtime_snapshot_tool_digest(&visible_tool_names, &capability_snapshot)?;
     let runtime_plugins = collect_runtime_snapshot_runtime_plugins_state(config);
     let restore_spec = build_runtime_snapshot_restore_spec(config, &external_skills);
+
     Ok(RuntimeSnapshotCliState {
         config: config_display,
         provider,
@@ -2632,10 +2591,9 @@ fn collect_runtime_snapshot_cli_state_from_parts(
         enabled_service_channel_ids,
         channels,
         tool_runtime: snapshot_tool_runtime,
-        visible_tool_names: visible_tools,
+        visible_tool_names,
         capability_snapshot,
         capability_snapshot_sha256,
-        tool_calling,
         runtime_plugins,
         external_skills,
         restore_spec,
@@ -2643,7 +2601,7 @@ fn collect_runtime_snapshot_cli_state_from_parts(
 }
 
 fn collect_runtime_snapshot_provider_state(
-    config: &mvp::config::LoongClawConfig,
+    config: &mvp::config::LoongConfig,
 ) -> RuntimeSnapshotProviderState {
     let active_profile_id = config
         .active_provider_id()
@@ -2814,7 +2772,7 @@ fn collect_runtime_snapshot_external_skills_state(
 }
 
 pub(crate) fn collect_runtime_snapshot_runtime_plugins_state(
-    config: &mvp::config::LoongClawConfig,
+    config: &mvp::config::LoongConfig,
 ) -> RuntimeSnapshotRuntimePluginsState {
     let readiness_evaluation = config
         .runtime_plugins
@@ -3066,7 +3024,7 @@ fn merge_plugin_scan_report(
 }
 
 fn runtime_plugin_setup_readiness_context(
-    config: &mvp::config::LoongClawConfig,
+    config: &mvp::config::LoongConfig,
 ) -> PluginSetupReadinessContext {
     let verified_env_vars = std::env::vars_os()
         .filter_map(|(key, value)| {
@@ -3239,7 +3197,7 @@ fn json_string_array_to_set(
 }
 
 fn build_runtime_snapshot_restore_spec(
-    config: &mvp::config::LoongClawConfig,
+    config: &mvp::config::LoongConfig,
     external_skills: &RuntimeSnapshotExternalSkillsState,
 ) -> RuntimeSnapshotRestoreSpec {
     let mut warnings = Vec::new();
@@ -3269,7 +3227,7 @@ fn build_runtime_snapshot_restore_spec(
 }
 
 fn runtime_snapshot_restore_provider_profiles(
-    config: &mvp::config::LoongClawConfig,
+    config: &mvp::config::LoongConfig,
 ) -> BTreeMap<String, mvp::config::ProviderProfileConfig> {
     if !config.providers.is_empty() {
         return config.providers.clone();
@@ -4277,6 +4235,627 @@ pub fn run_list_memory_systems_cli(config_path: Option<&str>, as_json: bool) -> 
     Ok(())
 }
 
+pub fn run_list_acp_backends_cli(config_path: Option<&str>, as_json: bool) -> CliResult<()> {
+    let (resolved_path, config) = mvp::config::load(config_path)?;
+    let snapshot = mvp::acp::collect_acp_runtime_snapshot(&config)?;
+
+    if as_json {
+        let payload = json!({
+            "config": resolved_path.display().to_string(),
+            "enabled": snapshot.control_plane.enabled,
+            "selected": acp_backend_metadata_json(
+                &snapshot.selected_metadata,
+                Some(snapshot.selected.source.as_str())
+            ),
+            "available": snapshot
+                .available
+                .iter()
+                .map(|metadata| acp_backend_metadata_json(metadata, None))
+                .collect::<Vec<_>>(),
+            "control_plane": acp_control_plane_json(&snapshot.control_plane),
+        });
+        let pretty = serde_json::to_string_pretty(&payload)
+            .map_err(|error| format!("serialize ACP backend output failed: {error}"))?;
+        println!("{pretty}");
+        return Ok(());
+    }
+
+    println!("config={}", resolved_path.display());
+    println!(
+        "enabled={} selected={} source={} api_version={} capabilities={}",
+        snapshot.control_plane.enabled,
+        snapshot.selected_metadata.id,
+        snapshot.selected.source.as_str(),
+        snapshot.selected_metadata.api_version,
+        format_capability_names(&snapshot.selected_metadata.capability_names())
+    );
+    println!(
+        "control_plane=dispatch_enabled:{} conversation_routing:{} allowed_channels:{} allowed_account_ids:{} bootstrap_mcp_servers:{} working_directory:{} thread_routing:{} default_agent:{} allowed_agents:{} max_concurrent_sessions:{} session_idle_ttl_ms:{} startup_timeout_ms:{} turn_timeout_ms:{} queue_owner_ttl_ms:{} bindings_enabled:{} emit_runtime_events:{} allow_mcp_server_injection:{}",
+        snapshot.control_plane.dispatch_enabled,
+        snapshot.control_plane.conversation_routing.as_str(),
+        snapshot.control_plane.allowed_channels.join(","),
+        snapshot.control_plane.allowed_account_ids.join(","),
+        snapshot.control_plane.bootstrap_mcp_servers.join(","),
+        snapshot
+            .control_plane
+            .working_directory
+            .as_deref()
+            .unwrap_or(""),
+        snapshot.control_plane.thread_routing.as_str(),
+        snapshot.control_plane.default_agent,
+        snapshot.control_plane.allowed_agents.join(","),
+        snapshot.control_plane.max_concurrent_sessions,
+        snapshot.control_plane.session_idle_ttl_ms,
+        snapshot.control_plane.startup_timeout_ms,
+        snapshot.control_plane.turn_timeout_ms,
+        snapshot.control_plane.queue_owner_ttl_ms,
+        snapshot.control_plane.bindings_enabled,
+        snapshot.control_plane.emit_runtime_events,
+        snapshot.control_plane.allow_mcp_server_injection
+    );
+    println!("available:");
+    for metadata in snapshot.available {
+        println!(
+            "- {} api_version={} capabilities={} summary={}",
+            metadata.id,
+            metadata.api_version,
+            format_capability_names(&metadata.capability_names()),
+            metadata.summary
+        );
+    }
+    Ok(())
+}
+
+pub fn run_list_acp_sessions_cli(config_path: Option<&str>, as_json: bool) -> CliResult<()> {
+    #[cfg(not(any(feature = "memory-sqlite", feature = "mvp")))]
+    {
+        let _ = (config_path, as_json);
+        Err("ACP session persistence requires feature `memory-sqlite`".to_owned())
+    }
+
+    #[cfg(any(feature = "memory-sqlite", feature = "mvp"))]
+    {
+        let (resolved_path, config) = mvp::config::load(config_path)?;
+        let store =
+            mvp::acp::AcpSqliteSessionStore::new(Some(config.memory.resolved_sqlite_path()));
+        let sessions = mvp::acp::AcpSessionStore::list(&store)?;
+
+        if as_json {
+            let payload = json!({
+                "config": resolved_path.display().to_string(),
+                "sqlite_path": config.memory.resolved_sqlite_path().display().to_string(),
+                "sessions": sessions
+                    .iter()
+                    .map(acp_session_metadata_json)
+                    .collect::<Vec<_>>(),
+            });
+            let pretty = serde_json::to_string_pretty(&payload)
+                .map_err(|error| format!("serialize ACP session output failed: {error}"))?;
+            println!("{pretty}");
+            return Ok(());
+        }
+
+        println!(
+            "config={} sqlite_path={}",
+            resolved_path.display(),
+            config.memory.resolved_sqlite_path().display()
+        );
+        if sessions.is_empty() {
+            println!("sessions: (none)");
+            return Ok(());
+        }
+        println!("sessions:");
+        for session in sessions {
+            println!(
+                "- session_key={} backend={} conversation_id={} binding_route_session_id={} activation_origin={} state={} mode={} runtime_session_name={} last_activity_ms={} last_error={}",
+                session.session_key,
+                session.backend_id,
+                session.conversation_id.as_deref().unwrap_or("(none)"),
+                session
+                    .binding
+                    .as_ref()
+                    .map(|binding| binding.route_session_id.as_str())
+                    .unwrap_or("(none)"),
+                session
+                    .activation_origin
+                    .map(mvp::acp::AcpRoutingOrigin::as_str)
+                    .unwrap_or("(none)"),
+                acp_session_state_label(session.state),
+                session.mode.map(acp_session_mode_label).unwrap_or("(none)"),
+                session.runtime_session_name,
+                session.last_activity_ms,
+                session.last_error.as_deref().unwrap_or("(none)")
+            );
+        }
+        Ok(())
+    }
+}
+
+pub async fn run_acp_doctor_cli(
+    config_path: Option<&str>,
+    backend_id: Option<&str>,
+    as_json: bool,
+) -> CliResult<()> {
+    let (resolved_path, config) = mvp::config::load(config_path)?;
+    let selection = mvp::acp::resolve_acp_backend_selection(&config);
+    let backend = backend_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(selection.id.as_str());
+    let report = mvp::acp::AcpSessionManager::default()
+        .doctor(&config, Some(backend))
+        .await?;
+
+    if as_json {
+        let payload = acp_doctor_json(
+            resolved_path.display().to_string(),
+            selection.id.as_str(),
+            backend,
+            &report,
+        );
+        let pretty = serde_json::to_string_pretty(&payload)
+            .map_err(|error| format!("serialize ACP doctor output failed: {error}"))?;
+        println!("{pretty}");
+        return Ok(());
+    }
+
+    println!("config={}", resolved_path.display());
+    println!(
+        "selected_backend={} requested_backend={} healthy={}",
+        backend, backend, report.healthy
+    );
+    if report.diagnostics.is_empty() {
+        println!("diagnostics: (none)");
+        return Ok(());
+    }
+    println!("diagnostics:");
+    for (key, value) in report.diagnostics {
+        println!("- {}={}", key, value);
+    }
+    Ok(())
+}
+
+pub fn acp_doctor_json(
+    config_path: impl Into<String>,
+    _default_backend: &str,
+    effective_backend: &str,
+    report: &mvp::acp::AcpDoctorReport,
+) -> Value {
+    json!({
+        "config": config_path.into(),
+        "selected_backend": effective_backend,
+        "requested_backend": effective_backend,
+        "healthy": report.healthy,
+        "diagnostics": report.diagnostics,
+    })
+}
+
+pub async fn run_acp_status_cli(
+    config_path: Option<&str>,
+    session_key: Option<&str>,
+    conversation_id: Option<&str>,
+    route_session_id: Option<&str>,
+    as_json: bool,
+) -> CliResult<()> {
+    let (resolved_path, config) = mvp::config::load(config_path)?;
+    let resolved_session_key =
+        resolve_acp_status_session_key(&config, session_key, conversation_id, route_session_id)?;
+    let manager = mvp::acp::shared_acp_session_manager(&config)?;
+    let status = manager
+        .get_status(&config, resolved_session_key.as_str())
+        .await?;
+
+    if as_json {
+        let config_display = resolved_path.display().to_string();
+        let payload = gateway::read_models::build_acp_status_read_model(
+            config_display.as_str(),
+            session_key,
+            conversation_id,
+            route_session_id,
+            resolved_session_key.as_str(),
+            &status,
+        );
+        let pretty = serde_json::to_string_pretty(&payload)
+            .map_err(|error| format!("serialize ACP status output failed: {error}"))?;
+        println!("{pretty}");
+        return Ok(());
+    }
+
+    println!("config={}", resolved_path.display());
+    if let Some(conversation_id) = conversation_id {
+        println!("requested_conversation_id={conversation_id}");
+    }
+    if let Some(route_session_id) = route_session_id {
+        println!("requested_route_session_id={route_session_id}");
+    }
+    if let Some(session_key) = session_key {
+        println!("requested_session={session_key}");
+    }
+    println!("resolved_session_key={}", resolved_session_key);
+    println!(
+        "status=backend:{} state:{} mode:{} pending_turns:{} active_turn_id:{} conversation_id:{} binding_route_session_id:{} activation_origin:{} last_activity_ms:{} last_error:{}",
+        status.backend_id,
+        acp_session_state_label(status.state),
+        status.mode.map(acp_session_mode_label).unwrap_or("(none)"),
+        status.pending_turns,
+        status.active_turn_id.as_deref().unwrap_or("(none)"),
+        status.conversation_id.as_deref().unwrap_or("(none)"),
+        status
+            .binding
+            .as_ref()
+            .map(|binding| binding.route_session_id.as_str())
+            .unwrap_or("(none)"),
+        status
+            .activation_origin
+            .map(mvp::acp::AcpRoutingOrigin::as_str)
+            .unwrap_or("(none)"),
+        status.last_activity_ms,
+        status.last_error.as_deref().unwrap_or("(none)")
+    );
+    Ok(())
+}
+
+pub async fn run_acp_observability_cli(config_path: Option<&str>, as_json: bool) -> CliResult<()> {
+    let (resolved_path, config) = mvp::config::load(config_path)?;
+    let manager = mvp::acp::shared_acp_session_manager(&config)?;
+    let snapshot = manager.observability_snapshot(&config).await?;
+
+    if as_json {
+        let config_display = resolved_path.display().to_string();
+        let payload = gateway::read_models::build_acp_observability_read_model(
+            config_display.as_str(),
+            &snapshot,
+        );
+        let pretty = serde_json::to_string_pretty(&payload)
+            .map_err(|error| format!("serialize ACP observability output failed: {error}"))?;
+        println!("{pretty}");
+        return Ok(());
+    }
+
+    println!("config={}", resolved_path.display());
+    println!(
+        "runtime_cache=active_sessions:{} idle_ttl_ms:{} evicted_total:{} last_evicted_at_ms:{}",
+        snapshot.runtime_cache.active_sessions,
+        snapshot.runtime_cache.idle_ttl_ms,
+        snapshot.runtime_cache.evicted_total,
+        snapshot
+            .runtime_cache
+            .last_evicted_at_ms
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "(none)".to_owned())
+    );
+    println!(
+        "sessions=bound:{} unbound:{} activation_origins:{} backends:{}",
+        snapshot.sessions.bound,
+        snapshot.sessions.unbound,
+        format_usize_rollup(&snapshot.sessions.activation_origin_counts),
+        format_usize_rollup(&snapshot.sessions.backend_counts)
+    );
+    println!(
+        "actors=active:{} queue_depth:{} waiting:{}",
+        snapshot.actors.active, snapshot.actors.queue_depth, snapshot.actors.waiting
+    );
+    println!(
+        "turns=active:{} queue_depth:{} completed:{} failed:{} average_latency_ms:{} max_latency_ms:{}",
+        snapshot.turns.active,
+        snapshot.turns.queue_depth,
+        snapshot.turns.completed,
+        snapshot.turns.failed,
+        snapshot.turns.average_latency_ms,
+        snapshot.turns.max_latency_ms
+    );
+    if snapshot.errors_by_code.is_empty() {
+        println!("errors_by_code: (none)");
+    } else {
+        println!("errors_by_code:");
+        for (key, value) in snapshot.errors_by_code {
+            println!("- {}={}", key, value);
+        }
+    }
+    Ok(())
+}
+
+pub fn resolve_acp_status_session_key(
+    config: &mvp::config::LoongConfig,
+    session_key: Option<&str>,
+    conversation_id: Option<&str>,
+    route_session_id: Option<&str>,
+) -> CliResult<String> {
+    let session_key = session_key
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    let conversation_id = conversation_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    let route_session_id = route_session_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+
+    match (session_key, conversation_id, route_session_id) {
+        (Some(session_key), None, None) => Ok(session_key),
+        (None, Some(conversation_id), None) => {
+            #[cfg(not(any(feature = "memory-sqlite", feature = "mvp")))]
+            {
+                let _ = (config, conversation_id);
+                Err("ACP conversation-id lookup requires feature `memory-sqlite`".to_owned())
+            }
+
+            #[cfg(any(feature = "memory-sqlite", feature = "mvp"))]
+            {
+                let store = mvp::acp::AcpSqliteSessionStore::new(Some(
+                    config.memory.resolved_sqlite_path(),
+                ));
+                let metadata = mvp::acp::AcpSessionStore::get_by_conversation_id(
+                    &store,
+                    conversation_id.as_str(),
+                )?
+                .ok_or_else(|| {
+                    format!(
+                        "ACP conversation `{}` is not registered in {}",
+                        conversation_id,
+                        config.memory.resolved_sqlite_path().display()
+                    )
+                })?;
+                Ok(metadata.session_key)
+            }
+        }
+        (None, None, Some(route_session_id)) => {
+            #[cfg(not(any(feature = "memory-sqlite", feature = "mvp")))]
+            {
+                let _ = (config, route_session_id);
+                Err("ACP route-session-id lookup requires feature `memory-sqlite`".to_owned())
+            }
+
+            #[cfg(any(feature = "memory-sqlite", feature = "mvp"))]
+            {
+                let store = mvp::acp::AcpSqliteSessionStore::new(Some(
+                    config.memory.resolved_sqlite_path(),
+                ));
+                let metadata = mvp::acp::AcpSessionStore::get_by_binding_route_session_id(
+                    &store,
+                    route_session_id.as_str(),
+                )?
+                .ok_or_else(|| {
+                    format!(
+                        "ACP route session `{}` is not registered in {}",
+                        route_session_id,
+                        config.memory.resolved_sqlite_path().display()
+                    )
+                })?;
+                Ok(metadata.session_key)
+            }
+        }
+        (Some(_), Some(_), _)
+        | (Some(_), _, Some(_))
+        | (_, Some(_), Some(_)) => Err(
+            "acp-status accepts exactly one of --session, --conversation-id, or --route-session-id"
+                .to_owned(),
+        ),
+        (None, None, None) => Err(
+            "acp-status requires --session <session_key>, --conversation-id <conversation_id>, or --route-session-id <route_session_id>"
+                .to_owned(),
+        ),
+    }
+}
+
+pub async fn run_chat_cli(
+    config_path: Option<&str>,
+    session: Option<&str>,
+    acp: bool,
+    acp_event_stream: bool,
+    acp_bootstrap_mcp_server: &[String],
+    acp_cwd: Option<&str>,
+) -> CliResult<()> {
+    let options = build_cli_chat_options(acp, acp_event_stream, acp_bootstrap_mcp_server, acp_cwd);
+    mvp::chat::run_cli_chat(config_path, session, &options).await
+}
+
+pub async fn run_ask_cli(
+    config_path: Option<&str>,
+    session: Option<&str>,
+    message: &str,
+    acp: bool,
+    acp_event_stream: bool,
+    acp_bootstrap_mcp_server: &[String],
+    acp_cwd: Option<&str>,
+) -> CliResult<()> {
+    let options = build_cli_chat_options(acp, acp_event_stream, acp_bootstrap_mcp_server, acp_cwd);
+    mvp::chat::run_cli_ask(config_path, session, message, &options).await
+}
+
+pub fn build_cli_chat_options(
+    acp: bool,
+    acp_event_stream: bool,
+    acp_bootstrap_mcp_server: &[String],
+    acp_cwd: Option<&str>,
+) -> mvp::chat::CliChatOptions {
+    mvp::chat::CliChatOptions {
+        acp_requested: acp,
+        acp_event_stream,
+        acp_bootstrap_mcp_servers: acp_bootstrap_mcp_server.to_vec(),
+        acp_working_directory: acp_cwd
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(std::path::PathBuf::from),
+    }
+}
+
+pub fn run_acp_event_summary_cli(
+    config_path: Option<&str>,
+    session: Option<&str>,
+    limit: usize,
+    as_json: bool,
+) -> CliResult<()> {
+    if limit == 0 {
+        return Err("acp-event-summary limit must be >= 1".to_owned());
+    }
+
+    let (_, config) = mvp::config::load(config_path)?;
+    let session_id = session
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("default")
+        .to_owned();
+
+    #[cfg(feature = "memory-sqlite")]
+    {
+        let mem_config =
+            mvp::memory::runtime_config::MemoryRuntimeConfig::from_memory_config(&config.memory);
+        let turns = mvp::memory::window_direct(&session_id, limit, &mem_config)
+            .map_err(|error| format!("load ACP event summary failed: {error}"))?;
+        let summary = mvp::acp::summarize_turn_events(
+            turns
+                .iter()
+                .filter_map(|turn| (turn.role == "assistant").then_some(turn.content.as_str())),
+        );
+        if as_json {
+            let payload = acp_event_summary_json(&session_id, limit, &summary);
+            let pretty = serde_json::to_string_pretty(&payload)
+                .map_err(|error| format!("serialize ACP event summary failed: {error}"))?;
+            println!("{pretty}");
+            return Ok(());
+        }
+        print!("{}", format_acp_event_summary(&session_id, limit, &summary));
+        Ok(())
+    }
+
+    #[cfg(not(feature = "memory-sqlite"))]
+    {
+        let _ = (config, session_id, as_json);
+        Err("acp-event-summary requires memory-sqlite feature".to_owned())
+    }
+}
+
+pub fn run_acp_dispatch_cli(
+    config_path: Option<&str>,
+    session: Option<&str>,
+    channel: Option<&str>,
+    conversation_id: Option<&str>,
+    account_id: Option<&str>,
+    thread_id: Option<&str>,
+    as_json: bool,
+) -> CliResult<()> {
+    let (resolved_path, config) = mvp::config::load(config_path)?;
+    let session_id = session
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("default")
+        .to_owned();
+    let address = build_acp_dispatch_address(
+        session_id.as_str(),
+        channel,
+        conversation_id,
+        account_id,
+        thread_id,
+    )?;
+    let decision = mvp::acp::evaluate_acp_conversation_dispatch_for_address(&config, &address)?;
+
+    if as_json {
+        let config_display = resolved_path.display().to_string();
+        let payload = gateway::read_models::build_acp_dispatch_read_model(
+            config_display.as_str(),
+            &address,
+            session_id.as_str(),
+            &decision,
+        );
+        let pretty = serde_json::to_string_pretty(&payload)
+            .map_err(|error| format!("serialize ACP dispatch output failed: {error}"))?;
+        println!("{pretty}");
+        return Ok(());
+    }
+
+    println!("config={}", resolved_path.display());
+    println!(
+        "address=session:{} channel:{} account_id:{} conversation_id:{} thread_id:{}",
+        address.session_id,
+        address.channel_id.as_deref().unwrap_or("(none)"),
+        address.account_id.as_deref().unwrap_or("(none)"),
+        address.conversation_id.as_deref().unwrap_or("(none)"),
+        address.thread_id.as_deref().unwrap_or("(none)")
+    );
+    println!(
+        "dispatch=route_via_acp:{} reason:{} automatic_routing_origin:{} route_session_id:{} prefixed_agent_id:{} channel_id:{} account_id:{} conversation_id:{} thread_id:{}",
+        decision.route_via_acp,
+        decision.reason.as_str(),
+        decision
+            .automatic_routing_origin
+            .map(mvp::acp::AcpRoutingOrigin::as_str)
+            .unwrap_or("(none)"),
+        decision.target.route_session_id,
+        decision
+            .target
+            .prefixed_agent_id
+            .as_deref()
+            .unwrap_or("(none)"),
+        decision.target.channel_id.as_deref().unwrap_or("(none)"),
+        decision.target.account_id.as_deref().unwrap_or("(none)"),
+        decision
+            .target
+            .conversation_id
+            .as_deref()
+            .unwrap_or("(none)"),
+        decision.target.thread_id.as_deref().unwrap_or("(none)")
+    );
+    println!(
+        "channel_path={}",
+        if decision.target.channel_path.is_empty() {
+            "(none)".to_owned()
+        } else {
+            decision.target.channel_path.join(":")
+        }
+    );
+    Ok(())
+}
+
+pub fn build_acp_dispatch_address(
+    session_id: &str,
+    channel: Option<&str>,
+    conversation_id: Option<&str>,
+    account_id: Option<&str>,
+    thread_id: Option<&str>,
+) -> CliResult<mvp::conversation::ConversationSessionAddress> {
+    let session_id = session_id.trim();
+    if session_id.is_empty() {
+        return Err("acp-dispatch requires a non-empty --session value".to_owned());
+    }
+
+    let channel = channel.map(str::trim).filter(|value| !value.is_empty());
+    let conversation_id = conversation_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let account_id = account_id.map(str::trim).filter(|value| !value.is_empty());
+    let thread_id = thread_id.map(str::trim).filter(|value| !value.is_empty());
+
+    let channel = match channel {
+        Some(channel) => channel,
+        None => {
+            if conversation_id.is_some() || account_id.is_some() || thread_id.is_some() {
+                return Err(
+                    "acp-dispatch requires --channel when using --conversation-id, --account-id, or --thread-id"
+                        .to_owned(),
+                );
+            }
+            return Ok(mvp::conversation::ConversationSessionAddress::from_session_id(session_id));
+        }
+    };
+
+    let conversation_id = conversation_id.ok_or_else(|| {
+        "acp-dispatch requires --conversation-id when --channel is provided".to_owned()
+    })?;
+    let mut address = mvp::conversation::ConversationSessionAddress::from_session_id(session_id)
+        .with_channel_scope(channel, conversation_id);
+    if let Some(account_id) = account_id {
+        address = address.with_account_id(account_id);
+    }
+    if let Some(thread_id) = thread_id {
+        address = address.with_thread_id(thread_id);
+    }
+    Ok(address)
+}
+
 pub fn run_safe_lane_summary_cli(
     config_path: Option<&str>,
     session: Option<&str>,
@@ -4394,13 +4973,6 @@ pub fn run_safe_lane_summary_cli(
 }
 
 #[cfg(feature = "memory-sqlite")]
-pub fn format_capability_names(names: &[&str]) -> String {
-    if names.is_empty() {
-        return "(none)".to_owned();
-    }
-    names.join(",")
-}
-
 pub fn format_milli_ratio(value: Option<u32>) -> String {
     value
         .map(|raw| format!("{:.3}", (raw as f64) / 1000.0))
@@ -5268,12 +5840,6 @@ pub fn memory_system_metadata_json(
     metadata: &mvp::memory::MemorySystemMetadata,
     source: Option<&str>,
 ) -> Value {
-    let supported_stage_families = metadata
-        .supported_stage_families
-        .iter()
-        .copied()
-        .map(mvp::memory::MemoryStageFamily::as_str)
-        .collect::<Vec<_>>();
     let supported_pre_assembly_stage_families = metadata
         .supported_pre_assembly_stage_families
         .iter()
@@ -5292,14 +5858,6 @@ pub fn memory_system_metadata_json(
     payload.insert(
         "capabilities".to_owned(),
         json!(metadata.capability_names()),
-    );
-    payload.insert(
-        "runtime_fallback_kind".to_owned(),
-        json!(metadata.runtime_fallback_kind.as_str()),
-    );
-    payload.insert(
-        "supported_stage_families".to_owned(),
-        json!(supported_stage_families),
     );
     payload.insert(
         "supported_pre_assembly_stage_families".to_owned(),
@@ -5334,15 +5892,6 @@ fn format_memory_recall_mode_names(recall_modes: &[mvp::memory::MemoryRecallMode
     render_string_list(names)
 }
 
-fn format_memory_core_operation_names(operations: &[mvp::memory::MemoryCoreOperation]) -> String {
-    let names = operations
-        .iter()
-        .copied()
-        .map(mvp::memory::MemoryCoreOperation::as_str)
-        .collect::<Vec<_>>();
-    render_string_list(names)
-}
-
 pub fn memory_system_policy_json(policy: &mvp::memory::MemorySystemPolicySnapshot) -> Value {
     json!({
         "backend": policy.backend.as_str(),
@@ -5371,12 +5920,6 @@ pub fn build_memory_systems_cli_json_payload(
             .iter()
             .map(|metadata| memory_system_metadata_json(metadata, None))
             .collect::<Vec<_>>(),
-        "core_operations": snapshot
-            .core_operations
-            .iter()
-            .copied()
-            .map(mvp::memory::MemoryCoreOperation::as_str)
-            .collect::<Vec<_>>(),
         "policy": memory_system_policy_json(&snapshot.policy),
     })
 }
@@ -5386,8 +5929,6 @@ pub fn render_memory_system_snapshot_text(
     snapshot: &mvp::memory::MemorySystemRuntimeSnapshot,
 ) -> String {
     let selected_capabilities = snapshot.selected_metadata.capability_names();
-    let selected_stage_families =
-        format_memory_stage_family_names(&snapshot.selected_metadata.supported_stage_families);
     let selected_pre_assembly_stages = format_memory_stage_family_names(
         &snapshot
             .selected_metadata
@@ -5395,20 +5936,16 @@ pub fn render_memory_system_snapshot_text(
     );
     let selected_recall_modes =
         format_memory_recall_mode_names(&snapshot.selected_metadata.supported_recall_modes);
-    let core_operations = format_memory_core_operation_names(&snapshot.core_operations);
     let mut lines = vec![
         format!("config={config_path}"),
         format!(
-            "selected={} source={} api_version={} capabilities={} runtime_fallback_kind={} stages={} pre_assembly_stages={} recall_modes={} core_operations={} summary={}",
+            "selected={} source={} api_version={} capabilities={} pre_assembly_stages={} recall_modes={} summary={}",
             snapshot.selected_metadata.id,
             snapshot.selected.source.as_str(),
             snapshot.selected_metadata.api_version,
             format_capability_names(&selected_capabilities),
-            snapshot.selected_metadata.runtime_fallback_kind.as_str(),
-            selected_stage_families,
             selected_pre_assembly_stages,
             selected_recall_modes,
-            core_operations,
             snapshot.selected_metadata.summary
         ),
         format!(
@@ -5427,17 +5964,14 @@ pub fn render_memory_system_snapshot_text(
 
     for metadata in &snapshot.available {
         let capabilities = metadata.capability_names();
-        let stage_families = format_memory_stage_family_names(&metadata.supported_stage_families);
         let pre_assembly_stages =
             format_memory_stage_family_names(&metadata.supported_pre_assembly_stage_families);
         let recall_modes = format_memory_recall_mode_names(&metadata.supported_recall_modes);
         lines.push(format!(
-            "- {} api_version={} capabilities={} runtime_fallback_kind={} stages={} pre_assembly_stages={} recall_modes={} summary={}",
+            "- {} api_version={} capabilities={} pre_assembly_stages={} recall_modes={} summary={}",
             metadata.id,
             metadata.api_version,
             format_capability_names(&capabilities),
-            metadata.runtime_fallback_kind.as_str(),
-            stage_families,
             pre_assembly_stages,
             recall_modes,
             metadata.summary
@@ -5445,6 +5979,282 @@ pub fn render_memory_system_snapshot_text(
     }
 
     lines.join("\n")
+}
+
+pub fn acp_backend_metadata_json(
+    metadata: &mvp::acp::AcpBackendMetadata,
+    source: Option<&str>,
+) -> Value {
+    let mut payload = serde_json::Map::new();
+    payload.insert("id".to_owned(), json!(metadata.id));
+    payload.insert("api_version".to_owned(), json!(metadata.api_version));
+    payload.insert(
+        "capabilities".to_owned(),
+        json!(metadata.capability_names()),
+    );
+    payload.insert("summary".to_owned(), json!(metadata.summary));
+    if let Some(source) = source {
+        payload.insert("source".to_owned(), json!(source));
+    }
+    Value::Object(payload)
+}
+
+pub fn acp_control_plane_json(snapshot: &mvp::acp::AcpControlPlaneSnapshot) -> Value {
+    json!({
+        "enabled": snapshot.enabled,
+        "dispatch_enabled": snapshot.dispatch_enabled,
+        "conversation_routing": snapshot.conversation_routing.as_str(),
+        "allowed_channels": snapshot.allowed_channels,
+        "allowed_account_ids": snapshot.allowed_account_ids,
+        "bootstrap_mcp_servers": snapshot.bootstrap_mcp_servers,
+        "working_directory": snapshot.working_directory,
+        "thread_routing": snapshot.thread_routing.as_str(),
+        "default_agent": snapshot.default_agent,
+        "allowed_agents": snapshot.allowed_agents,
+        "max_concurrent_sessions": snapshot.max_concurrent_sessions,
+        "session_idle_ttl_ms": snapshot.session_idle_ttl_ms,
+        "startup_timeout_ms": snapshot.startup_timeout_ms,
+        "turn_timeout_ms": snapshot.turn_timeout_ms,
+        "queue_owner_ttl_ms": snapshot.queue_owner_ttl_ms,
+        "bindings_enabled": snapshot.bindings_enabled,
+        "emit_runtime_events": snapshot.emit_runtime_events,
+        "allow_mcp_server_injection": snapshot.allow_mcp_server_injection,
+    })
+}
+
+pub fn acp_session_metadata_json(metadata: &mvp::acp::AcpSessionMetadata) -> Value {
+    json!({
+        "session_key": metadata.session_key,
+        "conversation_id": metadata.conversation_id,
+        "binding": metadata.binding.as_ref().map(acp_binding_scope_json),
+        "activation_origin": metadata.activation_origin.map(mvp::acp::AcpRoutingOrigin::as_str),
+        "provenance": acp_session_activation_provenance_json(metadata.activation_origin),
+        "backend_id": metadata.backend_id,
+        "runtime_session_name": metadata.runtime_session_name,
+        "working_directory": metadata
+            .working_directory
+            .as_ref()
+            .map(|path| path.display().to_string()),
+        "backend_session_id": metadata.backend_session_id,
+        "agent_session_id": metadata.agent_session_id,
+        "mode": metadata.mode.map(acp_session_mode_label),
+        "state": acp_session_state_label(metadata.state),
+        "last_activity_ms": metadata.last_activity_ms,
+        "last_error": metadata.last_error,
+    })
+}
+
+pub fn acp_session_status_json(status: &mvp::acp::AcpSessionStatus) -> Value {
+    json!({
+        "session_key": status.session_key,
+        "backend_id": status.backend_id,
+        "conversation_id": status.conversation_id,
+        "binding": status.binding.as_ref().map(acp_binding_scope_json),
+        "activation_origin": status.activation_origin.map(mvp::acp::AcpRoutingOrigin::as_str),
+        "provenance": acp_session_activation_provenance_json(status.activation_origin),
+        "state": acp_session_state_label(status.state),
+        "mode": status.mode.map(acp_session_mode_label),
+        "pending_turns": status.pending_turns,
+        "active_turn_id": status.active_turn_id,
+        "last_activity_ms": status.last_activity_ms,
+        "last_error": status.last_error,
+    })
+}
+
+pub fn acp_binding_scope_json(binding: &mvp::acp::AcpSessionBindingScope) -> Value {
+    json!({
+        "route_session_id": binding.route_session_id,
+        "channel_id": binding.channel_id,
+        "account_id": binding.account_id,
+        "conversation_id": binding.conversation_id,
+        "thread_id": binding.thread_id,
+    })
+}
+
+pub fn acp_session_activation_provenance_json(origin: Option<mvp::acp::AcpRoutingOrigin>) -> Value {
+    json!({
+        "surface": "session_activation",
+        "activation_origin": origin.map(mvp::acp::AcpRoutingOrigin::as_str),
+    })
+}
+
+pub fn acp_dispatch_prediction_provenance_json(
+    decision: &mvp::acp::AcpConversationDispatchDecision,
+) -> Value {
+    json!({
+        "surface": "dispatch_prediction",
+        "automatic_routing_origin": decision
+            .automatic_routing_origin
+            .map(mvp::acp::AcpRoutingOrigin::as_str),
+    })
+}
+
+pub fn acp_turn_provenance_json(summary: &mvp::acp::AcpTurnEventSummary) -> Value {
+    json!({
+        "surface": "turn_execution",
+        "last_routing_intent": summary.last_routing_intent,
+        "last_routing_origin": summary.last_routing_origin,
+        "routing_intent_counts": summary.routing_intent_counts,
+        "routing_origin_counts": summary.routing_origin_counts,
+    })
+}
+
+pub fn acp_dispatch_decision_json(
+    session: &str,
+    decision: &mvp::acp::AcpConversationDispatchDecision,
+) -> Value {
+    json!({
+        "session": session,
+        "decision": {
+            "route_via_acp": decision.route_via_acp,
+            "reason": decision.reason.as_str(),
+            "automatic_routing_origin": decision
+                .automatic_routing_origin
+                .map(mvp::acp::AcpRoutingOrigin::as_str),
+            "provenance": acp_dispatch_prediction_provenance_json(decision),
+            "target": {
+                "original_session_id": decision.target.original_session_id,
+                "route_session_id": decision.target.route_session_id,
+                "prefixed_agent_id": decision.target.prefixed_agent_id,
+                "channel_id": decision.target.channel_id,
+                "account_id": decision.target.account_id,
+                "conversation_id": decision.target.conversation_id,
+                "thread_id": decision.target.thread_id,
+                "channel_path": decision.target.channel_path,
+            }
+        }
+    })
+}
+
+pub fn acp_manager_observability_json(
+    snapshot: &mvp::acp::AcpManagerObservabilitySnapshot,
+) -> Value {
+    json!({
+        "runtime_cache": {
+            "active_sessions": snapshot.runtime_cache.active_sessions,
+            "idle_ttl_ms": snapshot.runtime_cache.idle_ttl_ms,
+            "evicted_total": snapshot.runtime_cache.evicted_total,
+            "last_evicted_at_ms": snapshot.runtime_cache.last_evicted_at_ms,
+        },
+        "sessions": {
+            "bound": snapshot.sessions.bound,
+            "unbound": snapshot.sessions.unbound,
+            "activation_origin_counts": snapshot.sessions.activation_origin_counts,
+            "provenance": {
+                "surface": "session_activation_aggregate",
+                "activation_origin_counts": snapshot.sessions.activation_origin_counts,
+            },
+            "backend_counts": snapshot.sessions.backend_counts,
+        },
+        "actors": {
+            "active": snapshot.actors.active,
+            "queue_depth": snapshot.actors.queue_depth,
+            "waiting": snapshot.actors.waiting,
+        },
+        "turns": {
+            "active": snapshot.turns.active,
+            "queue_depth": snapshot.turns.queue_depth,
+            "completed": snapshot.turns.completed,
+            "failed": snapshot.turns.failed,
+            "average_latency_ms": snapshot.turns.average_latency_ms,
+            "max_latency_ms": snapshot.turns.max_latency_ms,
+        },
+        "errors_by_code": snapshot.errors_by_code,
+    })
+}
+
+pub fn acp_event_summary_json(
+    session: &str,
+    limit: usize,
+    summary: &mvp::acp::AcpTurnEventSummary,
+) -> Value {
+    json!({
+        "session": session,
+        "limit": limit,
+        "provenance": acp_turn_provenance_json(summary),
+        "summary": summary,
+    })
+}
+
+pub fn format_acp_event_summary(
+    session: &str,
+    limit: usize,
+    summary: &mvp::acp::AcpTurnEventSummary,
+) -> String {
+    format!(
+        concat!(
+            "acp_event_summary session={} limit={}\n",
+            "records turn_event_records={} final_records={}\n",
+            "events done={} error={} text={} usage_update={}\n",
+            "turns succeeded={} cancelled={} failed={}\n",
+            "latest backend_id={} agent_id={} routing_intent={} routing_origin={} session_key={} conversation_id={} binding_route_session_id={} channel_id={} account_id={} channel_conversation_id={} channel_thread_id={} trace_id={} source_message_id={} ack_cursor={} state={} stop_reason={} error={}\n",
+            "rollup event_types={} stop_reasons={} routing_intents={} routing_origins={}\n"
+        ),
+        session,
+        limit,
+        summary.turn_event_records,
+        summary.final_records,
+        summary.done_events,
+        summary.error_events,
+        summary.text_events,
+        summary.usage_update_events,
+        summary.turns_succeeded,
+        summary.turns_cancelled,
+        summary.turns_failed,
+        summary.last_backend_id.as_deref().unwrap_or("-"),
+        summary.last_agent_id.as_deref().unwrap_or("-"),
+        summary.last_routing_intent.as_deref().unwrap_or("-"),
+        summary.last_routing_origin.as_deref().unwrap_or("-"),
+        summary.last_session_key.as_deref().unwrap_or("-"),
+        summary.last_conversation_id.as_deref().unwrap_or("-"),
+        summary
+            .last_binding_route_session_id
+            .as_deref()
+            .unwrap_or("-"),
+        summary.last_channel_id.as_deref().unwrap_or("-"),
+        summary.last_account_id.as_deref().unwrap_or("-"),
+        summary
+            .last_channel_conversation_id
+            .as_deref()
+            .unwrap_or("-"),
+        summary.last_channel_thread_id.as_deref().unwrap_or("-"),
+        summary.last_trace_id.as_deref().unwrap_or("-"),
+        summary.last_source_message_id.as_deref().unwrap_or("-"),
+        summary.last_ack_cursor.as_deref().unwrap_or("-"),
+        summary.last_turn_state.as_deref().unwrap_or("-"),
+        summary.last_stop_reason.as_deref().unwrap_or("-"),
+        summary.last_error.as_deref().unwrap_or("-"),
+        format_u32_rollup(&summary.event_type_counts),
+        format_u32_rollup(&summary.stop_reason_counts),
+        format_u32_rollup(&summary.routing_intent_counts),
+        format_u32_rollup(&summary.routing_origin_counts)
+    )
+}
+
+pub fn acp_session_mode_label(mode: mvp::acp::AcpSessionMode) -> &'static str {
+    match mode {
+        mvp::acp::AcpSessionMode::Interactive => "interactive",
+        mvp::acp::AcpSessionMode::Background => "background",
+        mvp::acp::AcpSessionMode::Review => "review",
+    }
+}
+
+pub fn acp_session_state_label(state: mvp::acp::AcpSessionState) -> &'static str {
+    match state {
+        mvp::acp::AcpSessionState::Initializing => "initializing",
+        mvp::acp::AcpSessionState::Ready => "ready",
+        mvp::acp::AcpSessionState::Busy => "busy",
+        mvp::acp::AcpSessionState::Cancelling => "cancelling",
+        mvp::acp::AcpSessionState::Error => "error",
+        mvp::acp::AcpSessionState::Closed => "closed",
+    }
+}
+
+pub fn format_capability_names(names: &[&str]) -> String {
+    if names.is_empty() {
+        return "(none)".to_owned();
+    }
+    names.join(",")
 }
 
 pub fn format_u32_rollup(values: &BTreeMap<String, u32>) -> String {

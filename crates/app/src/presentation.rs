@@ -87,14 +87,14 @@ pub struct BuildVersionInfo {
 
 impl BuildVersionInfo {
     pub fn current() -> Self {
-        let release_build = option_env!("LOONGCLAW_RELEASE_BUILD")
+        let release_build = option_env!("LOONG_RELEASE_BUILD")
             .map(|raw| raw.trim())
             .is_some_and(is_truthy_env_value);
-        let short_sha = option_env!("LOONGCLAW_GIT_SHA")
+        let short_sha = option_env!("LOONG_GIT_SHA")
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(short_sha);
-        let channel = option_env!("LOONGCLAW_BUILD_CHANNEL")
+        let channel = option_env!("LOONG_BUILD_CHANNEL")
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(Cow::Borrowed)
@@ -581,7 +581,7 @@ mod tests {
 
     #[test]
     fn presentation_current_build_surfaces_embedded_git_trace_metadata_when_available() {
-        let release_build = option_env!("LOONGCLAW_RELEASE_BUILD")
+        let release_build = option_env!("LOONG_RELEASE_BUILD")
             .map(str::trim)
             .is_some_and(is_truthy_env_value);
         if release_build {
@@ -590,7 +590,7 @@ mod tests {
 
         let version_line = BuildVersionInfo::current().render_version_line();
 
-        if let Some(short_sha) = option_env!("LOONGCLAW_GIT_SHA")
+        if let Some(short_sha) = option_env!("LOONG_GIT_SHA")
             .map(str::trim)
             .filter(|value| !value.is_empty())
         {
@@ -600,7 +600,7 @@ mod tests {
             );
         }
 
-        if let Some(channel) = option_env!("LOONGCLAW_BUILD_CHANNEL")
+        if let Some(channel) = option_env!("LOONG_BUILD_CHANNEL")
             .map(str::trim)
             .filter(|value| !value.is_empty())
         {
@@ -711,7 +711,7 @@ mod tests {
     fn presentation_wraps_text_lines_for_narrow_width() {
         let lines = render_wrapped_text_line(
             "source: ",
-            "Codex config at ~/.codex/agents/loongclaw/config.toml",
+            "Codex config at ~/.codex/agents/loong/config.toml",
             48,
         );
 
@@ -719,7 +719,7 @@ mod tests {
             lines,
             vec![
                 "source: Codex config at".to_owned(),
-                "  ~/.codex/agents/loongclaw/config.toml".to_owned(),
+                "  ~/.codex/agents/loong/config.toml".to_owned(),
             ]
         );
     }
@@ -749,7 +749,7 @@ mod tests {
     #[test]
     fn presentation_wraps_display_line_with_label_prefix() {
         let lines = render_wrapped_display_line(
-            "    source: Codex config at ~/.codex/agents/loongclaw/config.toml",
+            "    source: Codex config at ~/.codex/agents/loong/config.toml",
             48,
         );
 
@@ -757,7 +757,7 @@ mod tests {
             lines,
             vec![
                 "    source: Codex config at".to_owned(),
-                "      ~/.codex/agents/loongclaw/config.toml".to_owned(),
+                "      ~/.codex/agents/loong/config.toml".to_owned(),
             ]
         );
     }

@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use serde_json::{Value, json};
 
-use crate::config::LoongClawConfig;
+use crate::config::LoongConfig;
 use crate::conversation::{
     ConstrainedSubagentContractView, ConstrainedSubagentExecution, ConstrainedSubagentIdentity,
     ConstrainedSubagentIsolation, ConstrainedSubagentMode, ConstrainedSubagentProfile,
@@ -114,7 +114,7 @@ pub(crate) fn next_delegate_child_depth(
 }
 
 pub(crate) fn build_delegate_child_lifecycle_seed(
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     binding: ConversationRuntimeBinding<'_>,
     mode: ConstrainedSubagentMode,
     next_child_depth: usize,
@@ -151,7 +151,7 @@ pub(crate) fn build_delegate_child_lifecycle_seed(
 }
 
 fn build_delegate_child_execution(
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     binding: ConversationRuntimeBinding<'_>,
     mode: ConstrainedSubagentMode,
     next_child_depth: usize,
@@ -593,7 +593,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::config::LoongClawConfig;
+    use crate::config::LoongConfig;
     use crate::memory::runtime_config::MemoryRuntimeConfig;
     use crate::session::repository::{NewSessionEvent, NewSessionRecord};
     use crate::trust::extract_trust_event_payload;
@@ -605,7 +605,7 @@ mod tests {
 
     fn isolated_repo_with_path(test_name: &str) -> (SessionRepository, std::path::PathBuf) {
         let sqlite_path = std::env::temp_dir().join(format!(
-            "loongclaw-operator-delegate-runtime-{test_name}-{}.sqlite3",
+            "loong-operator-delegate-runtime-{test_name}-{}.sqlite3",
             std::process::id()
         ));
         let _ = std::fs::remove_file(&sqlite_path);
@@ -708,7 +708,7 @@ mod tests {
 
     #[test]
     fn build_delegate_child_lifecycle_seed_uses_mode_specific_state_and_event_kind() {
-        let config = LoongClawConfig::default();
+        let config = LoongConfig::default();
         let execution_policy = DelegateChildExecutionPolicy {
             isolation: ConstrainedSubagentIsolation::Shared,
             profile: None,
@@ -742,7 +742,7 @@ mod tests {
 
     #[test]
     fn build_delegate_child_lifecycle_seed_embeds_delegate_trust_event() {
-        let config = LoongClawConfig::default();
+        let config = LoongConfig::default();
         let execution_policy = DelegateChildExecutionPolicy {
             isolation: ConstrainedSubagentIsolation::Shared,
             profile: None,

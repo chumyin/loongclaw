@@ -1,10 +1,10 @@
 use super::*;
 use crate::KernelContext;
-use crate::config::{LoongClawConfig, ProviderConfig, ReasoningEffort};
+use crate::config::{LoongConfig, ProviderConfig, ReasoningEffort};
 use crate::test_support::ScopedEnv;
-use loongclaw_contracts::{Capability, ExecutionRoute, HarnessKind, SecretRef};
-use loongclaw_kernel::{
-    AuditEventKind, FixedClock, InMemoryAuditSink, LoongClawKernel, StaticPolicyEngine,
+use loong_contracts::{Capability, ExecutionRoute, HarnessKind, SecretRef};
+use loong_kernel::{
+    AuditEventKind, FixedClock, InMemoryAuditSink, LoongKernel, StaticPolicyEngine,
     VerticalPackManifest,
 };
 use reqwest::header::{HeaderMap, HeaderValue, RETRY_AFTER};
@@ -31,8 +31,7 @@ fn build_provider_failover_test_kernel_context(
 ) -> (KernelContext, Arc<InMemoryAuditSink>) {
     let audit = Arc::new(InMemoryAuditSink::default());
     let clock = Arc::new(FixedClock::new(1_700_000_321));
-    let mut kernel =
-        LoongClawKernel::with_runtime(StaticPolicyEngine::default(), clock, audit.clone());
+    let mut kernel = LoongKernel::with_runtime(StaticPolicyEngine::default(), clock, audit.clone());
     kernel
         .register_pack(VerticalPackManifest {
             pack_id: "provider-test-pack".to_owned(),
@@ -177,13 +176,13 @@ fn read_local_provider_request_accepts_elapsed_deadline() {
 
 #[tokio::test]
 async fn provider_auth_ready_accepts_x_api_key_providers() {
-    let config = LoongClawConfig {
+    let config = LoongConfig {
         provider: ProviderConfig {
             kind: ProviderKind::Anthropic,
             api_key: Some(SecretRef::Inline("anthropic-secret".to_owned())),
             ..ProviderConfig::default()
         },
-        ..LoongClawConfig::default()
+        ..LoongConfig::default()
     };
 
     assert!(provider_auth_ready(&config).await);
@@ -191,13 +190,13 @@ async fn provider_auth_ready_accepts_x_api_key_providers() {
 
 #[tokio::test]
 async fn provider_auth_ready_accepts_manual_auth_headers_for_custom_provider() {
-    let config = LoongClawConfig {
+    let config = LoongConfig {
         provider: ProviderConfig {
             kind: ProviderKind::Custom,
             headers: BTreeMap::from([("authorization".to_owned(), "Token manual-auth".to_owned())]),
             ..ProviderConfig::default()
         },
-        ..LoongClawConfig::default()
+        ..LoongConfig::default()
     };
 
     assert!(provider_auth_ready(&config).await);
@@ -212,12 +211,12 @@ async fn provider_auth_ready_accepts_bedrock_sigv4_credentials() {
     env.set("AWS_REGION", "us-west-2");
     env.remove("AWS_SESSION_TOKEN");
 
-    let config = LoongClawConfig {
+    let config = LoongConfig {
         provider: ProviderConfig {
             kind: ProviderKind::Bedrock,
             ..ProviderConfig::default()
         },
-        ..LoongClawConfig::default()
+        ..LoongConfig::default()
     };
 
     assert!(provider_auth_ready(&config).await);
@@ -702,10 +701,10 @@ fn clear_provider_auth_envs(env: &mut ScopedEnv, env_keys: &[&'static str]) {
     }
 }
 
-fn test_config(provider: ProviderConfig) -> LoongClawConfig {
-    LoongClawConfig {
+fn test_config(provider: ProviderConfig) -> LoongConfig {
+    LoongConfig {
         provider,
-        ..LoongClawConfig::default()
+        ..LoongConfig::default()
     }
 }
 
@@ -1355,13 +1354,13 @@ fn completion_body_omits_optional_fields_when_not_configured() {
 
 #[test]
 fn anthropic_completion_body_uses_native_messages_shape() {
-    let config = LoongClawConfig {
+    let config = LoongConfig {
         provider: ProviderConfig {
             kind: ProviderKind::Anthropic,
             max_tokens: Some(2_048),
             ..ProviderConfig::default()
         },
-        ..LoongClawConfig::default()
+        ..LoongConfig::default()
     };
     let messages = vec![
         json!({"role": "system", "content": "sys"}),
@@ -1385,13 +1384,13 @@ fn anthropic_completion_body_uses_native_messages_shape() {
 
 #[test]
 fn bedrock_completion_body_uses_converse_shape() {
-    let config = LoongClawConfig {
+    let config = LoongConfig {
         provider: ProviderConfig {
             kind: ProviderKind::Bedrock,
             max_tokens: Some(2_048),
             ..ProviderConfig::default()
         },
-        ..LoongClawConfig::default()
+        ..LoongConfig::default()
     };
     let messages = vec![
         json!({"role": "system", "content": "sys"}),
@@ -1450,7 +1449,7 @@ fn kimi_coding_request_headers_include_default_user_agent() {
         .expect("default user-agent")
         .to_str()
         .expect("user-agent value");
-    assert_eq!(user_agent, "KimiCLI/LoongClaw");
+    assert_eq!(user_agent, "KimiCLI/Loong");
 }
 
 #[test]
@@ -1615,12 +1614,12 @@ fn turn_body_includes_tool_schema_and_auto_choice() {
 #[cfg(any(feature = "tool-file", feature = "tool-shell"))]
 #[test]
 fn anthropic_turn_body_uses_native_messages_shape_and_tool_schema() {
-    let config = LoongClawConfig {
+    let config = LoongConfig {
         provider: ProviderConfig {
             kind: ProviderKind::Anthropic,
             ..ProviderConfig::default()
         },
-        ..LoongClawConfig::default()
+        ..LoongConfig::default()
     };
     let messages = vec![
         json!({
@@ -1675,12 +1674,12 @@ fn anthropic_turn_body_uses_native_messages_shape_and_tool_schema() {
 #[cfg(any(feature = "tool-file", feature = "tool-shell"))]
 #[test]
 fn anthropic_turn_body_converts_tool_schema_to_native_format() {
-    let config = LoongClawConfig {
+    let config = LoongConfig {
         provider: ProviderConfig {
             kind: ProviderKind::Anthropic,
             ..ProviderConfig::default()
         },
-        ..LoongClawConfig::default()
+        ..LoongConfig::default()
     };
 
     let body = build_turn_request_body(
@@ -1704,12 +1703,12 @@ fn anthropic_turn_body_converts_tool_schema_to_native_format() {
 
 #[test]
 fn anthropic_turn_body_preserves_native_tool_use_and_tool_result_blocks() {
-    let config = LoongClawConfig {
+    let config = LoongConfig {
         provider: ProviderConfig {
             kind: ProviderKind::Anthropic,
             ..ProviderConfig::default()
         },
-        ..LoongClawConfig::default()
+        ..LoongConfig::default()
     };
 
     let body = build_turn_request_body(
@@ -2015,12 +2014,12 @@ fn opencode_zen_gemini_turn_body_preserves_native_tool_results() {
 #[cfg(any(feature = "tool-file", feature = "tool-shell"))]
 #[test]
 fn bedrock_turn_body_uses_native_tool_blocks_and_tool_config() {
-    let config = LoongClawConfig {
+    let config = LoongConfig {
         provider: ProviderConfig {
             kind: ProviderKind::Bedrock,
             ..ProviderConfig::default()
         },
-        ..LoongClawConfig::default()
+        ..LoongConfig::default()
     };
 
     let body = build_turn_request_body(

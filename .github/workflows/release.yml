@@ -12,7 +12,7 @@ on:
 
 env:
   BIN_NAME: loong
-  LEGACY_BIN_NAME: loongclaw
+  LEGACY_BIN_NAME: loong
   PACKAGE_NAME: loong
   LINUX_ARM64_GLIBC_FLOOR: "2.17"
   LINUX_ARM64_ZIG_VERSION: "0.13.0"
@@ -62,7 +62,7 @@ jobs:
         run: chmod +x ./scripts/check_dep_graph.sh && ./scripts/check_dep_graph.sh
 
       - name: Strict architecture contract
-        run: chmod +x ./scripts/check_architecture_boundaries.sh && LOONGCLAW_ARCH_STRICT=true ./scripts/check_architecture_boundaries.sh
+        run: chmod +x ./scripts/check_architecture_boundaries.sh && LOONG_ARCH_STRICT=true ./scripts/check_architecture_boundaries.sh
 
   build-binaries:
     name: Build ${{ matrix.target }} on ${{ matrix.os }}
@@ -162,16 +162,16 @@ jobs:
       - name: Build release binary with cargo-zigbuild
         if: matrix.use_zig == true
         env:
-          LOONGCLAW_RELEASE_BUILD: "1"
+          LOONG_RELEASE_BUILD: "1"
         run: |
-          cargo zigbuild --release --locked -p loongclaw --bin ${{ env.BIN_NAME }} --bin ${{ env.LEGACY_BIN_NAME }} \
+          cargo zigbuild --release --locked -p loong --bin ${{ env.BIN_NAME }} --bin ${{ env.LEGACY_BIN_NAME }} \
             --target "${{ matrix.target }}.${{ env.LINUX_ARM64_GLIBC_FLOOR }}"
 
       - name: Build release binary (Android/Termux)
         if: matrix.use_android_ndk == true
         shell: bash
         env:
-          LOONGCLAW_RELEASE_BUILD: "1"
+          LOONG_RELEASE_BUILD: "1"
         run: |
           set -euo pipefail
           toolchain="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin"
@@ -179,13 +179,13 @@ jobs:
           export CXX_aarch64_linux_android="${toolchain}/aarch64-linux-android${ANDROID_API_LEVEL}-clang++"
           export AR_aarch64_linux_android="${toolchain}/llvm-ar"
           export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="${toolchain}/aarch64-linux-android${ANDROID_API_LEVEL}-clang"
-          cargo build --release --locked -p loongclaw --bin "${BIN_NAME}" --bin "${LEGACY_BIN_NAME}" --target "${{ matrix.target }}"
+          cargo build --release --locked -p loong --bin "${BIN_NAME}" --bin "${LEGACY_BIN_NAME}" --target "${{ matrix.target }}"
 
       - name: Build release binary (native)
         if: matrix.use_zig != true && matrix.use_android_ndk != true
         env:
-          LOONGCLAW_RELEASE_BUILD: "1"
-        run: cargo build --release --locked -p loongclaw --bin ${{ env.BIN_NAME }} --bin ${{ env.LEGACY_BIN_NAME }} --target ${{ matrix.target }}
+          LOONG_RELEASE_BUILD: "1"
+        run: cargo build --release --locked -p loong --bin ${{ env.BIN_NAME }} --bin ${{ env.LEGACY_BIN_NAME }} --target ${{ matrix.target }}
 
       - name: Package archive (Unix)
         if: matrix.archive == 'tar.gz'

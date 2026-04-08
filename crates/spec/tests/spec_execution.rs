@@ -1,15 +1,15 @@
 use std::collections::BTreeSet;
 
 use kernel::{AuditEventKind, Capability};
-use loongclaw_spec::test_support::make_runner_spec;
-use loongclaw_spec::{OperationSpec, execute_spec, spec_requires_native_tool_executor};
+use loong_spec::test_support::make_runner_spec;
+use loong_spec::{OperationSpec, execute_spec, spec_requires_native_tool_executor};
 use serde_json::json;
 
 #[test]
 fn spec_requires_native_tool_executor_detects_aliases_and_extension() {
     let native_tool_names = [
-        "claw.migrate",
-        "claw_migrate",
+        "loong.migrate",
+        "loong_migrate",
         "config.import",
         "config_import",
     ];
@@ -17,7 +17,7 @@ fn spec_requires_native_tool_executor_detects_aliases_and_extension() {
         extension_action: "plan".to_owned(),
         required_capabilities: BTreeSet::from([Capability::InvokeTool]),
         payload: json!({"input_path": "/tmp/demo"}),
-        extension: "claw-migration".to_owned(),
+        extension: "loong-migration".to_owned(),
         core: None,
     });
     let unrelated_spec = make_runner_spec(OperationSpec::ToolCore {

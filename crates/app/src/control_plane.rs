@@ -14,7 +14,7 @@ use crate::acp::{
     shared_acp_session_manager,
 };
 #[cfg(feature = "memory-sqlite")]
-use crate::config::LoongClawConfig;
+use crate::config::LoongConfig;
 #[cfg(feature = "memory-sqlite")]
 use crate::memory::runtime_config::MemoryRuntimeConfig;
 #[cfg(feature = "memory-sqlite")]
@@ -1690,13 +1690,13 @@ impl ControlPlaneRepositoryView {
 #[cfg(feature = "memory-sqlite")]
 #[derive(Debug, Clone)]
 pub struct ControlPlaneAcpView {
-    config: LoongClawConfig,
+    config: LoongConfig,
     current_session_id: String,
 }
 
 #[cfg(feature = "memory-sqlite")]
 impl ControlPlaneAcpView {
-    pub fn new(config: LoongClawConfig, current_session_id: impl Into<String>) -> Self {
+    pub fn new(config: LoongConfig, current_session_id: impl Into<String>) -> Self {
         Self {
             config,
             current_session_id: normalize_control_plane_session_id(&current_session_id.into()),
@@ -1860,7 +1860,7 @@ mod tests {
             AcpRoutingOrigin, AcpSessionBindingScope, AcpSessionMetadata, AcpSessionMode,
             AcpSessionState, AcpSessionStore, AcpSqliteSessionStore,
         },
-        config::LoongClawConfig,
+        config::LoongConfig,
     };
 
     use super::*;
@@ -2585,7 +2585,7 @@ mod tests {
     #[cfg(feature = "memory-sqlite")]
     fn isolated_memory_config(test_name: &str) -> MemoryRuntimeConfig {
         let base = std::env::temp_dir().join(format!(
-            "loongclaw-control-plane-view-{test_name}-{}",
+            "loong-control-plane-view-{test_name}-{}",
             std::process::id()
         ));
         let _ = fs::create_dir_all(&base);
@@ -2600,7 +2600,7 @@ mod tests {
     #[cfg(feature = "memory-sqlite")]
     fn broken_memory_config(test_name: &str) -> MemoryRuntimeConfig {
         let base = std::env::temp_dir().join(format!(
-            "loongclaw-control-plane-broken-{test_name}-{}",
+            "loong-control-plane-broken-{test_name}-{}",
             std::process::id()
         ));
         let sqlite_path = base.join("sqlite-dir");
@@ -2739,7 +2739,7 @@ mod tests {
         })
         .expect("create hidden root session");
 
-        let mut config = LoongClawConfig::default();
+        let mut config = LoongConfig::default();
         let sqlite_path = memory_config
             .sqlite_path
             .as_ref()

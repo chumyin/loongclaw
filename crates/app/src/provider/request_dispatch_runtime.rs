@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde_json::Value;
 
-use crate::config::{LoongClawConfig, ProviderConfig};
+use crate::config::{LoongConfig, ProviderConfig};
 
 use super::auth_profile_runtime::{ProviderAuthProfile, auth_profile_supports_scheme};
 use super::capability_profile_runtime::ProviderCapabilityProfile;
@@ -26,7 +26,7 @@ use super::transport_trait::ProviderTransport;
 
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn request_completion_with_model(
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     messages: &[Value],
     model: String,
     auto_model_mode: bool,
@@ -51,7 +51,7 @@ pub(super) async fn request_completion_with_model(
 
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn request_turn_with_model(
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     session_id: &str,
     turn_id: &str,
     messages: &[Value],
@@ -82,7 +82,7 @@ pub(super) async fn request_turn_with_model(
 
 #[allow(clippy::too_many_arguments)]
 async fn request_completion_with_provider(
-    base_config: &LoongClawConfig,
+    base_config: &LoongConfig,
     request_provider: &ProviderConfig,
     messages: &[Value],
     model: &str,
@@ -231,7 +231,7 @@ pub(super) async fn request_completion_with_provider_transport(
 
 #[allow(clippy::too_many_arguments)]
 async fn request_turn_with_provider(
-    base_config: &LoongClawConfig,
+    base_config: &LoongConfig,
     request_provider: &ProviderConfig,
     session_id: &str,
     turn_id: &str,
@@ -415,7 +415,7 @@ pub(super) async fn request_turn_with_provider_transport(
 
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn request_turn_streaming(
-    base_config: &LoongClawConfig,
+    base_config: &LoongConfig,
     request_provider: &ProviderConfig,
     session_id: &str,
     turn_id: &str,
@@ -597,7 +597,7 @@ pub(super) async fn request_turn_streaming_with_transport(
 
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn request_turn_streaming_with_model(
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     session_id: &str,
     turn_id: &str,
     messages: &[Value],

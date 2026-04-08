@@ -26,7 +26,7 @@ use crate::CliResult;
     feature = "channel-wecom",
     feature = "channel-whatsapp"
 ))]
-use crate::config::LoongClawConfig;
+use crate::config::LoongConfig;
 #[cfg(any(
     feature = "channel-telegram",
     feature = "channel-feishu",
@@ -81,7 +81,7 @@ pub trait ChannelAdapter {
 }
 
 // ============================================================================
-// KnownChannelSessionSendTarget and parse functions (runtime-coupled due to LoongClawConfig)
+// KnownChannelSessionSendTarget and parse functions (runtime-coupled due to LoongConfig)
 // ============================================================================
 
 #[cfg(any(
@@ -120,7 +120,7 @@ pub(in crate::channel) enum KnownChannelSessionSendTarget {
     feature = "channel-wecom"
 ))]
 pub(in crate::channel) fn parse_known_channel_session_send_target(
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     session_id: &str,
 ) -> CliResult<KnownChannelSessionSendTarget> {
     let (channel, scope) = parse_route_session_id(session_id)?
@@ -144,7 +144,7 @@ pub(in crate::channel) fn parse_known_channel_session_send_target(
     feature = "channel-wecom"
 ))]
 fn parse_telegram_session_send_target(
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     session_id: &str,
     scope: &[String],
 ) -> CliResult<KnownChannelSessionSendTarget> {
@@ -189,7 +189,7 @@ fn parse_telegram_session_send_target(
     feature = "channel-wecom"
 ))]
 fn parse_feishu_session_send_target(
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     session_id: &str,
     scope: &[String],
 ) -> CliResult<KnownChannelSessionSendTarget> {
@@ -239,7 +239,7 @@ fn parse_feishu_session_send_target(
     feature = "channel-wecom"
 ))]
 fn parse_matrix_session_send_target(
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     session_id: &str,
     scope: &[String],
 ) -> CliResult<KnownChannelSessionSendTarget> {
@@ -279,7 +279,7 @@ fn parse_matrix_session_send_target(
     feature = "channel-wecom"
 ))]
 fn parse_wecom_session_send_target(
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     session_id: &str,
     scope: &[String],
 ) -> CliResult<KnownChannelSessionSendTarget> {

@@ -26,7 +26,7 @@ pub type NativeToolExecutor = fn(ToolCoreRequest) -> Option<Result<ToolCoreOutco
 pub fn tool_name_requires_native_tool_executor(tool_name: &str) -> bool {
     matches!(
         tool_name,
-        "config.import" | "config_import" | "claw.migrate" | "claw_migrate"
+        "config.import" | "config_import" | "loong.migrate" | "loong_migrate"
     )
 }
 
@@ -35,7 +35,7 @@ pub fn spec_requires_native_tool_executor(spec: &RunnerSpec) -> bool {
         OperationSpec::ToolCore { tool_name, .. } => {
             tool_name_requires_native_tool_executor(tool_name)
         }
-        OperationSpec::ToolExtension { extension, .. } => extension == "claw-migration",
+        OperationSpec::ToolExtension { extension, .. } => extension == "loong-migration",
         OperationSpec::Task { .. }
         | OperationSpec::ConnectorLegacy { .. }
         | OperationSpec::ConnectorCore { .. }

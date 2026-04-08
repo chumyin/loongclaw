@@ -17,7 +17,7 @@ fn unique_temp_dir(prefix: &str) -> PathBuf {
 fn write_runtime_trajectory_config(root: &Path) -> PathBuf {
     fs::create_dir_all(root).expect("create fixture root");
 
-    let mut config = mvp::config::LoongClawConfig::default();
+    let mut config = mvp::config::LoongConfig::default();
     let sqlite_path = root.join("memory.sqlite3");
     config.memory.sqlite_path = sqlite_path.display().to_string();
     config.tools.file_root = Some(root.display().to_string());

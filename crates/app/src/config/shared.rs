@@ -6,7 +6,7 @@ use std::{
     sync::OnceLock,
 };
 
-use loongclaw_contracts::SecretRef;
+use loong_contracts::SecretRef;
 
 pub(super) const DEFAULT_CONFIG_FILE: &str = "config.toml";
 pub(super) const DEFAULT_SQLITE_FILE: &str = "memory.sqlite3";
@@ -14,10 +14,10 @@ pub const CLI_COMMAND_NAME: &str = "loong";
 pub const LEGACY_CLI_COMMAND_NAME: &str = "loongclaw";
 pub const HOME_DIR_NAME: &str = ".loong";
 pub const LEGACY_HOME_DIR_NAME: &str = ".loongclaw";
-pub const PRODUCT_DISPLAY_NAME: &str = "LoongClaw";
+pub const PRODUCT_DISPLAY_NAME: &str = "Loong";
 static ACTIVE_CLI_COMMAND_NAME: OnceLock<&'static str> = OnceLock::new();
 pub(super) const DEFAULT_FEISHU_SQLITE_FILE: &str = "feishu.sqlite3";
-pub(crate) const LOONGCLAW_HOME_ENV: &str = "LOONG_HOME";
+pub(crate) const LOONG_HOME_ENV: &str = "LOONG_HOME";
 
 fn normalize_cli_command_name(raw: &str) -> &'static str {
     if raw.eq_ignore_ascii_case(LEGACY_CLI_COMMAND_NAME) {
@@ -147,37 +147,35 @@ impl ConfigValidationCode {
 
     pub const fn problem_type_uri(self) -> &'static str {
         match self {
-            ConfigValidationCode::Assignment => {
-                "urn:loongclaw:problem:config.env_pointer.assignment"
-            }
+            ConfigValidationCode::Assignment => "urn:loong:problem:config.env_pointer.assignment",
             ConfigValidationCode::DollarPrefix => {
-                "urn:loongclaw:problem:config.env_pointer.dollar_prefix"
+                "urn:loong:problem:config.env_pointer.dollar_prefix"
             }
             ConfigValidationCode::PercentWrapped => {
-                "urn:loongclaw:problem:config.env_pointer.percent_wrapped"
+                "urn:loong:problem:config.env_pointer.percent_wrapped"
             }
             ConfigValidationCode::SecretLiteral => {
-                "urn:loongclaw:problem:config.env_pointer.secret_literal"
+                "urn:loong:problem:config.env_pointer.secret_literal"
             }
             ConfigValidationCode::InvalidName => {
-                "urn:loongclaw:problem:config.env_pointer.invalid_name"
+                "urn:loong:problem:config.env_pointer.invalid_name"
             }
-            ConfigValidationCode::InvalidValue => "urn:loongclaw:problem:config.value.invalid",
-            ConfigValidationCode::NumericRange => "urn:loongclaw:problem:config.numeric_range",
+            ConfigValidationCode::InvalidValue => "urn:loong:problem:config.value.invalid",
+            ConfigValidationCode::NumericRange => "urn:loong:problem:config.numeric_range",
             ConfigValidationCode::DuplicateChannelAccountId => {
-                "urn:loongclaw:problem:config.channel_account.duplicate_id"
+                "urn:loong:problem:config.channel_account.duplicate_id"
             }
             ConfigValidationCode::UnknownChannelDefaultAccount => {
-                "urn:loongclaw:problem:config.channel_account.unknown_default"
+                "urn:loong:problem:config.channel_account.unknown_default"
             }
             ConfigValidationCode::ImplicitActiveProvider => {
-                "urn:loongclaw:problem:config.provider_selection.implicit_active"
+                "urn:loong:problem:config.provider_selection.implicit_active"
             }
             ConfigValidationCode::UnknownActiveProvider => {
-                "urn:loongclaw:problem:config.provider_selection.unknown_active"
+                "urn:loong:problem:config.provider_selection.unknown_active"
             }
             ConfigValidationCode::UnknownSearchProvider => {
-                "urn:loongclaw:problem:config.web_search.unknown_provider"
+                "urn:loong:problem:config.web_search.unknown_provider"
             }
         }
     }
@@ -268,10 +266,10 @@ impl ConfigValidationCode {
                 "[{code}] {field_path} points to `{requested_account_id}`, but configured accounts are: {configured_account_ids}. set `{field_path}` to one of the configured account ids"
             }
             ConfigValidationCode::ImplicitActiveProvider => {
-                "[{code}] {field_path} is not set explicitly. LoongClaw selected `{selected_profile_id}` using {selection_basis}. set `{field_path} = \"{selected_profile_id}\"` to make the active provider explicit"
+                "[{code}] {field_path} is not set explicitly. Loong selected `{selected_profile_id}` using {selection_basis}. set `{field_path} = \"{selected_profile_id}\"` to make the active provider explicit"
             }
             ConfigValidationCode::UnknownActiveProvider => {
-                "[{code}] {field_path} points to `{requested_profile_id}`, but configured provider profiles are: {configured_profile_ids}. LoongClaw recovered to `{selected_profile_id}` using {selection_basis}. update `{field_path}` to an available profile id"
+                "[{code}] {field_path} points to `{requested_profile_id}`, but configured provider profiles are: {configured_profile_ids}. Loong recovered to `{selected_profile_id}` using {selection_basis}. update `{field_path}` to an available profile id"
             }
             ConfigValidationCode::UnknownSearchProvider => {
                 "[{code}] {field_path} is set to `{provider_value}`, which is not a valid web search provider. valid options are: {valid_providers}. set `{field_path}` to one of the valid providers"
@@ -435,11 +433,11 @@ const EN_VALIDATION_MESSAGE_CATALOG: &[ConfigValidationCatalogEntry] = &[
     ),
     ConfigValidationCatalogEntry::new(
         "config.provider_selection.implicit_active",
-        "[{code}] {field_path} is not set explicitly. LoongClaw selected `{selected_profile_id}` using {selection_basis}. set `{field_path} = \"{selected_profile_id}\"` to make the active provider explicit",
+        "[{code}] {field_path} is not set explicitly. Loong selected `{selected_profile_id}` using {selection_basis}. set `{field_path} = \"{selected_profile_id}\"` to make the active provider explicit",
     ),
     ConfigValidationCatalogEntry::new(
         "config.provider_selection.unknown_active",
-        "[{code}] {field_path} points to `{requested_profile_id}`, but configured provider profiles are: {configured_profile_ids}. LoongClaw recovered to `{selected_profile_id}` using {selection_basis}. update `{field_path}` to an available profile id",
+        "[{code}] {field_path} points to `{requested_profile_id}`, but configured provider profiles are: {configured_profile_ids}. Loong recovered to `{selected_profile_id}` using {selection_basis}. update `{field_path}` to an available profile id",
     ),
 ];
 
@@ -494,9 +492,9 @@ fn get_user_home() -> PathBuf {
     )
 }
 
-fn get_loongclaw_home() -> PathBuf {
-    resolve_loongclaw_home(
-        env::var_os(LOONGCLAW_HOME_ENV).as_deref(),
+fn get_loong_home() -> PathBuf {
+    resolve_loong_home(
+        env::var_os(LOONG_HOME_ENV).as_deref(),
         env::var_os("HOME").as_deref(),
         env::var_os("USERPROFILE").as_deref(),
     )
@@ -512,12 +510,12 @@ fn resolve_user_home(
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-fn resolve_loongclaw_home(
-    loongclaw_home: Option<&std::ffi::OsStr>,
+fn resolve_loong_home(
+    loong_home: Option<&std::ffi::OsStr>,
     home: Option<&std::ffi::OsStr>,
     userprofile: Option<&std::ffi::OsStr>,
 ) -> PathBuf {
-    loongclaw_home
+    loong_home
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| resolve_user_home(home, userprofile).join(HOME_DIR_NAME))
@@ -537,8 +535,8 @@ pub fn detect_legacy_home(user_home: &Path) -> Option<PathBuf> {
     }
 }
 
-pub(super) fn default_loongclaw_home() -> PathBuf {
-    get_loongclaw_home()
+pub(super) fn default_loong_home() -> PathBuf {
+    get_loong_home()
 }
 
 pub fn expand_path(raw: &str) -> PathBuf {
@@ -882,14 +880,14 @@ mod tests {
     #[test]
     fn get_user_home_deterministic_fallback_scenarios() {
         let home = if cfg!(windows) {
-            PathBuf::from(r"C:\Users\loongclaw-test-home")
+            PathBuf::from(r"C:\Users\loong-test-home")
         } else {
-            PathBuf::from("/tmp/loongclaw-test-home")
+            PathBuf::from("/tmp/loong-test-home")
         };
         let userprofile = PathBuf::from(if cfg!(windows) {
-            r"C:\Users\loongclaw-test-synthetic"
+            r"C:\Users\loong-test-synthetic"
         } else {
-            "/tmp/loongclaw-test-synthetic"
+            "/tmp/loong-test-synthetic"
         });
 
         let result_home = resolve_user_home(Some(home.as_os_str()), Some(userprofile.as_os_str()));
@@ -912,19 +910,19 @@ mod tests {
     }
 
     #[test]
-    fn resolve_loongclaw_home_prefers_explicit_override_over_user_home() {
+    fn resolve_loong_home_prefers_explicit_override_over_user_home() {
         let override_home = if cfg!(windows) {
-            PathBuf::from(r"C:\tmp\loongclaw-home-override")
+            PathBuf::from(r"C:\tmp\loong-home-override")
         } else {
-            PathBuf::from("/tmp/loongclaw-home-override")
+            PathBuf::from("/tmp/loong-home-override")
         };
         let home = if cfg!(windows) {
-            PathBuf::from(r"C:\Users\loongclaw-test-home")
+            PathBuf::from(r"C:\Users\loong-test-home")
         } else {
-            PathBuf::from("/tmp/loongclaw-test-home")
+            PathBuf::from("/tmp/loong-test-home")
         };
 
-        let resolved = resolve_loongclaw_home(
+        let resolved = resolve_loong_home(
             Some(override_home.as_os_str()),
             Some(home.as_os_str()),
             None,
@@ -936,9 +934,9 @@ mod tests {
     #[test]
     fn resolve_user_home_treats_empty_home_as_unset() {
         let userprofile = if cfg!(windows) {
-            PathBuf::from(r"C:\Users\loongclaw-test-userprofile")
+            PathBuf::from(r"C:\Users\loong-test-userprofile")
         } else {
-            PathBuf::from("/tmp/loongclaw-test-userprofile")
+            PathBuf::from("/tmp/loong-test-userprofile")
         };
         let resolved = resolve_user_home(
             Some(std::ffi::OsStr::new("")),
@@ -949,65 +947,65 @@ mod tests {
     }
 
     #[test]
-    fn default_loongclaw_home_uses_override_env_when_present() {
+    fn default_loong_home_uses_override_env_when_present() {
         let mut env = ScopedEnv::new();
-        let override_home = std::env::temp_dir().join("loongclaw-home-env-override");
-        env.set(LOONGCLAW_HOME_ENV, &override_home);
+        let override_home = std::env::temp_dir().join("loong-home-env-override");
+        env.set(LOONG_HOME_ENV, &override_home);
 
-        assert_eq!(default_loongclaw_home(), override_home);
+        assert_eq!(default_loong_home(), override_home);
     }
 
     #[test]
-    fn resolve_loongclaw_home_treats_empty_override_as_unset() {
+    fn resolve_loong_home_treats_empty_override_as_unset() {
         let home = if cfg!(windows) {
-            PathBuf::from(r"C:\Users\loongclaw-test-home")
+            PathBuf::from(r"C:\Users\loong-test-home")
         } else {
-            PathBuf::from("/tmp/loongclaw-test-home")
+            PathBuf::from("/tmp/loong-test-home")
         };
         let resolved =
-            resolve_loongclaw_home(Some(std::ffi::OsStr::new("")), Some(home.as_os_str()), None);
+            resolve_loong_home(Some(std::ffi::OsStr::new("")), Some(home.as_os_str()), None);
 
         assert_eq!(resolved, home.join(".loong"));
     }
 
     #[test]
-    fn default_loongclaw_home_treats_empty_override_env_as_unset() {
+    fn default_loong_home_treats_empty_override_env_as_unset() {
         let mut env = ScopedEnv::new();
         let home = if cfg!(windows) {
-            PathBuf::from(r"C:\Users\loongclaw-test-home")
+            PathBuf::from(r"C:\Users\loong-test-home")
         } else {
-            PathBuf::from("/tmp/loongclaw-test-home")
+            PathBuf::from("/tmp/loong-test-home")
         };
-        env.set(LOONGCLAW_HOME_ENV, "");
+        env.set(LOONG_HOME_ENV, "");
         env.set("HOME", &home);
         env.remove("USERPROFILE");
 
-        let resolved = default_loongclaw_home();
+        let resolved = default_loong_home();
 
         assert_eq!(resolved, home.join(".loong"));
     }
 
     #[test]
-    fn default_loongclaw_home_reads_loong_home_env() {
+    fn default_loong_home_reads_loong_home_env() {
         let mut env = ScopedEnv::new();
         let override_home = std::env::temp_dir().join("loong-home-env-test");
-        env.set(LOONGCLAW_HOME_ENV, &override_home);
-        env.remove("LOONGCLAW_HOME");
+        env.set(LOONG_HOME_ENV, &override_home);
+        env.remove("LOONG_HOME");
 
-        assert_eq!(default_loongclaw_home(), override_home);
+        assert_eq!(default_loong_home(), override_home);
     }
 
     #[test]
-    fn default_loongclaw_home_prefers_loong_home_over_loongclaw_home() {
+    fn default_loong_home_prefers_loong_home_over_loong_home() {
         let mut env = ScopedEnv::new();
         let new_home = std::env::temp_dir().join("loong-home-preferred");
-        let old_home = std::env::temp_dir().join("loongclaw-home-deprecated");
-        env.set(LOONGCLAW_HOME_ENV, &new_home);
-        env.set("LOONGCLAW_HOME", &old_home);
+        let old_home = std::env::temp_dir().join("loong-home-deprecated");
+        env.set(LOONG_HOME_ENV, &new_home);
+        env.set("LOONG_HOME", &old_home);
 
         // The active env constant reads the preferred name, so the legacy
         // fallback stays ignored when both are present.
-        assert_eq!(default_loongclaw_home(), new_home);
+        assert_eq!(default_loong_home(), new_home);
     }
 }
 
@@ -1019,13 +1017,13 @@ mod legacy_home_tests {
     #[test]
     fn detect_legacy_home_finds_legacy_dir() {
         let temp = tempfile::tempdir().unwrap();
-        let legacy = temp.path().join(".loongclaw");
+        let legacy = temp.path().join(".loong");
         fs::create_dir_all(&legacy).unwrap();
         // .loong does NOT exist
         let result = detect_legacy_home(temp.path());
         assert!(
             result.is_some(),
-            "should detect legacy home when .loongclaw exists but .loong does not"
+            "should detect legacy home when .loong exists but .loong does not"
         );
     }
 
@@ -1033,7 +1031,7 @@ mod legacy_home_tests {
     fn detect_legacy_home_no_warning_when_new_exists() {
         let temp = tempfile::tempdir().unwrap();
         let new_home = temp.path().join(".loong");
-        let legacy = temp.path().join(".loongclaw");
+        let legacy = temp.path().join(".loong");
         fs::create_dir_all(&new_home).unwrap();
         fs::create_dir_all(&legacy).unwrap();
         let result = detect_legacy_home(temp.path());

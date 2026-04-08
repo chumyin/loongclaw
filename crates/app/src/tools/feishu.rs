@@ -6,7 +6,7 @@ use std::future::Future;
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 
-use loongclaw_contracts::{ToolCoreOutcome, ToolCoreRequest};
+use loong_contracts::{ToolCoreOutcome, ToolCoreRequest};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -553,7 +553,7 @@ impl FeishuInternalCallbackPayload {
 struct FeishuWhoamiPayload {
     account_id: Option<String>,
     open_id: Option<String>,
-    #[serde(default, rename = "_loongclaw")]
+    #[serde(default, rename = "_loong")]
     internal: LoongclawInternalToolPayload,
 }
 
@@ -567,7 +567,7 @@ struct FeishuDocCreatePayload {
     content: Option<String>,
     content_path: Option<String>,
     content_type: Option<String>,
-    #[serde(default, rename = "_loongclaw")]
+    #[serde(default, rename = "_loong")]
     internal: LoongclawInternalToolPayload,
 }
 
@@ -580,7 +580,7 @@ struct FeishuDocAppendPayload {
     content: Option<String>,
     content_path: Option<String>,
     content_type: Option<String>,
-    #[serde(default, rename = "_loongclaw")]
+    #[serde(default, rename = "_loong")]
     internal: LoongclawInternalToolPayload,
 }
 
@@ -591,7 +591,7 @@ struct FeishuDocReadPayload {
     selector: GrantSelectorPayload,
     url: String,
     lang: Option<u8>,
-    #[serde(default, rename = "_loongclaw")]
+    #[serde(default, rename = "_loong")]
     internal: LoongclawInternalToolPayload,
 }
 
@@ -607,7 +607,7 @@ struct FeishuMessagesHistoryPayload {
     sort_type: Option<String>,
     page_size: Option<usize>,
     page_token: Option<String>,
-    #[serde(default, rename = "_loongclaw")]
+    #[serde(default, rename = "_loong")]
     internal: LoongclawInternalToolPayload,
 }
 
@@ -617,7 +617,7 @@ struct FeishuMessagesGetPayload {
     #[serde(flatten)]
     selector: GrantSelectorPayload,
     message_id: String,
-    #[serde(default, rename = "_loongclaw")]
+    #[serde(default, rename = "_loong")]
     internal: LoongclawInternalToolPayload,
 }
 
@@ -638,7 +638,7 @@ struct FeishuMessagesSearchPayload {
     chat_type: Option<String>,
     start_time: Option<String>,
     end_time: Option<String>,
-    #[serde(default, rename = "_loongclaw")]
+    #[serde(default, rename = "_loong")]
     internal: LoongclawInternalToolPayload,
 }
 
@@ -652,7 +652,7 @@ struct FeishuMessagesResourceGetPayload {
     #[serde(rename = "type")]
     resource_type: String,
     save_as: String,
-    #[serde(default, rename = "_loongclaw")]
+    #[serde(default, rename = "_loong")]
     internal: LoongclawInternalToolPayload,
 }
 
@@ -672,7 +672,7 @@ struct FeishuMessagesSendPayload {
     file_path: Option<String>,
     file_type: Option<String>,
     uuid: Option<String>,
-    #[serde(default, rename = "_loongclaw")]
+    #[serde(default, rename = "_loong")]
     internal: LoongclawInternalToolPayload,
 }
 
@@ -692,7 +692,7 @@ struct FeishuMessagesReplyPayload {
     file_type: Option<String>,
     reply_in_thread: Option<bool>,
     uuid: Option<String>,
-    #[serde(default, rename = "_loongclaw")]
+    #[serde(default, rename = "_loong")]
     internal: LoongclawInternalToolPayload,
 }
 
@@ -705,7 +705,7 @@ struct FeishuCardUpdatePayload {
     markdown: Option<String>,
     shared: bool,
     open_ids: Option<Vec<String>>,
-    #[serde(default, rename = "_loongclaw")]
+    #[serde(default, rename = "_loong")]
     internal: LoongclawInternalToolPayload,
 }
 
@@ -766,7 +766,7 @@ struct FeishuCalendarListPayload {
     page_size: Option<usize>,
     page_token: Option<String>,
     sync_token: Option<String>,
-    #[serde(default, rename = "_loongclaw")]
+    #[serde(default, rename = "_loong")]
     internal: LoongclawInternalToolPayload,
 }
 
@@ -778,7 +778,7 @@ struct FeishuBitableListPayload {
     app_token: String,
     page_token: Option<String>,
     page_size: Option<usize>,
-    #[serde(default, rename = "_loongclaw")]
+    #[serde(default, rename = "_loong")]
     internal: LoongclawInternalToolPayload,
 }
 
@@ -789,7 +789,7 @@ struct FeishuBitableAppCreatePayload {
     selector: GrantSelectorPayload,
     name: String,
     folder_token: Option<String>,
-    #[serde(default, rename = "_loongclaw")]
+    #[serde(default, rename = "_loong")]
     internal: LoongclawInternalToolPayload,
 }
 
@@ -799,7 +799,7 @@ struct FeishuBitableAppGetPayload {
     #[serde(flatten)]
     selector: GrantSelectorPayload,
     app_token: String,
-    #[serde(default, rename = "_loongclaw")]
+    #[serde(default, rename = "_loong")]
     internal: LoongclawInternalToolPayload,
 }
 
@@ -811,7 +811,7 @@ struct FeishuBitableAppListPayload {
     folder_token: Option<String>,
     page_token: Option<String>,
     page_size: Option<usize>,
-    #[serde(default, rename = "_loongclaw")]
+    #[serde(default, rename = "_loong")]
     internal: LoongclawInternalToolPayload,
 }
 
@@ -823,7 +823,7 @@ struct FeishuBitableAppPatchPayload {
     app_token: String,
     name: Option<String>,
     is_advanced: Option<bool>,
-    #[serde(default, rename = "_loongclaw")]
+    #[serde(default, rename = "_loong")]
     internal: LoongclawInternalToolPayload,
 }
 
@@ -835,7 +835,7 @@ struct FeishuBitableAppCopyPayload {
     app_token: String,
     name: String,
     folder_token: Option<String>,
-    #[serde(default, rename = "_loongclaw")]
+    #[serde(default, rename = "_loong")]
     internal: LoongclawInternalToolPayload,
 }
 
@@ -847,7 +847,7 @@ struct FeishuBitableRecordCreatePayload {
     app_token: String,
     table_id: String,
     fields: Value,
-    #[serde(default, rename = "_loongclaw")]
+    #[serde(default, rename = "_loong")]
     internal: LoongclawInternalToolPayload,
 }
 
@@ -860,7 +860,7 @@ struct FeishuBitableRecordUpdatePayload {
     table_id: String,
     record_id: String,
     fields: Value,
-    #[serde(default, rename = "_loongclaw")]
+    #[serde(default, rename = "_loong")]
     internal: LoongclawInternalToolPayload,
 }
 
@@ -872,7 +872,7 @@ struct FeishuBitableRecordDeletePayload {
     app_token: String,
     table_id: String,
     record_id: String,
-    #[serde(default, rename = "_loongclaw")]
+    #[serde(default, rename = "_loong")]
     internal: LoongclawInternalToolPayload,
 }
 
@@ -884,7 +884,7 @@ struct FeishuBitableRecordBatchCreatePayload {
     app_token: String,
     table_id: String,
     records: Vec<Value>,
-    #[serde(default, rename = "_loongclaw")]
+    #[serde(default, rename = "_loong")]
     internal: LoongclawInternalToolPayload,
 }
 
@@ -896,7 +896,7 @@ struct FeishuBitableRecordBatchUpdatePayload {
     app_token: String,
     table_id: String,
     records: Vec<Value>,
-    #[serde(default, rename = "_loongclaw")]
+    #[serde(default, rename = "_loong")]
     internal: LoongclawInternalToolPayload,
 }
 
@@ -908,7 +908,7 @@ struct FeishuBitableRecordBatchDeletePayload {
     app_token: String,
     table_id: String,
     records: Vec<String>,
-    #[serde(default, rename = "_loongclaw")]
+    #[serde(default, rename = "_loong")]
     internal: LoongclawInternalToolPayload,
 }
 
@@ -923,7 +923,7 @@ struct FeishuBitableFieldCreatePayload {
     #[serde(rename = "type")]
     field_type: i64,
     property: Option<Value>,
-    #[serde(default, rename = "_loongclaw")]
+    #[serde(default, rename = "_loong")]
     internal: LoongclawInternalToolPayload,
 }
 
@@ -937,7 +937,7 @@ struct FeishuBitableFieldListPayload {
     view_id: Option<String>,
     page_size: Option<usize>,
     page_token: Option<String>,
-    #[serde(default, rename = "_loongclaw")]
+    #[serde(default, rename = "_loong")]
     internal: LoongclawInternalToolPayload,
 }
 
@@ -953,7 +953,7 @@ struct FeishuBitableFieldUpdatePayload {
     #[serde(rename = "type")]
     field_type: i64,
     property: Option<Value>,
-    #[serde(default, rename = "_loongclaw")]
+    #[serde(default, rename = "_loong")]
     internal: LoongclawInternalToolPayload,
 }
 
@@ -965,7 +965,7 @@ struct FeishuBitableFieldDeletePayload {
     app_token: String,
     table_id: String,
     field_id: String,
-    #[serde(default, rename = "_loongclaw")]
+    #[serde(default, rename = "_loong")]
     internal: LoongclawInternalToolPayload,
 }
 
@@ -978,7 +978,7 @@ struct FeishuBitableViewCreatePayload {
     table_id: String,
     view_name: String,
     view_type: Option<String>,
-    #[serde(default, rename = "_loongclaw")]
+    #[serde(default, rename = "_loong")]
     internal: LoongclawInternalToolPayload,
 }
 
@@ -990,7 +990,7 @@ struct FeishuBitableViewGetPayload {
     app_token: String,
     table_id: String,
     view_id: String,
-    #[serde(default, rename = "_loongclaw")]
+    #[serde(default, rename = "_loong")]
     internal: LoongclawInternalToolPayload,
 }
 
@@ -1003,7 +1003,7 @@ struct FeishuBitableViewListPayload {
     table_id: String,
     page_size: Option<usize>,
     page_token: Option<String>,
-    #[serde(default, rename = "_loongclaw")]
+    #[serde(default, rename = "_loong")]
     internal: LoongclawInternalToolPayload,
 }
 
@@ -1016,7 +1016,7 @@ struct FeishuBitableViewPatchPayload {
     table_id: String,
     view_id: String,
     view_name: String,
-    #[serde(default, rename = "_loongclaw")]
+    #[serde(default, rename = "_loong")]
     internal: LoongclawInternalToolPayload,
 }
 
@@ -1029,7 +1029,7 @@ struct FeishuBitableTableCreatePayload {
     name: String,
     default_view_name: Option<String>,
     fields: Option<Vec<Value>>,
-    #[serde(default, rename = "_loongclaw")]
+    #[serde(default, rename = "_loong")]
     internal: LoongclawInternalToolPayload,
 }
 
@@ -1041,7 +1041,7 @@ struct FeishuBitableTablePatchPayload {
     app_token: String,
     table_id: String,
     name: String,
-    #[serde(default, rename = "_loongclaw")]
+    #[serde(default, rename = "_loong")]
     internal: LoongclawInternalToolPayload,
 }
 
@@ -1052,7 +1052,7 @@ struct FeishuBitableTableBatchCreatePayload {
     selector: GrantSelectorPayload,
     app_token: String,
     tables: Vec<Value>,
-    #[serde(default, rename = "_loongclaw")]
+    #[serde(default, rename = "_loong")]
     internal: LoongclawInternalToolPayload,
 }
 
@@ -1070,7 +1070,7 @@ struct FeishuBitableRecordSearchPayload {
     sort: Option<Value>,
     field_names: Option<Vec<String>>,
     automatic_fields: Option<bool>,
-    #[serde(default, rename = "_loongclaw")]
+    #[serde(default, rename = "_loong")]
     internal: LoongclawInternalToolPayload,
 }
 
@@ -1087,7 +1087,7 @@ struct FeishuCalendarFreebusyPayload {
     include_external_calendar: Option<bool>,
     only_busy: Option<bool>,
     need_rsvp_status: Option<bool>,
-    #[serde(default, rename = "_loongclaw")]
+    #[serde(default, rename = "_loong")]
     internal: LoongclawInternalToolPayload,
 }
 
@@ -1931,7 +1931,7 @@ pub(super) fn feishu_provider_tool_definitions() -> Vec<Value> {
     push_feishu_provider_tool_definition(
         &mut tools,
         "feishu_card_update",
-        "Update a Feishu interactive card after a card callback. Pass markdown for a standard markdown card or card for full Feishu card JSON. When called from a Feishu callback turn, LoongClaw can infer account_id, callback_token, and a default exclusive open_ids target from internal callback context. Set shared=true for shared-card updates so callback operator defaults are suppressed. Callback tokens expire after 30 minutes and can be used at most twice.",
+        "Update a Feishu interactive card after a card callback. Pass markdown for a standard markdown card or card for full Feishu card JSON. When called from a Feishu callback turn, Loong can infer account_id, callback_token, and a default exclusive open_ids target from internal callback context. Set shared=true for shared-card updates so callback operator defaults are suppressed. Callback tokens expire after 30 minutes and can be used at most twice.",
         json!({
             "type": "object",
             "properties": {
@@ -1960,7 +1960,7 @@ pub(super) fn feishu_provider_tool_definitions() -> Vec<Value> {
                     "items": {
                         "type": "string"
                     },
-                    "description": "Optional explicit open_id targets for non-shared cards. For shared cards, either omit open_ids or set shared=true. When omitted in a callback turn without shared=true, LoongClaw can default to the callback operator open_id."
+                    "description": "Optional explicit open_id targets for non-shared cards. For shared cards, either omit open_ids or set shared=true. When omitted in a callback turn without shared=true, Loong can default to the callback operator open_id."
                 }
             },
             "required": [],
@@ -2147,7 +2147,7 @@ pub(super) fn feishu_provider_tool_definitions() -> Vec<Value> {
     push_feishu_provider_tool_definition(
         &mut tools,
         "feishu_messages_get",
-        "Fetch one Feishu message detail using a tenant token resolved from the selected account grant. When called from a Feishu conversation, LoongClaw can infer the account and current message from ingress context.",
+        "Fetch one Feishu message detail using a tenant token resolved from the selected account grant. When called from a Feishu conversation, Loong can infer the account and current message from ingress context.",
         json!({
             "type": "object",
             "properties": {
@@ -2172,7 +2172,7 @@ pub(super) fn feishu_provider_tool_definitions() -> Vec<Value> {
     push_feishu_provider_tool_definition(
         &mut tools,
         "feishu_messages_resource_get",
-        "Explicitly download one Feishu message image or file resource using a tenant token resolved from the selected account grant and save it under the configured file root. When called from a Feishu conversation, LoongClaw can infer the source message from ingress context and can infer the resource key or type when the current Feishu ingress carries exactly one Feishu message resource or when either payload.file_key or payload.type uniquely identifies one current ingress resource for the same message, as long as payload.message_id is omitted or matches the current ingress message. If the current Feishu ingress summary exposes resource_inventory, choose one entry and copy its file_key plus payload_type into this tool call when multiple resources are present. Outside the current ingress turn, also pass the source message_id explicitly. This does not perform implicit webhook binary downloads.",
+        "Explicitly download one Feishu message image or file resource using a tenant token resolved from the selected account grant and save it under the configured file root. When called from a Feishu conversation, Loong can infer the source message from ingress context and can infer the resource key or type when the current Feishu ingress carries exactly one Feishu message resource or when either payload.file_key or payload.type uniquely identifies one current ingress resource for the same message, as long as payload.message_id is omitted or matches the current ingress message. If the current Feishu ingress summary exposes resource_inventory, choose one entry and copy its file_key plus payload_type into this tool call when multiple resources are present. Outside the current ingress turn, also pass the source message_id explicitly. This does not perform implicit webhook binary downloads.",
         json!({
             "type": "object",
             "properties": {
@@ -2209,7 +2209,7 @@ pub(super) fn feishu_provider_tool_definitions() -> Vec<Value> {
     push_feishu_provider_tool_definition(
         &mut tools,
         "feishu_messages_history",
-        "List Feishu message history using a tenant token resolved from the selected account grant. When called from a Feishu conversation, LoongClaw can infer the current chat or thread container from ingress context.",
+        "List Feishu message history using a tenant token resolved from the selected account grant. When called from a Feishu conversation, Loong can infer the current chat or thread container from ingress context.",
         json!({
             "type": "object",
             "properties": {
@@ -2254,7 +2254,7 @@ pub(super) fn feishu_provider_tool_definitions() -> Vec<Value> {
     push_feishu_provider_tool_definition(
         &mut tools,
         "feishu_messages_search",
-        "Search Feishu messages using the selected account grant. When called from the current Feishu conversation, LoongClaw can infer the account and default chat scope from ingress context.",
+        "Search Feishu messages using the selected account grant. When called from the current Feishu conversation, Loong can infer the account and default chat scope from ingress context.",
         json!({
             "type": "object",
             "properties": {
@@ -2289,7 +2289,7 @@ pub(super) fn feishu_provider_tool_definitions() -> Vec<Value> {
                 "chat_ids": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Optional Feishu chat ids to scope the search. When omitted inside the current Feishu conversation, LoongClaw can default this to the active conversation."
+                    "description": "Optional Feishu chat ids to scope the search. When omitted inside the current Feishu conversation, Loong can default this to the active conversation."
                 },
                 "message_type": {
                     "type": "string"
@@ -2392,7 +2392,7 @@ pub(super) fn feishu_provider_tool_definitions() -> Vec<Value> {
     push_feishu_provider_tool_definition(
         &mut tools,
         "feishu_messages_send",
-        "Send a Feishu text, post, image, file, or markdown card message using a tenant token resolved from the selected account grant. When called from the current Feishu conversation, LoongClaw can infer the account and receive_id from ingress context.",
+        "Send a Feishu text, post, image, file, or markdown card message using a tenant token resolved from the selected account grant. When called from the current Feishu conversation, Loong can infer the account and receive_id from ingress context.",
         send_parameters,
     );
     let mut reply_parameters = json!({
@@ -2432,7 +2432,7 @@ pub(super) fn feishu_provider_tool_definitions() -> Vec<Value> {
             },
             "reply_in_thread": {
                 "type": "boolean",
-                "description": "When true, force the reply to be posted in thread form. When omitted, LoongClaw defaults to thread form if internal Feishu ingress metadata indicates the source message is already in a thread/topic."
+                "description": "When true, force the reply to be posted in thread form. When omitted, Loong defaults to thread form if internal Feishu ingress metadata indicates the source message is already in a thread/topic."
             },
             "uuid": {
                 "type": "string",
@@ -2472,7 +2472,7 @@ pub(super) fn feishu_provider_tool_definitions() -> Vec<Value> {
     push_feishu_provider_tool_definition(
         &mut tools,
         "feishu_messages_reply",
-        "Reply to a Feishu message with text, post, image, file, or a markdown card using a tenant token resolved from the selected account grant. When called from a Feishu conversation, LoongClaw can infer the account and source Feishu message from ingress context.",
+        "Reply to a Feishu message with text, post, image, file, or a markdown card using a tenant token resolved from the selected account grant. When called from a Feishu conversation, Loong can infer the account and source Feishu message from ingress context.",
         reply_parameters,
     );
     push_feishu_provider_tool_definition(

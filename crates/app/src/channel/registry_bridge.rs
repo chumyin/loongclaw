@@ -2,7 +2,7 @@ use std::path::Path;
 
 use crate::channel::http;
 use crate::config::{
-    ChannelDefaultAccountSelectionSource, LoongClawConfig, ONEBOT_ACCESS_TOKEN_ENV,
+    ChannelDefaultAccountSelectionSource, LoongConfig, ONEBOT_ACCESS_TOKEN_ENV,
     ONEBOT_WEBSOCKET_URL_ENV, QQBOT_APP_ID_ENV, QQBOT_CLIENT_SECRET_ENV,
     ResolvedOnebotChannelConfig, ResolvedQqbotChannelConfig, ResolvedWeixinChannelConfig,
     WEIXIN_BRIDGE_ACCESS_TOKEN_ENV, WEIXIN_BRIDGE_URL_ENV, normalize_channel_account_id,
@@ -124,8 +124,8 @@ const WEIXIN_OPERATIONS: &[ChannelRegistryOperationDescriptor] = &[
 
 const WEIXIN_ONBOARDING_DESCRIPTOR: ChannelOnboardingDescriptor = ChannelOnboardingDescriptor {
     strategy: ChannelOnboardingStrategy::PluginBridge,
-    setup_hint: "plugin-bridge weixin surface; connect a compatible WeChat ClawBot or iLink bridge under weixin or weixin.accounts.<account> and let that bridge own the upstream login flow until a native LoongClaw adapter exists",
-    status_command: "loongclaw doctor",
+    setup_hint: "plugin-bridge weixin surface; connect a compatible WeChat ClawBot or iLink bridge under weixin or weixin.accounts.<account> and let that bridge own the upstream login flow until a native Loong adapter exists",
+    status_command: "loong doctor",
     repair_command: None,
 };
 
@@ -233,7 +233,7 @@ const QQBOT_OPERATIONS: &[ChannelRegistryOperationDescriptor] = &[
 const QQBOT_ONBOARDING_DESCRIPTOR: ChannelOnboardingDescriptor = ChannelOnboardingDescriptor {
     strategy: ChannelOnboardingStrategy::PluginBridge,
     setup_hint: "plugin-bridge qqbot surface; connect an official QQ Bot gateway or compatible plugin bridge under qqbot or qqbot.accounts.<account> and keep target routing stable across c2c, group, and guild-style conversations",
-    status_command: "loongclaw doctor",
+    status_command: "loong doctor",
     repair_command: None,
 };
 
@@ -347,7 +347,7 @@ const ONEBOT_OPERATIONS: &[ChannelRegistryOperationDescriptor] = &[
 const ONEBOT_ONBOARDING_DESCRIPTOR: ChannelOnboardingDescriptor = ChannelOnboardingDescriptor {
     strategy: ChannelOnboardingStrategy::PluginBridge,
     setup_hint: "plugin-bridge OneBot surface; connect a OneBot-compatible bridge such as NapCat or LLOneBot under onebot or onebot.accounts.<account> and use this surface as the stable protocol contract until a native adapter exists",
-    status_command: "loongclaw doctor",
+    status_command: "loong doctor",
     repair_command: None,
 };
 
@@ -477,7 +477,7 @@ pub(super) fn plugin_bridge_account_scope_note_for_channel_id(
 
 fn build_weixin_snapshots(
     descriptor: &ChannelRegistryDescriptor,
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     _runtime_dir: &Path,
     _now_ms: u64,
 ) -> Vec<ChannelStatusSnapshot> {
@@ -523,7 +523,7 @@ fn build_weixin_snapshots(
 
 fn build_qqbot_snapshots(
     descriptor: &ChannelRegistryDescriptor,
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     _runtime_dir: &Path,
     _now_ms: u64,
 ) -> Vec<ChannelStatusSnapshot> {
@@ -567,7 +567,7 @@ fn build_qqbot_snapshots(
 
 fn build_onebot_snapshots(
     descriptor: &ChannelRegistryDescriptor,
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     _runtime_dir: &Path,
     _now_ms: u64,
 ) -> Vec<ChannelStatusSnapshot> {
@@ -956,10 +956,7 @@ fn build_onebot_snapshot_for_account(
     }
 }
 
-fn configured_weixin_account_enabled(
-    config: &LoongClawConfig,
-    configured_account_id: &str,
-) -> bool {
+fn configured_weixin_account_enabled(config: &LoongConfig, configured_account_id: &str) -> bool {
     let account_enabled = config
         .weixin
         .accounts
@@ -975,7 +972,7 @@ fn configured_weixin_account_enabled(
     config.weixin.enabled && account_enabled
 }
 
-fn configured_qqbot_account_enabled(config: &LoongClawConfig, configured_account_id: &str) -> bool {
+fn configured_qqbot_account_enabled(config: &LoongConfig, configured_account_id: &str) -> bool {
     let account_enabled = config
         .qqbot
         .accounts
@@ -991,10 +988,7 @@ fn configured_qqbot_account_enabled(config: &LoongClawConfig, configured_account
     config.qqbot.enabled && account_enabled
 }
 
-fn configured_onebot_account_enabled(
-    config: &LoongClawConfig,
-    configured_account_id: &str,
-) -> bool {
+fn configured_onebot_account_enabled(config: &LoongConfig, configured_account_id: &str) -> bool {
     let account_enabled = config
         .onebot
         .accounts
@@ -1233,7 +1227,7 @@ mod tests {
 
     #[test]
     fn weixin_status_reports_configured_bridge_surface_without_native_runtime() {
-        let config: LoongClawConfig = serde_json::from_value(json!({
+        let config: LoongConfig = serde_json::from_value(json!({
             "weixin": {
                 "enabled": true,
                 "bridge_url": "https://bridge.example.test/api?access_token=secret-token",
@@ -1293,7 +1287,7 @@ mod tests {
 
     #[test]
     fn qqbot_status_reports_configured_bridge_surface_without_native_runtime() {
-        let config: LoongClawConfig = serde_json::from_value(json!({
+        let config: LoongConfig = serde_json::from_value(json!({
             "qqbot": {
                 "enabled": true,
                 "app_id": "10001",
@@ -1351,7 +1345,7 @@ mod tests {
 
     #[test]
     fn onebot_status_reports_configured_bridge_surface_without_native_runtime() {
-        let config: LoongClawConfig = serde_json::from_value(json!({
+        let config: LoongConfig = serde_json::from_value(json!({
             "onebot": {
                 "enabled": true,
                 "websocket_url": "ws://127.0.0.1:5700?access_token=secret-token",

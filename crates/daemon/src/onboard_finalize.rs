@@ -1,8 +1,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use loongclaw_app as mvp;
-use loongclaw_spec::CliResult;
+use loong_app as mvp;
+use loong_spec::CliResult;
 use time::OffsetDateTime;
 use time::format_description::FormatItem;
 use time::macros::format_description;
@@ -80,7 +80,7 @@ pub struct OnboardingAction {
 
 pub fn build_onboarding_success_summary(
     path: &Path,
-    config: &mvp::config::LoongClawConfig,
+    config: &mvp::config::LoongConfig,
     import_source: Option<&str>,
 ) -> OnboardingSuccessSummary {
     build_onboarding_success_summary_with_memory(path, config, import_source, None, None, None)
@@ -88,7 +88,7 @@ pub fn build_onboarding_success_summary(
 
 pub(crate) fn build_onboarding_success_summary_with_memory(
     path: &Path,
-    config: &mvp::config::LoongClawConfig,
+    config: &mvp::config::LoongConfig,
     import_source: Option<&str>,
     review_candidate: Option<&crate::migration::ImportCandidate>,
     memory_path: Option<&str>,
@@ -325,7 +325,7 @@ fn collect_onboarding_domain_outcomes(
         .collect()
 }
 
-fn collect_onboarding_suggested_channels(config: &mvp::config::LoongClawConfig) -> Vec<String> {
+fn collect_onboarding_suggested_channels(config: &mvp::config::LoongConfig) -> Vec<String> {
     let enabled_service_channel_ids = config.enabled_service_channel_ids();
     if !enabled_service_channel_ids.is_empty() {
         return Vec::new();

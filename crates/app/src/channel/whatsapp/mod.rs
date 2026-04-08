@@ -17,7 +17,7 @@ use super::{
     http::{ChannelOutboundHttpPolicy, build_outbound_http_client, validate_outbound_http_target},
     runtime::state::ChannelOperationRuntimeTracker,
 };
-use crate::config::{ChannelDefaultAccountSelectionSource, LoongClawConfig};
+use crate::config::{ChannelDefaultAccountSelectionSource, LoongConfig};
 use crate::{CliResult, KernelContext, config::ResolvedWhatsappChannelConfig};
 use webhook::{WhatsappWebhookState, whatsapp_verify_handler, whatsapp_webhook_handler};
 
@@ -95,7 +95,7 @@ pub(super) async fn run_whatsapp_send(
 
 #[allow(clippy::print_stdout)] // CLI startup banner
 pub(super) async fn run_whatsapp_channel(
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     resolved: &ResolvedWhatsappChannelConfig,
     resolved_path: &Path,
     selected_by_default: bool,
@@ -242,7 +242,7 @@ pub(super) async fn run_whatsapp_channel_with_context(
 
 pub(super) async fn run_whatsapp_channel_with_stop(
     resolved_path: PathBuf,
-    config: LoongClawConfig,
+    config: LoongConfig,
     account_id: Option<&str>,
     stop: ChannelServeStopHandle,
     initialize_runtime_environment: bool,

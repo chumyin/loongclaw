@@ -1,6 +1,6 @@
 {
   "pack": {
-    "pack_id": "ops-claw-import-hotplug",
+    "pack_id": "ops-loong-import-hotplug",
     "domain": "ops",
     "version": "0.1.0",
     "default_route": {
@@ -12,7 +12,7 @@
       "InvokeTool"
     ],
     "metadata": {
-      "owner": "loongclaw-ai",
+      "owner": "loong-ai",
       "stage": "dev"
     }
   },
@@ -38,7 +38,7 @@
     "payload": {
       "input_path": "./legacy"
     },
-    "extension": "claw-migration",
+    "extension": "loong-migration",
     "core": null
   }
 }

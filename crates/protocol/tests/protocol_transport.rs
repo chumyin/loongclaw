@@ -1,8 +1,8 @@
 use std::collections::BTreeSet;
 use std::time::Duration;
 
-use loongclaw_protocol::test_support::*;
-use loongclaw_protocol::*;
+use loong_protocol::test_support::*;
+use loong_protocol::*;
 use tokio::io::{AsyncWriteExt, duplex, split};
 use tokio::time::{sleep, timeout};
 
@@ -453,7 +453,7 @@ fn control_plane_connect_request_roundtrips_through_json() {
             version: "1.0.0".to_owned(),
             mode: "operator_ui".to_owned(),
             platform: "macos".to_owned(),
-            display_name: Some("LoongClaw CLI".to_owned()),
+            display_name: Some("Loong CLI".to_owned()),
         },
         role: ControlPlaneRole::Operator,
         scopes: BTreeSet::from([

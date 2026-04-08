@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
 
-use loongclaw_app as mvp;
+use loong_app as mvp;
 
 pub use mvp::chat::DEFAULT_FIRST_PROMPT as DEFAULT_FIRST_ASK_MESSAGE;
 
@@ -33,7 +33,7 @@ pub struct SetupNextAction {
 }
 
 pub fn collect_setup_next_actions(
-    config: &mvp::config::LoongClawConfig,
+    config: &mvp::config::LoongConfig,
     config_path: &str,
 ) -> Vec<SetupNextAction> {
     let path_env = std::env::var_os("PATH");
@@ -41,7 +41,7 @@ pub fn collect_setup_next_actions(
 }
 
 pub(crate) fn collect_setup_next_actions_with_path_env(
-    config: &mvp::config::LoongClawConfig,
+    config: &mvp::config::LoongConfig,
     config_path: &str,
     path_env: Option<&OsStr>,
 ) -> Vec<SetupNextAction> {
@@ -145,7 +145,7 @@ pub(crate) fn collect_setup_next_actions_with_path_env(
 }
 
 fn collect_unresolved_plugin_bridge_surface_ids(
-    config: &mvp::config::LoongClawConfig,
+    config: &mvp::config::LoongConfig,
     channel_actions: &[crate::migration::channels::ChannelNextAction],
 ) -> Vec<&'static str> {
     let has_catalog_only_channel_handoff = channel_actions_are_catalog_only(channel_actions);
@@ -171,9 +171,7 @@ fn channel_actions_are_catalog_only(
     action.id == crate::migration::channels::CHANNEL_CATALOG_ACTION_ID
 }
 
-fn unresolved_plugin_bridge_surface_ids(
-    config: &mvp::config::LoongClawConfig,
-) -> Vec<&'static str> {
+fn unresolved_plugin_bridge_surface_ids(config: &mvp::config::LoongConfig) -> Vec<&'static str> {
     let inventory = mvp::channel::channel_inventory(config);
     let channel_checks = crate::migration::channels::collect_channel_preflight_checks(config);
     let unresolved_surface_names = channel_checks
@@ -271,7 +269,7 @@ fn channel_next_action_to_setup_action(
     }
 }
 
-fn should_suggest_personalization(config: &mvp::config::LoongClawConfig) -> bool {
+fn should_suggest_personalization(config: &mvp::config::LoongConfig) -> bool {
     let personalization = config.memory.trimmed_personalization();
     let Some(personalization) = personalization else {
         return true;
@@ -345,19 +343,16 @@ mod tests {
         );
         assert_eq!(action.browser_preview_phase, None);
         assert_eq!(action.label, "channels");
-        assert_eq!(
-            action.command,
-            "loong channels --config '/tmp/loongclaw.toml'"
-        );
+        assert_eq!(action.command, "loong channels --config '/tmp/loong.toml'");
     }
 
     #[test]
     fn collect_setup_next_actions_includes_personalize_after_chat_when_pending() {
-        let config = mvp::config::LoongClawConfig::default();
+        let config = mvp::config::LoongConfig::default();
 
         let actions = collect_setup_next_actions_with_path_env(
             &config,
-            "/tmp/loongclaw.toml",
+            "/tmp/loong.toml",
             Some(std::ffi::OsStr::new("")),
         );
 
@@ -367,13 +362,13 @@ mod tests {
         assert_eq!(actions[2].label, "working preferences");
         assert_eq!(
             actions[2].command,
-            "loong personalize --config '/tmp/loongclaw.toml'"
+            "loong personalize --config '/tmp/loong.toml'"
         );
     }
 
     #[test]
     fn collect_setup_next_actions_omits_personalize_when_suppressed() {
-        let mut config = mvp::config::LoongClawConfig::default();
+        let mut config = mvp::config::LoongConfig::default();
         config.memory.personalization = Some(mvp::config::PersonalizationConfig {
             preferred_name: None,
             response_density: None,
@@ -388,7 +383,7 @@ mod tests {
 
         let actions = collect_setup_next_actions_with_path_env(
             &config,
-            "/tmp/loongclaw.toml",
+            "/tmp/loong.toml",
             Some(std::ffi::OsStr::new("")),
         );
 
@@ -402,7 +397,7 @@ mod tests {
 
     #[test]
     fn collect_setup_next_actions_omits_personalize_when_configured() {
-        let mut config = mvp::config::LoongClawConfig::default();
+        let mut config = mvp::config::LoongConfig::default();
         config.memory.personalization = Some(mvp::config::PersonalizationConfig {
             preferred_name: Some("Chum".to_owned()),
             response_density: Some(mvp::config::ResponseDensity::Balanced),
@@ -417,7 +412,7 @@ mod tests {
 
         let actions = collect_setup_next_actions_with_path_env(
             &config,
-            "/tmp/loongclaw.toml",
+            "/tmp/loong.toml",
             Some(std::ffi::OsStr::new("")),
         );
 
@@ -431,7 +426,7 @@ mod tests {
 
     #[test]
     fn collect_setup_next_actions_promotes_browser_companion_preview_when_ready() {
-        let root = unique_temp_dir("loongclaw-next-actions-browser-companion");
+        let root = unique_temp_dir("loong-next-actions-browser-companion");
         let install_root = root.join("managed-skills");
         write_file(
             &install_root,
@@ -441,7 +436,7 @@ mod tests {
         let bin_dir = root.join("bin");
         write_fake_agent_browser(&bin_dir);
 
-        let mut config = mvp::config::LoongClawConfig::default();
+        let mut config = mvp::config::LoongConfig::default();
         config.tools.file_root = Some(root.display().to_string());
         config.tools.shell_allow.push("agent-browser".to_owned());
         config.external_skills.enabled = true;
@@ -450,7 +445,7 @@ mod tests {
 
         let actions = collect_setup_next_actions_with_path_env(
             &config,
-            "/tmp/loongclaw.toml",
+            "/tmp/loong.toml",
             Some(bin_dir.as_os_str()),
         );
 
@@ -476,7 +471,7 @@ mod tests {
 
     #[test]
     fn collect_setup_next_actions_guides_browser_preview_shell_unblock_when_hard_denied() {
-        let root = unique_temp_dir("loongclaw-next-actions-browser-companion-shell-deny");
+        let root = unique_temp_dir("loong-next-actions-browser-companion-shell-deny");
         let install_root = root.join("managed-skills");
         write_file(
             &install_root,
@@ -486,7 +481,7 @@ mod tests {
         let bin_dir = root.join("bin");
         write_fake_agent_browser(&bin_dir);
 
-        let mut config = mvp::config::LoongClawConfig::default();
+        let mut config = mvp::config::LoongConfig::default();
         config.tools.file_root = Some(root.display().to_string());
         config.tools.shell_deny.push("agent-browser".to_owned());
         config.external_skills.enabled = true;
@@ -495,7 +490,7 @@ mod tests {
 
         let actions = collect_setup_next_actions_with_path_env(
             &config,
-            "/tmp/loongclaw.toml",
+            "/tmp/loong.toml",
             Some(bin_dir.as_os_str()),
         );
 
@@ -519,16 +514,16 @@ mod tests {
 
     #[test]
     fn collect_setup_next_actions_guides_browser_preview_enable_when_not_configured() {
-        let root = unique_temp_dir("loongclaw-next-actions-browser-companion-enable");
+        let root = unique_temp_dir("loong-next-actions-browser-companion-enable");
         let bin_dir = root.join("bin");
         write_fake_agent_browser(&bin_dir);
 
-        let mut config = mvp::config::LoongClawConfig::default();
+        let mut config = mvp::config::LoongConfig::default();
         config.tools.file_root = Some(root.display().to_string());
 
         let actions = collect_setup_next_actions_with_path_env(
             &config,
-            "/tmp/loongclaw.toml",
+            "/tmp/loong.toml",
             Some(bin_dir.as_os_str()),
         );
 
@@ -550,7 +545,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn collect_setup_next_actions_requires_an_executable_agent_browser_binary() {
-        let root = unique_temp_dir("loongclaw-next-actions-browser-companion-nonexec");
+        let root = unique_temp_dir("loong-next-actions-browser-companion-nonexec");
         let install_root = root.join("managed-skills");
         write_file(
             &install_root,
@@ -560,7 +555,7 @@ mod tests {
         let bin_dir = root.join("bin");
         write_non_executable_agent_browser(&bin_dir);
 
-        let mut config = mvp::config::LoongClawConfig::default();
+        let mut config = mvp::config::LoongConfig::default();
         config.tools.file_root = Some(root.display().to_string());
         config.tools.shell_allow.push("agent-browser".to_owned());
         config.external_skills.enabled = true;
@@ -569,7 +564,7 @@ mod tests {
 
         let actions = collect_setup_next_actions_with_path_env(
             &config,
-            "/tmp/loongclaw.toml",
+            "/tmp/loong.toml",
             Some(bin_dir.as_os_str()),
         );
 
@@ -598,17 +593,17 @@ mod tests {
 
     #[test]
     fn collect_setup_next_actions_labels_single_unresolved_plugin_bridge_surface() {
-        let mut config = mvp::config::LoongClawConfig::default();
+        let mut config = mvp::config::LoongConfig::default();
         config.weixin.enabled = true;
         config.weixin.bridge_url = Some("https://bridge.example.test/weixin".to_owned());
-        config.weixin.bridge_access_token = Some(loongclaw_contracts::SecretRef::Inline(
+        config.weixin.bridge_access_token = Some(loong_contracts::SecretRef::Inline(
             "weixin-token".to_owned(),
         ));
         config.weixin.allowed_contact_ids = vec!["wxid_alice".to_owned()];
 
         let actions = collect_setup_next_actions_with_path_env(
             &config,
-            "/tmp/loongclaw.toml",
+            "/tmp/loong.toml",
             Some(std::ffi::OsStr::new("")),
         );
         let doctor_action = actions
@@ -619,29 +614,29 @@ mod tests {
         assert_eq!(doctor_action.label, "verify weixin managed bridge");
         assert_eq!(
             doctor_action.command,
-            "loong doctor --config '/tmp/loongclaw.toml'"
+            "loong doctor --config '/tmp/loong.toml'"
         );
     }
 
     #[test]
     fn collect_setup_next_actions_labels_multiple_unresolved_plugin_bridge_surfaces() {
-        let mut config = mvp::config::LoongClawConfig::default();
+        let mut config = mvp::config::LoongConfig::default();
         config.weixin.enabled = true;
         config.weixin.bridge_url = Some("https://bridge.example.test/weixin".to_owned());
-        config.weixin.bridge_access_token = Some(loongclaw_contracts::SecretRef::Inline(
+        config.weixin.bridge_access_token = Some(loong_contracts::SecretRef::Inline(
             "weixin-token".to_owned(),
         ));
         config.weixin.allowed_contact_ids = vec!["wxid_alice".to_owned()];
         config.qqbot.enabled = true;
-        config.qqbot.app_id = Some(loongclaw_contracts::SecretRef::Inline("10001".to_owned()));
-        config.qqbot.client_secret = Some(loongclaw_contracts::SecretRef::Inline(
+        config.qqbot.app_id = Some(loong_contracts::SecretRef::Inline("10001".to_owned()));
+        config.qqbot.client_secret = Some(loong_contracts::SecretRef::Inline(
             "qqbot-secret".to_owned(),
         ));
         config.qqbot.allowed_peer_ids = vec!["openid-alice".to_owned()];
 
         let actions = collect_setup_next_actions_with_path_env(
             &config,
-            "/tmp/loongclaw.toml",
+            "/tmp/loong.toml",
             Some(std::ffi::OsStr::new("")),
         );
         let doctor_action = actions
@@ -652,7 +647,7 @@ mod tests {
         assert_eq!(doctor_action.label, "verify managed bridges: weixin, qqbot");
         assert_eq!(
             doctor_action.command,
-            "loong doctor --config '/tmp/loongclaw.toml'"
+            "loong doctor --config '/tmp/loong.toml'"
         );
     }
 
@@ -663,7 +658,7 @@ mod tests {
             channel_action_id: None,
             browser_preview_phase: None,
             label: "verify weixin managed bridge".to_owned(),
-            command: "loong doctor --config '/tmp/loongclaw.toml'".to_owned(),
+            command: "loong doctor --config '/tmp/loong.toml'".to_owned(),
         };
 
         assert!(is_managed_bridge_doctor_action(&action));
@@ -676,7 +671,7 @@ mod tests {
             channel_action_id: None,
             browser_preview_phase: None,
             label: "verify managed bridges: weixin, qqbot".to_owned(),
-            command: "loong doctor --config '/tmp/loongclaw.toml'".to_owned(),
+            command: "loong doctor --config '/tmp/loong.toml'".to_owned(),
         };
 
         assert!(is_managed_bridge_doctor_action(&action));
@@ -689,7 +684,7 @@ mod tests {
             channel_action_id: None,
             browser_preview_phase: None,
             label: "doctor".to_owned(),
-            command: "loong doctor --config '/tmp/loongclaw.toml'".to_owned(),
+            command: "loong doctor --config '/tmp/loong.toml'".to_owned(),
         };
 
         assert!(!is_managed_bridge_doctor_action(&action));
@@ -702,7 +697,7 @@ mod tests {
             channel_action_id: Some(crate::migration::channels::CHANNEL_CATALOG_ACTION_ID),
             browser_preview_phase: None,
             label: "verify weixin managed bridge".to_owned(),
-            command: "loong channels --config '/tmp/loongclaw.toml'".to_owned(),
+            command: "loong channels --config '/tmp/loong.toml'".to_owned(),
         };
 
         assert!(!is_managed_bridge_doctor_action(&action));

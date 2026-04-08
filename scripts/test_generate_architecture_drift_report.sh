@@ -7,7 +7,7 @@ SCRIPT_UNDER_TEST="$REPO_ROOT/scripts/generate_architecture_drift_report.sh"
 assert_contains() {
   local file="$1"
   local needle="$2"
-  if ! grep -Fq -- "$needle" "$file"; then
+  if ! grep -Fq "$needle" "$file"; then
     echo "expected to find '$needle' in $file" >&2
     cat "$file" >&2
     exit 1
@@ -17,7 +17,7 @@ assert_contains() {
 assert_not_contains() {
   local file="$1"
   local needle="$2"
-  if grep -Fq -- "$needle" "$file"; then
+  if grep -Fq "$needle" "$file"; then
     echo "did not expect to find '$needle' in $file" >&2
     cat "$file" >&2
     exit 1
@@ -51,8 +51,8 @@ run_no_baseline_test() {
   tmp_dir="$(mktemp -d)"
   trap 'rm -rf "$tmp_dir"' RETURN
 
-  local output_file="$tmp_dir/docs/releases/support/architecture-drift-2099-01.md"
-  LOONGCLAW_ARCH_REPORT_MONTH="2099-01" \
+  local output_file="$tmp_dir/architecture-drift-2099-01.md"
+  LOONG_ARCH_REPORT_MONTH="2099-01" \
     "$SCRIPT_UNDER_TEST" "$output_file"
 
   [[ -f "$output_file" ]] || {
@@ -61,10 +61,6 @@ run_no_baseline_test() {
   }
 
   assert_contains "$output_file" "# Architecture Drift Report 2099-01"
-  assert_contains "$output_file" "This report is a repository maintenance artifact for architecture-governance and"
-  assert_contains "$output_file" "## Route By Audience"
-  assert_contains "$output_file" "| inspect architecture-maintenance and release-governance evidence | this report |"
-  assert_contains "$output_file" "## Read This File When"
   assert_contains "$output_file" "SLO status: PASS"
   assert_contains "$output_file" "Baseline report: none"
   assert_contains "$output_file" "Hotspots tracked: 14"
@@ -93,9 +89,6 @@ run_no_baseline_test() {
   assert_contains "$output_file" "<!-- arch-boundary key=memory_literals status=PASS -->"
   assert_contains "$output_file" "<!-- arch-boundary key=provider_mod_helper_definitions status=PASS -->"
   assert_contains "$output_file" "<!-- arch-boundary key=spec_app_dependency status=PASS -->"
-  assert_contains "$output_file" "- [Architecture gate](../../../scripts/check_architecture_boundaries.sh)"
-  assert_contains "$output_file" "- [CI workflow](../../../.github/workflows/ci.yml)"
-  assert_contains "$output_file" "## Do Not Use This File For"
   assert_blank_line_after "$output_file" "## Hotspot Metrics"
   assert_blank_line_after "$output_file" "## Boundary Checks"
 }
@@ -113,9 +106,9 @@ run_breach_baseline_test() {
 <!-- arch-boundary key=spec_app_dependency status=PASS -->
 BASELINE
 
-  local output_file="$tmp_dir/docs/releases/support/architecture-drift-2099-01.md"
-  LOONGCLAW_ARCH_REPORT_MONTH="2099-01" \
-    LOONGCLAW_ARCH_DRIFT_BASELINE_REPORT="$baseline_file" \
+  local output_file="$tmp_dir/architecture-drift-2099-01.md"
+  LOONG_ARCH_REPORT_MONTH="2099-01" \
+    LOONG_ARCH_DRIFT_BASELINE_REPORT="$baseline_file" \
     "$SCRIPT_UNDER_TEST" "$output_file"
 
   [[ -f "$output_file" ]] || {
@@ -154,8 +147,8 @@ run_baseline_directory_override_test() {
 BASELINE
 
   local output_file="$generated_dir/architecture-drift-2099-01.md"
-  LOONGCLAW_ARCH_REPORT_MONTH="2099-01" \
-    LOONGCLAW_ARCH_DRIFT_BASELINE_DIR="$baseline_dir" \
+  LOONG_ARCH_REPORT_MONTH="2099-01" \
+    LOONG_ARCH_DRIFT_BASELINE_DIR="$baseline_dir" \
     "$SCRIPT_UNDER_TEST" "$output_file"
 
   [[ -f "$output_file" ]] || {

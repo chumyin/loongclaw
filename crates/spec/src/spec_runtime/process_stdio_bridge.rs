@@ -1,6 +1,6 @@
 use std::{process::Stdio, time::Duration};
 
-use loongclaw_protocol::{JsonLineTransport, OutboundFrame, Transport, TransportInfo};
+use loong_protocol::{JsonLineTransport, OutboundFrame, Transport, TransportInfo};
 use serde_json::{Value, json};
 use tokio::{io::AsyncReadExt, process::Command as TokioCommand, time::timeout};
 
@@ -128,7 +128,7 @@ pub async fn run_process_stdio_json_line_exchange(
     timeout_ms: u64,
     frame: OutboundFrame,
 ) -> Result<ProcessStdioExchangeOutcome, String> {
-    let sanitized_env = loongclaw_contracts::sanitized_child_process_env();
+    let sanitized_env = loong_contracts::sanitized_child_process_env();
     let mut process = TokioCommand::new(program);
 
     process.env_clear();

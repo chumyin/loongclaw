@@ -4,9 +4,9 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
-use loongclaw_contracts::{Capability, ExecutionRoute, HarnessKind};
-use loongclaw_kernel::{
-    FixedClock, InMemoryAuditSink, LoongClawKernel, StaticPolicyEngine, VerticalPackManifest,
+use loong_contracts::{Capability, ExecutionRoute, HarnessKind};
+use loong_kernel::{
+    FixedClock, InMemoryAuditSink, LoongKernel, StaticPolicyEngine, VerticalPackManifest,
 };
 
 use crate::context::KernelContext;
@@ -259,20 +259,20 @@ impl TurnTestHarness {
     ) -> Self {
         let id = HARNESS_COUNTER.fetch_add(1, Ordering::SeqCst);
         let temp_dir =
-            std::env::temp_dir().join(format!("loongclaw-integ-{}-{id}", std::process::id()));
+            std::env::temp_dir().join(format!("loong-integ-{}-{id}", std::process::id()));
         std::fs::create_dir_all(&temp_dir).expect("create temp dir");
 
         // Merge the caller's overrides with the unique temp dir as file_root.
         let tool_config = ToolRuntimeConfig {
             file_root: Some(temp_dir.clone()),
-            config_path: Some(temp_dir.join("loongclaw.toml")),
+            config_path: Some(temp_dir.join("loong.toml")),
             ..tool_config_override
         };
 
         let audit = Arc::new(InMemoryAuditSink::default());
         let clock = Arc::new(FixedClock::new(1_700_000_000));
         let mut kernel =
-            LoongClawKernel::with_runtime(StaticPolicyEngine::default(), clock, audit.clone());
+            LoongKernel::with_runtime(StaticPolicyEngine::default(), clock, audit.clone());
 
         let pack = VerticalPackManifest {
             pack_id: "test-pack".to_owned(),
@@ -373,8 +373,8 @@ mod tests {
 
     #[test]
     fn unique_temp_dir_uses_distinct_paths() {
-        let first = unique_temp_dir("loongclaw-test-support");
-        let second = unique_temp_dir("loongclaw-test-support");
+        let first = unique_temp_dir("loong-test-support");
+        let second = unique_temp_dir("loong-test-support");
 
         assert_ne!(first, second);
     }
@@ -382,7 +382,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn write_executable_script_atomically_preserves_existing_script_when_write_fails() {
-        let root = unique_temp_dir("loongclaw-test-support-script-write-failure");
+        let root = unique_temp_dir("loong-test-support-script-write-failure");
         std::fs::create_dir_all(&root).expect("create temp dir");
         let script_path = root.join("fixture-script");
 

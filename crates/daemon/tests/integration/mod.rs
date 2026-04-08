@@ -57,27 +57,9 @@ fn unique_temp_dir(label: &str) -> PathBuf {
     let temp_dir = std::env::temp_dir();
     let canonical_temp_dir = dunce::canonicalize(&temp_dir).unwrap_or(temp_dir);
     let process_id = std::process::id();
-    let directory_name = format!("loongclaw-integration-{label}-{process_id}-{nanos}-{counter}");
+    let directory_name = format!("loong-integration-{label}-{process_id}-{nanos}-{counter}");
 
     canonical_temp_dir.join(directory_name)
-}
-
-#[cfg(unix)]
-fn integration_permission_test_running_as_root() -> bool {
-    let status = std::fs::read_to_string("/proc/self/status");
-    let Ok(status) = status else {
-        return false;
-    };
-
-    let uid_line = status.lines().find(|line| line.starts_with("Uid:"));
-    let Some(uid_line) = uid_line else {
-        return false;
-    };
-
-    uid_line
-        .split_whitespace()
-        .nth(1)
-        .is_some_and(|uid| uid == "0")
 }
 
 fn render_cli_help<const N: usize>(subcommand_path: [&str; N]) -> String {
@@ -108,7 +90,7 @@ fn validation_diagnostic_with_severity(
     mvp::config::ConfigValidationDiagnostic {
         severity: severity.to_owned(),
         code: code.to_owned(),
-        problem_type: format!("urn:loongclaw:problem:{code}"),
+        problem_type: format!("urn:loong:problem:{code}"),
         title_key: format!("{code}.title"),
         title: code.to_owned(),
         message_key: code.to_owned(),
@@ -129,7 +111,6 @@ mod chat_cli;
 mod cli_tests;
 mod doctor_feishu;
 mod feishu_cli;
-mod gateway_api_acp;
 mod gateway_api_events;
 mod gateway_api_health;
 mod gateway_api_turn;
@@ -159,7 +140,6 @@ mod sessions_cli;
 mod skills_cli;
 mod spec_runtime;
 mod spec_runtime_bridge;
-mod status_cli;
 mod tasks_cli;
 pub(crate) use managed_bridge_fixtures::*;
 mod trajectory_export_cli;
@@ -281,7 +261,7 @@ fn cli_runtime_restore_help_mentions_dry_run_default() {
 #[test]
 fn ask_cli_accepts_message_session_and_acp_flags() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         "ask",
         "--message",
         "Summarize this repository",
@@ -320,7 +300,7 @@ fn ask_cli_accepts_message_session_and_acp_flags() {
 #[test]
 fn ask_cli_accepts_latest_session_selector() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         "ask",
         "--message",
         "Summarize this repository",
@@ -343,7 +323,7 @@ fn ask_cli_accepts_latest_session_selector() {
 #[test]
 fn init_spec_cli_accepts_plugin_trust_guard_preset() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         "init-spec",
         "--output",
         "/tmp/plugin-trust-guard.json",
@@ -364,7 +344,7 @@ fn init_spec_cli_accepts_plugin_trust_guard_preset() {
 #[test]
 fn run_spec_cli_accepts_render_summary_flag() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         "run-spec",
         "--spec",
         "/tmp/tool-search-trusted.json",
@@ -389,7 +369,7 @@ fn run_spec_cli_accepts_render_summary_flag() {
 
 #[test]
 fn ask_cli_requires_message_flag() {
-    let error = try_parse_cli(["loongclaw", "ask"]).expect_err("ask without --message should fail");
+    let error = try_parse_cli(["loong", "ask"]).expect_err("ask without --message should fail");
     let rendered = error.to_string();
 
     assert!(
@@ -401,11 +381,11 @@ fn ask_cli_requires_message_flag() {
 #[test]
 fn audit_cli_recent_parses_global_flags_after_subcommand() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         "audit",
         "recent",
         "--config",
-        "/tmp/loongclaw.toml",
+        "/tmp/loong.toml",
         "--limit",
         "25",
         "--json",
@@ -418,10 +398,10 @@ fn audit_cli_recent_parses_global_flags_after_subcommand() {
             json,
             command,
         }) => {
-            assert_eq!(config.as_deref(), Some("/tmp/loongclaw.toml"));
+            assert_eq!(config.as_deref(), Some("/tmp/loong.toml"));
             assert!(json);
             match command {
-                loongclaw_daemon::audit_cli::AuditCommands::Recent {
+                loong_daemon::audit_cli::AuditCommands::Recent {
                     limit,
                     since_epoch_s,
                     until_epoch_s,
@@ -455,7 +435,7 @@ fn audit_cli_recent_parses_global_flags_after_subcommand() {
 
 #[test]
 fn audit_cli_summary_parses_limit_without_json() {
-    let cli = try_parse_cli(["loongclaw", "audit", "summary", "--limit", "10"])
+    let cli = try_parse_cli(["loong", "audit", "summary", "--limit", "10"])
         .expect("audit summary CLI should parse");
 
     match cli.command {
@@ -467,7 +447,7 @@ fn audit_cli_summary_parses_limit_without_json() {
             assert_eq!(config, None);
             assert!(!json);
             match command {
-                loongclaw_daemon::audit_cli::AuditCommands::Summary {
+                loong_daemon::audit_cli::AuditCommands::Summary {
                     limit,
                     since_epoch_s,
                     until_epoch_s,
@@ -500,7 +480,7 @@ fn audit_cli_summary_parses_limit_without_json() {
 #[test]
 fn audit_cli_recent_parses_kind_and_triage_filters() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         "audit",
         "recent",
         "--limit",
@@ -514,7 +494,7 @@ fn audit_cli_recent_parses_kind_and_triage_filters() {
 
     match cli.command {
         Some(Commands::Audit { command, .. }) => match command {
-            loongclaw_daemon::audit_cli::AuditCommands::Recent {
+            loong_daemon::audit_cli::AuditCommands::Recent {
                 limit,
                 since_epoch_s,
                 until_epoch_s,
@@ -548,7 +528,7 @@ fn audit_cli_recent_parses_kind_and_triage_filters() {
 #[test]
 fn audit_cli_recent_parses_tool_search_filters() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         "audit",
         "recent",
         "--query-contains",
@@ -562,7 +542,7 @@ fn audit_cli_recent_parses_tool_search_filters() {
 
     match cli.command {
         Some(Commands::Audit { command, .. }) => match command {
-            loongclaw_daemon::audit_cli::AuditCommands::Recent {
+            loong_daemon::audit_cli::AuditCommands::Recent {
                 kind,
                 query_contains,
                 trust_tier,
@@ -580,18 +560,12 @@ fn audit_cli_recent_parses_tool_search_filters() {
 
 #[test]
 fn audit_cli_summary_parses_kind_filter_in_canonical_form() {
-    let cli = try_parse_cli([
-        "loongclaw",
-        "audit",
-        "summary",
-        "--kind",
-        "ToolSearchEvaluated",
-    ])
-    .expect("audit summary CLI should parse canonical event kind filter");
+    let cli = try_parse_cli(["loong", "audit", "summary", "--kind", "ToolSearchEvaluated"])
+        .expect("audit summary CLI should parse canonical event kind filter");
 
     match cli.command {
         Some(Commands::Audit { command, .. }) => match command {
-            loongclaw_daemon::audit_cli::AuditCommands::Summary {
+            loong_daemon::audit_cli::AuditCommands::Summary {
                 limit,
                 since_epoch_s,
                 until_epoch_s,
@@ -622,12 +596,12 @@ fn audit_cli_summary_parses_kind_filter_in_canonical_form() {
 
 #[test]
 fn audit_cli_summary_parses_group_by_alias() {
-    let cli = try_parse_cli(["loongclaw", "audit", "summary", "--group-by", "token-id"])
+    let cli = try_parse_cli(["loong", "audit", "summary", "--group-by", "token-id"])
         .expect("audit summary CLI should parse group-by alias");
 
     match cli.command {
         Some(Commands::Audit { command, .. }) => match command {
-            loongclaw_daemon::audit_cli::AuditCommands::Summary { group_by, .. } => {
+            loong_daemon::audit_cli::AuditCommands::Summary { group_by, .. } => {
                 assert_eq!(group_by.as_deref(), Some("token"));
             }
             other => panic!("unexpected audit subcommand parsed: {other:?}"),
@@ -639,7 +613,7 @@ fn audit_cli_summary_parses_group_by_alias() {
 #[test]
 fn audit_cli_discovery_parses_trust_filters_and_aliases() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         "audit",
         "discovery",
         "--limit",
@@ -655,7 +629,7 @@ fn audit_cli_discovery_parses_trust_filters_and_aliases() {
 
     match cli.command {
         Some(Commands::Audit { command, .. }) => match command {
-            loongclaw_daemon::audit_cli::AuditCommands::Discovery {
+            loong_daemon::audit_cli::AuditCommands::Discovery {
                 limit,
                 since_epoch_s,
                 until_epoch_s,
@@ -688,12 +662,12 @@ fn audit_cli_discovery_parses_trust_filters_and_aliases() {
 
 #[test]
 fn audit_cli_discovery_parses_group_by_alias() {
-    let cli = try_parse_cli(["loongclaw", "audit", "discovery", "--group-by", "agent-id"])
+    let cli = try_parse_cli(["loong", "audit", "discovery", "--group-by", "agent-id"])
         .expect("audit discovery CLI should parse group-by alias");
 
     match cli.command {
         Some(Commands::Audit { command, .. }) => match command {
-            loongclaw_daemon::audit_cli::AuditCommands::Discovery { group_by, .. } => {
+            loong_daemon::audit_cli::AuditCommands::Discovery { group_by, .. } => {
                 assert_eq!(group_by.as_deref(), Some("agent"));
             }
             other => panic!("unexpected audit subcommand parsed: {other:?}"),
@@ -705,7 +679,7 @@ fn audit_cli_discovery_parses_group_by_alias() {
 #[test]
 fn audit_cli_recent_parses_time_window_filters() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         "audit",
         "recent",
         "--since-epoch-s",
@@ -719,7 +693,7 @@ fn audit_cli_recent_parses_time_window_filters() {
 
     match cli.command {
         Some(Commands::Audit { command, .. }) => match command {
-            loongclaw_daemon::audit_cli::AuditCommands::Recent {
+            loong_daemon::audit_cli::AuditCommands::Recent {
                 limit,
                 since_epoch_s,
                 until_epoch_s,
@@ -753,7 +727,7 @@ fn audit_cli_recent_parses_time_window_filters() {
 #[test]
 fn audit_cli_discovery_parses_pack_and_agent_filters() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         "audit",
         "discovery",
         "--pack-id",
@@ -767,7 +741,7 @@ fn audit_cli_discovery_parses_pack_and_agent_filters() {
 
     match cli.command {
         Some(Commands::Audit { command, .. }) => match command {
-            loongclaw_daemon::audit_cli::AuditCommands::Discovery {
+            loong_daemon::audit_cli::AuditCommands::Discovery {
                 limit,
                 since_epoch_s,
                 until_epoch_s,
@@ -801,7 +775,7 @@ fn audit_cli_discovery_parses_pack_and_agent_filters() {
 #[test]
 fn audit_cli_recent_parses_event_and_token_filters() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         "audit",
         "recent",
         "--event-id",
@@ -813,7 +787,7 @@ fn audit_cli_recent_parses_event_and_token_filters() {
 
     match cli.command {
         Some(Commands::Audit { command, .. }) => match command {
-            loongclaw_daemon::audit_cli::AuditCommands::Recent {
+            loong_daemon::audit_cli::AuditCommands::Recent {
                 limit,
                 since_epoch_s,
                 until_epoch_s,
@@ -847,7 +821,7 @@ fn audit_cli_recent_parses_event_and_token_filters() {
 #[test]
 fn audit_cli_token_trail_parses_required_token_and_identity_filters() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         "audit",
         "token-trail",
         "--token-id",
@@ -867,7 +841,7 @@ fn audit_cli_token_trail_parses_required_token_and_identity_filters() {
 
     match cli.command {
         Some(Commands::Audit { command, .. }) => match command {
-            loongclaw_daemon::audit_cli::AuditCommands::TokenTrail {
+            loong_daemon::audit_cli::AuditCommands::TokenTrail {
                 token_id,
                 limit,
                 since_epoch_s,
@@ -940,32 +914,24 @@ fn validation_summary_counts_error_and_warning_diagnostics_separately() {
 
 #[test]
 fn render_channel_surfaces_text_reports_aliases_and_operation_health() {
-    let mut config = mvp::config::LoongClawConfig::default();
+    let mut config = mvp::config::LoongConfig::default();
     config.telegram.enabled = true;
-    config.telegram.bot_token = Some(loongclaw_contracts::SecretRef::Inline(
+    config.telegram.bot_token = Some(loong_contracts::SecretRef::Inline(
         "123456:telegram-token".to_owned(),
     ));
     config.telegram.allowed_chat_ids = vec![1001];
     config.feishu.enabled = true;
-    config.feishu.app_id = Some(loongclaw_contracts::SecretRef::Inline(
-        "cli_a1b2c3".to_owned(),
-    ));
-    config.feishu.app_secret = Some(loongclaw_contracts::SecretRef::Inline(
-        "app-secret".to_owned(),
-    ));
+    config.feishu.app_id = Some(loong_contracts::SecretRef::Inline("cli_a1b2c3".to_owned()));
+    config.feishu.app_secret = Some(loong_contracts::SecretRef::Inline("app-secret".to_owned()));
     config.wecom.enabled = true;
-    config.wecom.bot_id = Some(loongclaw_contracts::SecretRef::Inline(
-        "bot_test".to_owned(),
-    ));
-    config.wecom.secret = Some(loongclaw_contracts::SecretRef::Inline(
-        "secret_test".to_owned(),
-    ));
+    config.wecom.bot_id = Some(loong_contracts::SecretRef::Inline("bot_test".to_owned()));
+    config.wecom.secret = Some(loong_contracts::SecretRef::Inline("secret_test".to_owned()));
     config.wecom.allowed_conversation_ids = vec!["group_demo".to_owned()];
 
     let inventory = mvp::channel::channel_inventory(&config);
-    let rendered = render_channel_surfaces_text("/tmp/loongclaw.toml", &inventory);
+    let rendered = render_channel_surfaces_text("/tmp/loong.toml", &inventory);
 
-    assert!(rendered.contains("config=/tmp/loongclaw.toml"));
+    assert!(rendered.contains("config=/tmp/loong.toml"));
     assert!(rendered.contains("Telegram [telegram]"));
     assert!(
         rendered.contains("capabilities=runtime_backed,multi_account,send,serve,runtime_tracking")
@@ -1010,7 +976,7 @@ fn render_channel_surfaces_text_reports_aliases_and_operation_health() {
 
 #[test]
 fn render_channel_surfaces_text_reports_configured_accounts_for_multi_account_channels() {
-    let config: mvp::config::LoongClawConfig = serde_json::from_value(serde_json::json!({
+    let config: mvp::config::LoongConfig = serde_json::from_value(serde_json::json!({
         "telegram": {
             "enabled": true,
             "default_account": "Work Bot",
@@ -1031,7 +997,7 @@ fn render_channel_surfaces_text_reports_configured_accounts_for_multi_account_ch
     .expect("deserialize multi-account config");
 
     let inventory = mvp::channel::channel_inventory(&config);
-    let rendered = render_channel_surfaces_text("/tmp/loongclaw.toml", &inventory);
+    let rendered = render_channel_surfaces_text("/tmp/loong.toml", &inventory);
 
     assert!(rendered.contains("configured_accounts=2"));
     assert!(rendered.contains("default_configured_account=work-bot"));
@@ -1041,7 +1007,7 @@ fn render_channel_surfaces_text_reports_configured_accounts_for_multi_account_ch
 
 #[test]
 fn render_channel_surfaces_text_reports_default_account_marker() {
-    let config: mvp::config::LoongClawConfig = serde_json::from_value(serde_json::json!({
+    let config: mvp::config::LoongConfig = serde_json::from_value(serde_json::json!({
         "telegram": {
             "enabled": true,
             "default_account": "Work Bot",
@@ -1062,7 +1028,7 @@ fn render_channel_surfaces_text_reports_default_account_marker() {
     .expect("deserialize multi-account config");
 
     let inventory = mvp::channel::channel_inventory(&config);
-    let rendered = render_channel_surfaces_text("/tmp/loongclaw.toml", &inventory);
+    let rendered = render_channel_surfaces_text("/tmp/loong.toml", &inventory);
 
     assert!(rendered.contains("configured_account=work-bot"));
     assert!(rendered.contains("default_account=true"));
@@ -1071,9 +1037,9 @@ fn render_channel_surfaces_text_reports_default_account_marker() {
 
 #[test]
 fn render_channel_surfaces_text_reports_catalog_only_channels() {
-    let config = mvp::config::LoongClawConfig::default();
+    let config = mvp::config::LoongConfig::default();
     let inventory = mvp::channel::channel_inventory(&config);
-    let rendered = render_channel_surfaces_text("/tmp/loongclaw.toml", &inventory);
+    let rendered = render_channel_surfaces_text("/tmp/loong.toml", &inventory);
 
     assert!(rendered.contains("catalog-only channels:"));
     assert!(rendered.contains(
@@ -1191,15 +1157,15 @@ fn render_channel_surfaces_text_reports_catalog_only_channels() {
         "onboarding strategy=manual_config status_command=\"loong doctor\" repair_command=\"loong doctor --fix\""
     ));
     assert!(rendered.contains(
-        "setup_hint=\"configure discord bot credentials in loongclaw.toml under discord or discord.accounts.<account>; outbound direct send is shipped, while gateway-based serve support remains planned\""
+        "setup_hint=\"configure discord bot credentials in loong.toml under discord or discord.accounts.<account>; outbound direct send is shipped, while gateway-based serve support remains planned\""
     ));
 }
 
 #[test]
 fn render_channel_surfaces_text_reports_managed_plugin_bridge_discovery() {
-    let config = mvp::config::LoongClawConfig::default();
+    let config = mvp::config::LoongConfig::default();
     let inventory = mvp::channel::channel_inventory(&config);
-    let rendered = render_channel_surfaces_text("/tmp/loongclaw.toml", &inventory);
+    let rendered = render_channel_surfaces_text("/tmp/loong.toml", &inventory);
 
     assert!(
         rendered.contains("Weixin [weixin]"),
@@ -1215,9 +1181,9 @@ fn render_channel_surfaces_text_reports_managed_plugin_bridge_discovery() {
 
 #[test]
 fn render_channel_surfaces_text_reports_plugin_backed_stable_targets() {
-    let config = mvp::config::LoongClawConfig::default();
+    let config = mvp::config::LoongConfig::default();
     let inventory = mvp::channel::channel_inventory(&config);
-    let rendered = render_channel_surfaces_text("/tmp/loongclaw.toml", &inventory);
+    let rendered = render_channel_surfaces_text("/tmp/loong.toml", &inventory);
 
     assert!(
         rendered.contains(
@@ -1240,7 +1206,7 @@ fn render_channel_surfaces_text_reports_plugin_backed_stable_targets() {
 
 #[test]
 fn render_channel_surfaces_text_reports_managed_plugin_bridge_ambiguity_and_setup_guidance() {
-    let config = mvp::config::LoongClawConfig::default();
+    let config = mvp::config::LoongConfig::default();
     let mut inventory = mvp::channel::channel_inventory(&config);
     let weixin_surface = inventory
         .channel_surfaces
@@ -1266,9 +1232,9 @@ fn render_channel_surfaces_text_reports_managed_plugin_bridge_ambiguity_and_setu
     discovery.incompatible_plugins = 0;
     discovery.plugins = vec![mvp::channel::ChannelDiscoveredPluginBridge {
         plugin_id: "weixin-bridge-a".to_owned(),
-        source_path: "/tmp/weixin-bridge-a/loongclaw.plugin.json".to_owned(),
+        source_path: "/tmp/weixin-bridge-a/loong.plugin.json".to_owned(),
         package_root: "/tmp/weixin-bridge-a".to_owned(),
-        package_manifest_path: Some("/tmp/weixin-bridge-a/loongclaw.plugin.json".to_owned()),
+        package_manifest_path: Some("/tmp/weixin-bridge-a/loong.plugin.json".to_owned()),
         bridge_kind: "managed_connector".to_owned(),
         adapter_family: "channel-bridge".to_owned(),
         transport_family: Some("wechat_clawbot_ilink_bridge".to_owned()),
@@ -1287,7 +1253,7 @@ fn render_channel_surfaces_text_reports_managed_plugin_bridge_ambiguity_and_setu
         ),
     }];
 
-    let rendered = render_channel_surfaces_text("/tmp/loongclaw.toml", &inventory);
+    let rendered = render_channel_surfaces_text("/tmp/loong.toml", &inventory);
 
     assert!(
         rendered.contains("ambiguity_status=multiple_compatible_plugins"),
@@ -1323,7 +1289,7 @@ fn render_channel_surfaces_text_reports_plugin_bridge_account_summary_for_mixed_
     config.external_skills.install_root = Some(install_root.display().to_string());
 
     let inventory = mvp::channel::channel_inventory(&config);
-    let rendered = render_channel_surfaces_text("/tmp/loongclaw.toml", &inventory);
+    let rendered = render_channel_surfaces_text("/tmp/loong.toml", &inventory);
 
     assert!(
         rendered.contains("selected_plugin_id=weixin-managed-bridge"),
@@ -1353,7 +1319,7 @@ fn render_channel_surfaces_text_reports_plugin_bridge_account_summary_for_mixed_
 
 #[test]
 fn render_channel_surfaces_text_escapes_untrusted_managed_bridge_values() {
-    let config = mvp::config::LoongClawConfig::default();
+    let config = mvp::config::LoongConfig::default();
     let mut inventory = mvp::channel::channel_inventory(&config);
     let weixin_surface = inventory
         .channel_surfaces
@@ -1390,8 +1356,7 @@ fn render_channel_surfaces_text_escapes_untrusted_managed_bridge_values() {
         setup_remediation: Some("fix bridge\nthen retry".to_owned()),
     }];
 
-    let rendered =
-        loongclaw_daemon::render_channel_surfaces_text("/tmp/loongclaw.toml", &inventory);
+    let rendered = loong_daemon::render_channel_surfaces_text("/tmp/loong.toml", &inventory);
 
     assert!(
         rendered.contains("managed_install_root=\"/tmp/managed bridge\""),
@@ -1442,11 +1407,6 @@ fn memory_system_metadata_json_includes_stage_families_summary_and_source() {
             .iter()
             .any(|entry| entry == "canonical_store")
     );
-    assert_eq!(payload["runtime_fallback_kind"], "metadata_only");
-    assert_eq!(
-        payload["supported_stage_families"],
-        json!(["derive", "retrieve", "rank", "compact"])
-    );
     assert_eq!(
         payload["supported_pre_assembly_stage_families"],
         json!(["derive", "retrieve", "rank"])
@@ -1459,31 +1419,23 @@ fn memory_system_metadata_json_includes_stage_families_summary_and_source() {
 
 #[test]
 fn build_memory_systems_cli_json_payload_includes_runtime_policy() {
-    let config = mvp::config::LoongClawConfig {
+    let config = mvp::config::LoongConfig {
         memory: mvp::config::MemoryConfig {
             profile: mvp::config::MemoryProfile::WindowPlusSummary,
             fail_open: false,
             ingest_mode: mvp::config::MemoryIngestMode::AsyncBackground,
             ..mvp::config::MemoryConfig::default()
         },
-        ..mvp::config::LoongClawConfig::default()
+        ..mvp::config::LoongConfig::default()
     };
     let snapshot =
         mvp::memory::collect_memory_system_runtime_snapshot(&config).expect("runtime snapshot");
 
-    let payload = build_memory_systems_cli_json_payload("/tmp/loongclaw.toml", &snapshot);
+    let payload = build_memory_systems_cli_json_payload("/tmp/loong.toml", &snapshot);
 
-    assert_eq!(payload["config"], "/tmp/loongclaw.toml");
+    assert_eq!(payload["config"], "/tmp/loong.toml");
     assert_eq!(payload["selected"]["id"], "builtin");
     assert_eq!(payload["selected"]["source"], "default");
-    assert_eq!(
-        payload["selected"]["runtime_fallback_kind"],
-        "metadata_only"
-    );
-    assert_eq!(
-        payload["selected"]["supported_stage_families"],
-        json!(["derive", "retrieve", "rank", "compact"])
-    );
     assert_eq!(
         payload["selected"]["supported_pre_assembly_stage_families"],
         json!(["derive", "retrieve", "rank"])
@@ -1491,17 +1443,6 @@ fn build_memory_systems_cli_json_payload_includes_runtime_policy() {
     assert_eq!(
         payload["selected"]["supported_recall_modes"],
         json!(["prompt_assembly", "operator_inspection"])
-    );
-    assert_eq!(
-        payload["core_operations"],
-        json!([
-            "append_turn",
-            "window",
-            "clear_session",
-            "replace_turns",
-            "read_context",
-            "read_stage_envelope"
-        ])
     );
     assert_eq!(payload["policy"]["backend"], "sqlite");
     assert_eq!(payload["policy"]["profile"], "window_plus_summary");
@@ -1515,52 +1456,38 @@ fn build_memory_systems_cli_json_payload_includes_runtime_policy() {
 
 #[test]
 fn render_memory_system_snapshot_text_reports_fail_open_policy() {
-    let mut env = loongclaw_daemon::test_support::ScopedEnv::new();
-    for key in [
-        "LOONGCLAW_MEMORY_BACKEND",
-        "LOONGCLAW_MEMORY_SYSTEM",
-        "LOONGCLAW_MEMORY_PROFILE",
-        "LOONGCLAW_MEMORY_FAIL_OPEN",
-        "LOONGCLAW_MEMORY_INGEST_MODE",
-        "LOONGCLAW_SQLITE_PATH",
-        "LOONGCLAW_SLIDING_WINDOW",
-        "LOONGCLAW_MEMORY_SUMMARY_MAX_CHARS",
-        "LOONGCLAW_MEMORY_PROFILE_NOTE",
-    ] {
-        env.remove(key);
-    }
-    let config = mvp::config::LoongClawConfig {
+    let config = mvp::config::LoongConfig {
         memory: mvp::config::MemoryConfig {
             profile: mvp::config::MemoryProfile::WindowPlusSummary,
             fail_open: false,
             ingest_mode: mvp::config::MemoryIngestMode::AsyncBackground,
             ..mvp::config::MemoryConfig::default()
         },
-        ..mvp::config::LoongClawConfig::default()
+        ..mvp::config::LoongConfig::default()
     };
     let snapshot =
         mvp::memory::collect_memory_system_runtime_snapshot(&config).expect("runtime snapshot");
 
-    let rendered = render_memory_system_snapshot_text("/tmp/loongclaw.toml", &snapshot);
+    let rendered = render_memory_system_snapshot_text("/tmp/loong.toml", &snapshot);
 
-    assert!(rendered.contains("config=/tmp/loongclaw.toml"));
+    assert!(rendered.contains("config=/tmp/loong.toml"));
     assert!(rendered.contains(
-        "selected=builtin source=default api_version=1 capabilities=canonical_store,deterministic_summary,profile_note_projection,prompt_hydration,retrieval_provenance runtime_fallback_kind=metadata_only stages=derive,retrieve,rank,compact pre_assembly_stages=derive,retrieve,rank recall_modes=prompt_assembly,operator_inspection core_operations=append_turn,window,clear_session,replace_turns,read_context,read_stage_envelope"
+        "selected=builtin source=default api_version=1 capabilities=canonical_store,deterministic_summary,profile_note_projection,prompt_hydration,retrieval_provenance pre_assembly_stages=derive,retrieve,rank recall_modes=prompt_assembly,operator_inspection"
     ));
     assert!(rendered.contains("policy=backend:sqlite profile:window_plus_summary mode:window_plus_summary ingest_mode:async_background fail_open:false strict_mode_requested:true strict_mode_active:false effective_fail_open:true"));
     assert!(rendered.contains(
-        "- builtin api_version=1 capabilities=canonical_store,deterministic_summary,profile_note_projection,prompt_hydration,retrieval_provenance runtime_fallback_kind=metadata_only stages=derive,retrieve,rank,compact pre_assembly_stages=derive,retrieve,rank recall_modes=prompt_assembly,operator_inspection"
+        "- builtin api_version=1 capabilities=canonical_store,deterministic_summary,profile_note_projection,prompt_hydration,retrieval_provenance pre_assembly_stages=derive,retrieve,rank recall_modes=prompt_assembly,operator_inspection"
     ));
     assert!(rendered.contains(
-        "- recall_first api_version=1 capabilities=prompt_hydration,retrieval_provenance runtime_fallback_kind=system_backed stages=derive,retrieve,rank pre_assembly_stages=derive,retrieve,rank recall_modes=prompt_assembly"
+        "- recall_first api_version=1 capabilities=prompt_hydration,retrieval_provenance pre_assembly_stages=derive,retrieve,rank recall_modes=prompt_assembly"
     ));
 }
 
 #[test]
 fn build_channels_cli_json_payload_includes_operation_requirement_metadata() {
-    let config = mvp::config::LoongClawConfig::default();
+    let config = mvp::config::LoongConfig::default();
     let inventory = mvp::channel::channel_inventory(&config);
-    let payload = build_channels_cli_json_payload("/tmp/loongclaw.toml", &inventory);
+    let payload = build_channels_cli_json_payload("/tmp/loong.toml", &inventory);
     let encoded = serde_json::to_value(&payload).expect("serialize payload");
     let surfaces = encoded["channel_surfaces"]
         .as_array()
@@ -1624,9 +1551,9 @@ fn build_channels_cli_json_payload_includes_operation_requirement_metadata() {
 
 #[test]
 fn build_channels_cli_json_payload_includes_onboarding_metadata() {
-    let config = mvp::config::LoongClawConfig::default();
+    let config = mvp::config::LoongConfig::default();
     let inventory = mvp::channel::channel_inventory(&config);
-    let payload = build_channels_cli_json_payload("/tmp/loongclaw.toml", &inventory);
+    let payload = build_channels_cli_json_payload("/tmp/loong.toml", &inventory);
     let encoded = serde_json::to_value(&payload).expect("serialize payload");
 
     assert!(
@@ -1689,9 +1616,9 @@ fn build_channels_cli_json_payload_includes_onboarding_metadata() {
 
 #[test]
 fn build_channels_cli_json_payload_includes_plugin_bridge_contracts() {
-    let config = mvp::config::LoongClawConfig::default();
+    let config = mvp::config::LoongConfig::default();
     let inventory = mvp::channel::channel_inventory(&config);
-    let payload = build_channels_cli_json_payload("/tmp/loongclaw.toml", &inventory);
+    let payload = build_channels_cli_json_payload("/tmp/loong.toml", &inventory);
     let encoded = serde_json::to_value(&payload).expect("serialize payload");
 
     assert!(
@@ -1748,9 +1675,9 @@ fn build_channels_cli_json_payload_includes_plugin_bridge_contracts() {
 
 #[test]
 fn build_channels_cli_json_payload_includes_plugin_bridge_stable_targets() {
-    let config = mvp::config::LoongClawConfig::default();
+    let config = mvp::config::LoongConfig::default();
     let inventory = mvp::channel::channel_inventory(&config);
-    let payload = build_channels_cli_json_payload("/tmp/loongclaw.toml", &inventory);
+    let payload = build_channels_cli_json_payload("/tmp/loong.toml", &inventory);
     let encoded = serde_json::to_value(&payload).expect("serialize payload");
 
     assert!(
@@ -1825,9 +1752,9 @@ fn build_channels_cli_json_payload_includes_plugin_bridge_stable_targets() {
 
 #[test]
 fn build_channels_cli_json_payload_includes_managed_plugin_bridge_discovery() {
-    let config = mvp::config::LoongClawConfig::default();
+    let config = mvp::config::LoongConfig::default();
     let inventory = mvp::channel::channel_inventory(&config);
-    let payload = build_channels_cli_json_payload("/tmp/loongclaw.toml", &inventory);
+    let payload = build_channels_cli_json_payload("/tmp/loong.toml", &inventory);
     let encoded = serde_json::to_value(&payload).expect("serialize payload");
 
     assert!(
@@ -1857,7 +1784,7 @@ fn build_channels_cli_json_payload_includes_managed_plugin_bridge_discovery() {
 
 #[test]
 fn build_channels_cli_json_payload_includes_managed_plugin_bridge_guidance_fields() {
-    let config = mvp::config::LoongClawConfig::default();
+    let config = mvp::config::LoongConfig::default();
     let mut inventory = mvp::channel::channel_inventory(&config);
     let weixin_surface = inventory
         .channel_surfaces
@@ -1881,9 +1808,9 @@ fn build_channels_cli_json_payload_includes_managed_plugin_bridge_guidance_field
         vec!["weixin-bridge-a".to_owned(), "weixin-bridge-b".to_owned()];
     discovery.plugins = vec![mvp::channel::ChannelDiscoveredPluginBridge {
         plugin_id: "weixin-bridge-a".to_owned(),
-        source_path: "/tmp/weixin-bridge-a/loongclaw.plugin.json".to_owned(),
+        source_path: "/tmp/weixin-bridge-a/loong.plugin.json".to_owned(),
         package_root: "/tmp/weixin-bridge-a".to_owned(),
-        package_manifest_path: Some("/tmp/weixin-bridge-a/loongclaw.plugin.json".to_owned()),
+        package_manifest_path: Some("/tmp/weixin-bridge-a/loong.plugin.json".to_owned()),
         bridge_kind: "managed_connector".to_owned(),
         adapter_family: "channel-bridge".to_owned(),
         transport_family: Some("wechat_clawbot_ilink_bridge".to_owned()),
@@ -1902,7 +1829,7 @@ fn build_channels_cli_json_payload_includes_managed_plugin_bridge_guidance_field
         ),
     }];
 
-    let payload = build_channels_cli_json_payload("/tmp/loongclaw.toml", &inventory);
+    let payload = build_channels_cli_json_payload("/tmp/loong.toml", &inventory);
     let encoded = serde_json::to_value(&payload).expect("serialize payload");
     let surfaces = encoded["channel_surfaces"]
         .as_array()
@@ -1947,7 +1874,7 @@ fn build_channels_cli_json_payload_includes_managed_plugin_bridge_guidance_field
 
 #[test]
 fn build_channels_cli_json_payload_includes_duplicate_managed_bridge_selection_fields() {
-    let config = mvp::config::LoongClawConfig::default();
+    let config = mvp::config::LoongConfig::default();
     let mut inventory = mvp::channel::channel_inventory(&config);
     let weixin_surface = inventory
         .channel_surfaces
@@ -1973,7 +1900,7 @@ fn build_channels_cli_json_payload_includes_duplicate_managed_bridge_selection_f
         "weixin-bridge-shared".to_owned(),
     ];
 
-    let payload = build_channels_cli_json_payload("/tmp/loongclaw.toml", &inventory);
+    let payload = build_channels_cli_json_payload("/tmp/loong.toml", &inventory);
     let encoded = serde_json::to_value(&payload).expect("serialize payload");
     let surfaces = encoded["channel_surfaces"]
         .as_array()
@@ -2019,7 +1946,7 @@ fn build_channels_cli_json_payload_includes_plugin_bridge_account_summary_for_mi
     config.external_skills.install_root = Some(install_root.display().to_string());
 
     let inventory = mvp::channel::channel_inventory(&config);
-    let payload = build_channels_cli_json_payload("/tmp/loongclaw.toml", &inventory);
+    let payload = build_channels_cli_json_payload("/tmp/loong.toml", &inventory);
     let encoded = serde_json::to_value(&payload).expect("serialize payload");
     let surfaces = encoded["channel_surfaces"]
         .as_array()
@@ -2065,14 +1992,14 @@ fn build_channels_cli_json_payload_includes_plugin_bridge_account_summary_for_mi
 
 #[test]
 fn build_channels_cli_json_payload_includes_full_channel_catalog() {
-    let config = mvp::config::LoongClawConfig::default();
+    let config = mvp::config::LoongConfig::default();
     let inventory = mvp::channel::channel_inventory(&config);
-    let payload = build_channels_cli_json_payload("/tmp/loongclaw.toml", &inventory);
+    let payload = build_channels_cli_json_payload("/tmp/loong.toml", &inventory);
     let encoded = serde_json::to_value(&payload).expect("serialize payload");
 
     assert_eq!(
         encoded.get("config").and_then(serde_json::Value::as_str),
-        Some("/tmp/loongclaw.toml")
+        Some("/tmp/loong.toml")
     );
     assert_eq!(
         encoded
@@ -2474,9 +2401,9 @@ fn build_channels_cli_json_payload_includes_full_channel_catalog() {
 fn build_channels_cli_json_payload_includes_grouped_channel_surfaces() {
     let _env = super::MigrationEnvironmentGuard::set(&[("TELEGRAM_BOT_TOKEN", None)]);
 
-    let config = mvp::config::LoongClawConfig::default();
+    let config = mvp::config::LoongConfig::default();
     let inventory = mvp::channel::channel_inventory(&config);
-    let payload = build_channels_cli_json_payload("/tmp/loongclaw.toml", &inventory);
+    let payload = build_channels_cli_json_payload("/tmp/loong.toml", &inventory);
     let encoded = serde_json::to_value(&payload).expect("serialize payload");
 
     assert_eq!(

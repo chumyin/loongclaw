@@ -9,7 +9,7 @@ use std::{
 };
 
 use flate2::read::GzDecoder;
-use loongclaw_contracts::{ToolCoreOutcome, ToolCoreRequest};
+use loong_contracts::{ToolCoreOutcome, ToolCoreRequest};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -466,7 +466,7 @@ pub(super) fn execute_external_skills_fetch_tool_with_config(
     let client = reqwest::blocking::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(30))
-        .user_agent("loongclaw-external-skills/0.1")
+        .user_agent("loong-external-skills/0.1")
         .build()
         .map_err(|error| {
             format!("failed to build HTTP client for external skills download: {error}")
@@ -984,7 +984,7 @@ pub(super) fn execute_external_skills_install_tool_with_config(
     }
 
     if let Some(backup_root) = backup_root {
-        remove_external_skill_path(&backup_root).map_err(|error| {
+        fs::remove_dir_all(&backup_root).map_err(|error| {
             format!(
                 "failed to remove replaced external skill backup {}: {error}",
                 backup_root.display()
@@ -1768,15 +1768,6 @@ impl Drop for ScopedDirCleanup {
             fs::remove_dir_all(path).ok();
         }
     }
-}
-
-fn remove_external_skill_path(path: &Path) -> std::io::Result<()> {
-    let metadata = fs::symlink_metadata(path)?;
-    let file_type = metadata.file_type();
-    if file_type.is_dir() {
-        return fs::remove_dir_all(path);
-    }
-    fs::remove_file(path)
 }
 
 fn parse_optional_bool(payload: &Map<String, Value>, key: &str) -> Result<Option<bool>, String> {
@@ -4451,7 +4442,7 @@ mod tests {
 
     fn base_runtime_config() -> ToolRuntimeConfig {
         ToolRuntimeConfig {
-            file_root: Some(std::env::temp_dir().join("loongclaw-ext-skills-tests")),
+            file_root: Some(std::env::temp_dir().join("loong-ext-skills-tests")),
             config_path: None,
             external_skills: ExternalSkillsRuntimePolicy {
                 enabled: false,
@@ -4991,7 +4982,7 @@ mod tests {
     #[test]
     fn install_from_directory_writes_managed_index_and_copy() {
         with_managed_runtime_test(|| {
-            let root = unique_temp_dir("loongclaw-ext-skill-install-dir");
+            let root = unique_temp_dir("loong-ext-skill-install-dir");
             fs::create_dir_all(&root).expect("create fixture root");
             write_file(
                 &root,
@@ -5036,7 +5027,7 @@ mod tests {
     #[test]
     fn install_from_bundled_skill_id_writes_managed_index_and_copy() {
         with_managed_runtime_test(|| {
-            let root = unique_temp_dir("loongclaw-ext-skill-install-bundled");
+            let root = unique_temp_dir("loong-ext-skill-install-bundled");
             fs::create_dir_all(&root).expect("create fixture root");
             let config = managed_runtime_config(&root);
 
@@ -5080,7 +5071,7 @@ mod tests {
     #[test]
     fn install_from_bundled_skill_id_copies_packaged_reference_files() {
         with_managed_runtime_test(|| {
-            let root = unique_temp_dir("loongclaw-ext-skill-install-bundled-directory");
+            let root = unique_temp_dir("loong-ext-skill-install-bundled-directory");
             fs::create_dir_all(&root).expect("create fixture root");
             let config = managed_runtime_config(&root);
 
@@ -5125,7 +5116,7 @@ mod tests {
     #[test]
     fn install_from_bundled_skill_id_copies_packaged_templates_for_github_issues() {
         with_managed_runtime_test(|| {
-            let root = unique_temp_dir("loongclaw-ext-skill-install-bundled-github-issues");
+            let root = unique_temp_dir("loong-ext-skill-install-bundled-github-issues");
             fs::create_dir_all(&root).expect("create fixture root");
             let config = managed_runtime_config(&root);
 
@@ -5170,7 +5161,7 @@ mod tests {
     #[test]
     fn install_from_bundled_skill_id_copies_packaged_references_for_lark_pack_members() {
         with_managed_runtime_test(|| {
-            let root = unique_temp_dir("loongclaw-ext-skill-install-bundled-lark-doc");
+            let root = unique_temp_dir("loong-ext-skill-install-bundled-lark-doc");
             fs::create_dir_all(&root).expect("create fixture root");
             let config = managed_runtime_config(&root);
 
@@ -5205,7 +5196,7 @@ mod tests {
     #[test]
     fn install_from_bundled_skill_id_copies_packaged_assets_for_minimax_docx() {
         with_managed_runtime_test(|| {
-            let root = unique_temp_dir("loongclaw-ext-skill-install-bundled-minimax-docx");
+            let root = unique_temp_dir("loong-ext-skill-install-bundled-minimax-docx");
             fs::create_dir_all(&root).expect("create fixture root");
             let config = managed_runtime_config(&root);
 
@@ -5252,7 +5243,7 @@ mod tests {
     #[test]
     fn install_rejects_path_and_bundled_skill_id_together() {
         with_managed_runtime_test(|| {
-            let root = unique_temp_dir("loongclaw-ext-skill-install-bundled-conflict");
+            let root = unique_temp_dir("loong-ext-skill-install-bundled-conflict");
             fs::create_dir_all(&root).expect("create fixture root");
             write_file(
                 &root,
@@ -5282,7 +5273,7 @@ mod tests {
     #[test]
     fn install_replace_reports_actual_replacement_state() {
         with_managed_runtime_test(|| {
-            let root = unique_temp_dir("loongclaw-ext-skill-install-replace");
+            let root = unique_temp_dir("loong-ext-skill-install-replace");
             fs::create_dir_all(&root).expect("create fixture root");
             write_file(
                 &root,
@@ -5332,7 +5323,7 @@ mod tests {
     #[test]
     fn install_stops_and_returns_needs_approval_for_security_findings() {
         with_managed_runtime_test(|| {
-            let root = unique_temp_dir("loongclaw-ext-skill-install-security-stop");
+            let root = unique_temp_dir("loong-ext-skill-install-security-stop");
             fs::create_dir_all(&root).expect("create fixture root");
             write_file(
                 &root,
@@ -5377,7 +5368,7 @@ mod tests {
     #[test]
     fn install_allows_approve_once_for_security_findings() {
         with_managed_runtime_test(|| {
-            let root = unique_temp_dir("loongclaw-ext-skill-install-security-approve");
+            let root = unique_temp_dir("loong-ext-skill-install-security-approve");
             fs::create_dir_all(&root).expect("create fixture root");
             write_file(
                 &root,
@@ -5416,7 +5407,7 @@ mod tests {
     #[test]
     fn install_requires_enabled_runtime() {
         with_managed_runtime_test(|| {
-            let root = unique_temp_dir("loongclaw-ext-skill-install-disabled");
+            let root = unique_temp_dir("loong-ext-skill-install-disabled");
             fs::create_dir_all(&root).expect("create fixture root");
             write_file(
                 &root,
@@ -5446,7 +5437,7 @@ mod tests {
     #[test]
     fn list_inspect_and_remove_require_enabled_runtime() {
         with_managed_runtime_test(|| {
-            let root = unique_temp_dir("loongclaw-ext-skill-disabled-management");
+            let root = unique_temp_dir("loong-ext-skill-disabled-management");
             fs::create_dir_all(&root).expect("create fixture root");
             write_file(
                 &root,
@@ -5501,9 +5492,9 @@ mod tests {
     #[test]
     fn list_and_invoke_installed_skill_return_managed_metadata() {
         with_managed_runtime_test(|| {
-            let root = unique_temp_dir("loongclaw-ext-skill-list-invoke");
+            let root = unique_temp_dir("loong-ext-skill-list-invoke");
             fs::create_dir_all(&root).expect("create fixture root");
-            let _home = ScopedHomeFixture::new("loongclaw-ext-skill-list-invoke-home");
+            let _home = ScopedHomeFixture::new("loong-ext-skill-list-invoke-home");
             write_file(
                 &root,
                 "source/demo-skill/SKILL.md",
@@ -5568,14 +5559,14 @@ mod tests {
     #[test]
     fn inspect_and_invoke_surface_skill_metadata_contract() {
         with_managed_runtime_test(|| {
-            let root = unique_temp_dir("loongclaw-ext-skill-metadata-contract");
+            let root = unique_temp_dir("loong-ext-skill-metadata-contract");
             fs::create_dir_all(&root).expect("create fixture root");
-            let mut home = ScopedHomeFixture::new("loongclaw-ext-skill-metadata-contract-home");
-            home.set_env("LOONGCLAW_RELEASE_GUARD_TOKEN", "present");
+            let mut home = ScopedHomeFixture::new("loong-ext-skill-metadata-contract-home");
+            home.set_env("LOONG_RELEASE_GUARD_TOKEN", "present");
             write_file(
                 &home.path,
                 ".agents/skills/release-guard/SKILL.md",
-                "---\nname: release-guard\ndescription: Guard release discipline.\ninvocation_policy: both\nrequired_env:\n- LOONGCLAW_RELEASE_GUARD_TOKEN\nrequired_bins:\n- sh\nrequired_config:\n- external_skills.enabled\nallowed_tools:\n- shell.exec\nblocked_tools:\n- web.fetch\n---\n\n# Release Guard\n\nPrefer release checklists.\n",
+                "---\nname: release-guard\ndescription: Guard release discipline.\ninvocation_policy: both\nrequired_env:\n- LOONG_RELEASE_GUARD_TOKEN\nrequired_bins:\n- sh\nrequired_config:\n- external_skills.enabled\nallowed_tools:\n- shell.exec\nblocked_tools:\n- web.fetch\n---\n\n# Release Guard\n\nPrefer release checklists.\n",
             );
             let config = managed_runtime_config(&root);
 
@@ -5619,7 +5610,7 @@ mod tests {
                     .expect("operator inspect should succeed");
             assert_eq!(
                 inspect_outcome.payload["skill"]["required_env"],
-                json!(["LOONGCLAW_RELEASE_GUARD_TOKEN"])
+                json!(["LOONG_RELEASE_GUARD_TOKEN"])
             );
             assert_eq!(
                 inspect_outcome.payload["skill"]["required_config"],
@@ -5667,7 +5658,7 @@ mod tests {
     #[test]
     fn operator_list_and_inspect_surface_pack_memberships_for_bundled_skills() {
         with_managed_runtime_test(|| {
-            let root = unique_temp_dir("loongclaw-ext-skill-pack-memberships");
+            let root = unique_temp_dir("loong-ext-skill-pack-memberships");
             fs::create_dir_all(&root).expect("create fixture root");
             let config = managed_runtime_config(&root);
 
@@ -5719,9 +5710,9 @@ mod tests {
     #[test]
     fn invoke_rejects_manual_or_ineligible_skill_metadata_contracts() {
         with_managed_runtime_test(|| {
-            let root = unique_temp_dir("loongclaw-ext-skill-metadata-contract-reject");
+            let root = unique_temp_dir("loong-ext-skill-metadata-contract-reject");
             fs::create_dir_all(&root).expect("create fixture root");
-            let home = ScopedHomeFixture::new("loongclaw-ext-skill-metadata-contract-reject-home");
+            let home = ScopedHomeFixture::new("loong-ext-skill-metadata-contract-reject-home");
             write_file(
                 &home.path,
                 ".agents/skills/manual-only/SKILL.md",
@@ -5730,7 +5721,7 @@ mod tests {
             write_file(
                 &home.path,
                 ".agents/skills/env-gated/SKILL.md",
-                "---\nrequired_env:\n- LOONGCLAW_MISSING_TOKEN\n---\n\n# Env Gated\n\nNeeds a token before it can run.\n",
+                "---\nrequired_env:\n- LOONG_MISSING_TOKEN\n---\n\n# Env Gated\n\nNeeds a token before it can run.\n",
             );
             let config = managed_runtime_config(&root);
 
@@ -5749,7 +5740,7 @@ mod tests {
                     .as_array()
                     .expect("eligibility issues should be an array")
                     .iter()
-                    .any(|issue| issue.as_str() == Some("missing env `LOONGCLAW_MISSING_TOKEN`"))
+                    .any(|issue| issue.as_str() == Some("missing env `LOONG_MISSING_TOKEN`"))
             );
 
             let manual_error = crate::tools::execute_tool_core_with_config(
@@ -5774,7 +5765,7 @@ mod tests {
                 &config,
             )
             .expect_err("missing env requirements should reject invocation");
-            assert!(env_error.contains("LOONGCLAW_MISSING_TOKEN"));
+            assert!(env_error.contains("LOONG_MISSING_TOKEN"));
 
             fs::remove_dir_all(&root).ok();
         });
@@ -5784,10 +5775,10 @@ mod tests {
     #[test]
     fn list_marks_non_executable_required_bin_as_ineligible() {
         with_managed_runtime_test(|| {
-            let root = unique_temp_dir("loongclaw-ext-skill-bin-eligibility");
+            let root = unique_temp_dir("loong-ext-skill-bin-eligibility");
             fs::create_dir_all(&root).expect("create fixture root");
-            let mut home = ScopedHomeFixture::new("loongclaw-ext-skill-bin-eligibility-home");
-            let bin_dir = unique_temp_dir("loongclaw-ext-skill-bin-eligibility-bin");
+            let mut home = ScopedHomeFixture::new("loong-ext-skill-bin-eligibility-home");
+            let bin_dir = unique_temp_dir("loong-ext-skill-bin-eligibility-bin");
             fs::create_dir_all(&bin_dir).expect("create fake bin dir");
 
             let fake_bin = bin_dir.join("release-check");
@@ -5834,8 +5825,8 @@ mod tests {
     #[test]
     fn discovery_resolves_managed_user_and_project_scopes_with_shadowed_duplicates() {
         with_managed_runtime_test(|| {
-            let root = unique_temp_dir("loongclaw-ext-skill-discovery-precedence");
-            let home = unique_temp_dir("loongclaw-ext-skill-discovery-home");
+            let root = unique_temp_dir("loong-ext-skill-discovery-precedence");
+            let home = unique_temp_dir("loong-ext-skill-discovery-home");
             fs::create_dir_all(&root).expect("create fixture root");
             fs::create_dir_all(&home).expect("create home root");
 
@@ -6011,8 +6002,8 @@ mod tests {
     #[test]
     fn discovery_search_and_recommend_route_through_tool_core() {
         with_managed_runtime_test(|| {
-            let root = unique_temp_dir("loongclaw-ext-skill-discovery-search");
-            let home = unique_temp_dir("loongclaw-ext-skill-discovery-search-home");
+            let root = unique_temp_dir("loong-ext-skill-discovery-search");
+            let home = unique_temp_dir("loong-ext-skill-discovery-search-home");
             fs::create_dir_all(&root).expect("create fixture root");
             fs::create_dir_all(&home).expect("create home root");
 
@@ -6114,9 +6105,9 @@ mod tests {
         with_managed_runtime_test(|| {
             use std::os::unix::fs::symlink;
 
-            let root = unique_temp_dir("loongclaw-ext-skill-discovery-symlink-root");
-            let home = unique_temp_dir("loongclaw-ext-skill-discovery-symlink-home");
-            let shared = unique_temp_dir("loongclaw-ext-skill-discovery-symlink-target");
+            let root = unique_temp_dir("loong-ext-skill-discovery-symlink-root");
+            let home = unique_temp_dir("loong-ext-skill-discovery-symlink-home");
+            let shared = unique_temp_dir("loong-ext-skill-discovery-symlink-target");
             fs::create_dir_all(&root).expect("create fixture root");
             fs::create_dir_all(home.join(".agents/skills")).expect("create user skills root");
             fs::create_dir_all(&shared).expect("create shared skill root");
@@ -6161,7 +6152,7 @@ mod tests {
     #[test]
     fn invoke_requires_enabled_runtime() {
         with_managed_runtime_test(|| {
-            let root = unique_temp_dir("loongclaw-ext-skill-invoke-disabled");
+            let root = unique_temp_dir("loong-ext-skill-invoke-disabled");
             fs::create_dir_all(&root).expect("create fixture root");
             write_file(
                 &root,
@@ -6203,9 +6194,9 @@ mod tests {
     #[test]
     fn remove_installed_skill_clears_managed_entry() {
         with_managed_runtime_test(|| {
-            let root = unique_temp_dir("loongclaw-ext-skill-remove");
+            let root = unique_temp_dir("loong-ext-skill-remove");
             fs::create_dir_all(&root).expect("create fixture root");
-            let _home = ScopedHomeFixture::new("loongclaw-ext-skill-remove-home");
+            let _home = ScopedHomeFixture::new("loong-ext-skill-remove-home");
             write_file(
                 &root,
                 "source/demo-skill/SKILL.md",
@@ -6254,8 +6245,8 @@ mod tests {
     #[test]
     fn provider_surface_does_not_fall_back_when_managed_winner_is_inactive() {
         with_managed_runtime_test(|| {
-            let root = unique_temp_dir("loongclaw-ext-skill-inactive-winner");
-            let home = unique_temp_dir("loongclaw-ext-skill-inactive-winner-home");
+            let root = unique_temp_dir("loong-ext-skill-inactive-winner");
+            let home = unique_temp_dir("loong-ext-skill-inactive-winner-home");
             fs::create_dir_all(&root).expect("create fixture root");
             fs::create_dir_all(&home).expect("create home root");
             write_file(
@@ -6334,12 +6325,15 @@ mod tests {
         });
     }
 
+    #[cfg(unix)]
     #[test]
-    fn provider_surface_skips_blocked_local_skills_without_failing_discovery() {
+    fn provider_surface_skips_unreadable_local_skills_without_failing_discovery() {
         with_managed_runtime_test(|| {
-            let root = unique_temp_dir("loongclaw-ext-skill-unreadable-discovery");
+            use std::os::unix::fs::PermissionsExt;
+
+            let root = unique_temp_dir("loong-ext-skill-unreadable-discovery");
             fs::create_dir_all(&root).expect("create fixture root");
-            let _home = ScopedHomeFixture::new("loongclaw-ext-skill-unreadable-discovery-home");
+            let _home = ScopedHomeFixture::new("loong-ext-skill-unreadable-discovery-home");
             write_file(
                 &root,
                 ".agents/skills/healthy-skill/SKILL.md",
@@ -6348,11 +6342,15 @@ mod tests {
             write_file(
                 &root,
                 ".agents/skills/broken-skill/SKILL.md",
-                &format!(
-                    "---\nname: broken-skill\ndescription: blocked project skill.\n---\n\n{}\n",
-                    "x".repeat(DEFAULT_MAX_DOWNLOAD_BYTES.saturating_add(1))
-                ),
+                "---\nname: broken-skill\ndescription: unreadable project skill.\n---\n\nBroken skill instructions.\n",
             );
+
+            let unreadable_path = root.join(".agents/skills/broken-skill/SKILL.md");
+            let mut perms = fs::metadata(&unreadable_path)
+                .expect("read metadata")
+                .permissions();
+            perms.set_mode(0o000);
+            fs::set_permissions(&unreadable_path, perms).expect("set unreadable permissions");
 
             let config = managed_runtime_config(&root);
             let list_outcome = crate::tools::execute_tool_core_with_config(
@@ -6377,17 +6375,26 @@ mod tests {
                 skills
                     .iter()
                     .all(|skill| skill["skill_id"] != "broken-skill"),
-                "blocked skill should be skipped instead of failing discovery: {skills:?}"
+                "unreadable skill should be skipped instead of failing discovery: {skills:?}"
             );
+
+            let mut cleanup_perms = fs::metadata(&unreadable_path)
+                .expect("read metadata for cleanup")
+                .permissions();
+            cleanup_perms.set_mode(0o644);
+            fs::set_permissions(&unreadable_path, cleanup_perms).ok();
             fs::remove_dir_all(&root).ok();
         });
     }
 
+    #[cfg(unix)]
     #[test]
-    fn provider_surface_fails_closed_when_blocked_user_winner_has_project_fallback() {
+    fn provider_surface_fails_closed_when_unreadable_user_winner_has_project_fallback() {
         with_managed_runtime_test(|| {
-            let root = unique_temp_dir("loongclaw-ext-skill-unreadable-user-winner");
-            let home = unique_temp_dir("loongclaw-ext-skill-unreadable-user-winner-home");
+            use std::os::unix::fs::PermissionsExt;
+
+            let root = unique_temp_dir("loong-ext-skill-unreadable-user-winner");
+            let home = unique_temp_dir("loong-ext-skill-unreadable-user-winner-home");
             fs::create_dir_all(&root).expect("create fixture root");
             fs::create_dir_all(&home).expect("create home root");
             write_file(
@@ -6398,11 +6405,15 @@ mod tests {
             write_file(
                 &home,
                 ".agents/skills/demo-skill/SKILL.md",
-                &format!(
-                    "---\nname: demo-skill\ndescription: blocked user winner.\n---\n\n{}\n",
-                    "x".repeat(DEFAULT_MAX_DOWNLOAD_BYTES.saturating_add(1))
-                ),
+                "---\nname: demo-skill\ndescription: unreadable user winner.\n---\n\nBroken user instructions.\n",
             );
+
+            let unreadable_path = home.join(".agents/skills/demo-skill/SKILL.md");
+            let mut perms = fs::metadata(&unreadable_path)
+                .expect("read metadata")
+                .permissions();
+            perms.set_mode(0o000);
+            fs::set_permissions(&unreadable_path, perms).expect("set unreadable permissions");
 
             let config = managed_runtime_config(&root);
             let mut env = crate::test_support::ScopedEnv::new();
@@ -6415,7 +6426,7 @@ mod tests {
                 },
                 &config,
             )
-            .expect("list should succeed when the higher-precedence local winner is blocked");
+            .expect("list should succeed when the higher-precedence local winner is unreadable");
 
             assert!(
                 list_outcome.payload["skills"]
@@ -6436,11 +6447,18 @@ mod tests {
                 },
                 &config,
             )
-            .expect_err("invoke should report the blocked higher-precedence local winner");
+            .expect_err("invoke should report the unreadable higher-precedence local winner");
             assert!(
-                error.contains("exceeds the"),
-                "expected blocked local winner error, got: {error}"
+                error.contains("failed to read external skill source")
+                    || error.contains("failed to inspect external skill source"),
+                "expected unreadable local winner error, got: {error}"
             );
+
+            let mut cleanup_perms = fs::metadata(&unreadable_path)
+                .expect("read metadata for cleanup")
+                .permissions();
+            cleanup_perms.set_mode(0o644);
+            fs::set_permissions(&unreadable_path, cleanup_perms).ok();
             fs::remove_dir_all(&root).ok();
             fs::remove_dir_all(&home).ok();
         });
@@ -6449,9 +6467,9 @@ mod tests {
     #[test]
     fn provider_surface_hides_model_hidden_skills_and_snapshot_auto_exposure() {
         with_managed_runtime_test(|| {
-            let root = unique_temp_dir("loongclaw-ext-skill-model-hidden");
+            let root = unique_temp_dir("loong-ext-skill-model-hidden");
             fs::create_dir_all(&root).expect("create fixture root");
-            let _home = ScopedHomeFixture::new("loongclaw-ext-skill-model-hidden-home");
+            let _home = ScopedHomeFixture::new("loong-ext-skill-model-hidden-home");
             write_file(
                 &root,
                 "source/demo-skill/SKILL.md",
@@ -6517,9 +6535,9 @@ mod tests {
     #[test]
     fn provider_surface_hides_skills_with_missing_required_env() {
         with_managed_runtime_test(|| {
-            let root = unique_temp_dir("loongclaw-ext-skill-required-env");
+            let root = unique_temp_dir("loong-ext-skill-required-env");
             fs::create_dir_all(&root).expect("create fixture root");
-            let _home = ScopedHomeFixture::new("loongclaw-ext-skill-required-env-home");
+            let _home = ScopedHomeFixture::new("loong-ext-skill-required-env-home");
             write_file(
                 &root,
                 ".agents/skills/env-guarded/SKILL.md",
@@ -6567,7 +6585,7 @@ mod tests {
     #[test]
     fn model_surface_redacts_operator_only_skill_metadata() {
         with_managed_runtime_test(|| {
-            let root = unique_temp_dir("loongclaw-ext-skill-model-redaction");
+            let root = unique_temp_dir("loong-ext-skill-model-redaction");
             fs::create_dir_all(&root).expect("create fixture root");
             write_file(
                 &root,
@@ -6695,7 +6713,7 @@ mod tests {
         with_managed_runtime_test(|| {
             use std::os::unix::fs::PermissionsExt;
 
-            let root = unique_temp_dir("loongclaw-ext-skill-required-bin-exec");
+            let root = unique_temp_dir("loong-ext-skill-required-bin-exec");
             fs::create_dir_all(root.join("bin")).expect("create bin dir");
             write_file(
                 &root,
@@ -6754,8 +6772,8 @@ mod tests {
     #[test]
     fn provider_surface_skips_broken_managed_installs_without_failing_discovery() {
         with_managed_runtime_test(|| {
-            let root = unique_temp_dir("loongclaw-ext-skill-broken-managed-discovery");
-            let home = unique_temp_dir("loongclaw-ext-skill-broken-managed-discovery-home");
+            let root = unique_temp_dir("loong-ext-skill-broken-managed-discovery");
+            let home = unique_temp_dir("loong-ext-skill-broken-managed-discovery-home");
             fs::create_dir_all(&root).expect("create fixture root");
             fs::create_dir_all(&home).expect("create home root");
             write_file(
@@ -6852,9 +6870,9 @@ mod tests {
     #[test]
     fn replace_failed_install_preserves_previous_managed_skill() {
         with_managed_runtime_test(|| {
-            use std::os::unix::fs::symlink;
+            use std::os::unix::fs::PermissionsExt;
 
-            let root = unique_temp_dir("loongclaw-ext-skill-replace-rollback");
+            let root = unique_temp_dir("loong-ext-skill-replace-rollback");
             fs::create_dir_all(&root).expect("create fixture root");
             write_file(
                 &root,
@@ -6866,8 +6884,17 @@ mod tests {
                 "source/demo-skill-v2/SKILL.md",
                 "# Demo Skill\n\nReplacement should fail safely.\n",
             );
-            let target_path = root.join("source/demo-skill-v2/linked.txt");
-            symlink("missing-target.txt", &target_path).expect("create unsupported symlink entry");
+            write_file(
+                &root,
+                "source/demo-skill-v2/private.txt",
+                "copy should fail on unreadable file",
+            );
+            let unreadable_path = root.join("source/demo-skill-v2/private.txt");
+            let mut perms = fs::metadata(&unreadable_path)
+                .expect("read metadata")
+                .permissions();
+            perms.set_mode(0o000);
+            fs::set_permissions(&unreadable_path, perms).expect("set unreadable permissions");
 
             let config = managed_runtime_config(&root);
             crate::tools::execute_tool_core_with_config(
@@ -6895,8 +6922,7 @@ mod tests {
             )
             .expect_err("replacement install should fail");
             assert!(
-                error.contains("cannot contain symlinks")
-                    || error.contains("does not allow symlinks"),
+                error.contains("failed to copy external skill file"),
                 "unexpected replacement failure: {error}"
             );
 
@@ -6935,6 +6961,11 @@ mod tests {
                 "failed replace must clean temporary directories: {transient_entries:?}"
             );
 
+            let mut cleanup_perms = fs::metadata(&unreadable_path)
+                .expect("read metadata for cleanup")
+                .permissions();
+            cleanup_perms.set_mode(0o644);
+            fs::set_permissions(&unreadable_path, cleanup_perms).ok();
             fs::remove_dir_all(&root).ok();
         });
     }
@@ -6942,7 +6973,7 @@ mod tests {
     #[test]
     fn tampered_index_paths_do_not_escape_managed_install_root() {
         with_managed_runtime_test(|| {
-            let root = unique_temp_dir("loongclaw-ext-skill-index-tamper");
+            let root = unique_temp_dir("loong-ext-skill-index-tamper");
             fs::create_dir_all(&root).expect("create fixture root");
             write_file(
                 &root,
@@ -6964,7 +6995,7 @@ mod tests {
 
             let install_root = root.join("external-skills-installed");
             let index_path = install_root.join("index.json");
-            let escape_root = unique_temp_dir("loongclaw-ext-skill-index-escape");
+            let escape_root = unique_temp_dir("loong-ext-skill-index-escape");
             fs::create_dir_all(&escape_root).expect("create escape root");
             write_file(
                 &escape_root,
@@ -7030,9 +7061,9 @@ mod tests {
     #[test]
     fn tampered_index_metadata_is_rehydrated_from_managed_skill_markdown() {
         with_managed_runtime_test(|| {
-            let root = unique_temp_dir("loongclaw-ext-skill-index-metadata");
+            let root = unique_temp_dir("loong-ext-skill-index-metadata");
             fs::create_dir_all(&root).expect("create fixture root");
-            let _home = ScopedHomeFixture::new("loongclaw-ext-skill-index-metadata-home");
+            let _home = ScopedHomeFixture::new("loong-ext-skill-index-metadata-home");
             write_file(
                 &root,
                 "source/demo-skill/SKILL.md",
@@ -7109,8 +7140,8 @@ mod tests {
     #[test]
     fn list_skips_missing_managed_installs_instead_of_failing_discovery() {
         with_managed_runtime_test(|| {
-            let root = unique_temp_dir("loongclaw-ext-skill-discovery-broken-managed");
-            let home = unique_temp_dir("loongclaw-ext-skill-discovery-broken-managed-home");
+            let root = unique_temp_dir("loong-ext-skill-discovery-broken-managed");
+            let home = unique_temp_dir("loong-ext-skill-discovery-broken-managed-home");
             fs::create_dir_all(&root).expect("create fixture root");
             fs::create_dir_all(&home).expect("create home root");
 
@@ -7183,7 +7214,7 @@ mod tests {
         with_managed_runtime_test(|| {
             use std::os::unix::fs::symlink;
 
-            let root = unique_temp_dir("loongclaw-ext-skill-install-symlink-swap");
+            let root = unique_temp_dir("loong-ext-skill-install-symlink-swap");
             fs::create_dir_all(&root).expect("create fixture root");
             write_file(
                 &root,
@@ -7206,7 +7237,7 @@ mod tests {
             let install_path = root.join("external-skills-installed").join("demo-skill");
             fs::remove_dir_all(&install_path).expect("remove managed install");
 
-            let escape_root = unique_temp_dir("loongclaw-ext-skill-install-symlink-target");
+            let escape_root = unique_temp_dir("loong-ext-skill-install-symlink-target");
             fs::create_dir_all(&escape_root).expect("create escape root");
             write_file(
                 &escape_root,
@@ -7255,7 +7286,7 @@ mod tests {
     #[test]
     fn install_from_tar_gz_archive_extracts_wrapped_skill_root() {
         with_managed_runtime_test(|| {
-            let root = unique_temp_dir("loongclaw-ext-skill-install-archive");
+            let root = unique_temp_dir("loong-ext-skill-install-archive");
             fs::create_dir_all(&root).expect("create fixture root");
             let archive_source_root = root.join("archive-src");
             write_file(
@@ -7317,7 +7348,7 @@ mod tests {
     #[test]
     fn install_rejects_multiple_skill_roots_without_source_skill_id() {
         with_managed_runtime_test(|| {
-            let root = unique_temp_dir("loongclaw-ext-skill-multi-root-reject");
+            let root = unique_temp_dir("loong-ext-skill-multi-root-reject");
             fs::create_dir_all(&root).expect("create fixture root");
             write_file(
                 &root,
@@ -7352,7 +7383,7 @@ mod tests {
     #[test]
     fn install_selects_matching_source_skill_id_from_multiple_skill_roots() {
         with_managed_runtime_test(|| {
-            let root = unique_temp_dir("loongclaw-ext-skill-multi-root-select");
+            let root = unique_temp_dir("loong-ext-skill-multi-root-select");
             fs::create_dir_all(&root).expect("create fixture root");
             write_file(
                 &root,
@@ -7403,7 +7434,7 @@ mod tests {
     #[test]
     fn install_from_archive_rejects_symlink_entries() {
         with_managed_runtime_test(|| {
-            let root = unique_temp_dir("loongclaw-ext-skill-archive-symlink");
+            let root = unique_temp_dir("loong-ext-skill-archive-symlink");
             fs::create_dir_all(&root).expect("create fixture root");
             let archive_path = root.join("demo-skill.tar.gz");
             {
@@ -7477,7 +7508,7 @@ mod tests {
         with_managed_runtime_test(|| {
             use std::io::Write as _;
 
-            let root = unique_temp_dir("loongclaw-ext-skill-install-zip-archive");
+            let root = unique_temp_dir("loong-ext-skill-install-zip-archive");
             fs::create_dir_all(&root).expect("create fixture root");
             let archive_path = root.join("demo-skill.zip");
             {
@@ -7530,7 +7561,7 @@ mod tests {
         with_managed_runtime_test(|| {
             use std::io::Write as _;
 
-            let root = unique_temp_dir("loongclaw-ext-skill-zip-traversal");
+            let root = unique_temp_dir("loong-ext-skill-zip-traversal");
             fs::create_dir_all(&root).expect("create fixture root");
             let archive_path = root.join("demo-skill.zip");
             {
@@ -7591,7 +7622,7 @@ mod tests {
     #[test]
     fn inspect_returns_preview_and_missing_skill_md_is_rejected() {
         with_managed_runtime_test(|| {
-            let root = unique_temp_dir("loongclaw-ext-skill-inspect");
+            let root = unique_temp_dir("loong-ext-skill-inspect");
             fs::create_dir_all(&root).expect("create fixture root");
             write_file(
                 &root,
@@ -7629,7 +7660,7 @@ mod tests {
                     .contains("Inspectable skill content")
             );
 
-            let missing_root = unique_temp_dir("loongclaw-ext-skill-missing");
+            let missing_root = unique_temp_dir("loong-ext-skill-missing");
             fs::create_dir_all(&missing_root).expect("create missing fixture root");
             write_file(
                 &missing_root,
@@ -7660,7 +7691,7 @@ mod tests {
         with_managed_runtime_test(|| {
             use std::os::unix::fs::symlink;
 
-            let root = unique_temp_dir("loongclaw-ext-skill-symlinked-skill-md");
+            let root = unique_temp_dir("loong-ext-skill-symlinked-skill-md");
             fs::create_dir_all(root.join("source/demo-skill")).expect("create skill directory");
             write_file(&root, "outside.md", "# Outside\n\nDo not follow.\n");
             symlink(
@@ -7689,7 +7720,7 @@ mod tests {
     #[test]
     fn installed_skill_snapshot_is_hidden_when_runtime_is_disabled() {
         with_managed_runtime_test(|| {
-            let root = unique_temp_dir("loongclaw-ext-skill-snapshot-disabled");
+            let root = unique_temp_dir("loong-ext-skill-snapshot-disabled");
             fs::create_dir_all(&root).expect("create fixture root");
             write_file(
                 &root,
@@ -7724,7 +7755,7 @@ mod tests {
 
     #[test]
     fn load_directory_skill_markdown_rejects_oversized_skill_files() {
-        let root = unique_temp_dir("loongclaw-ext-skill-oversized");
+        let root = unique_temp_dir("loong-ext-skill-oversized");
         fs::create_dir_all(&root).expect("create fixture root");
         fs::write(
             root.join(DEFAULT_SKILL_FILENAME),

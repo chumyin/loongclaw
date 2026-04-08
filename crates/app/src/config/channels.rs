@@ -1,9 +1,11 @@
 use std::collections::BTreeMap;
 
-use loongclaw_contracts::SecretRef;
+use loong_contracts::SecretRef;
 use serde::{Deserialize, Serialize};
 
 use crate::CliResult;
+use crate::channel::sdk;
+pub use crate::channel::sdk::{ChannelDescriptor, ChannelRuntimeKind};
 use crate::prompt::{
     DEFAULT_PROMPT_PACK_ID, PromptPersonality, PromptRenderInput, render_default_system_prompt,
     render_system_prompt,
@@ -14,6 +16,7 @@ use super::irc::{
     default_irc_password_env, default_irc_server_env, validate_irc_env_pointer,
     validate_irc_nickname_field, validate_irc_secret_ref_env_pointer, validate_irc_server_field,
 };
+use super::runtime::LoongConfig;
 use super::shared::{
     ConfigValidationCode, ConfigValidationIssue, ConfigValidationSeverity,
     EnvPointerValidationHint, validate_env_pointer_field, validate_secret_ref_env_pointer_field,
@@ -32,14 +35,6 @@ mod twitch;
 
 #[allow(unused_imports)]
 pub use self::twitch::{ResolvedTwitchChannelConfig, TwitchAccountConfig, TwitchChannelConfig};
-#[path = "channels_defaults.rs"]
-mod defaults;
-
-use self::defaults::*;
-#[path = "channels_validation.rs"]
-mod validation_support;
-
-use self::validation_support::*;
 #[allow(unused_imports)]
 pub use bridge::{
     OnebotAccountConfig, OnebotChannelConfig, QqbotAccountConfig, QqbotChannelConfig,
@@ -134,6 +129,35 @@ impl WebhookPayloadFormat {
 pub(crate) enum EmailSmtpEndpoint {
     RelayHost(String),
     ConnectionUrl(String),
+}
+
+pub fn channel_descriptor(id: &str) -> Option<&'static ChannelDescriptor> {
+    sdk::channel_descriptor(id)
+}
+
+pub fn service_channel_descriptors() -> Vec<&'static ChannelDescriptor> {
+    sdk::service_channel_descriptors()
+}
+
+pub(super) fn enabled_channel_ids(config: &LoongConfig) -> Vec<String> {
+    enabled_channel_ids_for_runtime_kind(config, None)
+}
+
+pub(super) fn enabled_service_channel_ids(config: &LoongConfig) -> Vec<String> {
+    enabled_channel_ids_for_runtime_kind(config, Some(ChannelRuntimeKind::Service))
+}
+
+fn enabled_channel_ids_for_runtime_kind(
+    config: &LoongConfig,
+    runtime_kind: Option<ChannelRuntimeKind>,
+) -> Vec<String> {
+    sdk::enabled_channel_ids(config, runtime_kind)
+}
+
+pub(super) fn collect_channel_validation_issues(
+    config: &LoongConfig,
+) -> Vec<ConfigValidationIssue> {
+    sdk::collect_channel_validation_issues(config)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -3981,7 +4005,7 @@ impl EmailChannelConfig {
                 let issue = build_email_invalid_value_issue(
                     "email.from_address",
                     "mailbox parse failed",
-                    "Use a valid RFC 5322 mailbox like `ops@example.com` or `LoongClaw <ops@example.com>`.",
+                    "Use a valid RFC 5322 mailbox like `ops@example.com` or `Loong <ops@example.com>`.",
                 );
                 issues.push(issue);
             }
@@ -4078,7 +4102,7 @@ impl EmailChannelConfig {
                     let issue = build_email_invalid_value_issue(
                         field_path.as_str(),
                         "mailbox parse failed",
-                        "Use a valid RFC 5322 mailbox like `ops@example.com` or `LoongClaw <ops@example.com>`.",
+                        "Use a valid RFC 5322 mailbox like `ops@example.com` or `Loong <ops@example.com>`.",
                     );
                     issues.push(issue);
                 }
@@ -6468,6 +6492,166 @@ impl TlonChannelConfig {
     }
 }
 
+fn default_telegram_base_url() -> String {
+    "https://api.telegram.org".to_owned()
+}
+
+const fn default_telegram_timeout_seconds() -> u64 {
+    15
+}
+
+const fn default_true() -> bool {
+    true
+}
+
+fn default_feishu_receive_id_type() -> String {
+    "chat_id".to_owned()
+}
+
+fn default_feishu_webhook_bind() -> String {
+    "127.0.0.1:8080".to_owned()
+}
+
+fn default_feishu_webhook_path() -> String {
+    "/feishu/events".to_owned()
+}
+
+const fn default_matrix_sync_timeout_seconds() -> u64 {
+    30
+}
+
+fn default_wecom_websocket_url() -> String {
+    "wss://openws.work.weixin.qq.com".to_owned()
+}
+
+const fn default_wecom_ping_interval_seconds() -> u64 {
+    30
+}
+
+const fn default_wecom_reconnect_interval_seconds() -> u64 {
+    5
+}
+
+fn default_discord_api_base_url() -> String {
+    "https://discord.com/api/v10".to_owned()
+}
+
+fn default_discord_bot_token_env() -> Option<String> {
+    Some(DISCORD_BOT_TOKEN_ENV.to_owned())
+}
+
+fn default_line_api_base_url() -> String {
+    "https://api.line.me/v2/bot".to_owned()
+}
+
+fn default_email_smtp_username_env() -> Option<String> {
+    Some(EMAIL_SMTP_USERNAME_ENV.to_owned())
+}
+
+fn default_email_smtp_password_env() -> Option<String> {
+    Some(EMAIL_SMTP_PASSWORD_ENV.to_owned())
+}
+
+fn default_email_imap_username_env() -> Option<String> {
+    Some(EMAIL_IMAP_USERNAME_ENV.to_owned())
+}
+
+fn default_email_imap_password_env() -> Option<String> {
+    Some(EMAIL_IMAP_PASSWORD_ENV.to_owned())
+}
+
+fn default_webhook_endpoint_url_env() -> Option<String> {
+    Some(WEBHOOK_ENDPOINT_URL_ENV.to_owned())
+}
+
+fn default_webhook_auth_token_env() -> Option<String> {
+    Some(WEBHOOK_AUTH_TOKEN_ENV.to_owned())
+}
+
+fn default_webhook_signing_secret_env() -> Option<String> {
+    Some(WEBHOOK_SIGNING_SECRET_ENV.to_owned())
+}
+
+fn default_webhook_auth_header_name() -> String {
+    "Authorization".to_owned()
+}
+
+fn default_webhook_auth_token_prefix() -> String {
+    "Bearer ".to_owned()
+}
+
+fn default_webhook_payload_text_field() -> String {
+    "text".to_owned()
+}
+
+fn default_teams_webhook_url_env() -> Option<String> {
+    Some(TEAMS_WEBHOOK_URL_ENV.to_owned())
+}
+
+fn default_teams_app_id_env() -> Option<String> {
+    Some(TEAMS_APP_ID_ENV.to_owned())
+}
+
+fn default_teams_app_password_env() -> Option<String> {
+    Some(TEAMS_APP_PASSWORD_ENV.to_owned())
+}
+
+fn default_teams_tenant_id_env() -> Option<String> {
+    Some(TEAMS_TENANT_ID_ENV.to_owned())
+}
+
+fn default_imessage_bridge_url_env() -> Option<String> {
+    Some(IMESSAGE_BRIDGE_URL_ENV.to_owned())
+}
+
+fn default_imessage_bridge_token_env() -> Option<String> {
+    Some(IMESSAGE_BRIDGE_TOKEN_ENV.to_owned())
+}
+
+fn default_slack_api_base_url() -> String {
+    "https://slack.com/api".to_owned()
+}
+
+fn default_slack_bot_token_env() -> Option<String> {
+    Some(SLACK_BOT_TOKEN_ENV.to_owned())
+}
+
+fn default_whatsapp_api_base_url() -> String {
+    "https://graph.facebook.com/v25.0".to_owned()
+}
+
+fn default_whatsapp_access_token_env() -> Option<String> {
+    Some(WHATSAPP_ACCESS_TOKEN_ENV.to_owned())
+}
+
+fn default_whatsapp_phone_number_id_env() -> Option<String> {
+    Some(WHATSAPP_PHONE_NUMBER_ID_ENV.to_owned())
+}
+
+fn default_whatsapp_verify_token_env() -> Option<String> {
+    Some(WHATSAPP_VERIFY_TOKEN_ENV.to_owned())
+}
+
+fn default_whatsapp_app_secret_env() -> Option<String> {
+    Some(WHATSAPP_APP_SECRET_ENV.to_owned())
+}
+
+fn default_system_prompt() -> String {
+    render_default_system_prompt()
+}
+
+fn default_prompt_pack_id() -> Option<String> {
+    Some(DEFAULT_PROMPT_PACK_ID.to_owned())
+}
+
+fn default_prompt_personality() -> Option<PromptPersonality> {
+    Some(PromptPersonality::default())
+}
+
+fn default_exit_commands() -> Vec<String> {
+    vec!["/exit".to_owned(), "/quit".to_owned()]
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ResolvedConfiguredAccount {
     id: String,
@@ -6699,6 +6883,841 @@ fn validate_email_secret_ref_env_pointer(
     }
 }
 
+fn build_email_invalid_value_issue(
+    field_path: &str,
+    invalid_reason: &str,
+    suggested_fix: &str,
+) -> ConfigValidationIssue {
+    let mut extra_message_variables = BTreeMap::new();
+    extra_message_variables.insert("invalid_reason".to_owned(), invalid_reason.to_owned());
+    extra_message_variables.insert("suggested_fix".to_owned(), suggested_fix.to_owned());
+
+    ConfigValidationIssue {
+        severity: ConfigValidationSeverity::Error,
+        code: ConfigValidationCode::InvalidValue,
+        field_path: field_path.to_owned(),
+        inline_field_path: field_path.to_owned(),
+        example_env_name: String::new(),
+        suggested_env_name: None,
+        extra_message_variables,
+    }
+}
+
+fn validate_telegram_env_pointer(
+    issues: &mut Vec<ConfigValidationIssue>,
+    field_path: &str,
+    env_key: Option<&str>,
+    inline_field_path: &str,
+) {
+    if let Err(issue) = validate_env_pointer_field(
+        field_path,
+        env_key,
+        EnvPointerValidationHint {
+            inline_field_path,
+            example_env_name: TELEGRAM_BOT_TOKEN_ENV,
+            detect_telegram_token_shape: true,
+        },
+    ) {
+        issues.push(*issue);
+    }
+}
+
+fn validate_telegram_secret_ref_env_pointer(
+    issues: &mut Vec<ConfigValidationIssue>,
+    field_path: &str,
+    secret_ref: Option<&SecretRef>,
+) {
+    if let Err(issue) = validate_secret_ref_env_pointer_field(
+        field_path,
+        secret_ref,
+        EnvPointerValidationHint {
+            inline_field_path: field_path,
+            example_env_name: TELEGRAM_BOT_TOKEN_ENV,
+            detect_telegram_token_shape: true,
+        },
+    ) {
+        issues.push(*issue);
+    }
+}
+
+fn validate_feishu_env_pointer(
+    issues: &mut Vec<ConfigValidationIssue>,
+    field_path: &str,
+    env_key: Option<&str>,
+    inline_field_path: &str,
+) {
+    let example_env_name = if field_path.ends_with("app_id_env") {
+        FEISHU_APP_ID_ENV
+    } else if field_path.ends_with("app_secret_env") {
+        FEISHU_APP_SECRET_ENV
+    } else if field_path.ends_with("verification_token_env") {
+        FEISHU_VERIFICATION_TOKEN_ENV
+    } else {
+        FEISHU_ENCRYPT_KEY_ENV
+    };
+    if let Err(issue) = validate_env_pointer_field(
+        field_path,
+        env_key,
+        EnvPointerValidationHint {
+            inline_field_path,
+            example_env_name,
+            detect_telegram_token_shape: false,
+        },
+    ) {
+        issues.push(*issue);
+    }
+}
+
+fn validate_feishu_secret_ref_env_pointer(
+    issues: &mut Vec<ConfigValidationIssue>,
+    field_path: &str,
+    secret_ref: Option<&SecretRef>,
+) {
+    let example_env_name = if field_path.ends_with("app_id") {
+        FEISHU_APP_ID_ENV
+    } else if field_path.ends_with("app_secret") {
+        FEISHU_APP_SECRET_ENV
+    } else if field_path.ends_with("verification_token") {
+        FEISHU_VERIFICATION_TOKEN_ENV
+    } else {
+        FEISHU_ENCRYPT_KEY_ENV
+    };
+    if let Err(issue) = validate_secret_ref_env_pointer_field(
+        field_path,
+        secret_ref,
+        EnvPointerValidationHint {
+            inline_field_path: field_path,
+            example_env_name,
+            detect_telegram_token_shape: false,
+        },
+    ) {
+        issues.push(*issue);
+    }
+}
+
+fn validate_matrix_env_pointer(
+    issues: &mut Vec<ConfigValidationIssue>,
+    field_path: &str,
+    env_key: Option<&str>,
+    inline_field_path: &str,
+) {
+    if let Err(issue) = validate_env_pointer_field(
+        field_path,
+        env_key,
+        EnvPointerValidationHint {
+            inline_field_path,
+            example_env_name: MATRIX_ACCESS_TOKEN_ENV,
+            detect_telegram_token_shape: false,
+        },
+    ) {
+        issues.push(*issue);
+    }
+}
+
+fn validate_matrix_secret_ref_env_pointer(
+    issues: &mut Vec<ConfigValidationIssue>,
+    field_path: &str,
+    secret_ref: Option<&SecretRef>,
+) {
+    if let Err(issue) = validate_secret_ref_env_pointer_field(
+        field_path,
+        secret_ref,
+        EnvPointerValidationHint {
+            inline_field_path: field_path,
+            example_env_name: MATRIX_ACCESS_TOKEN_ENV,
+            detect_telegram_token_shape: false,
+        },
+    ) {
+        issues.push(*issue);
+    }
+}
+
+fn validate_wecom_env_pointer(
+    issues: &mut Vec<ConfigValidationIssue>,
+    field_path: &str,
+    env_key: Option<&str>,
+    inline_field_path: &str,
+) {
+    let example_env_name = if field_path.ends_with("bot_id_env") {
+        WECOM_BOT_ID_ENV
+    } else {
+        WECOM_SECRET_ENV
+    };
+    if let Err(issue) = validate_env_pointer_field(
+        field_path,
+        env_key,
+        EnvPointerValidationHint {
+            inline_field_path,
+            example_env_name,
+            detect_telegram_token_shape: false,
+        },
+    ) {
+        issues.push(*issue);
+    }
+}
+
+fn validate_wecom_secret_ref_env_pointer(
+    issues: &mut Vec<ConfigValidationIssue>,
+    field_path: &str,
+    secret_ref: Option<&SecretRef>,
+) {
+    let example_env_name = if field_path.ends_with("bot_id") {
+        WECOM_BOT_ID_ENV
+    } else {
+        WECOM_SECRET_ENV
+    };
+    if let Err(issue) = validate_secret_ref_env_pointer_field(
+        field_path,
+        secret_ref,
+        EnvPointerValidationHint {
+            inline_field_path: field_path,
+            example_env_name,
+            detect_telegram_token_shape: false,
+        },
+    ) {
+        issues.push(*issue);
+    }
+}
+
+fn validate_discord_env_pointer(
+    issues: &mut Vec<ConfigValidationIssue>,
+    field_path: &str,
+    env_key: Option<&str>,
+    inline_field_path: &str,
+) {
+    if let Err(issue) = validate_env_pointer_field(
+        field_path,
+        env_key,
+        EnvPointerValidationHint {
+            inline_field_path,
+            example_env_name: DISCORD_BOT_TOKEN_ENV,
+            detect_telegram_token_shape: false,
+        },
+    ) {
+        issues.push(*issue);
+    }
+}
+
+fn validate_line_env_pointer(
+    issues: &mut Vec<ConfigValidationIssue>,
+    field_path: &str,
+    env_key: Option<&str>,
+    inline_field_path: &str,
+) {
+    let example_env_name = if field_path.ends_with("channel_secret_env") {
+        LINE_CHANNEL_SECRET_ENV
+    } else {
+        LINE_CHANNEL_ACCESS_TOKEN_ENV
+    };
+    if let Err(issue) = validate_env_pointer_field(
+        field_path,
+        env_key,
+        EnvPointerValidationHint {
+            inline_field_path,
+            example_env_name,
+            detect_telegram_token_shape: false,
+        },
+    ) {
+        issues.push(*issue);
+    }
+}
+
+fn validate_line_secret_ref_env_pointer(
+    issues: &mut Vec<ConfigValidationIssue>,
+    field_path: &str,
+    secret_ref: Option<&SecretRef>,
+) {
+    let example_env_name = if field_path.ends_with("channel_secret") {
+        LINE_CHANNEL_SECRET_ENV
+    } else {
+        LINE_CHANNEL_ACCESS_TOKEN_ENV
+    };
+    if let Err(issue) = validate_secret_ref_env_pointer_field(
+        field_path,
+        secret_ref,
+        EnvPointerValidationHint {
+            inline_field_path: field_path,
+            example_env_name,
+            detect_telegram_token_shape: false,
+        },
+    ) {
+        issues.push(*issue);
+    }
+}
+
+fn validate_dingtalk_env_pointer(
+    issues: &mut Vec<ConfigValidationIssue>,
+    field_path: &str,
+    env_key: Option<&str>,
+    inline_field_path: &str,
+) {
+    let example_env_name = if field_path.ends_with("secret_env") {
+        DINGTALK_SECRET_ENV
+    } else {
+        DINGTALK_WEBHOOK_URL_ENV
+    };
+    if let Err(issue) = validate_env_pointer_field(
+        field_path,
+        env_key,
+        EnvPointerValidationHint {
+            inline_field_path,
+            example_env_name,
+            detect_telegram_token_shape: false,
+        },
+    ) {
+        issues.push(*issue);
+    }
+}
+
+fn validate_dingtalk_secret_ref_env_pointer(
+    issues: &mut Vec<ConfigValidationIssue>,
+    field_path: &str,
+    secret_ref: Option<&SecretRef>,
+) {
+    let example_env_name = if field_path.ends_with("secret") {
+        DINGTALK_SECRET_ENV
+    } else {
+        DINGTALK_WEBHOOK_URL_ENV
+    };
+    if let Err(issue) = validate_secret_ref_env_pointer_field(
+        field_path,
+        secret_ref,
+        EnvPointerValidationHint {
+            inline_field_path: field_path,
+            example_env_name,
+            detect_telegram_token_shape: false,
+        },
+    ) {
+        issues.push(*issue);
+    }
+}
+
+fn validate_webhook_env_pointer(
+    issues: &mut Vec<ConfigValidationIssue>,
+    field_path: &str,
+    env_key: Option<&str>,
+    inline_field_path: &str,
+) {
+    let example_env_name = if field_path.ends_with("endpoint_url_env") {
+        WEBHOOK_ENDPOINT_URL_ENV
+    } else if field_path.ends_with("signing_secret_env") {
+        WEBHOOK_SIGNING_SECRET_ENV
+    } else {
+        WEBHOOK_AUTH_TOKEN_ENV
+    };
+    if let Err(issue) = validate_env_pointer_field(
+        field_path,
+        env_key,
+        EnvPointerValidationHint {
+            inline_field_path,
+            example_env_name,
+            detect_telegram_token_shape: false,
+        },
+    ) {
+        issues.push(*issue);
+    }
+}
+
+fn validate_webhook_secret_ref_env_pointer(
+    issues: &mut Vec<ConfigValidationIssue>,
+    field_path: &str,
+    secret_ref: Option<&SecretRef>,
+) {
+    let example_env_name = if field_path.ends_with("endpoint_url") {
+        WEBHOOK_ENDPOINT_URL_ENV
+    } else if field_path.ends_with("signing_secret") {
+        WEBHOOK_SIGNING_SECRET_ENV
+    } else {
+        WEBHOOK_AUTH_TOKEN_ENV
+    };
+    if let Err(issue) = validate_secret_ref_env_pointer_field(
+        field_path,
+        secret_ref,
+        EnvPointerValidationHint {
+            inline_field_path: field_path,
+            example_env_name,
+            detect_telegram_token_shape: false,
+        },
+    ) {
+        issues.push(*issue);
+    }
+}
+
+fn validate_discord_secret_ref_env_pointer(
+    issues: &mut Vec<ConfigValidationIssue>,
+    field_path: &str,
+    secret_ref: Option<&SecretRef>,
+) {
+    if let Err(issue) = validate_secret_ref_env_pointer_field(
+        field_path,
+        secret_ref,
+        EnvPointerValidationHint {
+            inline_field_path: field_path,
+            example_env_name: DISCORD_BOT_TOKEN_ENV,
+            detect_telegram_token_shape: false,
+        },
+    ) {
+        issues.push(*issue);
+    }
+}
+
+fn validate_google_chat_env_pointer(
+    issues: &mut Vec<ConfigValidationIssue>,
+    field_path: &str,
+    env_key: Option<&str>,
+    inline_field_path: &str,
+) {
+    if let Err(issue) = validate_env_pointer_field(
+        field_path,
+        env_key,
+        EnvPointerValidationHint {
+            inline_field_path,
+            example_env_name: GOOGLE_CHAT_WEBHOOK_URL_ENV,
+            detect_telegram_token_shape: false,
+        },
+    ) {
+        issues.push(*issue);
+    }
+}
+
+fn validate_google_chat_secret_ref_env_pointer(
+    issues: &mut Vec<ConfigValidationIssue>,
+    field_path: &str,
+    secret_ref: Option<&SecretRef>,
+) {
+    if let Err(issue) = validate_secret_ref_env_pointer_field(
+        field_path,
+        secret_ref,
+        EnvPointerValidationHint {
+            inline_field_path: field_path,
+            example_env_name: GOOGLE_CHAT_WEBHOOK_URL_ENV,
+            detect_telegram_token_shape: false,
+        },
+    ) {
+        issues.push(*issue);
+    }
+}
+
+fn validate_nextcloud_talk_env_pointer(
+    issues: &mut Vec<ConfigValidationIssue>,
+    field_path: &str,
+    env_key: Option<&str>,
+    inline_field_path: &str,
+) {
+    let example_env_name = if field_path.ends_with("shared_secret_env") {
+        NEXTCLOUD_TALK_SHARED_SECRET_ENV
+    } else {
+        NEXTCLOUD_TALK_SERVER_URL_ENV
+    };
+    if let Err(issue) = validate_env_pointer_field(
+        field_path,
+        env_key,
+        EnvPointerValidationHint {
+            inline_field_path,
+            example_env_name,
+            detect_telegram_token_shape: false,
+        },
+    ) {
+        issues.push(*issue);
+    }
+}
+
+fn validate_nextcloud_talk_secret_ref_env_pointer(
+    issues: &mut Vec<ConfigValidationIssue>,
+    field_path: &str,
+    secret_ref: Option<&SecretRef>,
+) {
+    if let Err(issue) = validate_secret_ref_env_pointer_field(
+        field_path,
+        secret_ref,
+        EnvPointerValidationHint {
+            inline_field_path: field_path,
+            example_env_name: NEXTCLOUD_TALK_SHARED_SECRET_ENV,
+            detect_telegram_token_shape: false,
+        },
+    ) {
+        issues.push(*issue);
+    }
+}
+
+fn validate_synology_chat_env_pointer(
+    issues: &mut Vec<ConfigValidationIssue>,
+    field_path: &str,
+    env_key: Option<&str>,
+    inline_field_path: &str,
+) {
+    let example_env_name = if field_path.ends_with("incoming_url_env") {
+        SYNOLOGY_CHAT_INCOMING_URL_ENV
+    } else {
+        SYNOLOGY_CHAT_TOKEN_ENV
+    };
+    if let Err(issue) = validate_env_pointer_field(
+        field_path,
+        env_key,
+        EnvPointerValidationHint {
+            inline_field_path,
+            example_env_name,
+            detect_telegram_token_shape: false,
+        },
+    ) {
+        issues.push(*issue);
+    }
+}
+
+fn validate_synology_chat_secret_ref_env_pointer(
+    issues: &mut Vec<ConfigValidationIssue>,
+    field_path: &str,
+    secret_ref: Option<&SecretRef>,
+) {
+    let example_env_name = if field_path.ends_with("incoming_url") {
+        SYNOLOGY_CHAT_INCOMING_URL_ENV
+    } else {
+        SYNOLOGY_CHAT_TOKEN_ENV
+    };
+    if let Err(issue) = validate_secret_ref_env_pointer_field(
+        field_path,
+        secret_ref,
+        EnvPointerValidationHint {
+            inline_field_path: field_path,
+            example_env_name,
+            detect_telegram_token_shape: false,
+        },
+    ) {
+        issues.push(*issue);
+    }
+}
+
+fn validate_teams_env_pointer(
+    issues: &mut Vec<ConfigValidationIssue>,
+    field_path: &str,
+    env_key: Option<&str>,
+    inline_field_path: &str,
+) {
+    let example_env_name = if field_path.ends_with("webhook_url_env") {
+        TEAMS_WEBHOOK_URL_ENV
+    } else if field_path.ends_with("app_password_env") {
+        TEAMS_APP_PASSWORD_ENV
+    } else if field_path.ends_with("tenant_id_env") {
+        TEAMS_TENANT_ID_ENV
+    } else {
+        TEAMS_APP_ID_ENV
+    };
+    if let Err(issue) = validate_env_pointer_field(
+        field_path,
+        env_key,
+        EnvPointerValidationHint {
+            inline_field_path,
+            example_env_name,
+            detect_telegram_token_shape: false,
+        },
+    ) {
+        issues.push(*issue);
+    }
+}
+
+fn validate_teams_secret_ref_env_pointer(
+    issues: &mut Vec<ConfigValidationIssue>,
+    field_path: &str,
+    secret_ref: Option<&SecretRef>,
+) {
+    let example_env_name = if field_path.ends_with("webhook_url") {
+        TEAMS_WEBHOOK_URL_ENV
+    } else if field_path.ends_with("app_password") {
+        TEAMS_APP_PASSWORD_ENV
+    } else {
+        TEAMS_APP_ID_ENV
+    };
+    if let Err(issue) = validate_secret_ref_env_pointer_field(
+        field_path,
+        secret_ref,
+        EnvPointerValidationHint {
+            inline_field_path: field_path,
+            example_env_name,
+            detect_telegram_token_shape: false,
+        },
+    ) {
+        issues.push(*issue);
+    }
+}
+
+fn validate_imessage_env_pointer(
+    issues: &mut Vec<ConfigValidationIssue>,
+    field_path: &str,
+    env_key: Option<&str>,
+    inline_field_path: &str,
+) {
+    let example_env_name = if field_path.ends_with("bridge_url_env") {
+        IMESSAGE_BRIDGE_URL_ENV
+    } else {
+        IMESSAGE_BRIDGE_TOKEN_ENV
+    };
+    if let Err(issue) = validate_env_pointer_field(
+        field_path,
+        env_key,
+        EnvPointerValidationHint {
+            inline_field_path,
+            example_env_name,
+            detect_telegram_token_shape: false,
+        },
+    ) {
+        issues.push(*issue);
+    }
+}
+
+fn validate_imessage_secret_ref_env_pointer(
+    issues: &mut Vec<ConfigValidationIssue>,
+    field_path: &str,
+    secret_ref: Option<&SecretRef>,
+) {
+    if let Err(issue) = validate_secret_ref_env_pointer_field(
+        field_path,
+        secret_ref,
+        EnvPointerValidationHint {
+            inline_field_path: field_path,
+            example_env_name: IMESSAGE_BRIDGE_TOKEN_ENV,
+            detect_telegram_token_shape: false,
+        },
+    ) {
+        issues.push(*issue);
+    }
+}
+
+fn validate_signal_env_pointer(
+    issues: &mut Vec<ConfigValidationIssue>,
+    field_path: &str,
+    env_key: Option<&str>,
+    inline_field_path: &str,
+) {
+    let example_env_name = if field_path.ends_with("service_url_env") {
+        SIGNAL_SERVICE_URL_ENV
+    } else {
+        SIGNAL_ACCOUNT_ENV
+    };
+    if let Err(issue) = validate_env_pointer_field(
+        field_path,
+        env_key,
+        EnvPointerValidationHint {
+            inline_field_path,
+            example_env_name,
+            detect_telegram_token_shape: false,
+        },
+    ) {
+        issues.push(*issue);
+    }
+}
+
+fn validate_mattermost_env_pointer(
+    issues: &mut Vec<ConfigValidationIssue>,
+    field_path: &str,
+    env_key: Option<&str>,
+    inline_field_path: &str,
+) {
+    let example_env_name = if field_path.ends_with("server_url_env") {
+        MATTERMOST_SERVER_URL_ENV
+    } else {
+        MATTERMOST_BOT_TOKEN_ENV
+    };
+    if let Err(issue) = validate_env_pointer_field(
+        field_path,
+        env_key,
+        EnvPointerValidationHint {
+            inline_field_path,
+            example_env_name,
+            detect_telegram_token_shape: false,
+        },
+    ) {
+        issues.push(*issue);
+    }
+}
+
+fn validate_mattermost_secret_ref_env_pointer(
+    issues: &mut Vec<ConfigValidationIssue>,
+    field_path: &str,
+    secret_ref: Option<&SecretRef>,
+) {
+    if let Err(issue) = validate_secret_ref_env_pointer_field(
+        field_path,
+        secret_ref,
+        EnvPointerValidationHint {
+            inline_field_path: field_path,
+            example_env_name: MATTERMOST_BOT_TOKEN_ENV,
+            detect_telegram_token_shape: false,
+        },
+    ) {
+        issues.push(*issue);
+    }
+}
+
+fn validate_slack_env_pointer(
+    issues: &mut Vec<ConfigValidationIssue>,
+    field_path: &str,
+    env_key: Option<&str>,
+    inline_field_path: &str,
+) {
+    if let Err(issue) = validate_env_pointer_field(
+        field_path,
+        env_key,
+        EnvPointerValidationHint {
+            inline_field_path,
+            example_env_name: SLACK_BOT_TOKEN_ENV,
+            detect_telegram_token_shape: false,
+        },
+    ) {
+        issues.push(*issue);
+    }
+}
+
+fn validate_slack_secret_ref_env_pointer(
+    issues: &mut Vec<ConfigValidationIssue>,
+    field_path: &str,
+    secret_ref: Option<&SecretRef>,
+) {
+    if let Err(issue) = validate_secret_ref_env_pointer_field(
+        field_path,
+        secret_ref,
+        EnvPointerValidationHint {
+            inline_field_path: field_path,
+            example_env_name: SLACK_BOT_TOKEN_ENV,
+            detect_telegram_token_shape: false,
+        },
+    ) {
+        issues.push(*issue);
+    }
+}
+
+fn validate_whatsapp_env_pointer(
+    issues: &mut Vec<ConfigValidationIssue>,
+    field_path: &str,
+    env_key: Option<&str>,
+    inline_field_path: &str,
+) {
+    let example_env_name = if field_path.ends_with("access_token_env") {
+        WHATSAPP_ACCESS_TOKEN_ENV
+    } else if field_path.ends_with("phone_number_id_env") {
+        WHATSAPP_PHONE_NUMBER_ID_ENV
+    } else if field_path.ends_with("verify_token_env") {
+        WHATSAPP_VERIFY_TOKEN_ENV
+    } else {
+        WHATSAPP_APP_SECRET_ENV
+    };
+    if let Err(issue) = validate_env_pointer_field(
+        field_path,
+        env_key,
+        EnvPointerValidationHint {
+            inline_field_path,
+            example_env_name,
+            detect_telegram_token_shape: false,
+        },
+    ) {
+        issues.push(*issue);
+    }
+}
+
+fn validate_whatsapp_secret_ref_env_pointer(
+    issues: &mut Vec<ConfigValidationIssue>,
+    field_path: &str,
+    secret_ref: Option<&SecretRef>,
+) {
+    let example_env_name = if field_path.ends_with("access_token") {
+        WHATSAPP_ACCESS_TOKEN_ENV
+    } else if field_path.ends_with("verify_token") {
+        WHATSAPP_VERIFY_TOKEN_ENV
+    } else {
+        WHATSAPP_APP_SECRET_ENV
+    };
+    if let Err(issue) = validate_secret_ref_env_pointer_field(
+        field_path,
+        secret_ref,
+        EnvPointerValidationHint {
+            inline_field_path: field_path,
+            example_env_name,
+            detect_telegram_token_shape: false,
+        },
+    ) {
+        issues.push(*issue);
+    }
+}
+
+fn validate_channel_account_integrity<'a, I>(
+    issues: &mut Vec<ConfigValidationIssue>,
+    channel_key: &str,
+    default_account: Option<&str>,
+    keys: I,
+) where
+    I: IntoIterator<Item = &'a String>,
+{
+    let mut normalized_to_labels = BTreeMap::<String, Vec<String>>::new();
+    for raw_key in keys {
+        let label = raw_key.trim();
+        if label.is_empty() {
+            continue;
+        }
+        normalized_to_labels
+            .entry(normalize_channel_account_id(label))
+            .or_default()
+            .push(label.to_owned());
+    }
+
+    for (normalized_account_id, labels) in &normalized_to_labels {
+        if labels.len() < 2 {
+            continue;
+        }
+        let mut extra_message_variables = BTreeMap::new();
+        extra_message_variables.insert(
+            "normalized_account_id".to_owned(),
+            normalized_account_id.clone(),
+        );
+        extra_message_variables.insert("raw_account_labels".to_owned(), labels.join(", "));
+        issues.push(ConfigValidationIssue {
+            severity: super::shared::ConfigValidationSeverity::Error,
+            code: ConfigValidationCode::DuplicateChannelAccountId,
+            field_path: format!("{channel_key}.accounts"),
+            inline_field_path: format!("{channel_key}.accounts.{normalized_account_id}"),
+            example_env_name: String::new(),
+            suggested_env_name: None,
+            extra_message_variables,
+        });
+    }
+
+    if normalized_to_labels.is_empty() {
+        return;
+    }
+
+    let Some(requested_default_account) = default_account
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return;
+    };
+    let normalized_default_account = normalize_channel_account_id(requested_default_account);
+    if normalized_to_labels.contains_key(&normalized_default_account) {
+        return;
+    }
+
+    let mut extra_message_variables = BTreeMap::new();
+    extra_message_variables.insert(
+        "requested_account_id".to_owned(),
+        normalized_default_account,
+    );
+    extra_message_variables.insert(
+        "configured_account_ids".to_owned(),
+        normalized_to_labels
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", "),
+    );
+    issues.push(ConfigValidationIssue {
+        severity: super::shared::ConfigValidationSeverity::Error,
+        code: ConfigValidationCode::UnknownChannelDefaultAccount,
+        field_path: format!("{channel_key}.default_account"),
+        inline_field_path: format!("{channel_key}.accounts"),
+        example_env_name: String::new(),
+        suggested_env_name: None,
+        extra_message_variables,
+    });
+}
+
 fn configured_account_ids<'a, I>(keys: I) -> Vec<String>
 where
     I: IntoIterator<Item = &'a String>,
@@ -6927,7 +7946,7 @@ mod tests {
     #[test]
     fn telegram_account_identity_derives_from_bot_token_prefix() {
         let config = TelegramChannelConfig {
-            bot_token: Some(loongclaw_contracts::SecretRef::Inline(
+            bot_token: Some(loong_contracts::SecretRef::Inline(
                 "987654:token-value".to_owned(),
             )),
             bot_token_env: None,
@@ -6956,9 +7975,7 @@ mod tests {
     #[test]
     fn feishu_account_identity_derives_from_domain_and_app_id() {
         let config = FeishuChannelConfig {
-            app_id: Some(loongclaw_contracts::SecretRef::Inline(
-                "cli_a1b2c3".to_owned(),
-            )),
+            app_id: Some(loong_contracts::SecretRef::Inline("cli_a1b2c3".to_owned())),
             app_id_env: None,
             domain: FeishuDomain::Lark,
             ..FeishuChannelConfig::default()
@@ -7332,7 +8349,7 @@ mod tests {
     #[test]
     fn wecom_account_identity_derives_from_bot_id() {
         let config = WecomChannelConfig {
-            bot_id: Some(loongclaw_contracts::SecretRef::Inline("bot_123".to_owned())),
+            bot_id: Some(loong_contracts::SecretRef::Inline("bot_123".to_owned())),
             bot_id_env: None,
             ..WecomChannelConfig::default()
         };
@@ -7692,7 +8709,7 @@ mod tests {
             "account_id": "Webhook-Shared",
             "endpoint_url": "https://hooks.example.test/base",
             "auth_token": "base-token",
-            "auth_header_name": "X-LoongClaw-Token",
+            "auth_header_name": "X-Loong-Token",
             "auth_token_prefix": "Token ",
             "payload_format": "json_text",
             "payload_text_field": "message",
@@ -7735,7 +8752,7 @@ mod tests {
         );
         assert_eq!(ops_auth_token.as_deref(), Some("base-token"));
         assert_eq!(ops_signing_secret.as_deref(), Some("base-signing-secret"));
-        assert_eq!(ops.auth_header_name, "X-LoongClaw-Token");
+        assert_eq!(ops.auth_header_name, "X-Loong-Token");
         assert_eq!(ops.auth_token_prefix, "Token ");
         assert_eq!(ops.payload_format, WebhookPayloadFormat::PlainText);
         assert_eq!(ops.payload_text_field, "message");

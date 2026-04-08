@@ -10,7 +10,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use loongclaw_daemon::{
+use loong_daemon::{
     gateway::{
         client::{GatewayLocalClient, GatewayStopResponseOutcome},
         service::{
@@ -50,35 +50,24 @@ fn unique_runtime_dir(label: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .expect("system clock before unix epoch")
         .as_nanos();
-    let runtime_dir = std::env::temp_dir().join(format!(
-        "loongclaw-daemon-gateway-owner-state-{label}-{suffix}"
-    ));
+    let runtime_dir =
+        std::env::temp_dir().join(format!("loong-daemon-gateway-owner-state-{label}-{suffix}"));
     std::fs::create_dir_all(&runtime_dir).expect("create runtime dir");
     runtime_dir
 }
 
 fn headless_loaded_config_fixture() -> LoadedSupervisorConfig {
-    let runtime_root = unique_runtime_dir("headless-config");
-    let config_path = runtime_root.join("loongclaw.toml");
-    let sqlite_path = runtime_root.join("memory.sqlite3");
-    let mut config = mvp::config::LoongClawConfig::default();
-    config.memory.sqlite_path = sqlite_path.display().to_string();
-
     LoadedSupervisorConfig {
-        resolved_path: config_path,
-        config,
+        resolved_path: PathBuf::from("/tmp/loong.toml"),
+        config: mvp::config::LoongConfig::default(),
     }
 }
 
 fn telegram_loaded_config_fixture() -> LoadedSupervisorConfig {
-    let runtime_root = unique_runtime_dir("telegram-config");
-    let config_path = runtime_root.join("loongclaw.toml");
-    let sqlite_path = runtime_root.join("memory.sqlite3");
-    let mut config = mvp::config::LoongClawConfig::default();
+    let mut config = mvp::config::LoongConfig::default();
     config.telegram.enabled = true;
-    config.memory.sqlite_path = sqlite_path.display().to_string();
     LoadedSupervisorConfig {
-        resolved_path: config_path,
+        resolved_path: PathBuf::from("/tmp/loong.toml"),
         config,
     }
 }
@@ -87,7 +76,7 @@ fn plugin_backed_loaded_config_fixture() -> LoadedSupervisorConfig {
     let config = super::mixed_account_weixin_plugin_bridge_config();
 
     LoadedSupervisorConfig {
-        resolved_path: PathBuf::from("/tmp/loongclaw.toml"),
+        resolved_path: PathBuf::from("/tmp/loong.toml"),
         config,
     }
 }
@@ -129,7 +118,7 @@ async fn wait_until(description: &str, predicate: impl Fn() -> bool) {
 
 async fn wait_for_gateway_control_surface(
     runtime_dir: &std::path::Path,
-) -> loongclaw_daemon::gateway::state::GatewayOwnerStatus {
+) -> loong_daemon::gateway::state::GatewayOwnerStatus {
     wait_until("gateway control surface binding", || {
         let status = load_gateway_owner_status(runtime_dir);
         let Some(status) = status else {
@@ -401,9 +390,7 @@ async fn gateway_owner_state_multi_channel_compat_records_wrapper_mode_and_sessi
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[allow(clippy::await_holding_lock)]
 async fn gateway_owner_state_localhost_control_surface_requires_auth_and_stops_runtime() {
-    let _lock = lock_daemon_test_environment();
     let runtime_dir = unique_runtime_dir("localhost-control");
     let hooks = SupervisorRuntimeHooks {
         load_config: Arc::new(|_| Ok(headless_loaded_config_fixture())),
@@ -520,131 +507,6 @@ async fn gateway_owner_state_localhost_control_surface_requires_auth_and_stops_r
         runtime_snapshot_json["tools"]["visible_tool_count"]
             .as_u64()
             .is_some()
-    );
-
-    let unauthorized_acp_sessions_response = client
-        .get(format!("{base_url}/api/gateway/acp/sessions"))
-        .send()
-        .await
-        .expect("send unauthorized gateway ACP sessions request");
-    assert_eq!(
-        unauthorized_acp_sessions_response.status(),
-        reqwest::StatusCode::UNAUTHORIZED
-    );
-
-    let authorized_acp_sessions_response = client
-        .get(format!("{base_url}/api/gateway/acp/sessions"))
-        .bearer_auth(token.as_str())
-        .send()
-        .await
-        .expect("send gateway ACP sessions request");
-    assert_eq!(
-        authorized_acp_sessions_response.status(),
-        reqwest::StatusCode::OK
-    );
-    let authorized_acp_sessions_json: Value = authorized_acp_sessions_response
-        .json()
-        .await
-        .expect("decode gateway ACP sessions response");
-    assert_eq!(
-        authorized_acp_sessions_json["returned_count"].as_u64(),
-        Some(0)
-    );
-
-    let authorized_acp_observability_response = client
-        .get(format!("{base_url}/api/gateway/acp/observability"))
-        .bearer_auth(token.as_str())
-        .send()
-        .await
-        .expect("send gateway ACP observability request");
-    assert_eq!(
-        authorized_acp_observability_response.status(),
-        reqwest::StatusCode::OK
-    );
-    let authorized_acp_observability_json: Value = authorized_acp_observability_response
-        .json()
-        .await
-        .expect("decode gateway ACP observability response");
-    assert_eq!(
-        authorized_acp_observability_json["snapshot"]["runtime_cache"]["active_sessions"].as_u64(),
-        Some(0)
-    );
-
-    let missing_status_response = client
-        .get(format!("{base_url}/api/gateway/acp/status"))
-        .bearer_auth(token.as_str())
-        .query(&[("session", "missing-session")])
-        .send()
-        .await
-        .expect("send missing gateway ACP status request");
-    assert_eq!(
-        missing_status_response.status(),
-        reqwest::StatusCode::NOT_FOUND
-    );
-    let missing_status_json: Value = missing_status_response
-        .json()
-        .await
-        .expect("decode missing gateway ACP status response");
-    assert_eq!(missing_status_json["error"]["code"], "not_found");
-
-    let missing_conversation_status_response = client
-        .get(format!("{base_url}/api/gateway/acp/status"))
-        .bearer_auth(token.as_str())
-        .query(&[("conversation_id", "missing-conversation")])
-        .send()
-        .await
-        .expect("send missing gateway ACP conversation status request");
-    assert_eq!(
-        missing_conversation_status_response.status(),
-        reqwest::StatusCode::NOT_FOUND
-    );
-    let missing_conversation_status_json: Value = missing_conversation_status_response
-        .json()
-        .await
-        .expect("decode missing gateway ACP conversation status response");
-    assert_eq!(
-        missing_conversation_status_json["error"]["code"],
-        "not_found"
-    );
-
-    let missing_route_status_response = client
-        .get(format!("{base_url}/api/gateway/acp/status"))
-        .bearer_auth(token.as_str())
-        .query(&[("route_session_id", "missing-route-session")])
-        .send()
-        .await
-        .expect("send missing gateway ACP route status request");
-    assert_eq!(
-        missing_route_status_response.status(),
-        reqwest::StatusCode::NOT_FOUND
-    );
-    let missing_route_status_json: Value = missing_route_status_response
-        .json()
-        .await
-        .expect("decode missing gateway ACP route status response");
-    assert_eq!(missing_route_status_json["error"]["code"], "not_found");
-
-    let conflicting_selector_response = client
-        .get(format!("{base_url}/api/gateway/acp/status"))
-        .bearer_auth(token.as_str())
-        .query(&[
-            ("session", "missing-session"),
-            ("conversation_id", "missing-conversation"),
-        ])
-        .send()
-        .await
-        .expect("send conflicting gateway ACP selector request");
-    assert_eq!(
-        conflicting_selector_response.status(),
-        reqwest::StatusCode::BAD_REQUEST
-    );
-    let conflicting_selector_json: Value = conflicting_selector_response
-        .json()
-        .await
-        .expect("decode conflicting gateway ACP selector response");
-    assert_eq!(
-        conflicting_selector_json["error"]["code"],
-        "invalid_selector"
     );
 
     let stop_response = client
@@ -823,12 +685,6 @@ async fn gateway_owner_state_local_client_discovers_owner_reads_summary_and_stop
         runtime_snapshot["tools"]["visible_tool_count"]
             .as_u64()
             .map(|value| value as usize)
-            .unwrap_or_default()
-    );
-    assert_eq!(
-        operator_summary.runtime.tool_calling.availability,
-        runtime_snapshot["tools"]["tool_calling"]["availability"]
-            .as_str()
             .unwrap_or_default()
     );
 

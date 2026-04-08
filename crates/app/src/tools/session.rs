@@ -6,7 +6,7 @@ use std::{
 #[cfg(feature = "memory-sqlite")]
 use tokio::time::{Duration, Instant, sleep};
 
-use loongclaw_contracts::{ToolCoreOutcome, ToolCoreRequest};
+use loong_contracts::{ToolCoreOutcome, ToolCoreRequest};
 use serde_json::{Value, json};
 
 use super::payload::{
@@ -52,7 +52,7 @@ use crate::session::repository::{
 };
 #[cfg(feature = "memory-sqlite")]
 use crate::{
-    config::LoongClawConfig,
+    config::LoongConfig,
     conversation::{
         ConversationRuntime, ConversationRuntimeBinding,
         run_started_delegate_child_turn_with_runtime,
@@ -394,7 +394,7 @@ pub(crate) async fn continue_session_with_runtime<R: ConversationRuntime + ?Size
     current_session_id: &str,
     memory_config: &MemoryRuntimeConfig,
     tool_config: &ToolConfig,
-    app_config: &LoongClawConfig,
+    app_config: &LoongConfig,
     runtime: &R,
     binding: ConversationRuntimeBinding<'_>,
 ) -> Result<ToolCoreOutcome, String> {
@@ -3754,7 +3754,7 @@ fn session_terminal_outcome_json(
 mod tests {
     use std::fs;
 
-    use loongclaw_contracts::{ToolCoreOutcome, ToolCoreRequest};
+    use loong_contracts::{ToolCoreOutcome, ToolCoreRequest};
     use rusqlite::params;
     use serde_json::{Value, json};
 
@@ -3770,7 +3770,7 @@ mod tests {
 
     fn isolated_memory_config(test_name: &str) -> MemoryRuntimeConfig {
         let base = std::env::temp_dir().join(format!(
-            "loongclaw-session-tools-{test_name}-{}",
+            "loong-session-tools-{test_name}-{}",
             std::process::id()
         ));
         let _ = fs::create_dir_all(&base);
@@ -5021,10 +5021,10 @@ mod tests {
             feishu: Some(crate::tools::runtime_config::FeishuToolRuntimeConfig {
                 channel: crate::config::FeishuChannelConfig {
                     enabled: true,
-                    app_id: Some(loongclaw_contracts::SecretRef::Inline(
+                    app_id: Some(loong_contracts::SecretRef::Inline(
                         "test-feishu-app-id".to_owned(),
                     )),
-                    app_secret: Some(loongclaw_contracts::SecretRef::Inline(
+                    app_secret: Some(loong_contracts::SecretRef::Inline(
                         "test-feishu-app-secret".to_owned(),
                     )),
                     ..crate::config::FeishuChannelConfig::default()

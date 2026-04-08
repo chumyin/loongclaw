@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::Path;
 
-use loongclaw_contracts::{ToolCoreOutcome, ToolCoreRequest};
+use loong_contracts::{ToolCoreOutcome, ToolCoreRequest};
 use serde_json::{Map, Value, json};
 
 use crate::memory::{
@@ -658,7 +658,7 @@ mod tests {
     #[cfg(all(feature = "tool-file", feature = "memory-sqlite"))]
     #[test]
     fn memory_search_tool_returns_cross_session_canonical_hits_without_workspace_root() {
-        let root = unique_temp_dir("loongclaw-memory-search-canonical");
+        let root = unique_temp_dir("loong-memory-search-canonical");
         let db_path = root.join("memory.sqlite3");
 
         std::fs::create_dir_all(&root).expect("create root dir");
@@ -728,7 +728,7 @@ mod tests {
     #[cfg(all(feature = "tool-file", feature = "memory-sqlite"))]
     #[test]
     fn memory_search_tool_preserves_metadata_only_canonical_hits() {
-        let root = unique_temp_dir("loongclaw-memory-search-canonical-metadata");
+        let root = unique_temp_dir("loong-memory-search-canonical-metadata");
         let db_path = root.join("memory.sqlite3");
 
         std::fs::create_dir_all(&root).expect("create root dir");
@@ -739,7 +739,7 @@ mod tests {
         };
         let payload = json!({
             "type": crate::memory::CANONICAL_MEMORY_RECORD_TYPE,
-            "_loongclaw_internal": true,
+            "_loong_internal": true,
             "scope": "workspace",
             "kind": "imported_profile",
             "content": "release checklist",

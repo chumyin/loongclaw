@@ -94,7 +94,7 @@ impl TelegramOffsetTracker {
 
 impl TelegramAdapter {
     pub(super) fn new(config: &ResolvedTelegramChannelConfig, token: String) -> Self {
-        let offset_home = config::default_loongclaw_home();
+        let offset_home = config::default_loong_home();
         let offset_path =
             telegram_offset_path_for_account(offset_home.as_path(), config.account.id.as_str());
         let next_offset =
@@ -866,15 +866,15 @@ pub(super) fn parse_telegram_updates(
     Ok((inbox, next_offset))
 }
 
-fn telegram_offset_path_for_account(loongclaw_home: &Path, account_id: &str) -> PathBuf {
-    loongclaw_home
+fn telegram_offset_path_for_account(loong_home: &Path, account_id: &str) -> PathBuf {
+    loong_home
         .join("telegram-offsets")
         .join(format!("{}.offset", account_id.trim()))
 }
 
-fn load_offset_for_account(loongclaw_home: &Path, account_id: &str) -> Option<i64> {
-    let account_path = telegram_offset_path_for_account(loongclaw_home, account_id);
-    load_offset(&account_path).or_else(|| load_offset(&loongclaw_home.join("telegram.offset")))
+fn load_offset_for_account(loong_home: &Path, account_id: &str) -> Option<i64> {
+    let account_path = telegram_offset_path_for_account(loong_home, account_id);
+    load_offset(&account_path).or_else(|| load_offset(&loong_home.join("telegram.offset")))
 }
 
 fn load_offset(path: &Path) -> Option<i64> {
@@ -901,7 +901,7 @@ mod tests {
     #[test]
     fn offset_file_roundtrip() {
         let unique = format!(
-            "loongclaw-telegram-offset-{}",
+            "loong-telegram-offset-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("clock")
@@ -975,7 +975,7 @@ mod tests {
     #[test]
     fn telegram_batch_offset_is_not_persisted_until_ack() {
         let unique = format!(
-            "loongclaw-telegram-batch-offset-{}",
+            "loong-telegram-batch-offset-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("clock")
@@ -1000,7 +1000,7 @@ mod tests {
     #[test]
     fn telegram_batch_acknowledges_messages_incrementally_and_flushes_trailing_offset() {
         let unique = format!(
-            "loongclaw-telegram-ack-offset-{}",
+            "loong-telegram-ack-offset-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("clock")
@@ -1027,7 +1027,7 @@ mod tests {
 
     #[test]
     fn telegram_offset_path_is_account_scoped() {
-        let home = std::env::temp_dir().join("loongclaw-telegram-account-offset");
+        let home = std::env::temp_dir().join("loong-telegram-account-offset");
         let path = telegram_offset_path_for_account(home.as_path(), "bot_123456");
 
         assert!(path.ends_with("telegram-offsets/bot_123456.offset"));
@@ -1036,7 +1036,7 @@ mod tests {
     #[test]
     fn telegram_offset_loader_falls_back_to_legacy_single_file() {
         let unique = format!(
-            "loongclaw-telegram-legacy-offset-{}",
+            "loong-telegram-legacy-offset-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("clock")

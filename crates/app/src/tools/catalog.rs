@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::OnceLock;
 
-use loongclaw_kernel::ToolConcurrencyClass;
+use loong_kernel::ToolConcurrencyClass;
 use serde::Serialize;
 use serde_json::{Value, json};
 use sha2::Digest;
@@ -619,8 +619,8 @@ fn build_tool_catalog() -> ToolCatalog {
         ToolDescriptor {
             name: "config.import",
             provider_name: "config_import",
-            aliases: &["claw.migrate", "claw_migrate"],
-            description: "Import legacy agent workspace config, profile, and external-skills mapping state into native LoongClaw settings",
+            aliases: &["loong.migrate", "loong_migrate"],
+            description: "Import legacy agent workspace config, profile, and external-skills mapping state into native Loong settings",
             execution_kind: ToolExecutionKind::Core,
             availability: ToolAvailability::Runtime,
             exposure: ToolExposureClass::Discoverable,
@@ -2459,7 +2459,7 @@ fn config_import_definition(descriptor: &ToolDescriptor) -> Value {
         "type": "function",
         "function": {
             "name": descriptor.provider_name,
-            "description": "Import, discover, plan, merge, apply, and roll back legacy agent workspace config and related external-skills state into native LoongClaw config.",
+            "description": "Import, discover, plan, merge, apply, and roll back legacy agent workspace config and related external-skills state into native Loong config.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -5064,12 +5064,8 @@ mod tests {
             feishu: Some(crate::tools::runtime_config::FeishuToolRuntimeConfig {
                 channel: crate::config::FeishuChannelConfig {
                     enabled: true,
-                    app_id: Some(loongclaw_contracts::SecretRef::Inline(
-                        "cli_a1b2c3".to_owned(),
-                    )),
-                    app_secret: Some(loongclaw_contracts::SecretRef::Inline(
-                        "app-secret".to_owned(),
-                    )),
+                    app_id: Some(loong_contracts::SecretRef::Inline("cli_a1b2c3".to_owned())),
+                    app_secret: Some(loong_contracts::SecretRef::Inline("app-secret".to_owned())),
                     ..crate::config::FeishuChannelConfig::default()
                 },
                 integration: crate::config::FeishuIntegrationConfig::default(),
@@ -5511,10 +5507,10 @@ mod tests {
             .descriptor("config.import")
             .expect("config.import descriptor");
         let expected_policy = governance_profile_for_descriptor(descriptor);
-        let legacy_alias_policy = governance_profile_for_tool_name("claw.migrate");
+        let legacy_alias_policy = governance_profile_for_tool_name("loong.migrate");
 
-        assert!(descriptor.aliases.contains(&"claw.migrate"));
-        assert!(descriptor.aliases.contains(&"claw_migrate"));
+        assert!(descriptor.aliases.contains(&"loong.migrate"));
+        assert!(descriptor.aliases.contains(&"loong_migrate"));
         assert_eq!(legacy_alias_policy, expected_policy);
     }
 

@@ -1,23 +1,12 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
+use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
 
 use crate::CliResult;
-use crate::config::LoongClawConfig;
+use crate::config::LoongConfig;
 
-#[path = "manager_actor.rs"]
-mod actor;
-#[path = "manager_sessions.rs"]
-mod sessions;
-#[path = "manager_support.rs"]
-mod support;
-
-use self::support::*;
-pub use self::support::{
-    AcpManagerActorSnapshot, AcpManagerObservabilitySnapshot, AcpManagerRuntimeCacheSnapshot,
-    AcpManagerSessionSnapshot, AcpManagerTurnSnapshot,
-};
 use super::backend::{
     ACP_SESSION_METADATA_ACTIVATION_ORIGIN, ACP_TURN_METADATA_TRACE_ID, AcpAbortController,
     AcpConfigPatch, AcpDoctorReport, AcpRoutingOrigin, AcpSessionBootstrap, AcpSessionHandle,
@@ -29,6 +18,56 @@ use super::merge_turn_events;
 use super::registry::resolve_acp_backend;
 use super::runtime::resolve_acp_backend_selection;
 use super::store::{AcpSessionStore, InMemoryAcpSessionStore};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcpManagerRuntimeCacheSnapshot {
+    pub active_sessions: usize,
+    pub idle_ttl_ms: u64,
+    pub evicted_total: u64,
+    pub last_evicted_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcpManagerTurnSnapshot {
+    pub active: usize,
+    pub queue_depth: usize,
+    pub completed: u64,
+    pub failed: u64,
+    pub average_latency_ms: u64,
+    pub max_latency_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcpManagerActorSnapshot {
+    pub active: usize,
+    pub queue_depth: usize,
+    pub waiting: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcpManagerSessionSnapshot {
+    pub bound: usize,
+    pub unbound: usize,
+    pub activation_origin_counts: BTreeMap<String, usize>,
+    pub backend_counts: BTreeMap<String, usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcpManagerObservabilitySnapshot {
+    pub runtime_cache: AcpManagerRuntimeCacheSnapshot,
+    pub sessions: AcpManagerSessionSnapshot,
+    pub actors: AcpManagerActorSnapshot,
+    pub turns: AcpManagerTurnSnapshot,
+    pub errors_by_code: BTreeMap<String, usize>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct TurnLatencyStats {
+    completed: u64,
+    failed: u64,
+    total_ms: u64,
+    max_ms: u64,
+}
 
 #[derive(Debug)]
 struct ActiveTurnState {
@@ -71,7 +110,7 @@ impl AcpSessionManager {
 
     pub async fn ensure_session(
         &self,
-        config: &LoongClawConfig,
+        config: &LoongConfig,
         bootstrap: &AcpSessionBootstrap,
     ) -> CliResult<AcpSessionMetadata> {
         self.cleanup_idle_sessions(config).await?;
@@ -83,7 +122,7 @@ impl AcpSessionManager {
             redact_identifier_for_log(bootstrap.conversation_id.as_deref());
         let redacted_binding_scope = redact_binding_scope_for_log(binding_scope.as_ref());
         tracing::debug!(
-            target: "loongclaw.acp",
+            target: "loong.acp",
             backend_id = %selection.id,
             has_conversation_id,
             mode = ?bootstrap.mode,
@@ -95,7 +134,7 @@ impl AcpSessionManager {
             self.resolve_existing_session(config, selection.id.as_str(), bootstrap)?
         {
             tracing::debug!(
-                target: "loongclaw.acp",
+                target: "loong.acp",
                 backend_id = %existing.backend_id,
                 state = ?existing.state,
                 "reused ACP session"
@@ -119,7 +158,7 @@ impl AcpSessionManager {
             .and_then(|value| AcpRoutingOrigin::parse(value));
         self.store.upsert(metadata.clone())?;
         tracing::debug!(
-            target: "loongclaw.acp",
+            target: "loong.acp",
             backend_id = %metadata.backend_id,
             activation_origin = ?metadata.activation_origin.map(AcpRoutingOrigin::as_str),
             "created ACP session"
@@ -129,7 +168,7 @@ impl AcpSessionManager {
 
     pub async fn run_turn(
         &self,
-        config: &LoongClawConfig,
+        config: &LoongConfig,
         bootstrap: &AcpSessionBootstrap,
         request: &AcpTurnRequest,
     ) -> CliResult<AcpTurnResult> {
@@ -139,7 +178,7 @@ impl AcpSessionManager {
 
     pub async fn run_turn_with_sink(
         &self,
-        config: &LoongClawConfig,
+        config: &LoongConfig,
         bootstrap: &AcpSessionBootstrap,
         request: &AcpTurnRequest,
         sink: Option<&dyn AcpTurnEventSink>,
@@ -157,7 +196,7 @@ impl AcpSessionManager {
         let redacted_trace_id = redact_identifier_for_log(trace_id);
         let has_trace_id = redacted_trace_id.is_some();
         tracing::debug!(
-            target: "loongclaw.acp",
+            target: "loong.acp",
             backend_id = %metadata.backend_id,
             has_trace_id,
             input_len = request.input.chars().count(),
@@ -224,7 +263,7 @@ impl AcpSessionManager {
                 metadata.touch();
                 self.store.upsert(metadata)?;
                 tracing::debug!(
-                    target: "loongclaw.acp",
+                    target: "loong.acp",
                     backend_id = %handle.backend_id,
                     has_trace_id,
                     state = ?result.state,
@@ -246,7 +285,7 @@ impl AcpSessionManager {
                 metadata.set_error(error.clone());
                 self.store.upsert(metadata)?;
                 tracing::warn!(
-                    target: "loongclaw.acp",
+                    target: "loong.acp",
                     backend_id = %handle.backend_id,
                     trace_id = ?redacted_trace_id,
                     has_trace_id,
@@ -263,7 +302,7 @@ impl AcpSessionManager {
 
     pub async fn get_status(
         &self,
-        config: &LoongClawConfig,
+        config: &LoongConfig,
         session_key: &str,
     ) -> CliResult<AcpSessionStatus> {
         let registered = self
@@ -345,7 +384,7 @@ impl AcpSessionManager {
 
     pub async fn set_mode(
         &self,
-        config: &LoongClawConfig,
+        config: &LoongConfig,
         session_key: &str,
         mode: AcpSessionMode,
     ) -> CliResult<()> {
@@ -381,7 +420,7 @@ impl AcpSessionManager {
 
     pub async fn set_config_option(
         &self,
-        config: &LoongClawConfig,
+        config: &LoongConfig,
         session_key: &str,
         patch: &AcpConfigPatch,
     ) -> CliResult<()> {
@@ -417,7 +456,7 @@ impl AcpSessionManager {
         }
     }
 
-    pub async fn cancel(&self, config: &LoongClawConfig, session_key: &str) -> CliResult<()> {
+    pub async fn cancel(&self, config: &LoongConfig, session_key: &str) -> CliResult<()> {
         let registered = self
             .store
             .get(session_key)?
@@ -455,7 +494,7 @@ impl AcpSessionManager {
         }
     }
 
-    pub async fn close(&self, config: &LoongClawConfig, session_key: &str) -> CliResult<()> {
+    pub async fn close(&self, config: &LoongConfig, session_key: &str) -> CliResult<()> {
         let registered = self
             .store
             .get(session_key)?
@@ -482,7 +521,7 @@ impl AcpSessionManager {
 
     pub async fn observability_snapshot(
         &self,
-        config: &LoongClawConfig,
+        config: &LoongConfig,
     ) -> CliResult<AcpManagerObservabilitySnapshot> {
         self.cleanup_idle_sessions(config).await?;
 
@@ -584,7 +623,7 @@ impl AcpSessionManager {
 
     pub async fn doctor(
         &self,
-        config: &LoongClawConfig,
+        config: &LoongConfig,
         backend_id: Option<&str>,
     ) -> CliResult<AcpDoctorReport> {
         let selected = backend_id
@@ -610,6 +649,572 @@ impl AcpSessionManager {
     pub fn list_sessions(&self) -> CliResult<Vec<AcpSessionMetadata>> {
         self.store.list()
     }
+
+    fn resolve_existing_session(
+        &self,
+        config: &LoongConfig,
+        selected_backend_id: &str,
+        bootstrap: &AcpSessionBootstrap,
+    ) -> CliResult<Option<AcpSessionMetadata>> {
+        if let Some(existing) = self.store.get(bootstrap.session_key.as_str())? {
+            return self
+                .validate_and_touch_existing_session(selected_backend_id, bootstrap, existing)
+                .map(Some);
+        }
+
+        if config.acp.bindings_enabled {
+            if let Some(binding) = AcpSessionBindingScope::from_bootstrap(bootstrap)
+                && let Some(existing) = self
+                    .store
+                    .get_by_binding_route_session_id(binding.route_session_id.as_str())?
+            {
+                return self
+                    .validate_and_touch_existing_session(selected_backend_id, bootstrap, existing)
+                    .map(Some);
+            }
+            if let Some(conversation_id) =
+                normalized_conversation_id(bootstrap.conversation_id.as_deref())
+                && let Some(existing) = self
+                    .store
+                    .get_by_conversation_id(conversation_id.as_str())?
+            {
+                return self
+                    .validate_and_touch_existing_session(selected_backend_id, bootstrap, existing)
+                    .map(Some);
+            }
+        }
+
+        Ok(None)
+    }
+
+    fn validate_and_touch_existing_session(
+        &self,
+        selected_backend_id: &str,
+        bootstrap: &AcpSessionBootstrap,
+        mut existing: AcpSessionMetadata,
+    ) -> CliResult<AcpSessionMetadata> {
+        if existing.backend_id != selected_backend_id {
+            return Err(format!(
+                "session `{}` is already bound to ACP backend `{}` (requested `{}`); use a new session key or close the existing session first",
+                existing.session_key, existing.backend_id, selected_backend_id
+            ));
+        }
+
+        if let Some(binding) = AcpSessionBindingScope::from_bootstrap(bootstrap) {
+            if let Some(existing_binding) = existing.binding.as_ref() {
+                if existing_binding != &binding {
+                    return Err(format!(
+                        "session `{}` is already bound to ACP route `{}` (requested `{}`); use a new session key or close the existing session first",
+                        existing.session_key,
+                        existing_binding.route_session_id,
+                        binding.route_session_id
+                    ));
+                }
+            } else {
+                existing.binding = Some(binding);
+            }
+        }
+
+        if let Some(conversation_id) =
+            normalized_conversation_id(bootstrap.conversation_id.as_deref())
+        {
+            if existing.binding.is_some() {
+                if existing.conversation_id.is_none() {
+                    existing.conversation_id = Some(conversation_id);
+                }
+            } else {
+                existing.conversation_id = Some(conversation_id);
+            }
+        }
+        if existing.mode.is_none() {
+            existing.mode = bootstrap.mode;
+        }
+        existing.touch();
+        self.store.upsert(existing.clone())?;
+        Ok(existing)
+    }
+
+    fn enforce_max_concurrent_sessions(
+        &self,
+        config: &LoongConfig,
+        requested_session_key: &str,
+    ) -> CliResult<()> {
+        if self.store.get(requested_session_key)?.is_some() {
+            return Ok(());
+        }
+        let current = self.store.list()?.len();
+        let limit = config.acp.max_concurrent_sessions();
+        if current >= limit {
+            return Err(format!(
+                "ACP control plane already tracks {current} sessions, which reaches max_concurrent_sessions={limit}"
+            ));
+        }
+        Ok(())
+    }
+
+    async fn cleanup_idle_sessions(&self, config: &LoongConfig) -> CliResult<()> {
+        let ttl_ms = config.acp.session_idle_ttl_ms();
+        if ttl_ms == 0 {
+            return Ok(());
+        }
+
+        let now = now_ms();
+        for metadata in self.store.list()? {
+            if matches!(
+                metadata.state,
+                AcpSessionState::Busy | AcpSessionState::Cancelling | AcpSessionState::Initializing
+            ) {
+                continue;
+            }
+            if self.actor_ref_count_for_metadata(&metadata)? > 0 {
+                continue;
+            }
+            if self.pending_turn_count_for_metadata(&metadata)? > 0 {
+                continue;
+            }
+            if self.is_active_turn_for_metadata(&metadata)? {
+                continue;
+            }
+            if now.saturating_sub(metadata.last_activity_ms) < ttl_ms {
+                continue;
+            }
+
+            if let Ok(backend) = resolve_acp_backend(Some(metadata.backend_id.as_str())) {
+                let _ = backend.close(config, &metadata.to_handle()).await;
+            }
+            let _ = self.store.remove(metadata.session_key.as_str());
+            self.record_eviction(now)?;
+        }
+
+        Ok(())
+    }
+
+    fn fallback_status(
+        &self,
+        metadata: &AcpSessionMetadata,
+        active_turn: bool,
+        pending_turns: usize,
+    ) -> AcpSessionStatus {
+        AcpSessionStatus {
+            session_key: metadata.session_key.clone(),
+            backend_id: metadata.backend_id.clone(),
+            conversation_id: metadata.conversation_id.clone(),
+            binding: metadata.binding.clone(),
+            activation_origin: metadata.activation_origin,
+            state: projected_status_state(metadata.state, active_turn, pending_turns),
+            mode: metadata.mode,
+            pending_turns: pending_turns.max(usize::from(active_turn)),
+            active_turn_id: active_turn.then(|| metadata.runtime_session_name.clone()),
+            last_activity_ms: metadata.last_activity_ms,
+            last_error: metadata.last_error.clone(),
+        }
+    }
+
+    async fn request_active_turn_cancellation(
+        &self,
+        config: &LoongConfig,
+        mut metadata: AcpSessionMetadata,
+        active_turn: Arc<ActiveTurnState>,
+    ) -> CliResult<()> {
+        active_turn.abort_controller.abort();
+
+        metadata.state = AcpSessionState::Cancelling;
+        metadata.clear_error();
+        metadata.touch();
+        self.store.upsert(metadata.clone())?;
+
+        let backend = resolve_acp_backend(Some(active_turn.handle.backend_id.as_str()))?;
+        match backend.cancel(config, &active_turn.handle).await {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                self.record_error(error.as_str())?;
+                metadata.state = AcpSessionState::Error;
+                metadata.set_error(error.clone());
+                self.store.upsert(metadata)?;
+                Err(error)
+            }
+        }
+    }
+
+    async fn acquire_session_actor_guard(&self, actor_key: String) -> CliResult<SessionActorGuard> {
+        self.increment_actor_ref_count(actor_key.as_str())?;
+        let queue_lock = match self.get_or_insert_session_actor(actor_key.as_str()) {
+            Ok(lock) => lock,
+            Err(error) => {
+                let _ = self.decrement_actor_ref_count(actor_key.as_str());
+                return Err(error);
+            }
+        };
+
+        Ok(SessionActorGuard {
+            actor_key,
+            actor_guard: Some(queue_lock.lock_owned().await),
+            session_actor_locks: self.session_actor_locks.clone(),
+            actor_ref_counts: self.actor_ref_counts.clone(),
+            pending_turns: self.pending_turns.clone(),
+            count_pending_turn: false,
+        })
+    }
+
+    async fn acquire_turn_queue_guard(&self, actor_key: String) -> CliResult<SessionActorGuard> {
+        self.increment_actor_ref_count(actor_key.as_str())?;
+        if let Err(error) = self.increment_pending_turn(actor_key.as_str()) {
+            let _ = self.decrement_actor_ref_count(actor_key.as_str());
+            return Err(error);
+        }
+        let queue_lock = match self.get_or_insert_session_actor(actor_key.as_str()) {
+            Ok(lock) => lock,
+            Err(error) => {
+                let _ = self.decrement_pending_turn(actor_key.as_str());
+                let _ = self.decrement_actor_ref_count(actor_key.as_str());
+                return Err(error);
+            }
+        };
+
+        Ok(SessionActorGuard {
+            actor_key,
+            actor_guard: Some(queue_lock.lock_owned().await),
+            session_actor_locks: self.session_actor_locks.clone(),
+            actor_ref_counts: self.actor_ref_counts.clone(),
+            pending_turns: self.pending_turns.clone(),
+            count_pending_turn: true,
+        })
+    }
+
+    fn get_or_insert_session_actor(&self, actor_key: &str) -> CliResult<Arc<AsyncMutex<()>>> {
+        let mut guard = self
+            .session_actor_locks
+            .write()
+            .map_err(|_error| "ACP session actor registry lock poisoned".to_owned())?;
+        Ok(guard
+            .entry(actor_key.to_owned())
+            .or_insert_with(|| Arc::new(AsyncMutex::new(())))
+            .clone())
+    }
+
+    fn increment_actor_ref_count(&self, actor_key: &str) -> CliResult<()> {
+        let mut guard = self
+            .actor_ref_counts
+            .write()
+            .map_err(|_error| "ACP actor reference registry lock poisoned".to_owned())?;
+        *guard.entry(actor_key.to_owned()).or_insert(0) += 1;
+        Ok(())
+    }
+
+    fn decrement_actor_ref_count(&self, actor_key: &str) -> CliResult<()> {
+        let mut guard = self
+            .actor_ref_counts
+            .write()
+            .map_err(|_error| "ACP actor reference registry lock poisoned".to_owned())?;
+        if let Some(count) = guard.get_mut(actor_key) {
+            if *count <= 1 {
+                guard.remove(actor_key);
+            } else {
+                *count -= 1;
+            }
+        }
+        Ok(())
+    }
+
+    fn increment_pending_turn(&self, actor_key: &str) -> CliResult<()> {
+        let mut guard = self
+            .pending_turns
+            .write()
+            .map_err(|_error| "ACP pending turn registry lock poisoned".to_owned())?;
+        *guard.entry(actor_key.to_owned()).or_insert(0) += 1;
+        Ok(())
+    }
+
+    fn decrement_pending_turn(&self, actor_key: &str) -> CliResult<()> {
+        let mut guard = self
+            .pending_turns
+            .write()
+            .map_err(|_error| "ACP pending turn registry lock poisoned".to_owned())?;
+        if let Some(count) = guard.get_mut(actor_key) {
+            if *count <= 1 {
+                guard.remove(actor_key);
+            } else {
+                *count -= 1;
+            }
+        }
+        Ok(())
+    }
+
+    fn pending_turn_count_for_metadata(&self, metadata: &AcpSessionMetadata) -> CliResult<usize> {
+        self.pending_turn_count(actor_key_for_metadata(metadata).as_str())
+    }
+
+    fn actor_ref_count_for_metadata(&self, metadata: &AcpSessionMetadata) -> CliResult<usize> {
+        self.actor_ref_count(actor_key_for_metadata(metadata).as_str())
+    }
+
+    fn pending_turn_count(&self, actor_key: &str) -> CliResult<usize> {
+        let guard = self
+            .pending_turns
+            .read()
+            .map_err(|_error| "ACP pending turn registry lock poisoned".to_owned())?;
+        Ok(guard.get(actor_key).copied().unwrap_or(0))
+    }
+
+    fn actor_ref_count(&self, actor_key: &str) -> CliResult<usize> {
+        let guard = self
+            .actor_ref_counts
+            .read()
+            .map_err(|_error| "ACP actor reference registry lock poisoned".to_owned())?;
+        Ok(guard.get(actor_key).copied().unwrap_or(0))
+    }
+
+    fn active_turn(&self, actor_key: &str) -> CliResult<Option<Arc<ActiveTurnState>>> {
+        let guard = self
+            .active_turns
+            .read()
+            .map_err(|_error| "ACP active turn registry lock poisoned".to_owned())?;
+        Ok(guard.get(actor_key).cloned())
+    }
+
+    fn is_active_turn_for_metadata(&self, metadata: &AcpSessionMetadata) -> CliResult<bool> {
+        Ok(self
+            .active_turn(actor_key_for_metadata(metadata).as_str())?
+            .is_some())
+    }
+
+    fn record_turn_completion(&self, started_ms: u64, succeeded: bool) -> CliResult<()> {
+        let duration_ms = now_ms().saturating_sub(started_ms);
+        let mut guard = self
+            .turn_latency_stats
+            .write()
+            .map_err(|_error| "ACP turn latency registry lock poisoned".to_owned())?;
+        if succeeded {
+            guard.completed = guard.completed.saturating_add(1);
+        } else {
+            guard.failed = guard.failed.saturating_add(1);
+        }
+        guard.total_ms = guard.total_ms.saturating_add(duration_ms);
+        guard.max_ms = guard.max_ms.max(duration_ms);
+        Ok(())
+    }
+
+    fn record_error(&self, error: &str) -> CliResult<()> {
+        let key = normalize_error_key(error);
+        let mut guard = self
+            .error_counts_by_code
+            .write()
+            .map_err(|_error| "ACP error registry lock poisoned".to_owned())?;
+        *guard.entry(key).or_insert(0) += 1;
+        Ok(())
+    }
+
+    fn record_eviction(&self, at_ms: u64) -> CliResult<()> {
+        let mut count_guard = self
+            .evicted_runtime_count
+            .write()
+            .map_err(|_error| "ACP eviction counter lock poisoned".to_owned())?;
+        *count_guard = count_guard.saturating_add(1);
+        let mut ts_guard = self
+            .last_evicted_at_ms
+            .write()
+            .map_err(|_error| "ACP last eviction lock poisoned".to_owned())?;
+        *ts_guard = Some(at_ms);
+        Ok(())
+    }
+
+    fn register_active_turn(
+        &self,
+        actor_key: &str,
+        active_turn: Arc<ActiveTurnState>,
+    ) -> CliResult<()> {
+        let mut guard = self
+            .active_turns
+            .write()
+            .map_err(|_error| "ACP active turn registry lock poisoned".to_owned())?;
+        guard.insert(actor_key.to_owned(), active_turn);
+        Ok(())
+    }
+
+    fn clear_active_turn(&self, actor_key: &str) -> CliResult<()> {
+        let mut guard = self
+            .active_turns
+            .write()
+            .map_err(|_error| "ACP active turn registry lock poisoned".to_owned())?;
+        guard.remove(actor_key);
+        Ok(())
+    }
+}
+
+struct SessionActorGuard {
+    actor_key: String,
+    actor_guard: Option<OwnedMutexGuard<()>>,
+    session_actor_locks: Arc<RwLock<BTreeMap<String, Arc<AsyncMutex<()>>>>>,
+    actor_ref_counts: Arc<RwLock<BTreeMap<String, usize>>>,
+    pending_turns: Arc<RwLock<BTreeMap<String, usize>>>,
+    count_pending_turn: bool,
+}
+
+impl Drop for SessionActorGuard {
+    fn drop(&mut self) {
+        self.actor_guard.take();
+
+        if self.count_pending_turn
+            && let Ok(mut guard) = self.pending_turns.write()
+        {
+            match guard.get_mut(self.actor_key.as_str()) {
+                Some(count) if *count <= 1 => {
+                    guard.remove(self.actor_key.as_str());
+                }
+                Some(count) => {
+                    *count -= 1;
+                }
+                None => {}
+            }
+        }
+
+        if let Ok(mut guard) = self.actor_ref_counts.write() {
+            match guard.get_mut(self.actor_key.as_str()) {
+                Some(count) if *count <= 1 => {
+                    guard.remove(self.actor_key.as_str());
+                }
+                Some(count) => {
+                    *count -= 1;
+                }
+                None => {}
+            }
+        }
+
+        let should_remove_actor = self
+            .actor_ref_counts
+            .read()
+            .map(|guard| !guard.contains_key(self.actor_key.as_str()))
+            .unwrap_or(false);
+        if should_remove_actor && let Ok(mut guard) = self.session_actor_locks.write() {
+            guard.remove(self.actor_key.as_str());
+        }
+    }
+}
+
+const IDENTIFIER_FINGERPRINT_HEX_PREFIX_LEN: usize = 24;
+
+fn normalized_identifier(raw: Option<&str>) -> Option<String> {
+    raw.map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_owned())
+}
+
+fn normalized_conversation_id(raw: Option<&str>) -> Option<String> {
+    normalized_identifier(raw)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RedactedBindingScopeForLog {
+    route_session_id: String,
+    channel_id: Option<String>,
+    account_id: Option<String>,
+    conversation_id: Option<String>,
+    thread_id: Option<String>,
+}
+
+fn redact_identifier_for_log(raw: Option<&str>) -> Option<String> {
+    let normalized = normalized_identifier(raw)?;
+    Some(identifier_fingerprint(normalized.as_str()))
+}
+
+fn identifier_fingerprint(raw: &str) -> String {
+    let digest = Sha256::digest(raw.as_bytes());
+    let hex = hex::encode(digest);
+    let prefix = &hex[..IDENTIFIER_FINGERPRINT_HEX_PREFIX_LEN];
+    format!("sha256:{prefix}")
+}
+
+fn redact_binding_scope_for_log(
+    binding: Option<&AcpSessionBindingScope>,
+) -> Option<RedactedBindingScopeForLog> {
+    let binding = binding?;
+
+    Some(RedactedBindingScopeForLog {
+        route_session_id: identifier_fingerprint(binding.route_session_id.as_str()),
+        channel_id: binding.channel_id.clone(),
+        account_id: redact_identifier_for_log(binding.account_id.as_deref()),
+        conversation_id: redact_identifier_for_log(binding.conversation_id.as_deref()),
+        thread_id: redact_identifier_for_log(binding.thread_id.as_deref()),
+    })
+}
+
+fn actor_key_for_bootstrap(bootstrap: &AcpSessionBootstrap) -> String {
+    let binding = AcpSessionBindingScope::from_bootstrap(bootstrap);
+    session_actor_key(
+        bootstrap.session_key.as_str(),
+        bootstrap.conversation_id.as_deref(),
+        binding.as_ref(),
+    )
+}
+
+fn actor_key_for_metadata(metadata: &AcpSessionMetadata) -> String {
+    session_actor_key(
+        metadata.session_key.as_str(),
+        metadata.conversation_id.as_deref(),
+        metadata.binding.as_ref(),
+    )
+}
+
+fn session_actor_key(
+    session_key: &str,
+    conversation_id: Option<&str>,
+    binding: Option<&AcpSessionBindingScope>,
+) -> String {
+    if let Some(binding) = binding {
+        return format!("route:{}", binding.route_session_id);
+    }
+    if let Some(conversation_id) = normalized_conversation_id(conversation_id) {
+        return format!("conversation:{conversation_id}");
+    }
+    format!("session:{}", session_key.trim())
+}
+
+fn normalize_error_key(error: &str) -> String {
+    let trimmed = error.trim();
+    if trimmed.is_empty() {
+        return "unknown".to_owned();
+    }
+    const MAX_ERROR_KEY_LEN: usize = 120;
+    let mut truncated = String::new();
+    for (idx, ch) in trimmed.chars().enumerate() {
+        if idx >= MAX_ERROR_KEY_LEN {
+            truncated.push_str("...");
+            break;
+        }
+        truncated.push(ch);
+    }
+    truncated
+}
+
+fn projected_status_state(
+    state: AcpSessionState,
+    active_turn: bool,
+    pending_turns: usize,
+) -> AcpSessionState {
+    if !active_turn && pending_turns == 0 {
+        return state;
+    }
+
+    if matches!(
+        state,
+        AcpSessionState::Cancelling | AcpSessionState::Error | AcpSessionState::Closed
+    ) {
+        state
+    } else {
+        AcpSessionState::Busy
+    }
+}
+
+fn bump_usize_count(counts: &mut BTreeMap<String, usize>, key: &str) {
+    let entry = counts.entry(key.to_owned()).or_insert(0);
+    *entry = entry.saturating_add(1);
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -629,7 +1234,7 @@ mod tests {
         AcpTurnRequest, AcpTurnResult, AcpTurnStopReason, register_acp_backend,
     };
     use crate::CliResult;
-    use crate::config::{AcpConfig, LoongClawConfig};
+    use crate::config::{AcpConfig, LoongConfig};
 
     #[cfg(feature = "memory-sqlite")]
     use super::super::AcpSqliteSessionStore;
@@ -712,11 +1317,6 @@ mod tests {
         id: &'static str,
     }
 
-    struct CloseFailureBackend {
-        id: &'static str,
-        state: Arc<CloseFailureState>,
-    }
-
     struct QueuedTurnBackend {
         id: &'static str,
         state: Arc<QueuedTurnState>,
@@ -767,11 +1367,6 @@ mod tests {
         cancel_calls: AtomicUsize,
         close_calls: AtomicUsize,
         abort_observed: AtomicUsize,
-    }
-
-    #[derive(Default)]
-    struct CloseFailureState {
-        close_calls: AtomicUsize,
     }
 
     #[derive(Default)]
@@ -827,30 +1422,6 @@ mod tests {
         }
     }
 
-    async fn wait_for_actor_counts(
-        manager: &AcpSessionManager,
-        actor_key: &str,
-        expected_ref_count: usize,
-        expected_pending_turns: usize,
-    ) {
-        tokio::time::timeout(Duration::from_secs(1), async {
-            loop {
-                let ref_count = manager
-                    .actor_ref_count(actor_key)
-                    .expect("actor ref count should read");
-                let pending_turns = manager
-                    .pending_turn_count(actor_key)
-                    .expect("pending turn count should read");
-                if ref_count == expected_ref_count && pending_turns == expected_pending_turns {
-                    return;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("actor counts should converge");
-    }
-
     struct StreamingSinkBackend {
         id: &'static str,
         state: Arc<StreamingSinkState>,
@@ -891,7 +1462,7 @@ mod tests {
 
         async fn ensure_session(
             &self,
-            _config: &LoongClawConfig,
+            _config: &LoongConfig,
             request: &AcpSessionBootstrap,
         ) -> CliResult<AcpSessionHandle> {
             self.state.lock().expect("counting state").ensure_calls += 1;
@@ -908,7 +1479,7 @@ mod tests {
 
         async fn run_turn(
             &self,
-            _config: &LoongClawConfig,
+            _config: &LoongConfig,
             _session: &AcpSessionHandle,
             request: &AcpTurnRequest,
         ) -> CliResult<AcpTurnResult> {
@@ -924,18 +1495,14 @@ mod tests {
 
         async fn cancel(
             &self,
-            _config: &LoongClawConfig,
+            _config: &LoongConfig,
             _session: &AcpSessionHandle,
         ) -> CliResult<()> {
             self.state.lock().expect("counting state").cancel_calls += 1;
             Ok(())
         }
 
-        async fn close(
-            &self,
-            _config: &LoongClawConfig,
-            _session: &AcpSessionHandle,
-        ) -> CliResult<()> {
+        async fn close(&self, _config: &LoongConfig, _session: &AcpSessionHandle) -> CliResult<()> {
             self.state.lock().expect("counting state").close_calls += 1;
             Ok(())
         }
@@ -953,7 +1520,7 @@ mod tests {
 
         async fn ensure_session(
             &self,
-            _config: &LoongClawConfig,
+            _config: &LoongConfig,
             request: &AcpSessionBootstrap,
         ) -> CliResult<AcpSessionHandle> {
             Ok(AcpSessionHandle {
@@ -969,7 +1536,7 @@ mod tests {
 
         async fn run_turn(
             &self,
-            _config: &LoongClawConfig,
+            _config: &LoongConfig,
             _session: &AcpSessionHandle,
             request: &AcpTurnRequest,
         ) -> CliResult<AcpTurnResult> {
@@ -984,17 +1551,13 @@ mod tests {
 
         async fn cancel(
             &self,
-            _config: &LoongClawConfig,
+            _config: &LoongConfig,
             _session: &AcpSessionHandle,
         ) -> CliResult<()> {
             Ok(())
         }
 
-        async fn close(
-            &self,
-            _config: &LoongClawConfig,
-            _session: &AcpSessionHandle,
-        ) -> CliResult<()> {
+        async fn close(&self, _config: &LoongConfig, _session: &AcpSessionHandle) -> CliResult<()> {
             Ok(())
         }
     }
@@ -1007,7 +1570,7 @@ mod tests {
 
         async fn ensure_session(
             &self,
-            _config: &LoongClawConfig,
+            _config: &LoongConfig,
             request: &AcpSessionBootstrap,
         ) -> CliResult<AcpSessionHandle> {
             Ok(AcpSessionHandle {
@@ -1023,7 +1586,7 @@ mod tests {
 
         async fn run_turn(
             &self,
-            _config: &LoongClawConfig,
+            _config: &LoongConfig,
             _session: &AcpSessionHandle,
             _request: &AcpTurnRequest,
         ) -> CliResult<AcpTurnResult> {
@@ -1032,81 +1595,14 @@ mod tests {
 
         async fn cancel(
             &self,
-            _config: &LoongClawConfig,
+            _config: &LoongConfig,
             _session: &AcpSessionHandle,
         ) -> CliResult<()> {
             Ok(())
         }
 
-        async fn close(
-            &self,
-            _config: &LoongClawConfig,
-            _session: &AcpSessionHandle,
-        ) -> CliResult<()> {
+        async fn close(&self, _config: &LoongConfig, _session: &AcpSessionHandle) -> CliResult<()> {
             Ok(())
-        }
-    }
-
-    #[async_trait]
-    impl AcpRuntimeBackend for CloseFailureBackend {
-        fn id(&self) -> &'static str {
-            self.id
-        }
-
-        fn metadata(&self) -> AcpBackendMetadata {
-            AcpBackendMetadata::new(
-                self.id(),
-                [AcpCapability::SessionLifecycle],
-                "Close failure ACP backend for manager tests",
-            )
-        }
-
-        async fn ensure_session(
-            &self,
-            _config: &LoongClawConfig,
-            request: &AcpSessionBootstrap,
-        ) -> CliResult<AcpSessionHandle> {
-            Ok(AcpSessionHandle {
-                session_key: request.session_key.clone(),
-                backend_id: self.id().to_owned(),
-                runtime_session_name: format!("close-failure-{}", request.session_key),
-                working_directory: request.working_directory.clone(),
-                backend_session_id: None,
-                agent_session_id: None,
-                binding: request.binding.clone(),
-            })
-        }
-
-        async fn run_turn(
-            &self,
-            _config: &LoongClawConfig,
-            _session: &AcpSessionHandle,
-            request: &AcpTurnRequest,
-        ) -> CliResult<AcpTurnResult> {
-            Ok(AcpTurnResult {
-                output_text: request.input.clone(),
-                state: AcpSessionState::Ready,
-                usage: None,
-                events: Vec::new(),
-                stop_reason: Some(AcpTurnStopReason::Completed),
-            })
-        }
-
-        async fn cancel(
-            &self,
-            _config: &LoongClawConfig,
-            _session: &AcpSessionHandle,
-        ) -> CliResult<()> {
-            Ok(())
-        }
-
-        async fn close(
-            &self,
-            _config: &LoongClawConfig,
-            _session: &AcpSessionHandle,
-        ) -> CliResult<()> {
-            self.state.close_calls.fetch_add(1, Ordering::SeqCst);
-            Err("synthetic ACP close failure".to_owned())
         }
     }
 
@@ -1130,7 +1626,7 @@ mod tests {
 
         async fn ensure_session(
             &self,
-            _config: &LoongClawConfig,
+            _config: &LoongConfig,
             request: &AcpSessionBootstrap,
         ) -> CliResult<AcpSessionHandle> {
             Ok(AcpSessionHandle {
@@ -1146,7 +1642,7 @@ mod tests {
 
         async fn run_turn(
             &self,
-            _config: &LoongClawConfig,
+            _config: &LoongConfig,
             _session: &AcpSessionHandle,
             request: &AcpTurnRequest,
         ) -> CliResult<AcpTurnResult> {
@@ -1177,17 +1673,13 @@ mod tests {
 
         async fn cancel(
             &self,
-            _config: &LoongClawConfig,
+            _config: &LoongConfig,
             _session: &AcpSessionHandle,
         ) -> CliResult<()> {
             Ok(())
         }
 
-        async fn close(
-            &self,
-            _config: &LoongClawConfig,
-            _session: &AcpSessionHandle,
-        ) -> CliResult<()> {
+        async fn close(&self, _config: &LoongConfig, _session: &AcpSessionHandle) -> CliResult<()> {
             Ok(())
         }
     }
@@ -1213,7 +1705,7 @@ mod tests {
 
         async fn ensure_session(
             &self,
-            _config: &LoongClawConfig,
+            _config: &LoongConfig,
             request: &AcpSessionBootstrap,
         ) -> CliResult<AcpSessionHandle> {
             Ok(AcpSessionHandle {
@@ -1229,7 +1721,7 @@ mod tests {
 
         async fn run_turn(
             &self,
-            _config: &LoongClawConfig,
+            _config: &LoongConfig,
             _session: &AcpSessionHandle,
             request: &AcpTurnRequest,
         ) -> CliResult<AcpTurnResult> {
@@ -1253,7 +1745,7 @@ mod tests {
 
         async fn set_mode(
             &self,
-            _config: &LoongClawConfig,
+            _config: &LoongConfig,
             _session: &AcpSessionHandle,
             mode: AcpSessionMode,
         ) -> CliResult<()> {
@@ -1273,7 +1765,7 @@ mod tests {
 
         async fn get_status(
             &self,
-            _config: &LoongClawConfig,
+            _config: &LoongConfig,
             session: &AcpSessionHandle,
         ) -> CliResult<Option<AcpSessionStatus>> {
             self.state.status_calls.fetch_add(1, Ordering::SeqCst);
@@ -1299,17 +1791,13 @@ mod tests {
 
         async fn cancel(
             &self,
-            _config: &LoongClawConfig,
+            _config: &LoongConfig,
             _session: &AcpSessionHandle,
         ) -> CliResult<()> {
             Ok(())
         }
 
-        async fn close(
-            &self,
-            _config: &LoongClawConfig,
-            _session: &AcpSessionHandle,
-        ) -> CliResult<()> {
+        async fn close(&self, _config: &LoongConfig, _session: &AcpSessionHandle) -> CliResult<()> {
             Ok(())
         }
     }
@@ -1333,7 +1821,7 @@ mod tests {
 
         async fn ensure_session(
             &self,
-            _config: &LoongClawConfig,
+            _config: &LoongConfig,
             request: &AcpSessionBootstrap,
         ) -> CliResult<AcpSessionHandle> {
             Ok(AcpSessionHandle {
@@ -1349,7 +1837,7 @@ mod tests {
 
         async fn run_turn(
             &self,
-            _config: &LoongClawConfig,
+            _config: &LoongConfig,
             _session: &AcpSessionHandle,
             request: &AcpTurnRequest,
         ) -> CliResult<AcpTurnResult> {
@@ -1364,7 +1852,7 @@ mod tests {
 
         async fn set_mode(
             &self,
-            _config: &LoongClawConfig,
+            _config: &LoongConfig,
             _session: &AcpSessionHandle,
             _mode: AcpSessionMode,
         ) -> CliResult<()> {
@@ -1374,17 +1862,13 @@ mod tests {
             Ok(())
         }
 
-        async fn close(
-            &self,
-            _config: &LoongClawConfig,
-            _session: &AcpSessionHandle,
-        ) -> CliResult<()> {
+        async fn close(&self, _config: &LoongConfig, _session: &AcpSessionHandle) -> CliResult<()> {
             Ok(())
         }
 
         async fn cancel(
             &self,
-            _config: &LoongClawConfig,
+            _config: &LoongConfig,
             _session: &AcpSessionHandle,
         ) -> CliResult<()> {
             Ok(())
@@ -1412,7 +1896,7 @@ mod tests {
 
         async fn ensure_session(
             &self,
-            _config: &LoongClawConfig,
+            _config: &LoongConfig,
             request: &AcpSessionBootstrap,
         ) -> CliResult<AcpSessionHandle> {
             Ok(AcpSessionHandle {
@@ -1428,7 +1912,7 @@ mod tests {
 
         async fn run_turn(
             &self,
-            _config: &LoongClawConfig,
+            _config: &LoongConfig,
             _session: &AcpSessionHandle,
             request: &AcpTurnRequest,
         ) -> CliResult<AcpTurnResult> {
@@ -1443,7 +1927,7 @@ mod tests {
 
         async fn run_turn_with_sink(
             &self,
-            _config: &LoongClawConfig,
+            _config: &LoongConfig,
             _session: &AcpSessionHandle,
             _request: &AcpTurnRequest,
             abort: Option<AcpAbortSignal>,
@@ -1473,18 +1957,14 @@ mod tests {
 
         async fn cancel(
             &self,
-            _config: &LoongClawConfig,
+            _config: &LoongConfig,
             _session: &AcpSessionHandle,
         ) -> CliResult<()> {
             self.state.cancel_calls.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
 
-        async fn close(
-            &self,
-            _config: &LoongClawConfig,
-            _session: &AcpSessionHandle,
-        ) -> CliResult<()> {
+        async fn close(&self, _config: &LoongConfig, _session: &AcpSessionHandle) -> CliResult<()> {
             self.state.close_calls.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
@@ -1510,7 +1990,7 @@ mod tests {
 
         async fn ensure_session(
             &self,
-            _config: &LoongClawConfig,
+            _config: &LoongConfig,
             request: &AcpSessionBootstrap,
         ) -> CliResult<AcpSessionHandle> {
             Ok(AcpSessionHandle {
@@ -1526,7 +2006,7 @@ mod tests {
 
         async fn run_turn(
             &self,
-            _config: &LoongClawConfig,
+            _config: &LoongConfig,
             _session: &AcpSessionHandle,
             request: &AcpTurnRequest,
         ) -> CliResult<AcpTurnResult> {
@@ -1541,7 +2021,7 @@ mod tests {
 
         async fn run_turn_with_sink(
             &self,
-            _config: &LoongClawConfig,
+            _config: &LoongConfig,
             _session: &AcpSessionHandle,
             request: &AcpTurnRequest,
             _abort: Option<AcpAbortSignal>,
@@ -1569,17 +2049,13 @@ mod tests {
 
         async fn cancel(
             &self,
-            _config: &LoongClawConfig,
+            _config: &LoongConfig,
             _session: &AcpSessionHandle,
         ) -> CliResult<()> {
             Ok(())
         }
 
-        async fn close(
-            &self,
-            _config: &LoongClawConfig,
-            _session: &AcpSessionHandle,
-        ) -> CliResult<()> {
+        async fn close(&self, _config: &LoongConfig, _session: &AcpSessionHandle) -> CliResult<()> {
             Ok(())
         }
     }
@@ -1588,12 +2064,12 @@ mod tests {
     async fn ensure_session_reuses_existing_metadata_without_respawning_backend() {
         let counts = install_manager_backends("manager-counting-reuse", "manager-alt-reuse");
         let manager = AcpSessionManager::default();
-        let config = LoongClawConfig {
+        let config = LoongConfig {
             acp: AcpConfig {
                 backend: Some("manager-counting-reuse".to_owned()),
                 ..AcpConfig::default()
             },
-            ..LoongClawConfig::default()
+            ..LoongConfig::default()
         };
         let bootstrap = AcpSessionBootstrap {
             session_key: "session-reuse".to_owned(),
@@ -1632,13 +2108,13 @@ mod tests {
             "manager-alt-binding-reuse",
         );
         let manager = AcpSessionManager::default();
-        let config = LoongClawConfig {
+        let config = LoongConfig {
             acp: AcpConfig {
                 backend: Some("manager-counting-binding-reuse".to_owned()),
                 bindings_enabled: true,
                 ..AcpConfig::default()
             },
-            ..LoongClawConfig::default()
+            ..LoongConfig::default()
         };
         let first_bootstrap = AcpSessionBootstrap {
             session_key: "session-bound-a".to_owned(),
@@ -1680,13 +2156,13 @@ mod tests {
             "manager-alt-route-binding-reuse",
         );
         let manager = AcpSessionManager::default();
-        let config = LoongClawConfig {
+        let config = LoongConfig {
             acp: AcpConfig {
                 backend: Some("manager-counting-route-binding-reuse".to_owned()),
                 bindings_enabled: true,
                 ..AcpConfig::default()
             },
-            ..LoongClawConfig::default()
+            ..LoongConfig::default()
         };
         let binding_metadata = BTreeMap::from([
             (
@@ -1754,12 +2230,12 @@ mod tests {
     async fn run_turn_updates_persisted_session_state() {
         let counts = install_manager_backends("manager-counting-turn", "manager-alt-turn");
         let manager = AcpSessionManager::default();
-        let config = LoongClawConfig {
+        let config = LoongConfig {
             acp: AcpConfig {
                 backend: Some("manager-counting-turn".to_owned()),
                 ..AcpConfig::default()
             },
-            ..LoongClawConfig::default()
+            ..LoongConfig::default()
         };
         let bootstrap = AcpSessionBootstrap {
             session_key: "session-turn".to_owned(),
@@ -1805,12 +2281,12 @@ mod tests {
         .expect("register failing backend");
 
         let manager = AcpSessionManager::default();
-        let config = LoongClawConfig {
+        let config = LoongConfig {
             acp: AcpConfig {
                 backend: Some("manager-failing-turn".to_owned()),
                 ..AcpConfig::default()
             },
-            ..LoongClawConfig::default()
+            ..LoongConfig::default()
         };
         let bootstrap = AcpSessionBootstrap {
             session_key: "session-error".to_owned(),
@@ -1862,19 +2338,19 @@ mod tests {
         .expect("register failing observe backend");
 
         let manager = AcpSessionManager::default();
-        let success_config = LoongClawConfig {
+        let success_config = LoongConfig {
             acp: AcpConfig {
                 backend: Some("manager-counting-observe".to_owned()),
                 ..AcpConfig::default()
             },
-            ..LoongClawConfig::default()
+            ..LoongConfig::default()
         };
-        let failure_config = LoongClawConfig {
+        let failure_config = LoongConfig {
             acp: AcpConfig {
                 backend: Some("manager-failing-observe".to_owned()),
                 ..AcpConfig::default()
             },
-            ..LoongClawConfig::default()
+            ..LoongConfig::default()
         };
 
         manager
@@ -1969,12 +2445,12 @@ mod tests {
         .expect("register queued backend");
 
         let manager = Arc::new(AcpSessionManager::default());
-        let config = Arc::new(LoongClawConfig {
+        let config = Arc::new(LoongConfig {
             acp: AcpConfig {
                 backend: Some("manager-queued-turn".to_owned()),
                 ..AcpConfig::default()
             },
-            ..LoongClawConfig::default()
+            ..LoongConfig::default()
         });
         let bootstrap = AcpSessionBootstrap {
             session_key: "session-queued".to_owned(),
@@ -2091,12 +2567,12 @@ mod tests {
         .expect("register abortable backend");
 
         let manager = Arc::new(AcpSessionManager::default());
-        let config = Arc::new(LoongClawConfig {
+        let config = Arc::new(LoongConfig {
             acp: AcpConfig {
                 backend: Some("manager-abortable-turn".to_owned()),
                 ..AcpConfig::default()
             },
-            ..LoongClawConfig::default()
+            ..LoongConfig::default()
         });
         let bootstrap = AcpSessionBootstrap {
             session_key: "session-abortable".to_owned(),
@@ -2183,12 +2659,12 @@ mod tests {
         .expect("register abortable status backend");
 
         let manager = Arc::new(AcpSessionManager::default());
-        let config = Arc::new(LoongClawConfig {
+        let config = Arc::new(LoongConfig {
             acp: AcpConfig {
                 backend: Some("manager-abortable-turn-status".to_owned()),
                 ..AcpConfig::default()
             },
-            ..LoongClawConfig::default()
+            ..LoongConfig::default()
         });
         let bootstrap = AcpSessionBootstrap {
             session_key: "session-abortable-status".to_owned(),
@@ -2289,12 +2765,12 @@ mod tests {
         .expect("register abortable close backend");
 
         let manager = Arc::new(AcpSessionManager::default());
-        let config = Arc::new(LoongClawConfig {
+        let config = Arc::new(LoongConfig {
             acp: AcpConfig {
                 backend: Some("manager-abortable-turn-close".to_owned()),
                 ..AcpConfig::default()
             },
-            ..LoongClawConfig::default()
+            ..LoongConfig::default()
         });
         let bootstrap = AcpSessionBootstrap {
             session_key: "session-abortable-close".to_owned(),
@@ -2407,12 +2883,12 @@ mod tests {
         .expect("register streaming sink backend");
 
         let manager = AcpSessionManager::default();
-        let config = LoongClawConfig {
+        let config = LoongConfig {
             acp: AcpConfig {
                 backend: Some(backend_id.to_owned()),
                 ..AcpConfig::default()
             },
-            ..LoongClawConfig::default()
+            ..LoongConfig::default()
         };
         let bootstrap = AcpSessionBootstrap {
             session_key: "stream-session".to_owned(),
@@ -2461,12 +2937,12 @@ mod tests {
         .expect("register serialized status backend");
 
         let manager = Arc::new(AcpSessionManager::default());
-        let config = Arc::new(LoongClawConfig {
+        let config = Arc::new(LoongConfig {
             acp: AcpConfig {
                 backend: Some("manager-serialized-status".to_owned()),
                 ..AcpConfig::default()
             },
-            ..LoongClawConfig::default()
+            ..LoongConfig::default()
         });
         let bootstrap = AcpSessionBootstrap {
             session_key: "session-status-serialized".to_owned(),
@@ -2552,12 +3028,12 @@ mod tests {
         .expect("register serialized control backend");
 
         let manager = Arc::new(AcpSessionManager::default());
-        let config = Arc::new(LoongClawConfig {
+        let config = Arc::new(LoongConfig {
             acp: AcpConfig {
                 backend: Some("manager-serialized-control".to_owned()),
                 ..AcpConfig::default()
             },
-            ..LoongClawConfig::default()
+            ..LoongConfig::default()
         });
         let bootstrap = AcpSessionBootstrap {
             session_key: "session-control-serialized".to_owned(),
@@ -2684,13 +3160,13 @@ mod tests {
         .expect("register slow control backend");
 
         let manager = Arc::new(AcpSessionManager::default());
-        let config = Arc::new(LoongClawConfig {
+        let config = Arc::new(LoongConfig {
             acp: AcpConfig {
                 backend: Some("manager-slow-control".to_owned()),
                 session_idle_ttl_ms: Some(1),
                 ..AcpConfig::default()
             },
-            ..LoongClawConfig::default()
+            ..LoongConfig::default()
         });
         let bootstrap = AcpSessionBootstrap {
             session_key: "session-slow-control".to_owned(),
@@ -2752,146 +3228,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cleanup_idle_sessions_keeps_session_when_backend_close_fails() {
-        let shared = Arc::new(CloseFailureState::default());
-        register_acp_backend("manager-close-failure", {
-            let shared = shared.clone();
-            move || {
-                Box::new(CloseFailureBackend {
-                    id: "manager-close-failure",
-                    state: shared.clone(),
-                })
-            }
-        })
-        .expect("register close-failure backend");
-
-        let manager = Arc::new(AcpSessionManager::default());
-        let config = Arc::new(LoongClawConfig {
-            acp: AcpConfig {
-                backend: Some("manager-close-failure".to_owned()),
-                session_idle_ttl_ms: Some(1),
-                ..AcpConfig::default()
-            },
-            ..LoongClawConfig::default()
-        });
-        let bootstrap = AcpSessionBootstrap {
-            session_key: "session-close-failure".to_owned(),
-            conversation_id: Some("conv-close-failure".to_owned()),
-            binding: None,
-            working_directory: None,
-            initial_prompt: None,
-            mode: Some(AcpSessionMode::Interactive),
-            mcp_servers: Vec::new(),
-            metadata: BTreeMap::new(),
-        };
-
-        manager
-            .ensure_session(config.as_ref(), &bootstrap)
-            .await
-            .expect("ensure close-failure session");
-        tokio::time::sleep(Duration::from_millis(5)).await;
-
-        manager
-            .cleanup_idle_sessions(config.as_ref())
-            .await
-            .expect("idle cleanup should keep failed-close session");
-
-        let sessions = manager.list_sessions().expect("list sessions");
-        let snapshot = manager
-            .observability_snapshot(config.as_ref())
-            .await
-            .expect("observability snapshot after close failure");
-
-        assert_eq!(shared.close_calls.load(Ordering::SeqCst), 2);
-        assert!(
-            sessions
-                .iter()
-                .any(|entry| entry.session_key == "session-close-failure"),
-            "failed idle close must keep the session metadata"
-        );
-        assert_eq!(snapshot.runtime_cache.active_sessions, 1);
-        assert_eq!(snapshot.runtime_cache.evicted_total, 0);
-    }
-
-    #[tokio::test]
-    async fn cancelled_waiting_turn_queue_guard_rolls_back_counts() {
-        let manager = Arc::new(AcpSessionManager::default());
-        let actor_key = "queued-turn-roll-back";
-
-        let held_guard = manager
-            .acquire_turn_queue_guard(actor_key.to_owned())
-            .await
-            .expect("initial turn queue guard");
-
-        let waiting_guard = {
-            let manager = manager.clone();
-            tokio::spawn(
-                async move { manager.acquire_turn_queue_guard(actor_key.to_owned()).await },
-            )
-        };
-
-        wait_for_actor_counts(manager.as_ref(), actor_key, 2, 2).await;
-
-        waiting_guard.abort();
-        let join_result = waiting_guard.await;
-        assert!(join_result.is_err(), "aborted waiter should not complete");
-
-        wait_for_actor_counts(manager.as_ref(), actor_key, 1, 1).await;
-
-        drop(held_guard);
-
-        wait_for_actor_counts(manager.as_ref(), actor_key, 0, 0).await;
-    }
-
-    #[tokio::test]
-    async fn cancelled_waiting_session_actor_guard_rolls_back_ref_count() {
-        let manager = Arc::new(AcpSessionManager::default());
-        let actor_key = "session-actor-roll-back";
-
-        let held_guard = manager
-            .acquire_session_actor_guard(actor_key.to_owned())
-            .await
-            .expect("initial session actor guard");
-
-        let waiting_guard = {
-            let manager = manager.clone();
-            tokio::spawn(async move {
-                manager
-                    .acquire_session_actor_guard(actor_key.to_owned())
-                    .await
-            })
-        };
-
-        wait_for_actor_counts(manager.as_ref(), actor_key, 2, 0).await;
-
-        waiting_guard.abort();
-        let join_result = waiting_guard.await;
-        assert!(join_result.is_err(), "aborted waiter should not complete");
-
-        wait_for_actor_counts(manager.as_ref(), actor_key, 1, 0).await;
-
-        drop(held_guard);
-
-        wait_for_actor_counts(manager.as_ref(), actor_key, 0, 0).await;
-    }
-
-    #[tokio::test]
     async fn ensure_session_rejects_backend_mismatch_for_existing_session() {
         install_manager_backends("manager-counting-mismatch", "manager-alt-mismatch");
         let manager = AcpSessionManager::default();
-        let initial = LoongClawConfig {
+        let initial = LoongConfig {
             acp: AcpConfig {
                 backend: Some("manager-counting-mismatch".to_owned()),
                 ..AcpConfig::default()
             },
-            ..LoongClawConfig::default()
+            ..LoongConfig::default()
         };
-        let switched = LoongClawConfig {
+        let switched = LoongConfig {
             acp: AcpConfig {
                 backend: Some("manager-alt-mismatch".to_owned()),
                 ..AcpConfig::default()
             },
-            ..LoongClawConfig::default()
+            ..LoongConfig::default()
         };
         let bootstrap = AcpSessionBootstrap {
             session_key: "session-boundary".to_owned(),
@@ -2920,13 +3272,13 @@ mod tests {
     async fn ensure_session_honors_max_concurrent_sessions() {
         install_manager_backends("manager-counting-cap", "manager-alt-cap");
         let manager = AcpSessionManager::default();
-        let config = LoongClawConfig {
+        let config = LoongConfig {
             acp: AcpConfig {
                 backend: Some("manager-counting-cap".to_owned()),
                 max_concurrent_sessions: Some(1),
                 ..AcpConfig::default()
             },
-            ..LoongClawConfig::default()
+            ..LoongConfig::default()
         };
 
         manager
@@ -2972,10 +3324,8 @@ mod tests {
     #[cfg(feature = "memory-sqlite")]
     #[test]
     fn sqlite_store_roundtrips_session_metadata() {
-        let sqlite_path = std::env::temp_dir().join(format!(
-            "loongclaw-acp-store-{}.sqlite3",
-            std::process::id()
-        ));
+        let sqlite_path =
+            std::env::temp_dir().join(format!("loong-acp-store-{}.sqlite3", std::process::id()));
         let _ = std::fs::remove_file(&sqlite_path);
 
         let store = AcpSqliteSessionStore::new(Some(sqlite_path.clone()));
@@ -3027,7 +3377,7 @@ mod tests {
     #[test]
     fn sqlite_store_migrates_legacy_schema_before_creating_conversation_index() {
         let sqlite_path = std::env::temp_dir().join(format!(
-            "loongclaw-acp-legacy-store-{}.sqlite3",
+            "loong-acp-legacy-store-{}.sqlite3",
             std::process::id()
         ));
         let _ = std::fs::remove_file(&sqlite_path);

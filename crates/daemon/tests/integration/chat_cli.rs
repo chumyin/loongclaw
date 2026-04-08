@@ -20,7 +20,7 @@ fn unique_temp_path(label: &str) -> PathBuf {
         .as_nanos();
     let counter = CHAT_CLI_TEMP_PATH_COUNTER.fetch_add(1, Ordering::Relaxed);
     std::env::temp_dir().join(format!(
-        "loongclaw-chat-cli-{label}-{}-{nanos}-{counter}",
+        "loong-chat-cli-{label}-{}-{nanos}-{counter}",
         std::process::id(),
     ))
 }
@@ -29,33 +29,9 @@ fn render_output(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
-fn compact_cli_output_for_assertion(value: &str) -> String {
-    value
-        .chars()
-        .filter(|character| {
-            if character.is_whitespace() {
-                return false;
-            }
-
-            !matches!(character, '│' | '╭' | '╰' | '─')
-        })
-        .collect()
-}
-
-fn stdout_contains_compacted_hint(stdout: &str, expected_hint: &str) -> bool {
-    let compacted_stdout = compact_cli_output_for_assertion(stdout);
-    let compacted_expected_hint = compact_cli_output_for_assertion(expected_hint);
-    let bulleted_expected_hint = format!("-{compacted_expected_hint}");
-
-    let matches_plain_hint = compacted_stdout.contains(&compacted_expected_hint);
-    let matches_bulleted_hint = compacted_stdout.contains(&bulleted_expected_hint);
-
-    matches_plain_hint || matches_bulleted_hint
-}
-
 fn invoked_chat_cli_command_name() -> &'static str {
     mvp::config::detect_invoked_cli_command_name_from_arg0(Some(OsStr::new(env!(
-        "CARGO_BIN_EXE_loongclaw"
+        "CARGO_BIN_EXE_loong"
     ))))
 }
 
@@ -112,13 +88,13 @@ impl ChatCliFixture {
             "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$*\" >> \"{}\"\nexit {exit_code}\n",
             self.onboard_log_path.display()
         );
-        std::fs::write(&self.onboard_binary_path, script).expect("write fake loongclaw script");
+        std::fs::write(&self.onboard_binary_path, script).expect("write fake loong script");
         let mut permissions = std::fs::metadata(&self.onboard_binary_path)
-            .expect("fake loongclaw metadata")
+            .expect("fake loong metadata")
             .permissions();
         permissions.set_mode(0o755);
         std::fs::set_permissions(&self.onboard_binary_path, permissions)
-            .expect("mark fake loongclaw executable");
+            .expect("mark fake loong executable");
     }
 
     fn run_chat_command(&self, config_path: Option<&Path>, stdin_bytes: Option<&[u8]>) -> Output {
@@ -131,14 +107,14 @@ impl ChatCliFixture {
         stdin_bytes: Option<&[u8]>,
         fake_onboard_exit_code: Option<i32>,
     ) -> Output {
-        let loongclaw_home = self.home_dir.join(".loongclaw");
-        let mut command = Command::new(env!("CARGO_BIN_EXE_loongclaw"));
+        let loong_home = self.home_dir.join(".loong");
+        let mut command = Command::new(env!("CARGO_BIN_EXE_loong"));
         command
             .arg("chat")
             .current_dir(&self.root)
             .env("HOME", &self.home_dir)
-            .env("LOONG_HOME", &loongclaw_home)
-            .env_remove("LOONGCLAW_CONFIG_PATH")
+            .env("LOONG_HOME", &loong_home)
+            .env_remove("LOONG_CONFIG_PATH")
             .env_remove("USERPROFILE")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -148,10 +124,7 @@ impl ChatCliFixture {
         }
         if let Some(exit_code) = fake_onboard_exit_code {
             self.install_fake_onboard(exit_code);
-            command.env(
-                "LOONGCLAW_TEST_ONBOARD_EXECUTABLE",
-                &self.onboard_binary_path,
-            );
+            command.env("LOONG_TEST_ONBOARD_EXECUTABLE", &self.onboard_binary_path);
         }
 
         let mut child = command.spawn().expect("spawn chat cli");
@@ -190,7 +163,7 @@ fn chat_without_config_runs_onboard_for_explicit_yes() {
         "explicit yes should succeed, stdout={stdout:?}, stderr={stderr:?}"
     );
     assert!(
-        stdout.contains("Welcome to LoongClaw!"),
+        stdout.contains("Welcome to Loong!"),
         "missing-config onboarding flow should greet the user: {stdout:?}"
     );
     assert!(
@@ -258,6 +231,8 @@ fn chat_without_config_decline_hint_preserves_explicit_config_path() {
         invoked_chat_cli_command_name(),
         explicit_config.display()
     );
+    let compacted_stdout = stdout.split_whitespace().collect::<String>();
+    let compacted_expected_hint = expected_hint.split_whitespace().collect::<String>();
 
     assert!(
         output.status.success(),
@@ -269,7 +244,7 @@ fn chat_without_config_decline_hint_preserves_explicit_config_path() {
         fixture.onboard_log()
     );
     assert!(
-        stdout_contains_compacted_hint(&stdout, &expected_hint),
+        compacted_stdout.contains(&compacted_expected_hint),
         "decline hint should preserve the explicit config path: {stdout:?}"
     );
 }
@@ -285,6 +260,8 @@ fn chat_without_config_treats_explicit_no_as_decline() {
         "You can run '{} onboard' later to get started.",
         invoked_chat_cli_command_name()
     );
+    let compacted_stdout = stdout.split_whitespace().collect::<String>();
+    let compacted_expected_hint = expected_hint.split_whitespace().collect::<String>();
 
     assert!(
         output.status.success(),
@@ -296,7 +273,7 @@ fn chat_without_config_treats_explicit_no_as_decline() {
         fixture.onboard_log()
     );
     assert!(
-        stdout_contains_compacted_hint(&stdout, &expected_hint),
+        compacted_stdout.contains(&compacted_expected_hint),
         "explicit no should leave a follow-up hint: {stdout:?}"
     );
 }
@@ -312,6 +289,8 @@ fn chat_without_config_treats_eof_as_decline() {
         "You can run '{} onboard' later to get started.",
         invoked_chat_cli_command_name()
     );
+    let compacted_stdout = stdout.split_whitespace().collect::<String>();
+    let compacted_expected_hint = expected_hint.split_whitespace().collect::<String>();
 
     assert!(
         output.status.success(),
@@ -323,7 +302,7 @@ fn chat_without_config_treats_eof_as_decline() {
         fixture.onboard_log()
     );
     assert!(
-        stdout_contains_compacted_hint(&stdout, &expected_hint),
+        compacted_stdout.contains(&compacted_expected_hint),
         "eof should still leave the follow-up hint: {stdout:?}"
     );
 }
@@ -348,17 +327,17 @@ fn chat_without_config_reports_onboard_failure() {
 
 #[test]
 fn chat_without_config_surfaces_config_path_access_errors() {
-    #[cfg(unix)]
-    if integration_permission_test_running_as_root() {
-        eprintln!("skipping config access permission test under uid 0");
-        return;
-    }
-
     let fixture = ChatCliFixture::new("config-access-error");
 
-    let blocked_parent = fixture.root.join("blocked");
-    std::fs::write(&blocked_parent, b"not a directory").expect("create blocking parent file");
-    let blocked_config = blocked_parent.join("loongclaw.toml");
+    let blocked_dir = fixture.root.join("blocked");
+    std::fs::create_dir_all(&blocked_dir).expect("create blocked directory");
+    let _reset_guard = PermissionsResetGuard::new(&blocked_dir);
+    let mut permissions = std::fs::metadata(&blocked_dir)
+        .expect("blocked directory metadata")
+        .permissions();
+    permissions.set_mode(0o000);
+    std::fs::set_permissions(&blocked_dir, permissions).expect("lock blocked directory");
+    let blocked_config = blocked_dir.join("loong.toml");
 
     let output = fixture.run_chat_command(Some(&blocked_config), None);
     let stdout = render_output(&output.stdout);

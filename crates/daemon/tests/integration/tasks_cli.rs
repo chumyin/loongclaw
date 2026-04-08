@@ -47,50 +47,42 @@ pub(super) struct TasksCliEnvironmentGuard {
 }
 
 const TASKS_RUNTIME_ENV_KEYS: &[&str] = &[
-    "ANTHROPIC_API_KEY",
-    "AWS_ACCESS_KEY_ID",
-    "AWS_SECRET_ACCESS_KEY",
-    "AZURE_OPENAI_API_KEY",
-    "DEEPSEEK_API_KEY",
-    "GEMINI_API_KEY",
-    "LOONGCLAW_BROWSER_COMPANION_COMMAND",
-    "LOONGCLAW_BROWSER_COMPANION_ENABLED",
-    "LOONGCLAW_BROWSER_COMPANION_EXPECTED_VERSION",
-    "LOONGCLAW_BROWSER_COMPANION_TIMEOUT_SECONDS",
-    "LOONGCLAW_BROWSER_ENABLED",
-    "LOONGCLAW_BROWSER_MAX_LINKS",
-    "LOONGCLAW_BROWSER_MAX_SESSIONS",
-    "LOONGCLAW_BROWSER_MAX_TEXT_CHARS",
-    "LOONGCLAW_CONFIG_PATH",
-    "LOONGCLAW_EXTERNAL_SKILLS_ALLOWED_DOMAINS",
-    "LOONGCLAW_EXTERNAL_SKILLS_AUTO_EXPOSE_INSTALLED",
-    "LOONGCLAW_EXTERNAL_SKILLS_BLOCKED_DOMAINS",
-    "LOONGCLAW_EXTERNAL_SKILLS_ENABLED",
-    "LOONGCLAW_EXTERNAL_SKILLS_INSTALL_ROOT",
-    "LOONGCLAW_EXTERNAL_SKILLS_REQUIRE_DOWNLOAD_APPROVAL",
-    "LOONGCLAW_FILE_ROOT",
-    "LOONGCLAW_MEMORY_BACKEND",
-    "LOONGCLAW_MEMORY_PROFILE",
-    "LOONGCLAW_MEMORY_PROFILE_NOTE",
-    "LOONGCLAW_MEMORY_SUMMARY_MAX_CHARS",
-    "LOONGCLAW_SHELL_ALLOWLIST",
-    "LOONGCLAW_SHELL_DEFAULT_MODE",
-    "LOONGCLAW_SHELL_DENY",
-    "LOONGCLAW_SLIDING_WINDOW",
-    "LOONGCLAW_SQLITE_PATH",
-    "LOONGCLAW_TOOL_DELEGATE_ENABLED",
-    "LOONGCLAW_TOOL_MESSAGES_ENABLED",
-    "LOONGCLAW_TOOL_SESSIONS_ALLOW_MUTATION",
-    "LOONGCLAW_TOOL_SESSIONS_ENABLED",
-    "LOONGCLAW_WEB_FETCH_ALLOWED_DOMAINS",
-    "LOONGCLAW_WEB_FETCH_ALLOW_PRIVATE_HOSTS",
-    "LOONGCLAW_WEB_FETCH_BLOCKED_DOMAINS",
-    "LOONGCLAW_WEB_FETCH_ENABLED",
-    "LOONGCLAW_WEB_FETCH_MAX_BYTES",
-    "LOONGCLAW_WEB_FETCH_MAX_REDIRECTS",
-    "LOONGCLAW_WEB_FETCH_TIMEOUT_SECONDS",
-    "OPENAI_API_KEY",
-    "OPENROUTER_API_KEY",
+    "LOONG_BROWSER_COMPANION_COMMAND",
+    "LOONG_BROWSER_COMPANION_ENABLED",
+    "LOONG_BROWSER_COMPANION_EXPECTED_VERSION",
+    "LOONG_BROWSER_COMPANION_TIMEOUT_SECONDS",
+    "LOONG_BROWSER_ENABLED",
+    "LOONG_BROWSER_MAX_LINKS",
+    "LOONG_BROWSER_MAX_SESSIONS",
+    "LOONG_BROWSER_MAX_TEXT_CHARS",
+    "LOONG_CONFIG_PATH",
+    "LOONG_EXTERNAL_SKILLS_ALLOWED_DOMAINS",
+    "LOONG_EXTERNAL_SKILLS_AUTO_EXPOSE_INSTALLED",
+    "LOONG_EXTERNAL_SKILLS_BLOCKED_DOMAINS",
+    "LOONG_EXTERNAL_SKILLS_ENABLED",
+    "LOONG_EXTERNAL_SKILLS_INSTALL_ROOT",
+    "LOONG_EXTERNAL_SKILLS_REQUIRE_DOWNLOAD_APPROVAL",
+    "LOONG_FILE_ROOT",
+    "LOONG_MEMORY_BACKEND",
+    "LOONG_MEMORY_PROFILE",
+    "LOONG_MEMORY_PROFILE_NOTE",
+    "LOONG_MEMORY_SUMMARY_MAX_CHARS",
+    "LOONG_SHELL_ALLOWLIST",
+    "LOONG_SHELL_DEFAULT_MODE",
+    "LOONG_SHELL_DENY",
+    "LOONG_SLIDING_WINDOW",
+    "LOONG_SQLITE_PATH",
+    "LOONG_TOOL_DELEGATE_ENABLED",
+    "LOONG_TOOL_MESSAGES_ENABLED",
+    "LOONG_TOOL_SESSIONS_ALLOW_MUTATION",
+    "LOONG_TOOL_SESSIONS_ENABLED",
+    "LOONG_WEB_FETCH_ALLOWED_DOMAINS",
+    "LOONG_WEB_FETCH_ALLOW_PRIVATE_HOSTS",
+    "LOONG_WEB_FETCH_BLOCKED_DOMAINS",
+    "LOONG_WEB_FETCH_ENABLED",
+    "LOONG_WEB_FETCH_MAX_BYTES",
+    "LOONG_WEB_FETCH_MAX_REDIRECTS",
+    "LOONG_WEB_FETCH_TIMEOUT_SECONDS",
 ];
 
 impl TasksCliEnvironmentGuard {
@@ -158,27 +150,13 @@ impl Drop for TasksCliEnvironmentGuard {
     }
 }
 
-fn tasks_cli_create_environment_guard() -> TasksCliEnvironmentGuard {
-    let current_executable = std::env::current_exe().expect("current test executable");
-    let deps_directory = current_executable.parent().expect("deps directory");
-    let target_directory = deps_directory.parent().expect("target directory");
-    let detached_delegate_binary = target_directory.join("loong");
-    let detached_delegate_binary = detached_delegate_binary
-        .to_str()
-        .expect("detached delegate binary path should be utf-8")
-        .to_owned();
-    let seeded_pairs = [("CARGO_BIN_EXE_loong", detached_delegate_binary.as_str())];
-
-    TasksCliEnvironmentGuard::set_with_seeded_env(&seeded_pairs, &[])
-}
-
 pub(super) fn write_tasks_config_with(
     root: &Path,
-    configure: impl FnOnce(&mut mvp::config::LoongClawConfig),
+    configure: impl FnOnce(&mut mvp::config::LoongConfig),
 ) -> PathBuf {
     fs::create_dir_all(root).expect("create fixture root");
-    let config_path = root.join("loongclaw.toml");
-    let mut config = mvp::config::LoongClawConfig::default();
+    let config_path = root.join("loong.toml");
+    let mut config = mvp::config::LoongConfig::default();
     config.memory.sqlite_path = root.join("memory.sqlite3").display().to_string();
     config.tools.file_root = Some(root.display().to_string());
     config.tools.sessions.allow_mutation = true;
@@ -346,7 +324,7 @@ fn archive_tasks_test_session(config_path: &Path, session_id: &str, archived_at:
 #[test]
 fn tasks_create_cli_parses_global_flags_after_subcommand() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         "tasks",
         "create",
         "research release status",
@@ -358,7 +336,7 @@ fn tasks_create_cli_parses_global_flags_after_subcommand() {
         "ops-root",
         "--json",
         "--config",
-        "/tmp/loongclaw.toml",
+        "/tmp/loong.toml",
     ])
     .expect("tasks create CLI should parse");
 
@@ -369,11 +347,11 @@ fn tasks_create_cli_parses_global_flags_after_subcommand() {
             session,
             command,
         }) => {
-            assert_eq!(config.as_deref(), Some("/tmp/loongclaw.toml"));
+            assert_eq!(config.as_deref(), Some("/tmp/loong.toml"));
             assert!(json);
             assert_eq!(session, "ops-root");
             match command {
-                loongclaw_daemon::tasks_cli::TasksCommands::Create {
+                loong_daemon::tasks_cli::TasksCommands::Create {
                     task,
                     label,
                     timeout_seconds,
@@ -382,22 +360,22 @@ fn tasks_create_cli_parses_global_flags_after_subcommand() {
                     assert_eq!(label.as_deref(), Some("release-scan"));
                     assert_eq!(timeout_seconds, Some(90));
                 }
-                loongclaw_daemon::tasks_cli::TasksCommands::List { .. } => {
+                loong_daemon::tasks_cli::TasksCommands::List { .. } => {
                     panic!("unexpected tasks subcommand parsed: List")
                 }
-                loongclaw_daemon::tasks_cli::TasksCommands::Status { .. } => {
+                loong_daemon::tasks_cli::TasksCommands::Status { .. } => {
                     panic!("unexpected tasks subcommand parsed: Status")
                 }
-                loongclaw_daemon::tasks_cli::TasksCommands::Events { .. } => {
+                loong_daemon::tasks_cli::TasksCommands::Events { .. } => {
                     panic!("unexpected tasks subcommand parsed: Events")
                 }
-                loongclaw_daemon::tasks_cli::TasksCommands::Wait { .. } => {
+                loong_daemon::tasks_cli::TasksCommands::Wait { .. } => {
                     panic!("unexpected tasks subcommand parsed: Wait")
                 }
-                loongclaw_daemon::tasks_cli::TasksCommands::Cancel { .. } => {
+                loong_daemon::tasks_cli::TasksCommands::Cancel { .. } => {
                     panic!("unexpected tasks subcommand parsed: Cancel")
                 }
-                loongclaw_daemon::tasks_cli::TasksCommands::Recover { .. } => {
+                loong_daemon::tasks_cli::TasksCommands::Recover { .. } => {
                     panic!("unexpected tasks subcommand parsed: Recover")
                 }
             }
@@ -409,7 +387,7 @@ fn tasks_create_cli_parses_global_flags_after_subcommand() {
 #[test]
 fn tasks_wait_cli_parses_session_and_timeout_flags() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         "tasks",
         "wait",
         "delegate:abc123",
@@ -421,7 +399,7 @@ fn tasks_wait_cli_parses_session_and_timeout_flags() {
         "ops-root",
         "--json",
         "--config",
-        "/tmp/loongclaw.toml",
+        "/tmp/loong.toml",
     ])
     .expect("tasks wait CLI should parse");
 
@@ -432,11 +410,11 @@ fn tasks_wait_cli_parses_session_and_timeout_flags() {
             session,
             command,
         }) => {
-            assert_eq!(config.as_deref(), Some("/tmp/loongclaw.toml"));
+            assert_eq!(config.as_deref(), Some("/tmp/loong.toml"));
             assert!(json);
             assert_eq!(session, "ops-root");
             match command {
-                loongclaw_daemon::tasks_cli::TasksCommands::Wait {
+                loong_daemon::tasks_cli::TasksCommands::Wait {
                     task_id,
                     after_id,
                     timeout_ms,
@@ -445,22 +423,22 @@ fn tasks_wait_cli_parses_session_and_timeout_flags() {
                     assert_eq!(after_id, Some(10));
                     assert_eq!(timeout_ms, 2500);
                 }
-                loongclaw_daemon::tasks_cli::TasksCommands::Create { .. } => {
+                loong_daemon::tasks_cli::TasksCommands::Create { .. } => {
                     panic!("unexpected tasks subcommand parsed: Create")
                 }
-                loongclaw_daemon::tasks_cli::TasksCommands::List { .. } => {
+                loong_daemon::tasks_cli::TasksCommands::List { .. } => {
                     panic!("unexpected tasks subcommand parsed: List")
                 }
-                loongclaw_daemon::tasks_cli::TasksCommands::Status { .. } => {
+                loong_daemon::tasks_cli::TasksCommands::Status { .. } => {
                     panic!("unexpected tasks subcommand parsed: Status")
                 }
-                loongclaw_daemon::tasks_cli::TasksCommands::Events { .. } => {
+                loong_daemon::tasks_cli::TasksCommands::Events { .. } => {
                     panic!("unexpected tasks subcommand parsed: Events")
                 }
-                loongclaw_daemon::tasks_cli::TasksCommands::Cancel { .. } => {
+                loong_daemon::tasks_cli::TasksCommands::Cancel { .. } => {
                     panic!("unexpected tasks subcommand parsed: Cancel")
                 }
-                loongclaw_daemon::tasks_cli::TasksCommands::Recover { .. } => {
+                loong_daemon::tasks_cli::TasksCommands::Recover { .. } => {
                     panic!("unexpected tasks subcommand parsed: Recover")
                 }
             }
@@ -472,26 +450,26 @@ fn tasks_wait_cli_parses_session_and_timeout_flags() {
 #[test]
 fn tasks_cli_environment_guard_clears_tracked_env_vars_before_applying_overrides() {
     let _guard = TasksCliEnvironmentGuard::set_with_seeded_env(
-        &[("LOONGCLAW_SQLITE_PATH", "/tmp/host-value.sqlite3")],
+        &[("LOONG_SQLITE_PATH", "/tmp/host-value.sqlite3")],
         &[],
     );
-    let cleared_value = std::env::var_os("LOONGCLAW_SQLITE_PATH");
+    let cleared_value = std::env::var_os("LOONG_SQLITE_PATH");
     assert_eq!(cleared_value, None);
 }
 
 #[tokio::test]
 async fn execute_tasks_command_list_returns_visible_background_tasks() {
-    let root = TempDirGuard::new("loongclaw-tasks-cli-list");
+    let root = TempDirGuard::new("loong-tasks-cli-list");
     let _env = TasksCliEnvironmentGuard::set(&[]);
     let config_path = write_tasks_config(root.path());
     seed_background_task(&config_path, "ops-root", "delegate:task-1");
 
-    let execution = loongclaw_daemon::tasks_cli::execute_tasks_command(
-        loongclaw_daemon::tasks_cli::TasksCommandOptions {
+    let execution = loong_daemon::tasks_cli::execute_tasks_command(
+        loong_daemon::tasks_cli::TasksCommandOptions {
             config: Some(config_path.display().to_string()),
             json: false,
             session: "ops-root".to_owned(),
-            command: loongclaw_daemon::tasks_cli::TasksCommands::List {
+            command: loong_daemon::tasks_cli::TasksCommands::List {
                 limit: 20,
                 state: None,
                 overdue_only: false,
@@ -511,17 +489,17 @@ async fn execute_tasks_command_list_returns_visible_background_tasks() {
 
 #[tokio::test]
 async fn execute_tasks_command_status_surfaces_approval_and_tool_policy() {
-    let root = TempDirGuard::new("loongclaw-tasks-cli-status");
+    let root = TempDirGuard::new("loong-tasks-cli-status");
     let _env = TasksCliEnvironmentGuard::set(&[]);
     let config_path = write_tasks_config(root.path());
     seed_background_task(&config_path, "ops-root", "delegate:task-1");
 
-    let execution = loongclaw_daemon::tasks_cli::execute_tasks_command(
-        loongclaw_daemon::tasks_cli::TasksCommandOptions {
+    let execution = loong_daemon::tasks_cli::execute_tasks_command(
+        loong_daemon::tasks_cli::TasksCommandOptions {
             config: Some(config_path.display().to_string()),
             json: false,
             session: "ops-root".to_owned(),
-            command: loongclaw_daemon::tasks_cli::TasksCommands::Status {
+            command: loong_daemon::tasks_cli::TasksCommands::Status {
                 task_id: "delegate:task-1".to_owned(),
             },
         },
@@ -537,8 +515,8 @@ async fn execute_tasks_command_status_surfaces_approval_and_tool_policy() {
         "file.read"
     );
 
-    let rendered = loongclaw_daemon::tasks_cli::render_tasks_cli_text(&execution)
-        .expect("render tasks status");
+    let rendered =
+        loong_daemon::tasks_cli::render_tasks_cli_text(&execution).expect("render tasks status");
     assert!(
         rendered.contains("approval_requests: 1"),
         "status render should surface approval count: {rendered}"
@@ -551,16 +529,16 @@ async fn execute_tasks_command_status_surfaces_approval_and_tool_policy() {
 
 #[tokio::test]
 async fn execute_tasks_command_create_queues_background_task_and_surfaces_follow_up_recipes() {
-    let root = TempDirGuard::new("loongclaw-tasks-cli-create");
-    let _env = tasks_cli_create_environment_guard();
+    let root = TempDirGuard::new("loong-tasks-cli-create");
+    let _env = TasksCliEnvironmentGuard::set(&[]);
     let config_path = write_tasks_config(root.path());
 
-    let execution = loongclaw_daemon::tasks_cli::execute_tasks_command(
-        loongclaw_daemon::tasks_cli::TasksCommandOptions {
+    let execution = loong_daemon::tasks_cli::execute_tasks_command(
+        loong_daemon::tasks_cli::TasksCommandOptions {
             config: Some(config_path.display().to_string()),
             json: false,
             session: "ops-root".to_owned(),
-            command: loongclaw_daemon::tasks_cli::TasksCommands::Create {
+            command: loong_daemon::tasks_cli::TasksCommands::Create {
                 task: "research release readiness".to_owned(),
                 label: Some("Release Check".to_owned()),
                 timeout_seconds: Some(45),
@@ -626,18 +604,18 @@ async fn execute_tasks_command_create_queues_background_task_and_surfaces_follow
 
 #[tokio::test]
 async fn execute_tasks_command_create_returns_queued_outcome_when_task_hydration_fails() {
-    let root = TempDirGuard::new("loongclaw-tasks-cli-create-best-effort");
-    let _env = tasks_cli_create_environment_guard();
+    let root = TempDirGuard::new("loong-tasks-cli-create-best-effort");
+    let _env = TasksCliEnvironmentGuard::set(&[]);
     let config_path = write_tasks_config_with(root.path(), |config| {
         config.tools.sessions.enabled = false;
     });
 
-    let execution = loongclaw_daemon::tasks_cli::execute_tasks_command(
-        loongclaw_daemon::tasks_cli::TasksCommandOptions {
+    let execution = loong_daemon::tasks_cli::execute_tasks_command(
+        loong_daemon::tasks_cli::TasksCommandOptions {
             config: Some(config_path.display().to_string()),
             json: false,
             session: "ops-root".to_owned(),
-            command: loongclaw_daemon::tasks_cli::TasksCommands::Create {
+            command: loong_daemon::tasks_cli::TasksCommands::Create {
                 task: "research release readiness".to_owned(),
                 label: Some("Release Check".to_owned()),
                 timeout_seconds: Some(45),
@@ -650,8 +628,8 @@ async fn execute_tasks_command_create_returns_queued_outcome_when_task_hydration
     let queued_task_id = execution.payload["queued_outcome"]["child_session_id"]
         .as_str()
         .expect("queued task id");
-    let rendered = loongclaw_daemon::tasks_cli::render_tasks_cli_text(&execution)
-        .expect("render tasks create");
+    let rendered =
+        loong_daemon::tasks_cli::render_tasks_cli_text(&execution).expect("render tasks create");
 
     assert_eq!(execution.payload["command"], "create");
     assert_eq!(execution.payload["task"]["task_id"], queued_task_id);
@@ -672,8 +650,8 @@ async fn execute_tasks_command_create_returns_queued_outcome_when_task_hydration
 
 #[tokio::test]
 async fn execute_tasks_command_create_latest_session_selector_resolves_newest_resumable_root() {
-    let root = TempDirGuard::new("loongclaw-tasks-cli-create-latest");
-    let _env = tasks_cli_create_environment_guard();
+    let root = TempDirGuard::new("loong-tasks-cli-create-latest");
+    let _env = TasksCliEnvironmentGuard::set(&[]);
     let config_path = write_tasks_config(root.path());
     let repo = load_session_repository(&config_path);
 
@@ -701,12 +679,12 @@ async fn execute_tasks_command_create_latest_session_selector_resolves_newest_re
     set_tasks_test_turn_timestamps(&config_path, "ops-root-archived", 400);
     archive_tasks_test_session(&config_path, "ops-root-archived", 500);
 
-    let execution = loongclaw_daemon::tasks_cli::execute_tasks_command(
-        loongclaw_daemon::tasks_cli::TasksCommandOptions {
+    let execution = loong_daemon::tasks_cli::execute_tasks_command(
+        loong_daemon::tasks_cli::TasksCommandOptions {
             config: Some(config_path.display().to_string()),
             json: false,
             session: "latest".to_owned(),
-            command: loongclaw_daemon::tasks_cli::TasksCommands::Create {
+            command: loong_daemon::tasks_cli::TasksCommands::Create {
                 task: "research release readiness".to_owned(),
                 label: Some("Release Check".to_owned()),
                 timeout_seconds: Some(45),
@@ -739,7 +717,7 @@ async fn execute_tasks_command_create_latest_session_selector_resolves_newest_re
 
 #[tokio::test]
 async fn execute_tasks_command_latest_session_selector_rejects_missing_resumable_root() {
-    let root = TempDirGuard::new("loongclaw-tasks-cli-latest-missing");
+    let root = TempDirGuard::new("loong-tasks-cli-latest-missing");
     let _env = TasksCliEnvironmentGuard::set(&[]);
     let config_path = write_tasks_config(root.path());
     let repo = load_session_repository(&config_path);
@@ -747,12 +725,12 @@ async fn execute_tasks_command_latest_session_selector_rejects_missing_resumable
     ensure_root_session(&repo, "ops-root-empty");
     set_tasks_test_session_updated_at(&config_path, "ops-root-empty", 100);
 
-    let result = loongclaw_daemon::tasks_cli::execute_tasks_command(
-        loongclaw_daemon::tasks_cli::TasksCommandOptions {
+    let result = loong_daemon::tasks_cli::execute_tasks_command(
+        loong_daemon::tasks_cli::TasksCommandOptions {
             config: Some(config_path.display().to_string()),
             json: false,
             session: "latest".to_owned(),
-            command: loongclaw_daemon::tasks_cli::TasksCommands::List {
+            command: loong_daemon::tasks_cli::TasksCommands::List {
                 limit: 20,
                 state: None,
                 overdue_only: false,
@@ -775,7 +753,7 @@ async fn execute_tasks_command_latest_session_selector_rejects_missing_resumable
 
 #[tokio::test]
 async fn execute_tasks_command_list_latest_session_selector_uses_selected_root_scope() {
-    let root = TempDirGuard::new("loongclaw-tasks-cli-list-latest");
+    let root = TempDirGuard::new("loong-tasks-cli-list-latest");
     let _env = TasksCliEnvironmentGuard::set(&[]);
     let config_path = write_tasks_config(root.path());
     let repo = load_session_repository(&config_path);
@@ -795,12 +773,12 @@ async fn execute_tasks_command_list_latest_session_selector_uses_selected_root_s
     ensure_root_session(&repo, "ops-root-empty");
     set_tasks_test_session_updated_at(&config_path, "ops-root-empty", 300);
 
-    let execution = loongclaw_daemon::tasks_cli::execute_tasks_command(
-        loongclaw_daemon::tasks_cli::TasksCommandOptions {
+    let execution = loong_daemon::tasks_cli::execute_tasks_command(
+        loong_daemon::tasks_cli::TasksCommandOptions {
             config: Some(config_path.display().to_string()),
             json: false,
             session: "latest".to_owned(),
-            command: loongclaw_daemon::tasks_cli::TasksCommands::List {
+            command: loong_daemon::tasks_cli::TasksCommands::List {
                 limit: 20,
                 state: None,
                 overdue_only: false,
@@ -824,7 +802,7 @@ async fn execute_tasks_command_list_latest_session_selector_uses_selected_root_s
 
 #[tokio::test]
 async fn execute_tasks_command_list_counts_background_tasks_beyond_session_tool_limit() {
-    let root = TempDirGuard::new("loongclaw-tasks-cli-list-many");
+    let root = TempDirGuard::new("loong-tasks-cli-list-many");
     let _env = TasksCliEnvironmentGuard::set(&[]);
     let config_path = write_tasks_config(root.path());
     let repo = load_session_repository(&config_path);
@@ -834,12 +812,12 @@ async fn execute_tasks_command_list_counts_background_tasks_beyond_session_tool_
         seed_background_task_record(&repo, "ops-root", &task_id, false);
     }
 
-    let execution = loongclaw_daemon::tasks_cli::execute_tasks_command(
-        loongclaw_daemon::tasks_cli::TasksCommandOptions {
+    let execution = loong_daemon::tasks_cli::execute_tasks_command(
+        loong_daemon::tasks_cli::TasksCommandOptions {
             config: Some(config_path.display().to_string()),
             json: false,
             session: "ops-root".to_owned(),
-            command: loongclaw_daemon::tasks_cli::TasksCommands::List {
+            command: loong_daemon::tasks_cli::TasksCommands::List {
                 limit: 20,
                 state: None,
                 overdue_only: false,
@@ -857,17 +835,17 @@ async fn execute_tasks_command_list_counts_background_tasks_beyond_session_tool_
 
 #[tokio::test]
 async fn execute_tasks_command_events_and_wait_surface_incremental_payloads() {
-    let root = TempDirGuard::new("loongclaw-tasks-cli-events");
+    let root = TempDirGuard::new("loong-tasks-cli-events");
     let _env = TasksCliEnvironmentGuard::set(&[]);
     let config_path = write_tasks_config(root.path());
     seed_background_task(&config_path, "ops-root", "delegate:task-1");
 
-    let events_execution = loongclaw_daemon::tasks_cli::execute_tasks_command(
-        loongclaw_daemon::tasks_cli::TasksCommandOptions {
+    let events_execution = loong_daemon::tasks_cli::execute_tasks_command(
+        loong_daemon::tasks_cli::TasksCommandOptions {
             config: Some(config_path.display().to_string()),
             json: false,
             session: "ops-root".to_owned(),
-            command: loongclaw_daemon::tasks_cli::TasksCommands::Events {
+            command: loong_daemon::tasks_cli::TasksCommands::Events {
                 task_id: "delegate:task-1".to_owned(),
                 after_id: None,
                 limit: 20,
@@ -889,12 +867,12 @@ async fn execute_tasks_command_events_and_wait_surface_incremental_payloads() {
     );
     assert!(next_after_id >= 1);
 
-    let wait_execution = loongclaw_daemon::tasks_cli::execute_tasks_command(
-        loongclaw_daemon::tasks_cli::TasksCommandOptions {
+    let wait_execution = loong_daemon::tasks_cli::execute_tasks_command(
+        loong_daemon::tasks_cli::TasksCommandOptions {
             config: Some(config_path.display().to_string()),
             json: false,
             session: "ops-root".to_owned(),
-            command: loongclaw_daemon::tasks_cli::TasksCommands::Wait {
+            command: loong_daemon::tasks_cli::TasksCommands::Wait {
                 task_id: "delegate:task-1".to_owned(),
                 after_id: Some(next_after_id),
                 timeout_ms: 1,
@@ -913,17 +891,17 @@ async fn execute_tasks_command_events_and_wait_surface_incremental_payloads() {
 
 #[tokio::test]
 async fn execute_tasks_command_cancel_dry_run_surfaces_cancel_action() {
-    let root = TempDirGuard::new("loongclaw-tasks-cli-cancel");
+    let root = TempDirGuard::new("loong-tasks-cli-cancel");
     let _env = TasksCliEnvironmentGuard::set(&[]);
     let config_path = write_tasks_config(root.path());
     seed_background_task(&config_path, "ops-root", "delegate:task-1");
 
-    let execution = loongclaw_daemon::tasks_cli::execute_tasks_command(
-        loongclaw_daemon::tasks_cli::TasksCommandOptions {
+    let execution = loong_daemon::tasks_cli::execute_tasks_command(
+        loong_daemon::tasks_cli::TasksCommandOptions {
             config: Some(config_path.display().to_string()),
             json: false,
             session: "ops-root".to_owned(),
-            command: loongclaw_daemon::tasks_cli::TasksCommands::Cancel {
+            command: loong_daemon::tasks_cli::TasksCommands::Cancel {
                 task_id: "delegate:task-1".to_owned(),
                 dry_run: true,
             },
@@ -944,17 +922,17 @@ async fn execute_tasks_command_cancel_dry_run_surfaces_cancel_action() {
 
 #[tokio::test]
 async fn execute_tasks_command_recover_dry_run_surfaces_non_recoverable_result() {
-    let root = TempDirGuard::new("loongclaw-tasks-cli-recover");
+    let root = TempDirGuard::new("loong-tasks-cli-recover");
     let _env = TasksCliEnvironmentGuard::set(&[]);
     let config_path = write_tasks_config(root.path());
     seed_background_task(&config_path, "ops-root", "delegate:task-1");
 
-    let execution = loongclaw_daemon::tasks_cli::execute_tasks_command(
-        loongclaw_daemon::tasks_cli::TasksCommandOptions {
+    let execution = loong_daemon::tasks_cli::execute_tasks_command(
+        loong_daemon::tasks_cli::TasksCommandOptions {
             config: Some(config_path.display().to_string()),
             json: false,
             session: "ops-root".to_owned(),
-            command: loongclaw_daemon::tasks_cli::TasksCommands::Recover {
+            command: loong_daemon::tasks_cli::TasksCommands::Recover {
                 task_id: "delegate:task-1".to_owned(),
                 dry_run: true,
             },

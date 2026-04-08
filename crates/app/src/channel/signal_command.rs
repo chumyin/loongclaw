@@ -1,10 +1,8 @@
 use std::path::PathBuf;
 
+use super::{ChannelCommandContext, LoongConfig};
 use crate::CliResult;
-use crate::config::LoongClawConfig;
 use crate::config::{self, ResolvedSignalChannelConfig};
-
-use super::commands::ChannelCommandContext;
 
 pub(super) fn load_signal_command_context(
     config_path: Option<&str>,
@@ -16,7 +14,7 @@ pub(super) fn load_signal_command_context(
 
 fn build_signal_command_context(
     resolved_path: PathBuf,
-    config: LoongClawConfig,
+    config: LoongConfig,
     account_id: Option<&str>,
 ) -> CliResult<ChannelCommandContext<ResolvedSignalChannelConfig>> {
     let resolved = config.signal.resolve_account(account_id)?;

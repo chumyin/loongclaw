@@ -5,7 +5,7 @@ use serde_json::Value;
 
 use crate::CliResult;
 use crate::config::{
-    AcpConversationRoutingMode, AcpDispatchThreadRoutingMode, LoongClawConfig,
+    AcpConversationRoutingMode, AcpDispatchThreadRoutingMode, LoongConfig,
     normalize_dispatch_account_id, normalize_dispatch_channel_id,
 };
 use crate::conversation::{ConversationSessionAddress, parse_route_session_id};
@@ -191,7 +191,7 @@ pub struct AcpRuntimeSnapshot {
     pub mcp: crate::mcp::McpRuntimeSnapshot,
 }
 
-pub fn resolve_acp_backend_selection(config: &LoongClawConfig) -> AcpBackendSelection {
+pub fn resolve_acp_backend_selection(config: &LoongConfig) -> AcpBackendSelection {
     if let Some(id) = acp_backend_id_from_env() {
         return AcpBackendSelection {
             id,
@@ -212,7 +212,7 @@ pub fn resolve_acp_backend_selection(config: &LoongClawConfig) -> AcpBackendSele
     }
 }
 
-pub fn collect_acp_runtime_snapshot(config: &LoongClawConfig) -> CliResult<AcpRuntimeSnapshot> {
+pub fn collect_acp_runtime_snapshot(config: &LoongConfig) -> CliResult<AcpRuntimeSnapshot> {
     let selected = resolve_acp_backend_selection(config);
     let selected_metadata = describe_acp_backend(Some(selected.id.as_str()))?;
     let available = list_acp_backend_metadata()?;
@@ -333,7 +333,7 @@ pub fn describe_acp_conversation_dispatch_target_for_address(
 }
 
 pub fn should_route_conversation_turn_via_acp(
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     session_id: &str,
 ) -> CliResult<bool> {
     let address = ConversationSessionAddress::from_session_id(session_id);
@@ -341,14 +341,14 @@ pub fn should_route_conversation_turn_via_acp(
 }
 
 pub fn should_route_conversation_turn_via_acp_for_address(
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     address: &ConversationSessionAddress,
 ) -> CliResult<bool> {
     Ok(evaluate_acp_conversation_dispatch_for_address(config, address)?.route_via_acp)
 }
 
 pub fn evaluate_acp_conversation_turn_entry_for_address(
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     address: &ConversationSessionAddress,
     options: &AcpConversationTurnOptions<'_>,
 ) -> CliResult<AcpConversationTurnEntryDecision> {
@@ -368,7 +368,7 @@ pub fn evaluate_acp_conversation_turn_entry_for_address(
 }
 
 pub(crate) async fn execute_acp_conversation_turn_for_address(
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     address: &ConversationSessionAddress,
     user_input: &str,
     options: &AcpConversationTurnOptions<'_>,
@@ -494,7 +494,7 @@ pub fn derive_automatic_acp_routing_origin_for_address(
 }
 
 pub fn prepare_acp_conversation_turn_for_address(
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     address: &ConversationSessionAddress,
     user_input: &str,
     options: &AcpConversationTurnOptions<'_>,
@@ -570,7 +570,7 @@ pub fn prepare_acp_conversation_turn_for_address(
 }
 
 pub fn evaluate_acp_conversation_dispatch_for_address(
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     address: &ConversationSessionAddress,
 ) -> CliResult<AcpConversationDispatchDecision> {
     let target = describe_acp_conversation_dispatch_target_for_address(address)?;
@@ -652,7 +652,7 @@ pub fn evaluate_acp_conversation_dispatch_for_address(
 }
 
 pub fn derive_acp_conversation_route(
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     session_id: &str,
 ) -> CliResult<AcpConversationRoute> {
     let address = ConversationSessionAddress::from_session_id(session_id);
@@ -660,7 +660,7 @@ pub fn derive_acp_conversation_route(
 }
 
 pub fn derive_acp_conversation_route_for_address(
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     address: &ConversationSessionAddress,
 ) -> CliResult<AcpConversationRoute> {
     let target = describe_acp_conversation_dispatch_target_for_address(address)?;
@@ -771,7 +771,7 @@ fn parse_agent_prefixed_route_session_id(session_id: &str) -> Option<(&str, &str
         .filter(|(agent, route_session_id)| !agent.is_empty() && !route_session_id.is_empty())
 }
 
-pub fn shared_acp_session_manager(config: &LoongClawConfig) -> CliResult<Arc<AcpSessionManager>> {
+pub fn shared_acp_session_manager(config: &LoongConfig) -> CliResult<Arc<AcpSessionManager>> {
     #[cfg(feature = "memory-sqlite")]
     {
         let sqlite_path = config.memory.resolved_sqlite_path();
@@ -834,7 +834,7 @@ mod tests {
         let _env_lock = acp_env_lock().lock().expect("env lock");
         super::super::registry::clear_acp_backend_env_override();
 
-        let config = LoongClawConfig::default();
+        let config = LoongConfig::default();
         let selection = resolve_acp_backend_selection(&config);
 
         assert_eq!(selection.id, DEFAULT_ACP_BACKEND_ID);
@@ -846,12 +846,12 @@ mod tests {
         let _env_lock = acp_env_lock().lock().expect("env lock");
         super::super::registry::set_acp_backend_env_override(Some("env-backend"));
 
-        let config = LoongClawConfig {
+        let config = LoongConfig {
             acp: AcpConfig {
                 backend: Some("config-backend".to_owned()),
                 ..AcpConfig::default()
             },
-            ..LoongClawConfig::default()
+            ..LoongConfig::default()
         };
 
         let selection = resolve_acp_backend_selection(&config);
@@ -865,12 +865,12 @@ mod tests {
         let _env_lock = acp_env_lock().lock().expect("env lock");
         super::super::registry::clear_acp_backend_env_override();
 
-        let config = LoongClawConfig {
+        let config = LoongConfig {
             acp: AcpConfig {
                 backend: Some("config-backend".to_owned()),
                 ..AcpConfig::default()
             },
-            ..LoongClawConfig::default()
+            ..LoongConfig::default()
         };
 
         let selection = resolve_acp_backend_selection(&config);
@@ -883,7 +883,7 @@ mod tests {
         let _env_lock = acp_env_lock().lock().expect("env lock");
         super::super::registry::clear_acp_backend_env_override();
 
-        let config = LoongClawConfig {
+        let config = LoongConfig {
             conversation: ConversationConfig::default(),
             acp: AcpConfig {
                 enabled: true,
@@ -899,7 +899,7 @@ mod tests {
                 allow_mcp_server_injection: true,
                 ..AcpConfig::default()
             },
-            ..LoongClawConfig::default()
+            ..LoongConfig::default()
         };
 
         let snapshot = collect_acp_runtime_snapshot(&config).expect("collect ACP snapshot");
@@ -936,13 +936,13 @@ mod tests {
 
     #[test]
     fn derive_acp_conversation_route_wraps_non_agent_session_ids() {
-        let config = LoongClawConfig {
+        let config = LoongConfig {
             acp: AcpConfig {
                 default_agent: Some("claude".to_owned()),
                 allowed_agents: vec!["claude".to_owned()],
                 ..AcpConfig::default()
             },
-            ..LoongClawConfig::default()
+            ..LoongConfig::default()
         };
         let route = derive_acp_conversation_route(&config, "telegram:42")
             .expect("derive ACP conversation route");
@@ -965,13 +965,13 @@ mod tests {
 
     #[test]
     fn derive_acp_conversation_route_preserves_agent_session_keys() {
-        let config = LoongClawConfig {
+        let config = LoongConfig {
             acp: AcpConfig {
                 default_agent: Some("claude".to_owned()),
                 allowed_agents: vec!["claude".to_owned()],
                 ..AcpConfig::default()
             },
-            ..LoongClawConfig::default()
+            ..LoongConfig::default()
         };
         let route = derive_acp_conversation_route(&config, "agent:claude:review-thread")
             .expect("derive ACP route for agent-prefixed session");
@@ -982,12 +982,12 @@ mod tests {
 
     #[test]
     fn derive_acp_conversation_route_rejects_disallowed_agent_prefix() {
-        let config = LoongClawConfig {
+        let config = LoongConfig {
             acp: AcpConfig {
                 allowed_agents: vec!["codex".to_owned()],
                 ..AcpConfig::default()
             },
-            ..LoongClawConfig::default()
+            ..LoongConfig::default()
         };
 
         let error = derive_acp_conversation_route(&config, "agent:claude:review-thread")
@@ -997,7 +997,7 @@ mod tests {
 
     #[test]
     fn collect_acp_runtime_snapshot_reports_dispatch_policy() {
-        let config = LoongClawConfig {
+        let config = LoongConfig {
             acp: AcpConfig {
                 enabled: true,
                 dispatch: crate::config::AcpDispatchConfig {
@@ -1013,7 +1013,7 @@ mod tests {
                 },
                 ..AcpConfig::default()
             },
-            ..LoongClawConfig::default()
+            ..LoongConfig::default()
         };
 
         let snapshot = collect_acp_runtime_snapshot(&config).expect("collect ACP snapshot");
@@ -1045,7 +1045,7 @@ mod tests {
 
     #[test]
     fn should_route_conversation_turn_via_acp_respects_dispatch_policy() {
-        let config = LoongClawConfig {
+        let config = LoongConfig {
             acp: AcpConfig {
                 enabled: true,
                 dispatch: crate::config::AcpDispatchConfig {
@@ -1055,7 +1055,7 @@ mod tests {
                 },
                 ..AcpConfig::default()
             },
-            ..LoongClawConfig::default()
+            ..LoongConfig::default()
         };
 
         assert!(
@@ -1080,12 +1080,12 @@ mod tests {
 
     #[test]
     fn should_route_conversation_turn_via_acp_defaults_to_agent_prefixed_only() {
-        let config = LoongClawConfig {
+        let config = LoongConfig {
             acp: AcpConfig {
                 enabled: true,
                 ..AcpConfig::default()
             },
-            ..LoongClawConfig::default()
+            ..LoongConfig::default()
         };
 
         assert!(
@@ -1118,7 +1118,7 @@ mod tests {
 
     #[test]
     fn prepare_acp_conversation_turn_records_explicit_routing_origin_and_provenance() {
-        let config = LoongClawConfig {
+        let config = LoongConfig {
             acp: AcpConfig {
                 enabled: true,
                 dispatch: crate::config::AcpDispatchConfig {
@@ -1129,7 +1129,7 @@ mod tests {
                 },
                 ..AcpConfig::default()
             },
-            ..LoongClawConfig::default()
+            ..LoongConfig::default()
         };
         let address = ConversationSessionAddress::from_session_id("opaque-session")
             .with_channel_scope("telegram", "42")
@@ -1180,7 +1180,7 @@ mod tests {
             prepared
                 .request
                 .metadata
-                .get("loongclaw.trace_id")
+                .get("loong.trace_id")
                 .map(String::as_str),
             Some("trace-1")
         );
@@ -1192,7 +1192,7 @@ mod tests {
 
     #[test]
     fn prepare_acp_conversation_turn_uses_automatic_origin_for_agent_prefixed_routes() {
-        let config = LoongClawConfig {
+        let config = LoongConfig {
             acp: AcpConfig {
                 enabled: true,
                 dispatch: crate::config::AcpDispatchConfig {
@@ -1202,7 +1202,7 @@ mod tests {
                 },
                 ..AcpConfig::default()
             },
-            ..LoongClawConfig::default()
+            ..LoongConfig::default()
         };
         let address = ConversationSessionAddress::from_session_id("agent:codex:review-thread");
 
@@ -1295,7 +1295,7 @@ mod tests {
 
     #[test]
     fn derive_acp_conversation_route_exposes_explicit_binding_scope() {
-        let config = LoongClawConfig::default();
+        let config = LoongConfig::default();
         let address = ConversationSessionAddress::from_session_id("opaque-session")
             .with_channel_scope("feishu", "oc_123")
             .with_account_id("lark-prod")
@@ -1329,7 +1329,7 @@ mod tests {
 
     #[test]
     fn should_route_conversation_turn_via_acp_respects_channel_allowlist() {
-        let config = LoongClawConfig {
+        let config = LoongConfig {
             acp: AcpConfig {
                 enabled: true,
                 dispatch: crate::config::AcpDispatchConfig {
@@ -1339,7 +1339,7 @@ mod tests {
                 },
                 ..AcpConfig::default()
             },
-            ..LoongClawConfig::default()
+            ..LoongConfig::default()
         };
 
         assert!(
@@ -1358,7 +1358,7 @@ mod tests {
 
     #[test]
     fn should_route_conversation_turn_via_acp_uses_structured_channel_hint_for_opaque_session_id() {
-        let config = LoongClawConfig {
+        let config = LoongConfig {
             acp: AcpConfig {
                 enabled: true,
                 dispatch: crate::config::AcpDispatchConfig {
@@ -1368,7 +1368,7 @@ mod tests {
                 },
                 ..AcpConfig::default()
             },
-            ..LoongClawConfig::default()
+            ..LoongConfig::default()
         };
         let address = ConversationSessionAddress::from_session_id("opaque-session")
             .with_channel_scope("telegram", "chat_42");
@@ -1381,7 +1381,7 @@ mod tests {
 
     #[test]
     fn evaluate_acp_conversation_dispatch_respects_account_allowlist() {
-        let config = LoongClawConfig {
+        let config = LoongConfig {
             acp: AcpConfig {
                 enabled: true,
                 dispatch: crate::config::AcpDispatchConfig {
@@ -1390,7 +1390,7 @@ mod tests {
                 },
                 ..AcpConfig::default()
             },
-            ..LoongClawConfig::default()
+            ..LoongConfig::default()
         };
         let address = ConversationSessionAddress::from_session_id("opaque-session")
             .with_channel_scope("telegram", "100")
@@ -1408,7 +1408,7 @@ mod tests {
 
     #[test]
     fn evaluate_acp_conversation_dispatch_respects_thread_routing_policy() {
-        let config = LoongClawConfig {
+        let config = LoongConfig {
             acp: AcpConfig {
                 enabled: true,
                 dispatch: crate::config::AcpDispatchConfig {
@@ -1417,7 +1417,7 @@ mod tests {
                 },
                 ..AcpConfig::default()
             },
-            ..LoongClawConfig::default()
+            ..LoongConfig::default()
         };
         let root_address = ConversationSessionAddress::from_session_id("telegram:100")
             .with_channel_scope("telegram", "100");
@@ -1434,7 +1434,7 @@ mod tests {
 
     #[test]
     fn evaluate_acp_conversation_turn_entry_rejects_explicit_request_when_acp_disabled() {
-        let config = LoongClawConfig::default();
+        let config = LoongConfig::default();
         let address = ConversationSessionAddress::from_session_id("telegram:42");
         let options = super::super::AcpConversationTurnOptions::explicit();
 
@@ -1447,7 +1447,7 @@ mod tests {
 
     #[test]
     fn evaluate_acp_conversation_turn_entry_routes_explicit_request_even_when_dispatch_disabled() {
-        let config = LoongClawConfig {
+        let config = LoongConfig {
             acp: AcpConfig {
                 enabled: true,
                 dispatch: crate::config::AcpDispatchConfig {
@@ -1456,7 +1456,7 @@ mod tests {
                 },
                 ..AcpConfig::default()
             },
-            ..LoongClawConfig::default()
+            ..LoongConfig::default()
         };
         let address = ConversationSessionAddress::from_session_id("telegram:42");
         let options = super::super::AcpConversationTurnOptions::explicit();
@@ -1471,7 +1471,7 @@ mod tests {
     #[test]
     fn evaluate_acp_conversation_turn_entry_keeps_automatic_turns_on_provider_when_dispatch_blocks()
     {
-        let config = LoongClawConfig {
+        let config = LoongConfig {
             acp: AcpConfig {
                 enabled: true,
                 dispatch: crate::config::AcpDispatchConfig {
@@ -1480,7 +1480,7 @@ mod tests {
                 },
                 ..AcpConfig::default()
             },
-            ..LoongClawConfig::default()
+            ..LoongConfig::default()
         };
         let address = ConversationSessionAddress::from_session_id("telegram:42");
         let options = super::super::AcpConversationTurnOptions::automatic();
@@ -1494,7 +1494,7 @@ mod tests {
 
     #[test]
     fn evaluate_acp_conversation_turn_entry_routes_automatic_turns_when_dispatch_allows() {
-        let config = LoongClawConfig {
+        let config = LoongConfig {
             acp: AcpConfig {
                 enabled: true,
                 dispatch: crate::config::AcpDispatchConfig {
@@ -1503,7 +1503,7 @@ mod tests {
                 },
                 ..AcpConfig::default()
             },
-            ..LoongClawConfig::default()
+            ..LoongConfig::default()
         };
         let address = ConversationSessionAddress::from_session_id("telegram:42");
         let options = super::super::AcpConversationTurnOptions::automatic();
@@ -1517,9 +1517,9 @@ mod tests {
 
     #[test]
     fn shared_acp_session_manager_reuses_manager_for_same_memory_path() {
-        let mut config = LoongClawConfig::default();
+        let mut config = LoongConfig::default();
         config.memory.sqlite_path = std::env::temp_dir()
-            .join("loongclaw-acp-runtime-shared.sqlite3")
+            .join("loong-acp-runtime-shared.sqlite3")
             .display()
             .to_string();
 

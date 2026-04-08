@@ -1,6 +1,6 @@
 use clap_complete::{Shell, generate};
 
-use loongclaw_spec::CliResult;
+use loong_spec::CliResult;
 
 const CLI_COMPLETIONS_STACK_SIZE_BYTES: usize = 16 * 1024 * 1024;
 

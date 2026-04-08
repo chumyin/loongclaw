@@ -4,16 +4,14 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-REPORT_MONTH="${LOONGCLAW_ARCH_REPORT_MONTH:-$(date -u +%Y-%m)}"
-REPORT_PATH="${1:-docs/releases/support/architecture-drift-${REPORT_MONTH}.md}"
+REPORT_MONTH="${LOONG_ARCH_REPORT_MONTH:-$(date -u +%Y-%m)}"
+REPORT_PATH="${1:-docs/releases/architecture-drift-${REPORT_MONTH}.md}"
 REPORT_DIR="$(dirname "$REPORT_PATH")"
 BASELINE_DIR_OVERRIDE="$REPORT_DIR"
-if [[ -n "${LOONGCLAW_ARCH_DRIFT_BASELINE_DIR:-}" ]]; then
-  BASELINE_DIR_OVERRIDE="$LOONGCLAW_ARCH_DRIFT_BASELINE_DIR"
+if [[ -n "${LOONG_ARCH_DRIFT_BASELINE_DIR:-}" ]]; then
+  BASELINE_DIR_OVERRIDE="$LOONG_ARCH_DRIFT_BASELINE_DIR"
 fi
-mkdir -p "$REPORT_DIR"
-# Keep the temp report beside the tracked report so baseline resolution uses the same directory.
-TEMP_REPORT="$(mktemp "${REPORT_DIR}/architecture-drift-check.XXXXXX")"
+TEMP_REPORT="$(mktemp)"
 NORMALIZED_TRACKED="$(mktemp)"
 NORMALIZED_GENERATED="$(mktemp)"
 DIFF_OUTPUT="$(mktemp)"
@@ -29,7 +27,10 @@ normalize_architecture_drift_report() {
   local baseline_report_pattern
   baseline_report_pattern='/^- Baseline report: /d'
 
-  sed     -e "$generated_at_pattern"     -e "$baseline_report_pattern"     "$input_path"
+  sed \
+    -e "$generated_at_pattern" \
+    -e "$baseline_report_pattern" \
+    "$input_path"
 }
 
 if ! git ls-files --error-unmatch "$REPORT_PATH" >/dev/null 2>&1; then
@@ -37,7 +38,9 @@ if ! git ls-files --error-unmatch "$REPORT_PATH" >/dev/null 2>&1; then
   exit 1
 fi
 
-LOONGCLAW_ARCH_REPORT_MONTH="$REPORT_MONTH" LOONGCLAW_ARCH_DRIFT_BASELINE_DIR="$BASELINE_DIR_OVERRIDE"   scripts/generate_architecture_drift_report.sh "$TEMP_REPORT"
+LOONG_ARCH_REPORT_MONTH="$REPORT_MONTH" \
+LOONG_ARCH_DRIFT_BASELINE_DIR="$BASELINE_DIR_OVERRIDE" \
+  scripts/generate_architecture_drift_report.sh "$TEMP_REPORT"
 normalize_architecture_drift_report "$REPORT_PATH" >"$NORMALIZED_TRACKED"
 normalize_architecture_drift_report "$TEMP_REPORT" >"$NORMALIZED_GENERATED"
 

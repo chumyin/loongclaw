@@ -1,15 +1,11 @@
 use std::path::PathBuf;
 
+use super::{
+    ChannelCommandContext, ChannelOutboundTargetKind, ChannelSendCommandSpec, LoongConfig, http,
+    run_channel_send_command, twitch,
+};
 use crate::CliResult;
-use crate::config::LoongClawConfig;
 use crate::config::{self, ResolvedTwitchChannelConfig};
-
-use super::ChannelOutboundTargetKind;
-use super::commands::ChannelCommandContext;
-use super::commands::ChannelSendCommandSpec;
-use super::commands::run_channel_send_command;
-use super::http;
-use super::twitch;
 
 fn load_twitch_command_context(
     config_path: Option<&str>,
@@ -21,7 +17,7 @@ fn load_twitch_command_context(
 
 fn build_twitch_command_context(
     resolved_path: PathBuf,
-    config: LoongClawConfig,
+    config: LoongConfig,
     account_id: Option<&str>,
 ) -> CliResult<ChannelCommandContext<ResolvedTwitchChannelConfig>> {
     let resolved = config.twitch.resolve_account(account_id)?;

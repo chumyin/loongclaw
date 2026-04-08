@@ -92,7 +92,7 @@ write_release_fixture_asset() {
 set -euo pipefail
 if [[ "\${1:-}" == "onboard" ]]; then
   shift
-  selected_provider="\${LOONGCLAW_WEB_SEARCH_PROVIDER:-}"
+  selected_provider="\${LOONG_WEB_SEARCH_PROVIDER:-}"
   while [[ "\$#" -gt 0 ]]; do
     case "\${1:-}" in
       --web-search-provider)
@@ -629,7 +629,7 @@ run_release_override_install_and_onboard_test() {
       FIRECRAWL_API_KEY="" \
       JINA_API_KEY="" \
       JINA_AUTH_TOKEN="" \
-      LOONGCLAW_WEB_SEARCH_PROVIDER="" \
+      LOONG_WEB_SEARCH_PROVIDER="" \
       bash "$SCRIPT_UNDER_TEST" --version v0.1.2 --prefix "$install_dir" --onboard >"$output_file" 2>&1
   )
 
@@ -814,7 +814,7 @@ run_release_override_install_and_onboard_detects_duckduckgo_default_test() {
       FIRECRAWL_API_KEY="" \
       JINA_API_KEY="" \
       JINA_AUTH_TOKEN="" \
-      LOONGCLAW_WEB_SEARCH_PROVIDER="" \
+      LOONG_WEB_SEARCH_PROVIDER="" \
       bash "$SCRIPT_UNDER_TEST" --version v0.1.2 --prefix "$install_dir" --onboard >"$output_file" 2>&1
   )
 
@@ -846,7 +846,7 @@ run_release_override_install_and_onboard_prefers_tavily_for_domestic_hosts_test(
       FIRECRAWL_API_KEY="" \
       JINA_API_KEY="" \
       JINA_AUTH_TOKEN="" \
-      LOONGCLAW_WEB_SEARCH_PROVIDER="" \
+      LOONG_WEB_SEARCH_PROVIDER="" \
       bash "$SCRIPT_UNDER_TEST" --version v0.1.2 --prefix "$install_dir" --onboard >"$output_file" 2>&1
   )
 
@@ -878,7 +878,7 @@ run_release_override_install_and_onboard_prefers_unique_ready_credential_test() 
       FIRECRAWL_API_KEY="" \
       JINA_API_KEY="" \
       JINA_AUTH_TOKEN="" \
-      LOONGCLAW_WEB_SEARCH_PROVIDER="" \
+      LOONG_WEB_SEARCH_PROVIDER="" \
       bash "$SCRIPT_UNDER_TEST" --version v0.1.2 --prefix "$install_dir" --onboard >"$output_file" 2>&1
   )
 
@@ -910,7 +910,7 @@ run_release_override_install_and_onboard_prefers_unique_ready_firecrawl_credenti
       FIRECRAWL_API_KEY="firecrawl-test-token" \
       JINA_API_KEY="" \
       JINA_AUTH_TOKEN="" \
-      LOONGCLAW_WEB_SEARCH_PROVIDER="" \
+      LOONG_WEB_SEARCH_PROVIDER="" \
       bash "$SCRIPT_UNDER_TEST" --version v0.1.2 --prefix "$install_dir" --onboard >"$output_file" 2>&1
   )
 
@@ -942,7 +942,7 @@ run_release_override_install_and_onboard_preserves_signal_source_when_firecrawl_
       FIRECRAWL_API_KEY="firecrawl-test-token" \
       JINA_API_KEY="" \
       JINA_AUTH_TOKEN="" \
-      LOONGCLAW_WEB_SEARCH_PROVIDER="" \
+      LOONG_WEB_SEARCH_PROVIDER="" \
       bash "$SCRIPT_UNDER_TEST" --version v0.1.2 --prefix "$install_dir" --onboard >"$output_file" 2>&1
   )
 
@@ -974,7 +974,7 @@ run_release_override_install_and_onboard_preserves_signal_source_when_multiple_c
       FIRECRAWL_API_KEY="" \
       JINA_API_KEY="" \
       JINA_AUTH_TOKEN="" \
-      LOONGCLAW_WEB_SEARCH_PROVIDER="" \
+      LOONG_WEB_SEARCH_PROVIDER="" \
       bash "$SCRIPT_UNDER_TEST" --version v0.1.2 --prefix "$install_dir" --onboard >"$output_file" 2>&1
   )
 

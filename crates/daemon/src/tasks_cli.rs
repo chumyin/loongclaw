@@ -4,9 +4,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use async_trait::async_trait;
 use clap::Subcommand;
 use kernel::ToolCoreRequest;
-use loongclaw_app as mvp;
-use loongclaw_contracts::ToolCoreOutcome;
-use loongclaw_spec::CliResult;
+use loong_app as mvp;
+use loong_contracts::ToolCoreOutcome;
+use loong_spec::CliResult;
 use serde_json::{Value, json};
 
 #[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
@@ -345,7 +345,7 @@ pub async fn execute_tasks_command(
 
 async fn execute_create_command(
     resolved_config_path: &str,
-    config: &mvp::config::LoongClawConfig,
+    config: &mvp::config::LoongConfig,
     current_session_id: &str,
     memory_config: &mvp::memory::runtime_config::MemoryRuntimeConfig,
     tool_config: &mvp::config::ToolConfig,

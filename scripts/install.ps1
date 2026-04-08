@@ -1,21 +1,15 @@
 param(
     [string]$Prefix = "$HOME/.local/bin",
     [switch]$Onboard,
-    [string]$Version = $(if ($env:LOONG_INSTALL_VERSION) { $env:LOONG_INSTALL_VERSION } else { "latest" }),
+    [string]$Version = $(if ($env:LOONG_INSTALL_VERSION) { $env:LOONG_INSTALL_VERSION } elseif ($env:LOONGCLAW_INSTALL_VERSION) { $env:LOONGCLAW_INSTALL_VERSION } else { "latest" }),
     [switch]$Source,
-    [string]$Repository = $(if ($env:LOONG_INSTALL_REPO) { $env:LOONG_INSTALL_REPO } else { "eastreams/loong" })
+    [string]$Repository = $(if ($env:LOONG_INSTALL_REPO) { $env:LOONG_INSTALL_REPO } elseif ($env:LOONGCLAW_INSTALL_REPO) { $env:LOONGCLAW_INSTALL_REPO } else { "eastreams/loong" })
 )
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 $Prefix = [IO.Path]::GetFullPath(($Prefix -replace '^~', $HOME))
-$ReleaseBaseUrl = if ($env:LOONG_INSTALL_RELEASE_BASE_URL) {
-    $env:LOONG_INSTALL_RELEASE_BASE_URL
-} elseif ($env:LOONGCLAW_INSTALL_RELEASE_BASE_URL) {
-    $env:LOONGCLAW_INSTALL_RELEASE_BASE_URL
-} else {
-    "https://github.com/$Repository/releases"
-}
+$ReleaseBaseUrl = if ($env:LOONG_INSTALL_RELEASE_BASE_URL) { $env:LOONG_INSTALL_RELEASE_BASE_URL } elseif ($env:LOONGCLAW_INSTALL_RELEASE_BASE_URL) { $env:LOONGCLAW_INSTALL_RELEASE_BASE_URL } else { "https://github.com/$Repository/releases" }
 $BinName = "loong"
 $LegacyBinName = "loongclaw"
 
@@ -121,16 +115,16 @@ function Install-FromSource {
 
     Write-Host "==> Building loong from source (release)"
     Push-Location $repoRoot
-    $hadReleaseBuild = Test-Path Env:LOONGCLAW_RELEASE_BUILD
-    $previousReleaseBuild = $env:LOONGCLAW_RELEASE_BUILD
+    $hadReleaseBuild = (Test-Path Env:LOONG_RELEASE_BUILD) -or (Test-Path Env:LOONGCLAW_RELEASE_BUILD)
+    $previousReleaseBuild = if (Test-Path Env:LOONG_RELEASE_BUILD) { $env:LOONG_RELEASE_BUILD } else { $env:LOONGCLAW_RELEASE_BUILD }
     try {
-        $env:LOONGCLAW_RELEASE_BUILD = "1"
+        $env:LOONG_RELEASE_BUILD = "1"
         cargo build -p loong --bin $BinName --release --locked | Out-Host
     } finally {
         if ($hadReleaseBuild) {
-            $env:LOONGCLAW_RELEASE_BUILD = $previousReleaseBuild
-        } elseif (Test-Path Env:LOONGCLAW_RELEASE_BUILD) {
-            Remove-Item Env:LOONGCLAW_RELEASE_BUILD
+            $env:LOONG_RELEASE_BUILD = $previousReleaseBuild
+        } elseif (Test-Path Env:LOONG_RELEASE_BUILD) {
+            Remove-Item Env:LOONG_RELEASE_BUILD
         }
         Pop-Location
     }
@@ -208,7 +202,7 @@ function Resolve-NormalizedPathEntryOrNull([string]$PathEntry) {
 $installResult = if ($Source) { Install-FromSource } else { Install-FromRelease }
 
 Write-Host "==> Installed loong to $($installResult.Primary)"
-Write-Host "==> Installed compatible loong command to $($installResult.Legacy)"
+Write-Host "==> Installed compatible loongclaw command to $($installResult.Legacy)"
 
 $normalizedPrefix = $Prefix
 $pathItems = ($env:PATH -split [IO.Path]::PathSeparator) |

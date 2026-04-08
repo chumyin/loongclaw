@@ -37,29 +37,156 @@ fn welcome_subcommand_help_advertises_first_run_shortcuts() {
         "welcome help should frame the configured path as a quick-command entrypoint: {help}"
     );
     assert!(
-        help.contains("loong ask --config <path>")
-            || help.contains("loongclaw ask --config <path>"),
+        help.contains("loong ask --config <path>"),
         "welcome help should mention ask with an explicit config placeholder: {help}"
     );
     assert!(
-        help.contains("loong chat --config <path>")
-            || help.contains("loongclaw chat --config <path>"),
+        help.contains("loong chat --config <path>"),
         "welcome help should mention chat with an explicit config placeholder: {help}"
     );
     assert!(
-        help.contains("loong doctor --config <path>")
-            || help.contains("loongclaw doctor --config <path>"),
+        help.contains("loong personalize --config <path>"),
+        "welcome help should mention personalize with an explicit config placeholder: {help}"
+    );
+    assert!(
+        help.contains("loong doctor --config <path>"),
         "welcome help should mention doctor with an explicit config placeholder: {help}"
     );
     assert!(
-        help.contains("LOONGCLAW_CONFIG_PATH"),
+        help.contains("LOONG_CONFIG_PATH"),
         "welcome help should explain how config-path environment overrides interact with the quick commands: {help}"
     );
 }
 
 #[test]
+fn doctor_help_mentions_security_subcommand() {
+    let help = render_cli_help(["doctor"]);
+
+    assert!(
+        help.contains("security"),
+        "doctor help should advertise the security audit subcommand: {help}"
+    );
+    assert!(
+        help.contains("--config <CONFIG>"),
+        "doctor help should keep the shared config flag visible: {help}"
+    );
+}
+
+#[test]
+fn doctor_security_help_mentions_security_exposure_audit() {
+    let help = render_cli_help(["doctor", "security"]);
+
+    assert!(
+        help.contains("security exposure"),
+        "doctor security help should describe the exposure audit: {help}"
+    );
+    assert!(
+        help.contains("Usage: security"),
+        "doctor security help should render a dedicated usage block: {help}"
+    );
+}
+
+#[test]
+fn doctor_security_cli_parses_subcommand_and_global_flags() {
+    let cli = try_parse_cli([
+        "loong",
+        "doctor",
+        "--config",
+        "/tmp/loong.toml",
+        "security",
+        "--json",
+    ])
+    .expect("`doctor security --json` should parse");
+
+    match cli.command {
+        Some(Commands::Doctor {
+            config,
+            fix,
+            json,
+            skip_model_probe,
+            command,
+        }) => {
+            assert_eq!(config.as_deref(), Some("/tmp/loong.toml"));
+            assert!(!fix);
+            assert!(json);
+            assert!(!skip_model_probe);
+            assert_eq!(
+                command,
+                Some(loong_daemon::doctor_cli::DoctorCommands::Security)
+            );
+        }
+        other => panic!("unexpected command parsed: {other:?}"),
+    }
+}
+
+#[test]
+fn doctor_security_cli_accepts_global_flags_after_subcommand() {
+    let cli = try_parse_cli([
+        "loong",
+        "doctor",
+        "security",
+        "--config",
+        "/tmp/loong.toml",
+        "--skip-model-probe",
+    ])
+    .expect("global doctor flags should remain valid after the security subcommand");
+
+    match cli.command {
+        Some(Commands::Doctor {
+            config,
+            fix,
+            json,
+            skip_model_probe,
+            command,
+        }) => {
+            assert_eq!(config.as_deref(), Some("/tmp/loong.toml"));
+            assert!(!fix);
+            assert!(!json);
+            assert!(skip_model_probe);
+            assert_eq!(
+                command,
+                Some(loong_daemon::doctor_cli::DoctorCommands::Security)
+            );
+        }
+        other => panic!("unexpected command parsed: {other:?}"),
+    }
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("build test runtime");
+
+    let fix_error = runtime
+        .block_on(loong_daemon::doctor_cli::run_doctor_cli(
+            loong_daemon::doctor_cli::DoctorCommandOptions {
+                config: None,
+                fix: true,
+                json: false,
+                skip_model_probe: false,
+                command: Some(loong_daemon::doctor_cli::DoctorCommands::Security),
+            },
+        ))
+        .expect_err("doctor security should reject --fix at runtime");
+
+    let probe_error = runtime
+        .block_on(loong_daemon::doctor_cli::run_doctor_cli(
+            loong_daemon::doctor_cli::DoctorCommandOptions {
+                config: None,
+                fix: false,
+                json: false,
+                skip_model_probe: true,
+                command: Some(loong_daemon::doctor_cli::DoctorCommands::Security),
+            },
+        ))
+        .expect_err("doctor security should reject --skip-model-probe at runtime");
+
+    assert!(fix_error.contains("--fix"));
+    assert!(probe_error.contains("--skip-model-probe"));
+}
+
+#[test]
 fn setup_subcommand_is_removed() {
-    let error = try_parse_cli(["loongclaw", "setup"])
+    let error = try_parse_cli(["loong", "setup"])
         .expect_err("`setup` should no longer parse as a valid subcommand");
     assert!(
         error
@@ -71,7 +198,7 @@ fn setup_subcommand_is_removed() {
 #[test]
 fn migrate_cli_parses_discover_mode_with_defaults() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         "migrate",
         "--mode",
         "discover",
@@ -89,7 +216,7 @@ fn migrate_cli_parses_discover_mode_with_defaults() {
             force,
             ..
         }) => {
-            assert_eq!(mode, loongclaw_daemon::migrate_cli::MigrateMode::Discover);
+            assert_eq!(mode, loong_daemon::migrate_cli::MigrateMode::Discover);
             assert_eq!(input.as_deref(), Some("/tmp/legacy-root"));
             assert_eq!(output, None);
             assert!(!json);
@@ -101,7 +228,7 @@ fn migrate_cli_parses_discover_mode_with_defaults() {
 
 #[test]
 fn migrate_cli_requires_mode_flag() {
-    let error = try_parse_cli(["loongclaw", "migrate", "--input", "/tmp/legacy-root"])
+    let error = try_parse_cli(["loong", "migrate", "--input", "/tmp/legacy-root"])
         .expect_err("`migrate` without --mode should fail");
     let rendered = error.to_string();
 
@@ -114,14 +241,14 @@ fn migrate_cli_requires_mode_flag() {
 #[test]
 fn migrate_cli_parses_apply_selected_flags() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         "migrate",
         "--mode",
         "apply_selected",
         "--input",
         "/tmp/discovery-root",
         "--output",
-        "/tmp/loongclaw.toml",
+        "/tmp/loong.toml",
         "--source-id",
         "openclaw",
         "--primary-source-id",
@@ -146,12 +273,9 @@ fn migrate_cli_parses_apply_selected_flags() {
             force,
             ..
         }) => {
-            assert_eq!(
-                mode,
-                loongclaw_daemon::migrate_cli::MigrateMode::ApplySelected
-            );
+            assert_eq!(mode, loong_daemon::migrate_cli::MigrateMode::ApplySelected);
             assert_eq!(input.as_deref(), Some("/tmp/discovery-root"));
-            assert_eq!(output.as_deref(), Some("/tmp/loongclaw.toml"));
+            assert_eq!(output.as_deref(), Some("/tmp/loong.toml"));
             assert_eq!(source_id.as_deref(), Some("openclaw"));
             assert_eq!(primary_source_id.as_deref(), Some("openclaw"));
             assert!(safe_profile_merge);
@@ -164,6 +288,64 @@ fn migrate_cli_parses_apply_selected_flags() {
 }
 
 #[test]
+fn run_spec_cli_parses_bridge_support_delta_override() {
+    let cli = try_parse_cli([
+        "loong",
+        "run-spec",
+        "--spec",
+        "/tmp/runner.spec.json",
+        "--bridge-support-delta",
+        "/tmp/bridge-support.delta.json",
+        "--bridge-support-delta-sha256",
+        "abc123",
+    ])
+    .expect("run-spec with bridge support delta override should parse");
+
+    match cli.command {
+        Some(Commands::RunSpec {
+            spec,
+            print_audit,
+            bridge_support,
+            ..
+        }) => {
+            assert_eq!(spec, "/tmp/runner.spec.json");
+            assert!(!print_audit);
+            assert_eq!(
+                bridge_support.bridge_support_delta.as_deref(),
+                Some("/tmp/bridge-support.delta.json")
+            );
+            assert_eq!(
+                bridge_support.bridge_support_delta_sha256.as_deref(),
+                Some("abc123")
+            );
+        }
+        other => panic!("unexpected command parsed: {other:?}"),
+    }
+}
+
+#[test]
+fn run_spec_help_mentions_bridge_support_overrides() {
+    let help = render_cli_help(["run-spec"]);
+
+    assert!(
+        help.contains("--bridge-support <BRIDGE_SUPPORT>"),
+        "help: {help}"
+    );
+    assert!(
+        help.contains("--bridge-profile <BRIDGE_PROFILE>"),
+        "help: {help}"
+    );
+    assert!(
+        help.contains("--bridge-support-delta <BRIDGE_SUPPORT_DELTA>"),
+        "help: {help}"
+    );
+    assert!(
+        help.contains("--bridge-support-delta-sha256 <BRIDGE_SUPPORT_DELTA_SHA256>"),
+        "help: {help}"
+    );
+}
+
+#[test]
 fn safe_lane_summary_cli_rejects_zero_limit() {
     let error = run_safe_lane_summary_cli(None, Some("session-a"), 0, false)
         .expect_err("zero limit must be rejected");
@@ -171,90 +353,405 @@ fn safe_lane_summary_cli_rejects_zero_limit() {
 }
 
 #[test]
-fn runtime_trajectory_export_help_mentions_export_and_lineage() {
-    let help = render_cli_help(["runtime-trajectory", "export"]);
+fn runtime_trajectory_cli_rejects_invalid_limits() {
+    let turn_limit_error =
+        run_runtime_trajectory_cli(None, Some("session-a"), None, None, Some(0), 10, false)
+            .expect_err("zero turn limit must be rejected");
+    assert!(turn_limit_error.contains("turn_limit"));
 
-    assert!(
-        help.contains("trajectory"),
-        "runtime-trajectory export help should mention trajectory export: {help}"
-    );
-    assert!(
-        help.contains("--session <SESSION>"),
-        "runtime-trajectory export help should require a session id: {help}"
-    );
-    assert!(
-        help.contains("--turn-limit <TURN_LIMIT>")
-            && help.contains("--event-page-limit <EVENT_PAGE_LIMIT>"),
-        "runtime-trajectory export help should surface the bounded export controls: {help}"
-    );
+    let event_page_error =
+        run_runtime_trajectory_cli(None, Some("session-a"), None, None, None, 0, false)
+            .expect_err("zero event page limit must be rejected");
+    assert!(event_page_error.contains("event_page_limit"));
+
+    let missing_source_error = run_runtime_trajectory_cli(None, None, None, None, None, 10, false)
+        .expect_err("missing session and artifact must be rejected");
+    assert!(missing_source_error.contains("--session or --artifact"));
 }
 
 #[test]
-fn runtime_trajectory_cli_parses_export_flags() {
+fn session_search_cli_rejects_zero_limit() {
+    let error = run_session_search_cli(
+        None,
+        Some("session-a"),
+        "deploy freeze",
+        0,
+        None,
+        false,
+        false,
+    )
+    .expect_err("zero limit must be rejected");
+    assert!(error.contains(">= 1"));
+}
+
+#[test]
+fn session_search_cli_parses_flags() {
     let cli = try_parse_cli([
-        "loongclaw",
-        "runtime-trajectory",
-        "export",
-        "--config",
-        "/tmp/loongclaw.toml",
+        "loong",
+        "session-search",
+        "--session",
+        "root-session",
+        "--query",
+        "deploy freeze",
+        "--limit",
+        "7",
+        "--output",
+        "/tmp/session-search.json",
+        "--include-archived",
+        "--json",
+    ])
+    .expect("`session-search` should parse");
+
+    match cli.command {
+        Some(Commands::SessionSearch {
+            config,
+            session,
+            query,
+            limit,
+            output,
+            include_archived,
+            json,
+        }) => {
+            assert!(config.is_none());
+            assert_eq!(session.as_deref(), Some("root-session"));
+            assert_eq!(query, "deploy freeze");
+            assert_eq!(limit, 7);
+            assert_eq!(output.as_deref(), Some("/tmp/session-search.json"));
+            assert!(include_archived);
+            assert!(json);
+        }
+        other => panic!("unexpected command parsed: {other:?}"),
+    }
+}
+
+#[test]
+fn session_search_inspect_cli_parses_flags() {
+    let cli = try_parse_cli([
+        "loong",
+        "session-search-inspect",
+        "--artifact",
+        "/tmp/session-search.json",
+        "--json",
+    ])
+    .expect("`session-search-inspect` should parse");
+
+    match cli.command {
+        Some(Commands::SessionSearchInspect { artifact, json }) => {
+            assert_eq!(artifact, "/tmp/session-search.json");
+            assert!(json);
+        }
+        other => panic!("unexpected command parsed: {other:?}"),
+    }
+}
+
+#[test]
+fn format_session_search_text_includes_hit_summary() {
+    let rendered = format_session_search_text(
+        "/tmp/loong.toml",
+        Some("/tmp/session-search.json"),
+        &SessionSearchArtifactDocument {
+            schema: SessionSearchArtifactSchema {
+                version: SESSION_SEARCH_ARTIFACT_JSON_SCHEMA_VERSION,
+                surface: "session_search".to_owned(),
+                purpose: "session_recall_evidence".to_owned(),
+            },
+            exported_at: "2026-04-05T00:00:00Z".to_owned(),
+            scope_session_id: "root-session".to_owned(),
+            query: "deploy freeze".to_owned(),
+            limit: 5,
+            include_archived: false,
+            include_turns: true,
+            include_events: true,
+            returned_count: 1,
+            matched_session_count: 1,
+            searched_session_count: 2,
+            results: vec![SessionSearchArtifactResult {
+                session_id: "child-session".to_owned(),
+                label: Some("Child".to_owned()),
+                session_state: "running".to_owned(),
+                archived: false,
+                source: "turn".to_owned(),
+                source_id: 12,
+                role: Some("assistant".to_owned()),
+                event_kind: None,
+                ts: 123,
+                snippet: "deploy freeze checklist updated".to_owned(),
+                score: 140,
+            }],
+        },
+    );
+
+    assert!(rendered.contains("session_search session=root-session"));
+    assert!(rendered.contains("returned_count=1"));
+    assert!(rendered.contains("output=/tmp/session-search.json"));
+    assert!(rendered.contains("session=child-session"));
+    assert!(rendered.contains("source=turn"));
+    assert!(rendered.contains("role=assistant"));
+    assert!(rendered.contains("deploy freeze checklist updated"));
+}
+
+#[test]
+fn format_session_search_inspect_text_summarizes_first_hit() {
+    let rendered = format_session_search_inspect_text(
+        "/tmp/session-search.json",
+        &SessionSearchArtifactDocument {
+            schema: SessionSearchArtifactSchema {
+                version: SESSION_SEARCH_ARTIFACT_JSON_SCHEMA_VERSION,
+                surface: "session_search".to_owned(),
+                purpose: "session_recall_evidence".to_owned(),
+            },
+            exported_at: "2026-04-05T00:00:00Z".to_owned(),
+            scope_session_id: "root-session".to_owned(),
+            query: "deploy freeze".to_owned(),
+            limit: 5,
+            include_archived: false,
+            include_turns: true,
+            include_events: true,
+            returned_count: 1,
+            matched_session_count: 1,
+            searched_session_count: 2,
+            results: vec![SessionSearchArtifactResult {
+                session_id: "child-session".to_owned(),
+                label: Some("Child".to_owned()),
+                session_state: "running".to_owned(),
+                archived: false,
+                source: "turn".to_owned(),
+                source_id: 12,
+                role: Some("assistant".to_owned()),
+                event_kind: None,
+                ts: 123,
+                snippet: "deploy freeze checklist updated".to_owned(),
+                score: 140,
+            }],
+        },
+    );
+
+    assert!(rendered.contains("artifact=/tmp/session-search.json"));
+    assert!(rendered.contains("scope_session_id=root-session"));
+    assert!(rendered.contains("query=deploy freeze"));
+    assert!(rendered.contains("first_result_session_id=child-session"));
+    assert!(rendered.contains("first_result_source=turn"));
+    assert!(rendered.contains("first_result_role=assistant"));
+}
+
+#[test]
+fn trajectory_export_cli_parses_flags() {
+    let cli = try_parse_cli([
+        "loong",
+        "trajectory-export",
         "--session",
         "root-session",
         "--output",
-        "/tmp/runtime-trajectory.json",
+        "/tmp/trajectory.json",
         "--json",
     ])
-    .expect("`runtime-trajectory export` should parse");
+    .expect("`trajectory-export` should parse");
 
     match cli.command {
-        Some(Commands::RuntimeTrajectory {
-            command:
-                loongclaw_daemon::runtime_trajectory_cli::RuntimeTrajectoryCommands::Export(options),
+        Some(Commands::TrajectoryExport {
+            config,
+            session,
+            output,
+            json,
         }) => {
-            assert_eq!(options.config.as_deref(), Some("/tmp/loongclaw.toml"));
-            assert_eq!(options.session.as_deref(), Some("root-session"));
-            assert_eq!(options.turn_limit, None);
-            assert_eq!(
-                options.event_page_limit,
-                loongclaw_daemon::runtime_trajectory_cli::ARTIFACT_MODE_EVENT_PAGE_LIMIT_DEFAULT
-            );
-            assert_eq!(
-                options.output.as_deref(),
-                Some("/tmp/runtime-trajectory.json")
-            );
-            assert!(options.json);
+            assert!(config.is_none());
+            assert_eq!(session.as_deref(), Some("root-session"));
+            assert_eq!(output.as_deref(), Some("/tmp/trajectory.json"));
+            assert!(json);
         }
         other => panic!("unexpected command parsed: {other:?}"),
     }
 }
 
 #[test]
-fn runtime_trajectory_cli_parses_show_flags() {
+fn format_trajectory_export_text_summarizes_counts() {
+    let rendered = format_trajectory_export_text(
+        "/tmp/loong.toml",
+        Some("/tmp/trajectory.json"),
+        &TrajectoryExportArtifactDocument {
+            schema: TrajectoryExportArtifactSchema {
+                version: TRAJECTORY_EXPORT_ARTIFACT_JSON_SCHEMA_VERSION,
+                surface: "trajectory_export".to_owned(),
+                purpose: "session_replay_evidence".to_owned(),
+            },
+            exported_at: "2026-04-04T00:00:00Z".to_owned(),
+            session: TrajectoryExportSessionSummary {
+                session_id: "root-session".to_owned(),
+                kind: "root".to_owned(),
+                parent_session_id: None,
+                label: Some("Root".to_owned()),
+                state: "completed".to_owned(),
+                created_at: 1,
+                updated_at: 2,
+                archived_at: None,
+                turn_count: 2,
+                last_turn_at: Some(2),
+                last_error: None,
+            },
+            turns: vec![
+                TrajectoryExportTurn {
+                    role: "user".to_owned(),
+                    content: "hello".to_owned(),
+                    ts: 1,
+                },
+                TrajectoryExportTurn {
+                    role: "assistant".to_owned(),
+                    content: "world".to_owned(),
+                    ts: 2,
+                },
+            ],
+            events: vec![TrajectoryExportEvent {
+                id: 7,
+                session_id: "root-session".to_owned(),
+                event_kind: "delegate_started".to_owned(),
+                actor_session_id: Some("root-session".to_owned()),
+                payload_json: json!({"mode": "async"}),
+                ts: 2,
+            }],
+        },
+    );
+
+    assert!(rendered.contains("schema.version=1"));
+    assert!(rendered.contains("session_id=root-session"));
+    assert!(rendered.contains("turns=2"));
+    assert!(rendered.contains("events=1"));
+    assert!(rendered.contains("output=/tmp/trajectory.json"));
+}
+
+#[test]
+fn trajectory_inspect_cli_parses_flags() {
     let cli = try_parse_cli([
-        "loongclaw",
-        "runtime-trajectory",
-        "show",
+        "loong",
+        "trajectory-inspect",
         "--artifact",
-        "/tmp/runtime-trajectory.json",
+        "/tmp/trajectory.json",
         "--json",
     ])
-    .expect("`runtime-trajectory show` should parse");
+    .expect("`trajectory-inspect` should parse");
 
     match cli.command {
-        Some(Commands::RuntimeTrajectory {
-            command:
-                loongclaw_daemon::runtime_trajectory_cli::RuntimeTrajectoryCommands::Show(options),
-        }) => {
-            assert_eq!(options.artifact, "/tmp/runtime-trajectory.json");
-            assert!(options.json);
+        Some(Commands::TrajectoryInspect { artifact, json }) => {
+            assert_eq!(artifact, "/tmp/trajectory.json");
+            assert!(json);
         }
         other => panic!("unexpected command parsed: {other:?}"),
     }
+}
+
+#[test]
+fn format_trajectory_inspect_text_summarizes_counts() {
+    let rendered = format_trajectory_inspect_text(
+        "/tmp/trajectory.json",
+        &TrajectoryExportArtifactDocument {
+            schema: TrajectoryExportArtifactSchema {
+                version: TRAJECTORY_EXPORT_ARTIFACT_JSON_SCHEMA_VERSION,
+                surface: "trajectory_export".to_owned(),
+                purpose: "session_replay_evidence".to_owned(),
+            },
+            exported_at: "2026-04-04T00:00:00Z".to_owned(),
+            session: TrajectoryExportSessionSummary {
+                session_id: "root-session".to_owned(),
+                kind: "root".to_owned(),
+                parent_session_id: None,
+                label: Some("Root".to_owned()),
+                state: "completed".to_owned(),
+                created_at: 1,
+                updated_at: 2,
+                archived_at: None,
+                turn_count: 2,
+                last_turn_at: Some(2),
+                last_error: None,
+            },
+            turns: vec![
+                TrajectoryExportTurn {
+                    role: "user".to_owned(),
+                    content: "hello".to_owned(),
+                    ts: 1,
+                },
+                TrajectoryExportTurn {
+                    role: "assistant".to_owned(),
+                    content: "world".to_owned(),
+                    ts: 2,
+                },
+            ],
+            events: vec![TrajectoryExportEvent {
+                id: 7,
+                session_id: "root-session".to_owned(),
+                event_kind: "delegate_started".to_owned(),
+                actor_session_id: Some("root-session".to_owned()),
+                payload_json: json!({"mode": "async"}),
+                ts: 2,
+            }],
+        },
+    );
+
+    assert!(rendered.contains("schema.version=1"));
+    assert!(rendered.contains("artifact=/tmp/trajectory.json"));
+    assert!(rendered.contains("session_id=root-session"));
+    assert!(rendered.contains("turns=2"));
+    assert!(rendered.contains("events=1"));
+    assert!(rendered.contains("first_turn_role=user"));
+    assert!(rendered.contains("last_turn_role=assistant"));
+    assert!(rendered.contains("latest_event_kind=delegate_started"));
+}
+
+#[test]
+fn format_trajectory_inspect_text_summarizes_roles_and_events() {
+    let rendered = format_trajectory_inspect_text(
+        "/tmp/trajectory.json",
+        &TrajectoryExportArtifactDocument {
+            schema: TrajectoryExportArtifactSchema {
+                version: TRAJECTORY_EXPORT_ARTIFACT_JSON_SCHEMA_VERSION,
+                surface: "trajectory_export".to_owned(),
+                purpose: "session_replay_evidence".to_owned(),
+            },
+            exported_at: "2026-04-04T00:00:00Z".to_owned(),
+            session: TrajectoryExportSessionSummary {
+                session_id: "root-session".to_owned(),
+                kind: "root".to_owned(),
+                parent_session_id: None,
+                label: Some("Root".to_owned()),
+                state: "completed".to_owned(),
+                created_at: 1,
+                updated_at: 2,
+                archived_at: None,
+                turn_count: 2,
+                last_turn_at: Some(2),
+                last_error: None,
+            },
+            turns: vec![
+                TrajectoryExportTurn {
+                    role: "user".to_owned(),
+                    content: "hello".to_owned(),
+                    ts: 1,
+                },
+                TrajectoryExportTurn {
+                    role: "assistant".to_owned(),
+                    content: "world".to_owned(),
+                    ts: 2,
+                },
+            ],
+            events: vec![TrajectoryExportEvent {
+                id: 7,
+                session_id: "root-session".to_owned(),
+                event_kind: "delegate_started".to_owned(),
+                actor_session_id: Some("root-session".to_owned()),
+                payload_json: json!({"mode": "async"}),
+                ts: 2,
+            }],
+        },
+    );
+
+    assert!(rendered.contains("artifact=/tmp/trajectory.json"));
+    assert!(rendered.contains("first_turn_role=user"));
+    assert!(rendered.contains("last_turn_role=assistant"));
+    assert!(rendered.contains("latest_event_kind=delegate_started"));
 }
 
 #[test]
 fn onboard_cli_accepts_generic_api_key_flag() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         "onboard",
         "--non-interactive",
         "--accept-risk",
@@ -274,7 +771,7 @@ fn onboard_cli_accepts_generic_api_key_flag() {
 #[test]
 fn onboard_cli_keeps_legacy_api_key_env_alias() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         "onboard",
         "--non-interactive",
         "--accept-risk",
@@ -294,7 +791,7 @@ fn onboard_cli_keeps_legacy_api_key_env_alias() {
 #[test]
 fn onboard_cli_accepts_web_search_provider_flag() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         "onboard",
         "--non-interactive",
         "--accept-risk",
@@ -317,7 +814,7 @@ fn onboard_cli_accepts_web_search_provider_flag() {
 #[test]
 fn onboard_cli_accepts_web_search_api_key_flag() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         "onboard",
         "--non-interactive",
         "--accept-risk",
@@ -340,18 +837,18 @@ fn onboard_cli_accepts_web_search_api_key_flag() {
 #[test]
 fn onboard_cli_accepts_personality_flag() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         "onboard",
         "--non-interactive",
         "--accept-risk",
         "--personality",
-        "friendly_collab",
+        "hermit",
     ])
     .expect("`--personality` should parse");
 
     match cli.command {
         Some(Commands::Onboard { personality, .. }) => {
-            assert_eq!(personality.as_deref(), Some("friendly_collab"));
+            assert_eq!(personality.as_deref(), Some("hermit"));
         }
         other => panic!("unexpected command parsed: {other:?}"),
     }
@@ -360,7 +857,7 @@ fn onboard_cli_accepts_personality_flag() {
 #[test]
 fn onboard_cli_accepts_memory_profile_flag() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         "onboard",
         "--non-interactive",
         "--accept-risk",
@@ -380,7 +877,7 @@ fn onboard_cli_accepts_memory_profile_flag() {
 #[test]
 fn benchmark_memory_context_cli_parses_custom_knobs() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         "benchmark-memory-context",
         "--output",
         "target/benchmarks/test-memory-context-report.json",
@@ -445,7 +942,7 @@ fn benchmark_memory_context_cli_parses_custom_knobs() {
 
 #[test]
 fn benchmark_memory_context_cli_uses_stable_default_sample_sizes() {
-    let cli = try_parse_cli(["loongclaw", "benchmark-memory-context"])
+    let cli = try_parse_cli(["loong", "benchmark-memory-context"])
         .expect("benchmark-memory-context CLI should parse with defaults");
 
     match cli.command {
@@ -467,7 +964,7 @@ fn benchmark_memory_context_cli_uses_stable_default_sample_sizes() {
 
 #[test]
 fn memory_systems_cli_parses() {
-    let cli = try_parse_cli(["loongclaw", "list-memory-systems"])
+    let cli = try_parse_cli(["loong", "list-memory-systems"])
         .expect("`list-memory-systems` should parse");
 
     match cli.command {
@@ -482,10 +979,10 @@ fn memory_systems_cli_parses() {
 #[test]
 fn runtime_snapshot_cli_parses() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         "runtime-snapshot",
         "--config",
-        "/tmp/loongclaw.toml",
+        "/tmp/loong.toml",
         "--json",
         "--output",
         "/tmp/runtime-snapshot.json",
@@ -507,7 +1004,7 @@ fn runtime_snapshot_cli_parses() {
             experiment_id,
             parent_snapshot_id,
         }) => {
-            assert_eq!(config.as_deref(), Some("/tmp/loongclaw.toml"));
+            assert_eq!(config.as_deref(), Some("/tmp/loong.toml"));
             assert!(json);
             assert_eq!(output.as_deref(), Some("/tmp/runtime-snapshot.json"));
             assert_eq!(label.as_deref(), Some("baseline"));
@@ -521,10 +1018,10 @@ fn runtime_snapshot_cli_parses() {
 #[test]
 fn runtime_restore_cli_parses() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         "runtime-restore",
         "--config",
-        "/tmp/loongclaw.toml",
+        "/tmp/loong.toml",
         "--snapshot",
         "/tmp/runtime-snapshot.json",
         "--json",
@@ -539,7 +1036,7 @@ fn runtime_restore_cli_parses() {
             json,
             apply,
         }) => {
-            assert_eq!(config.as_deref(), Some("/tmp/loongclaw.toml"));
+            assert_eq!(config.as_deref(), Some("/tmp/loong.toml"));
             assert_eq!(snapshot, "/tmp/runtime-snapshot.json");
             assert!(json);
             assert!(apply);
@@ -551,7 +1048,7 @@ fn runtime_restore_cli_parses() {
 #[test]
 fn runtime_experiment_cli_parses_restore() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         "runtime-experiment",
         "restore",
         "--run",
@@ -559,7 +1056,7 @@ fn runtime_experiment_cli_parses_restore() {
         "--stage",
         "result",
         "--config",
-        "/tmp/loongclaw.toml",
+        "/tmp/loong.toml",
         "--json",
         "--apply",
     ])
@@ -567,22 +1064,22 @@ fn runtime_experiment_cli_parses_restore() {
 
     match cli.command {
         Some(Commands::RuntimeExperiment { command }) => match command {
-            loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Restore(
-                options,
-            ) => {
+            loong_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Restore(options) => {
                 assert_eq!(options.run, "/tmp/runtime-experiment.json");
                 assert_eq!(
                     options.stage,
-                    loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentRestoreStage::Result
+                    loong_daemon::runtime_experiment_cli::RuntimeExperimentRestoreStage::Result
                 );
-                assert_eq!(options.config.as_deref(), Some("/tmp/loongclaw.toml"));
+                assert_eq!(options.config.as_deref(), Some("/tmp/loong.toml"));
                 assert!(options.json);
                 assert!(options.apply);
             }
-            other @ (loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Start(_)
-            | loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Finish(_)
-            | loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Show(_)
-            | loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Compare(_)) => {
+            other @ (loong_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Start(_)
+            | loong_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Finish(_)
+            | loong_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Show(_)
+            | loong_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Compare(
+                _,
+            )) => {
                 panic!("unexpected runtime-experiment subcommand parsed: {other:?}")
             }
         },
@@ -593,7 +1090,7 @@ fn runtime_experiment_cli_parses_restore() {
 #[test]
 fn runtime_experiment_cli_parses_start_finish_and_show() {
     let start = try_parse_cli([
-        "loongclaw",
+        "loong",
         "runtime-experiment",
         "start",
         "--snapshot",
@@ -616,7 +1113,7 @@ fn runtime_experiment_cli_parses_start_finish_and_show() {
 
     match start.command {
         Some(Commands::RuntimeExperiment { command }) => match command {
-            loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Start(options) => {
+            loong_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Start(options) => {
                 assert_eq!(options.snapshot, "/tmp/runtime-snapshot.json");
                 assert_eq!(options.output, "/tmp/runtime-experiment.json");
                 assert_eq!(options.mutation_summary, "enable browser preview skill");
@@ -628,10 +1125,14 @@ fn runtime_experiment_cli_parses_start_finish_and_show() {
                 );
                 assert!(options.json);
             }
-            other @ (loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Finish(_)
-            | loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Show(_)
-            | loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Compare(_)
-            | loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Restore(_)) => {
+            other @ (loong_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Finish(_)
+            | loong_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Show(_)
+            | loong_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Compare(
+                _,
+            )
+            | loong_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Restore(
+                _,
+            )) => {
                 panic!("unexpected runtime-experiment subcommand parsed: {other:?}")
             }
         },
@@ -639,7 +1140,7 @@ fn runtime_experiment_cli_parses_start_finish_and_show() {
     }
 
     let finish = try_parse_cli([
-        "loongclaw",
+        "loong",
         "runtime-experiment",
         "finish",
         "--run",
@@ -664,9 +1165,7 @@ fn runtime_experiment_cli_parses_start_finish_and_show() {
 
     match finish.command {
         Some(Commands::RuntimeExperiment { command }) => match command {
-            loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Finish(
-                options,
-            ) => {
+            loong_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Finish(options) => {
                 assert_eq!(options.run, "/tmp/runtime-experiment.json");
                 assert_eq!(options.result_snapshot, "/tmp/runtime-snapshot-result.json");
                 assert_eq!(options.evaluation_summary, "task success improved");
@@ -677,25 +1176,20 @@ fn runtime_experiment_cli_parses_start_finish_and_show() {
                 assert_eq!(options.warning, vec!["manual verification only".to_owned()]);
                 assert_eq!(
                     options.decision,
-                    loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentDecision::Promoted
+                    loong_daemon::runtime_experiment_cli::RuntimeExperimentDecision::Promoted
                 );
                 assert_eq!(
                     options.status,
-                    loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentFinishStatus::Completed
+                    loong_daemon::runtime_experiment_cli::RuntimeExperimentFinishStatus::Completed
                 );
                 assert!(options.json);
             }
-            other
-            @ (loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Start(
+            other @ (loong_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Start(_)
+            | loong_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Show(_)
+            | loong_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Compare(
                 _,
             )
-            | loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Show(
-                _,
-            )
-            | loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Compare(
-                _,
-            )
-            | loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Restore(
+            | loong_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Restore(
                 _,
             )) => {
                 panic!("unexpected runtime-experiment subcommand parsed: {other:?}")
@@ -705,7 +1199,7 @@ fn runtime_experiment_cli_parses_start_finish_and_show() {
     }
 
     let show = try_parse_cli([
-        "loongclaw",
+        "loong",
         "runtime-experiment",
         "show",
         "--run",
@@ -716,14 +1210,18 @@ fn runtime_experiment_cli_parses_start_finish_and_show() {
 
     match show.command {
         Some(Commands::RuntimeExperiment { command }) => match command {
-            loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Show(options) => {
+            loong_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Show(options) => {
                 assert_eq!(options.run, "/tmp/runtime-experiment.json");
                 assert!(options.json);
             }
-            other @ (loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Start(_)
-            | loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Finish(_)
-            | loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Compare(_)
-            | loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Restore(_)) => {
+            other @ (loong_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Start(_)
+            | loong_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Finish(_)
+            | loong_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Compare(
+                _,
+            )
+            | loong_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Restore(
+                _,
+            )) => {
                 panic!("unexpected runtime-experiment subcommand parsed: {other:?}")
             }
         },
@@ -734,7 +1232,7 @@ fn runtime_experiment_cli_parses_start_finish_and_show() {
 #[test]
 fn runtime_experiment_cli_parses_compare() {
     let compare = try_parse_cli([
-        "loongclaw",
+        "loong",
         "runtime-experiment",
         "compare",
         "--run",
@@ -749,9 +1247,7 @@ fn runtime_experiment_cli_parses_compare() {
 
     match compare.command {
         Some(Commands::RuntimeExperiment { command }) => match command {
-            loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Compare(
-                options,
-            ) => {
+            loong_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Compare(options) => {
                 assert_eq!(options.run, "/tmp/runtime-experiment.json");
                 assert_eq!(
                     options.baseline_snapshot.as_deref(),
@@ -764,10 +1260,12 @@ fn runtime_experiment_cli_parses_compare() {
                 assert!(!options.recorded_snapshots);
                 assert!(options.json);
             }
-            other @ (loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Start(_)
-            | loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Finish(_)
-            | loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Show(_)
-            | loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Restore(_)) => {
+            other @ (loong_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Start(_)
+            | loong_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Finish(_)
+            | loong_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Show(_)
+            | loong_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Restore(
+                _,
+            )) => {
                 panic!("unexpected runtime-experiment subcommand parsed: {other:?}")
             }
         },
@@ -778,7 +1276,7 @@ fn runtime_experiment_cli_parses_compare() {
 #[test]
 fn runtime_experiment_cli_parses_compare_with_recorded_snapshots() {
     let compare = try_parse_cli([
-        "loongclaw",
+        "loong",
         "runtime-experiment",
         "compare",
         "--run",
@@ -790,19 +1288,19 @@ fn runtime_experiment_cli_parses_compare_with_recorded_snapshots() {
 
     match compare.command {
         Some(Commands::RuntimeExperiment { command }) => match command {
-            loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Compare(
-                options,
-            ) => {
+            loong_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Compare(options) => {
                 assert_eq!(options.run, "/tmp/runtime-experiment.json");
                 assert_eq!(options.baseline_snapshot, None);
                 assert_eq!(options.result_snapshot, None);
                 assert!(options.recorded_snapshots);
                 assert!(options.json);
             }
-            other @ (loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Start(_)
-            | loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Finish(_)
-            | loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Show(_)
-            | loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Restore(_)) => {
+            other @ (loong_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Start(_)
+            | loong_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Finish(_)
+            | loong_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Show(_)
+            | loong_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Restore(
+                _,
+            )) => {
                 panic!("unexpected runtime-experiment subcommand parsed: {other:?}")
             }
         },
@@ -813,7 +1311,7 @@ fn runtime_experiment_cli_parses_compare_with_recorded_snapshots() {
 #[test]
 fn runtime_experiment_cli_rejects_compare_recorded_snapshots_with_manual_paths() {
     let error = try_parse_cli([
-        "loongclaw",
+        "loong",
         "runtime-experiment",
         "compare",
         "--run",
@@ -830,9 +1328,9 @@ fn runtime_experiment_cli_rejects_compare_recorded_snapshots_with_manual_paths()
 }
 
 #[test]
-fn runtime_capability_cli_parses_propose_review_show_index_plan_apply_activate_and_rollback() {
+fn runtime_capability_cli_parses_propose_review_show_index_and_plan() {
     let propose = try_parse_cli([
-        "loongclaw",
+        "loong",
         "runtime-capability",
         "propose",
         "--run",
@@ -861,14 +1359,12 @@ fn runtime_capability_cli_parses_propose_review_show_index_plan_apply_activate_a
 
     match propose.command {
         Some(Commands::RuntimeCapability { command }) => match command {
-            loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Propose(
-                options,
-            ) => {
+            loong_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Propose(options) => {
                 assert_eq!(options.run, "/tmp/runtime-experiment.json");
                 assert_eq!(options.output, "/tmp/runtime-capability.json");
                 assert_eq!(
                     options.target,
-                    loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityTarget::ManagedSkill
+                    loong_daemon::runtime_capability_cli::RuntimeCapabilityTarget::ManagedSkill
                 );
                 assert_eq!(
                     options.target_summary,
@@ -892,15 +1388,11 @@ fn runtime_capability_cli_parses_propose_review_show_index_plan_apply_activate_a
                 );
                 assert!(options.json);
             }
-            other @ (loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Review(
-                _,
-            )
-            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Show(_)
-            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Index(_)
-            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Plan(_)
-            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Apply(_)
-            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Activate(_)
-            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Rollback(_)) => {
+            other @ (loong_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Review(_)
+            | loong_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Show(_)
+            | loong_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Index(_)
+            | loong_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Plan(_)
+            | loong_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Apply(_)) => {
                 panic!("unexpected runtime-capability subcommand parsed: {other:?}")
             }
         },
@@ -908,7 +1400,7 @@ fn runtime_capability_cli_parses_propose_review_show_index_plan_apply_activate_a
     }
 
     let review = try_parse_cli([
-        "loongclaw",
+        "loong",
         "runtime-capability",
         "review",
         "--candidate",
@@ -925,13 +1417,11 @@ fn runtime_capability_cli_parses_propose_review_show_index_plan_apply_activate_a
 
     match review.command {
         Some(Commands::RuntimeCapability { command }) => match command {
-            loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Review(
-                options,
-            ) => {
+            loong_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Review(options) => {
                 assert_eq!(options.candidate, "/tmp/runtime-capability.json");
                 assert_eq!(
                     options.decision,
-                    loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityReviewDecision::Accepted
+                    loong_daemon::runtime_capability_cli::RuntimeCapabilityReviewDecision::Accepted
                 );
                 assert_eq!(
                     options.review_summary,
@@ -943,15 +1433,13 @@ fn runtime_capability_cli_parses_propose_review_show_index_plan_apply_activate_a
                 );
                 assert!(options.json);
             }
-            other @ (loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Propose(
+            other @ (loong_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Propose(
                 _,
             )
-            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Show(_)
-            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Index(_)
-            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Plan(_)
-            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Apply(_)
-            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Activate(_)
-            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Rollback(_)) => {
+            | loong_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Show(_)
+            | loong_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Index(_)
+            | loong_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Plan(_)
+            | loong_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Apply(_)) => {
                 panic!("unexpected runtime-capability subcommand parsed: {other:?}")
             }
         },
@@ -959,7 +1447,7 @@ fn runtime_capability_cli_parses_propose_review_show_index_plan_apply_activate_a
     }
 
     let show = try_parse_cli([
-        "loongclaw",
+        "loong",
         "runtime-capability",
         "show",
         "--candidate",
@@ -970,21 +1458,17 @@ fn runtime_capability_cli_parses_propose_review_show_index_plan_apply_activate_a
 
     match show.command {
         Some(Commands::RuntimeCapability { command }) => match command {
-            loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Show(options) => {
+            loong_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Show(options) => {
                 assert_eq!(options.candidate, "/tmp/runtime-capability.json");
                 assert!(options.json);
             }
-            other @ (loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Propose(
+            other @ (loong_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Propose(
                 _,
             )
-            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Review(
-                _,
-            )
-            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Index(_)
-            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Plan(_)
-            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Apply(_)
-            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Activate(_)
-            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Rollback(_)) => {
+            | loong_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Review(_)
+            | loong_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Index(_)
+            | loong_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Plan(_)
+            | loong_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Apply(_)) => {
                 panic!("unexpected runtime-capability subcommand parsed: {other:?}")
             }
         },
@@ -992,7 +1476,7 @@ fn runtime_capability_cli_parses_propose_review_show_index_plan_apply_activate_a
     }
 
     let index = try_parse_cli([
-        "loongclaw",
+        "loong",
         "runtime-capability",
         "index",
         "--root",
@@ -1003,19 +1487,17 @@ fn runtime_capability_cli_parses_propose_review_show_index_plan_apply_activate_a
 
     match index.command {
         Some(Commands::RuntimeCapability { command }) => match command {
-            loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Index(options) => {
+            loong_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Index(options) => {
                 assert_eq!(options.root, "/tmp/runtime-capability");
                 assert!(options.json);
             }
-            other @ (loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Propose(
+            other @ (loong_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Propose(
                 _,
             )
-            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Review(_)
-            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Show(_)
-            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Plan(_)
-            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Apply(_)
-            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Activate(_)
-            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Rollback(_)) => {
+            | loong_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Review(_)
+            | loong_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Show(_)
+            | loong_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Plan(_)
+            | loong_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Apply(_)) => {
                 panic!("unexpected runtime-capability subcommand parsed: {other:?}")
             }
         },
@@ -1023,7 +1505,7 @@ fn runtime_capability_cli_parses_propose_review_show_index_plan_apply_activate_a
     }
 
     let plan = try_parse_cli([
-        "loongclaw",
+        "loong",
         "runtime-capability",
         "plan",
         "--root",
@@ -1036,20 +1518,18 @@ fn runtime_capability_cli_parses_propose_review_show_index_plan_apply_activate_a
 
     match plan.command {
         Some(Commands::RuntimeCapability { command }) => match command {
-            loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Plan(options) => {
+            loong_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Plan(options) => {
                 assert_eq!(options.root, "/tmp/runtime-capability");
                 assert_eq!(options.family_id, "family-123");
                 assert!(options.json);
             }
-            other @ (loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Propose(
+            other @ (loong_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Propose(
                 _,
             )
-            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Review(_)
-            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Show(_)
-            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Index(_)
-            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Apply(_)
-            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Activate(_)
-            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Rollback(_)) => {
+            | loong_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Review(_)
+            | loong_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Show(_)
+            | loong_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Index(_)
+            | loong_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Apply(_)) => {
                 panic!("unexpected runtime-capability subcommand parsed: {other:?}")
             }
         },
@@ -1057,7 +1537,7 @@ fn runtime_capability_cli_parses_propose_review_show_index_plan_apply_activate_a
     }
 
     let apply = try_parse_cli([
-        "loongclaw",
+        "loong",
         "runtime-capability",
         "apply",
         "--root",
@@ -1070,98 +1550,120 @@ fn runtime_capability_cli_parses_propose_review_show_index_plan_apply_activate_a
 
     match apply.command {
         Some(Commands::RuntimeCapability { command }) => match command {
-            loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Apply(options) => {
+            loong_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Apply(options) => {
                 assert_eq!(options.root, "/tmp/runtime-capability");
                 assert_eq!(options.family_id, "family-123");
                 assert!(options.json);
             }
-            other @ (loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Propose(
+            other @ (loong_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Propose(
                 _,
             )
-            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Review(_)
-            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Show(_)
-            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Index(_)
-            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Plan(_)
-            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Activate(_)
-            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Rollback(_)) => {
+            | loong_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Review(_)
+            | loong_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Show(_)
+            | loong_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Index(_)
+            | loong_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Plan(_)) => {
                 panic!("unexpected runtime-capability subcommand parsed: {other:?}")
             }
         },
         other => panic!("unexpected command parsed: {other:?}"),
     }
+}
 
-    let activate = try_parse_cli([
-        "loongclaw",
+#[test]
+fn runtime_capability_cli_parses_memory_stage_profile_target() {
+    let propose = try_parse_cli([
+        "loong",
         "runtime-capability",
-        "activate",
-        "--config",
-        "/tmp/loongclaw.toml",
-        "--artifact",
-        "/tmp/runtime-capability-apply.json",
-        "--apply",
-        "--replace",
-        "--json",
+        "propose",
+        "--run",
+        "/tmp/runtime-experiment.json",
+        "--output",
+        "/tmp/runtime-capability.json",
+        "--target",
+        "memory_stage_profile",
+        "--target-summary",
+        "Promote governed memory pipeline intent into a reusable profile",
+        "--bounded-scope",
+        "Governed memory pipeline promotion intent only",
+        "--required-capability",
+        "memory_read",
+        "--tag",
+        "memory",
+        "--tag",
+        "pipeline",
     ])
-    .expect("`runtime-capability activate` should parse");
+    .expect("`runtime-capability propose --target memory_stage_profile` should parse");
 
-    match activate.command {
+    match propose.command {
         Some(Commands::RuntimeCapability { command }) => match command {
-            loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Activate(
-                options,
-            ) => {
-                assert_eq!(options.config.as_deref(), Some("/tmp/loongclaw.toml"));
-                assert_eq!(options.artifact, "/tmp/runtime-capability-apply.json");
-                assert!(options.apply);
-                assert!(options.replace);
-                assert!(options.json);
+            loong_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Propose(options) => {
+                assert_eq!(options.run, "/tmp/runtime-experiment.json");
+                assert_eq!(options.output, "/tmp/runtime-capability.json");
+                assert_eq!(
+                    options.target,
+                    loong_daemon::runtime_capability_cli::RuntimeCapabilityTarget::MemoryStageProfile
+                );
+                assert!(options.target_summary.contains("governed memory pipeline"));
+                assert_eq!(
+                    options.bounded_scope,
+                    "Governed memory pipeline promotion intent only"
+                );
+                assert_eq!(options.required_capability, vec!["memory_read".to_owned()]);
+                assert_eq!(
+                    options.tag,
+                    vec!["memory".to_owned(), "pipeline".to_owned()]
+                );
             }
-            other @ (
-                loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Propose(_)
-                | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Review(_)
-                | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Show(_)
-                | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Index(_)
-                | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Plan(_)
-                | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Apply(_)
-                | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Rollback(_)
-            ) => {
+            other @ (loong_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Review(_)
+            | loong_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Show(_)
+            | loong_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Index(_)
+            | loong_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Plan(_)
+            | loong_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Apply(_)) => {
                 panic!("unexpected runtime-capability subcommand parsed: {other:?}")
             }
         },
         other => panic!("unexpected command parsed: {other:?}"),
     }
+}
 
-    let rollback = try_parse_cli([
-        "loongclaw",
+#[test]
+fn runtime_capability_cli_parses_memory_stage_profile_canonical_spelling() {
+    let propose = try_parse_cli([
+        "loong",
         "runtime-capability",
-        "rollback",
-        "--config",
-        "/tmp/loongclaw.toml",
-        "--record",
-        "/tmp/runtime-capability-activation.json",
-        "--apply",
-        "--json",
+        "propose",
+        "--run",
+        "/tmp/runtime-experiment.json",
+        "--output",
+        "/tmp/runtime-capability.json",
+        "--target",
+        "memory-stage-profile",
+        "--target-summary",
+        "Promote governed memory pipeline intent into a reusable profile",
+        "--bounded-scope",
+        "Governed memory pipeline promotion intent only",
+        "--required-capability",
+        "memory_read",
+        "--tag",
+        "memory",
+        "--tag",
+        "pipeline",
     ])
-    .expect("`runtime-capability rollback` should parse");
+    .expect("`runtime-capability propose --target memory-stage-profile` should parse");
 
-    match rollback.command {
+    match propose.command {
         Some(Commands::RuntimeCapability { command }) => match command {
-            loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Rollback(
-                options,
-            ) => {
-                assert_eq!(options.config.as_deref(), Some("/tmp/loongclaw.toml"));
-                assert_eq!(options.record, "/tmp/runtime-capability-activation.json");
-                assert!(options.apply);
-                assert!(options.json);
+            loong_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Propose(options) => {
+                assert_eq!(
+                    options.target,
+                    loong_daemon::runtime_capability_cli::RuntimeCapabilityTarget::MemoryStageProfile
+                );
             }
-            other @ (
-                loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Propose(_)
-                | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Review(_)
-                | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Show(_)
-                | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Index(_)
-                | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Plan(_)
-                | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Apply(_)
-                | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Activate(_)
-            ) => {
+            other @ (loong_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Review(_)
+            | loong_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Show(_)
+            | loong_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Index(_)
+            | loong_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Plan(_)
+            | loong_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Apply(_)) => {
                 panic!("unexpected runtime-capability subcommand parsed: {other:?}")
             }
         },
@@ -1174,6 +1676,74 @@ fn acp_event_summary_cli_rejects_zero_limit() {
     let error = run_acp_event_summary_cli(None, Some("session-a"), 0, false)
         .expect_err("zero limit must be rejected");
     assert!(error.contains(">= 1"));
+}
+
+#[test]
+fn runtime_trajectory_cli_parses_flags() {
+    let cli = try_parse_cli([
+        "loongclaw",
+        "runtime-trajectory",
+        "export",
+        "--session",
+        "root-session",
+        "--output",
+        "/tmp/runtime-trajectory.json",
+        "--turn-limit",
+        "25",
+        "--event-page-limit",
+        "50",
+        "--json",
+    ])
+    .expect("runtime-trajectory flags should parse");
+
+    match cli.command {
+        Some(Commands::RuntimeTrajectory { command }) => match command {
+            loong_daemon::runtime_trajectory_cli::RuntimeTrajectoryCommands::Export(options) => {
+                assert_eq!(options.session.as_deref(), Some("root-session"));
+                assert_eq!(
+                    options.output.as_deref(),
+                    Some("/tmp/runtime-trajectory.json")
+                );
+                assert_eq!(options.turn_limit, Some(25));
+                assert_eq!(options.event_page_limit, 50);
+                assert!(options.json);
+            }
+            other => panic!("unexpected runtime-trajectory subcommand parsed: {other:?}"),
+        },
+        other => panic!("unexpected command parsed: {other:?}"),
+    }
+}
+
+#[test]
+fn runtime_trajectory_cli_parses_artifact_show_mode() {
+    let cli = try_parse_cli([
+        "loongclaw",
+        "runtime-trajectory",
+        "show",
+        "--artifact",
+        "/tmp/runtime-trajectory.json",
+        "--json",
+    ])
+    .expect("runtime-trajectory artifact mode should parse");
+
+    match cli.command {
+        Some(Commands::RuntimeTrajectory { command }) => match command {
+            loong_daemon::runtime_trajectory_cli::RuntimeTrajectoryCommands::Show(options) => {
+                assert_eq!(options.artifact, "/tmp/runtime-trajectory.json");
+                assert!(options.json);
+            }
+            other => panic!("unexpected runtime-trajectory subcommand parsed: {other:?}"),
+        },
+        other => panic!("unexpected command parsed: {other:?}"),
+    }
+}
+
+#[test]
+fn runtime_trajectory_help_mentions_export_and_show_subcommands() {
+    let help = render_cli_help(["runtime-trajectory"]);
+
+    assert!(help.contains("export"));
+    assert!(help.contains("show"));
 }
 
 #[test]
@@ -1265,7 +1835,7 @@ fn format_acp_event_summary_includes_routing_intent_and_provenance() {
 #[test]
 fn chat_cli_accepts_acp_runtime_option_flags() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         "chat",
         "--session",
         "telegram:42",
@@ -1303,9 +1873,22 @@ fn chat_cli_accepts_acp_runtime_option_flags() {
 }
 
 #[test]
+fn chat_cli_accepts_latest_session_selector() {
+    let cli = try_parse_cli(["loong", "chat", "--session", "latest"])
+        .expect("chat CLI should accept the latest session selector");
+
+    match cli.command {
+        Some(Commands::Chat { session, .. }) => {
+            assert_eq!(session.as_deref(), Some("latest"));
+        }
+        other => panic!("unexpected command parse result: {other:?}"),
+    }
+}
+
+#[test]
 fn feishu_send_cli_accepts_generic_target_and_target_kind() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         channel_send_command("feishu"),
         "--target",
         "om_123",
@@ -1337,7 +1920,7 @@ fn feishu_send_cli_accepts_generic_target_and_target_kind() {
 #[test]
 fn feishu_send_cli_keeps_receive_id_alias() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         channel_send_command("feishu"),
         "--receive-id",
         "ou_123",
@@ -1367,7 +1950,7 @@ fn feishu_send_cli_keeps_receive_id_alias() {
 #[test]
 fn feishu_send_cli_rejects_unsupported_conversation_target_kind() {
     let error = try_parse_cli([
-        "loongclaw",
+        "loong",
         channel_send_command("feishu"),
         "--target",
         "oc_123",
@@ -1388,7 +1971,7 @@ fn feishu_send_cli_rejects_unsupported_conversation_target_kind() {
 #[test]
 fn feishu_send_cli_defaults_target_kind_from_catalog_metadata() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         channel_send_command("feishu"),
         "--target",
         "ou_123",
@@ -1408,7 +1991,7 @@ fn feishu_send_cli_defaults_target_kind_from_catalog_metadata() {
 #[test]
 fn telegram_send_cli_accepts_generic_target_and_defaults_to_conversation() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         channel_send_command("telegram"),
         "--target",
         "123:topic:7",
@@ -1435,7 +2018,7 @@ fn telegram_send_cli_accepts_generic_target_and_defaults_to_conversation() {
 #[test]
 fn telegram_send_cli_rejects_non_conversation_target_kind() {
     let error = try_parse_cli([
-        "loongclaw",
+        "loong",
         channel_send_command("telegram"),
         "--target",
         "123",
@@ -1456,7 +2039,7 @@ fn telegram_send_cli_rejects_non_conversation_target_kind() {
 #[test]
 fn matrix_send_cli_accepts_generic_target_and_defaults_to_conversation() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         "matrix-send",
         "--target",
         "!ops:example.org",
@@ -1483,7 +2066,7 @@ fn matrix_send_cli_accepts_generic_target_and_defaults_to_conversation() {
 #[test]
 fn matrix_send_cli_rejects_non_conversation_target_kind() {
     let error = try_parse_cli([
-        "loongclaw",
+        "loong",
         "matrix-send",
         "--target",
         "!ops:example.org",
@@ -1504,7 +2087,7 @@ fn matrix_send_cli_rejects_non_conversation_target_kind() {
 #[test]
 fn wecom_send_cli_accepts_generic_target_and_defaults_to_conversation() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         channel_send_command("wecom"),
         "--target",
         "group_demo",
@@ -1531,7 +2114,7 @@ fn wecom_send_cli_accepts_generic_target_and_defaults_to_conversation() {
 #[test]
 fn wecom_send_cli_rejects_non_conversation_target_kind() {
     let error = try_parse_cli([
-        "loongclaw",
+        "loong",
         channel_send_command("wecom"),
         "--target",
         "group_demo",
@@ -1552,7 +2135,7 @@ fn wecom_send_cli_rejects_non_conversation_target_kind() {
 #[test]
 fn line_send_cli_accepts_generic_target_and_defaults_to_address() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         channel_send_command("line"),
         "--target",
         "U1234567890abcdef",
@@ -1579,7 +2162,7 @@ fn line_send_cli_accepts_generic_target_and_defaults_to_address() {
 #[test]
 fn line_send_cli_rejects_non_address_target_kind() {
     let error = try_parse_cli([
-        "loongclaw",
+        "loong",
         channel_send_command("line"),
         "--target",
         "U1234567890abcdef",
@@ -1600,7 +2183,7 @@ fn line_send_cli_rejects_non_address_target_kind() {
 #[test]
 fn dingtalk_send_cli_accepts_config_backed_endpoint_without_target() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         channel_send_command("dingtalk"),
         "--text",
         "hello dingtalk",
@@ -1625,7 +2208,7 @@ fn dingtalk_send_cli_accepts_config_backed_endpoint_without_target() {
 #[test]
 fn dingtalk_send_cli_accepts_explicit_endpoint_target_override() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         channel_send_command("dingtalk"),
         "--target",
         "https://example.test/dingtalk",
@@ -1652,7 +2235,7 @@ fn dingtalk_send_cli_accepts_explicit_endpoint_target_override() {
 #[test]
 fn dingtalk_send_cli_rejects_non_endpoint_target_kind() {
     let error = try_parse_cli([
-        "loongclaw",
+        "loong",
         channel_send_command("dingtalk"),
         "--target-kind",
         "conversation",
@@ -1671,7 +2254,7 @@ fn dingtalk_send_cli_rejects_non_endpoint_target_kind() {
 #[test]
 fn webhook_send_cli_accepts_config_backed_endpoint_without_target() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         channel_send_command("webhook"),
         "--text",
         "hello webhook",
@@ -1696,7 +2279,7 @@ fn webhook_send_cli_accepts_config_backed_endpoint_without_target() {
 #[test]
 fn webhook_send_cli_accepts_explicit_endpoint_target_override() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         channel_send_command("webhook"),
         "--target",
         "https://example.test/webhook",
@@ -1723,7 +2306,7 @@ fn webhook_send_cli_accepts_explicit_endpoint_target_override() {
 #[test]
 fn webhook_send_cli_rejects_non_endpoint_target_kind() {
     let error = try_parse_cli([
-        "loongclaw",
+        "loong",
         channel_send_command("webhook"),
         "--target-kind",
         "conversation",
@@ -1742,7 +2325,7 @@ fn webhook_send_cli_rejects_non_endpoint_target_kind() {
 #[test]
 fn google_chat_send_cli_accepts_config_backed_endpoint_without_target() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         channel_send_command("google-chat"),
         "--text",
         "hello gchat",
@@ -1767,7 +2350,7 @@ fn google_chat_send_cli_accepts_config_backed_endpoint_without_target() {
 #[test]
 fn google_chat_send_cli_accepts_explicit_endpoint_target_override() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         channel_send_command("google-chat"),
         "--target",
         "https://example.test/google-chat",
@@ -1794,7 +2377,7 @@ fn google_chat_send_cli_accepts_explicit_endpoint_target_override() {
 #[test]
 fn google_chat_send_cli_rejects_non_endpoint_target_kind() {
     let error = try_parse_cli([
-        "loongclaw",
+        "loong",
         channel_send_command("google-chat"),
         "--target-kind",
         "conversation",
@@ -1813,7 +2396,7 @@ fn google_chat_send_cli_rejects_non_endpoint_target_kind() {
 #[test]
 fn teams_send_cli_accepts_config_backed_endpoint_without_target() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         channel_send_command("teams"),
         "--text",
         "hello teams",
@@ -1838,7 +2421,7 @@ fn teams_send_cli_accepts_config_backed_endpoint_without_target() {
 #[test]
 fn teams_send_cli_accepts_explicit_endpoint_target_override() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         channel_send_command("teams"),
         "--target",
         "https://example.test/teams",
@@ -1865,7 +2448,7 @@ fn teams_send_cli_accepts_explicit_endpoint_target_override() {
 #[test]
 fn teams_send_cli_rejects_non_endpoint_target_kind() {
     let error = try_parse_cli([
-        "loongclaw",
+        "loong",
         channel_send_command("teams"),
         "--target-kind",
         "conversation",
@@ -1884,7 +2467,7 @@ fn teams_send_cli_rejects_non_endpoint_target_kind() {
 #[test]
 fn mattermost_send_cli_accepts_generic_target_and_defaults_to_conversation() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         channel_send_command("mattermost"),
         "--target",
         "channel-demo",
@@ -1911,7 +2494,7 @@ fn mattermost_send_cli_accepts_generic_target_and_defaults_to_conversation() {
 #[test]
 fn mattermost_send_cli_rejects_non_conversation_target_kind() {
     let error = try_parse_cli([
-        "loongclaw",
+        "loong",
         channel_send_command("mattermost"),
         "--target",
         "channel-demo",
@@ -1932,7 +2515,7 @@ fn mattermost_send_cli_rejects_non_conversation_target_kind() {
 #[test]
 fn nextcloud_talk_send_cli_accepts_conversation_target() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         channel_send_command("nextcloud-talk"),
         "--target",
         "room-token",
@@ -1962,7 +2545,7 @@ fn nextcloud_talk_send_cli_accepts_conversation_target() {
 #[test]
 fn nextcloud_talk_send_cli_rejects_non_conversation_target_kind() {
     let error = try_parse_cli([
-        "loongclaw",
+        "loong",
         channel_send_command("nextcloud-talk"),
         "--target",
         "room-token",
@@ -1983,7 +2566,7 @@ fn nextcloud_talk_send_cli_rejects_non_conversation_target_kind() {
 #[test]
 fn synology_chat_send_cli_accepts_config_backed_webhook_without_target() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         channel_send_command("synology-chat"),
         "--text",
         "hello synology",
@@ -2011,7 +2594,7 @@ fn synology_chat_send_cli_accepts_config_backed_webhook_without_target() {
 #[test]
 fn synology_chat_send_cli_rejects_non_address_target_kind() {
     let error = try_parse_cli([
-        "loongclaw",
+        "loong",
         channel_send_command("synology-chat"),
         "--target-kind",
         "conversation",
@@ -2030,7 +2613,7 @@ fn synology_chat_send_cli_rejects_non_address_target_kind() {
 #[test]
 fn imessage_send_cli_accepts_conversation_target_kind() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         channel_send_command("imessage"),
         "--target",
         "iMessage;+;chat123",
@@ -2057,7 +2640,7 @@ fn imessage_send_cli_accepts_conversation_target_kind() {
 #[test]
 fn imessage_send_cli_rejects_non_conversation_target_kind() {
     let error = try_parse_cli([
-        "loongclaw",
+        "loong",
         channel_send_command("imessage"),
         "--target",
         "iMessage;+;chat123",
@@ -2077,7 +2660,7 @@ fn imessage_send_cli_rejects_non_conversation_target_kind() {
 
 #[test]
 fn matrix_serve_cli_accepts_once_and_account_flags() {
-    let cli = try_parse_cli(["loongclaw", "matrix-serve", "--once", "--account", "ops"])
+    let cli = try_parse_cli(["loong", "matrix-serve", "--once", "--account", "ops"])
         .expect("matrix serve CLI should parse");
 
     match cli.command {
@@ -2091,7 +2674,7 @@ fn matrix_serve_cli_accepts_once_and_account_flags() {
 
 #[test]
 fn wecom_serve_cli_accepts_account_flag() {
-    let cli = try_parse_cli(["loongclaw", "wecom-serve", "--account", "ops"])
+    let cli = try_parse_cli(["loong", "wecom-serve", "--account", "ops"])
         .expect("wecom serve CLI should parse");
 
     match cli.command {
@@ -2143,7 +2726,7 @@ fn run_channel_send_cli_forwards_common_arguments_to_runner() {
                 run: fake_send_cli_runner,
             },
             ChannelSendCliArgs {
-                config_path: Some("/tmp/loongclaw.toml"),
+                config_path: Some("/tmp/loong.toml"),
                 account: Some("ops"),
                 target: Some("om_42"),
                 target_kind: mvp::channel::ChannelOutboundTargetKind::MessageReply,
@@ -2155,7 +2738,7 @@ fn run_channel_send_cli_forwards_common_arguments_to_runner() {
 
     assert_eq!(
         error,
-        "config=/tmp/loongclaw.toml|account=ops|target=om_42|target_kind=message_reply|text=hello|card=true"
+        "config=/tmp/loong.toml|account=ops|target=om_42|target_kind=message_reply|text=hello|card=true"
     );
 }
 
@@ -2172,7 +2755,7 @@ fn run_channel_serve_cli_forwards_optional_arguments_to_runner() {
                 run: fake_serve_cli_runner,
             },
             ChannelServeCliArgs {
-                config_path: Some("/tmp/loongclaw.toml"),
+                config_path: Some("/tmp/loong.toml"),
                 account: Some("ops"),
                 once: true,
                 bind_override: Some("127.0.0.1:8123"),
@@ -2183,21 +2766,21 @@ fn run_channel_serve_cli_forwards_optional_arguments_to_runner() {
 
     assert_eq!(
         error,
-        "config=/tmp/loongclaw.toml|account=ops|once=true|bind=127.0.0.1:8123|path=/hooks/feishu"
+        "config=/tmp/loong.toml|account=ops|once=true|bind=127.0.0.1:8123|path=/hooks/feishu"
     );
 }
 
 #[test]
 fn multi_channel_serve_cli_requires_explicit_cli_session() {
-    let error = try_parse_cli(["loongclaw", "multi-channel-serve"])
-        .expect_err("missing --session should fail");
+    let error =
+        try_parse_cli(["loong", "multi-channel-serve"]).expect_err("missing --session should fail");
     assert!(error.to_string().contains("--session <SESSION>"));
 }
 
 #[test]
 fn multi_channel_serve_cli_parses_channel_account_selection_flags() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         "multi-channel-serve",
         "--session",
         "cli-supervisor",
@@ -2236,7 +2819,7 @@ fn multi_channel_serve_cli_parses_channel_account_selection_flags() {
 #[test]
 fn multi_channel_serve_cli_rejects_malformed_channel_account_selector() {
     let error = try_parse_cli([
-        "loongclaw",
+        "loong",
         "multi-channel-serve",
         "--session",
         "cli-supervisor",
@@ -2260,6 +2843,97 @@ fn multi_channel_serve_cli_help_mentions_session_and_channel_account_flags() {
     assert!(
         help.contains("runtime-backed service-channel"),
         "help: {help}"
+    );
+}
+
+#[test]
+fn gateway_run_cli_accepts_optional_session_and_channel_account_flags() {
+    let cli = try_parse_cli([
+        "loong",
+        "gateway",
+        "run",
+        "--session",
+        "cli-gateway",
+        "--channel-account",
+        "telegram=bot_123456",
+        "--channel-account",
+        "matrix=bridge-sync",
+    ])
+    .expect("gateway run should parse");
+
+    match cli.command {
+        Some(Commands::Gateway { command }) => match command {
+            loong_daemon::gateway::service::GatewayCommand::Run {
+                session,
+                channel_account,
+                ..
+            } => {
+                assert_eq!(session.as_deref(), Some("cli-gateway"));
+                assert_eq!(channel_account.len(), 2);
+                assert_eq!(channel_account[0].channel_id, "telegram");
+                assert_eq!(channel_account[0].account_id, "bot_123456");
+                assert_eq!(channel_account[1].channel_id, "matrix");
+                assert_eq!(channel_account[1].account_id, "bridge-sync");
+            }
+            other @ loong_daemon::gateway::service::GatewayCommand::Status { .. }
+            | other @ loong_daemon::gateway::service::GatewayCommand::Stop => {
+                panic!("unexpected gateway subcommand: {other:?}")
+            }
+        },
+        other => panic!("unexpected parse result: {other:?}"),
+    }
+}
+
+#[test]
+fn gateway_run_cli_allows_headless_mode_without_session() {
+    let cli =
+        try_parse_cli(["loong", "gateway", "run"]).expect("gateway run should allow headless mode");
+
+    match cli.command {
+        Some(Commands::Gateway { command }) => match command {
+            loong_daemon::gateway::service::GatewayCommand::Run { session, .. } => {
+                assert_eq!(session, None);
+            }
+            other @ loong_daemon::gateway::service::GatewayCommand::Status { .. }
+            | other @ loong_daemon::gateway::service::GatewayCommand::Stop => {
+                panic!("unexpected gateway subcommand: {other:?}")
+            }
+        },
+        other => panic!("unexpected parse result: {other:?}"),
+    }
+}
+
+#[test]
+fn gateway_status_cli_parses_json_flag() {
+    let cli = try_parse_cli(["loong", "gateway", "status", "--json"])
+        .expect("gateway status should parse");
+
+    match cli.command {
+        Some(Commands::Gateway { command }) => match command {
+            loong_daemon::gateway::service::GatewayCommand::Status { json } => {
+                assert!(json);
+            }
+            other @ loong_daemon::gateway::service::GatewayCommand::Run { .. }
+            | other @ loong_daemon::gateway::service::GatewayCommand::Stop => {
+                panic!("unexpected gateway subcommand: {other:?}")
+            }
+        },
+        other => panic!("unexpected parse result: {other:?}"),
+    }
+}
+
+#[test]
+fn gateway_cli_help_mentions_run_status_stop_and_optional_session() {
+    let help = render_cli_help(["gateway"]);
+    let run_help = render_cli_help(["gateway", "run"]);
+
+    assert!(help.contains("run"), "help: {help}");
+    assert!(help.contains("status"), "help: {help}");
+    assert!(help.contains("stop"), "help: {help}");
+    assert!(run_help.contains("--session <SESSION>"), "help: {run_help}");
+    assert!(
+        run_help.contains("--channel-account <CHANNEL=ACCOUNT>"),
+        "help: {run_help}"
     );
 }
 
