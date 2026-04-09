@@ -54,6 +54,13 @@ pub const LINE_RUNTIME_COMMAND_DESCRIPTOR: ChannelRuntimeCommandDescriptor =
         serve_bootstrap_agent_id: "channel-line",
     };
 
+pub const NEXTCLOUD_TALK_RUNTIME_COMMAND_DESCRIPTOR: ChannelRuntimeCommandDescriptor =
+    ChannelRuntimeCommandDescriptor {
+        channel_id: "nextcloud-talk",
+        platform: ChannelPlatform::NextcloudTalk,
+        serve_bootstrap_agent_id: "channel-nextcloud-talk",
+    };
+
 pub const WEBHOOK_RUNTIME_COMMAND_DESCRIPTOR: ChannelRuntimeCommandDescriptor =
     ChannelRuntimeCommandDescriptor {
         channel_id: "webhook",

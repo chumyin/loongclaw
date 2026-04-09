@@ -90,6 +90,7 @@ pub use registry::{
     LINE_RUNTIME_COMMAND_DESCRIPTOR, MATRIX_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
     MATRIX_COMMAND_FAMILY_DESCRIPTOR, MATRIX_RUNTIME_COMMAND_DESCRIPTOR,
     MATTERMOST_CATALOG_COMMAND_FAMILY_DESCRIPTOR, NEXTCLOUD_TALK_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
+    NEXTCLOUD_TALK_COMMAND_FAMILY_DESCRIPTOR, NEXTCLOUD_TALK_RUNTIME_COMMAND_DESCRIPTOR,
     NOSTR_CATALOG_COMMAND_FAMILY_DESCRIPTOR, SIGNAL_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
     SLACK_CATALOG_COMMAND_FAMILY_DESCRIPTOR, SYNOLOGY_CHAT_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
     TEAMS_CATALOG_COMMAND_FAMILY_DESCRIPTOR, TELEGRAM_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
@@ -164,6 +165,8 @@ pub use dispatch::run_feishu_channel_with_stop;
 pub use dispatch::run_line_channel_with_stop;
 #[cfg(feature = "channel-matrix")]
 pub use dispatch::run_matrix_channel_with_stop;
+#[cfg(feature = "channel-nextcloud-talk")]
+pub use dispatch::run_nextcloud_talk_channel_with_stop;
 #[cfg(feature = "channel-telegram")]
 pub use dispatch::run_telegram_channel_with_stop;
 #[cfg(feature = "channel-wecom")]
@@ -183,10 +186,11 @@ pub use dispatch::{
     load_channel_operation_runtime_for_account_from_dir_for_test, run_background_channel_with_stop,
     run_dingtalk_send, run_discord_send, run_email_send, run_feishu_channel, run_feishu_send,
     run_google_chat_send, run_imessage_send, run_irc_send, run_line_channel, run_line_send,
-    run_matrix_channel, run_matrix_send, run_mattermost_send, run_nextcloud_talk_send,
-    run_nostr_send, run_signal_send, run_slack_send, run_synology_chat_send, run_teams_send,
-    run_telegram_channel, run_telegram_send, run_webhook_channel, run_webhook_send,
-    run_wecom_channel, run_wecom_send, run_whatsapp_channel, run_whatsapp_send,
+    run_matrix_channel, run_matrix_send, run_mattermost_send, run_nextcloud_talk_channel,
+    run_nextcloud_talk_send, run_nostr_send, run_signal_send, run_slack_send,
+    run_synology_chat_send, run_teams_send, run_telegram_channel, run_telegram_send,
+    run_webhook_channel, run_webhook_send, run_wecom_channel, run_wecom_send, run_whatsapp_channel,
+    run_whatsapp_send,
 };
 #[cfg(test)]
 use runtime::serve::ChannelServeRuntimeSpec;
@@ -1798,6 +1802,46 @@ mod tests {
             KnownChannelSessionSendTarget::Line {
                 account_id: Some(account_id),
                 address: "U0123456789abcdef".to_owned(),
+            }
+        );
+    }
+
+    #[cfg(feature = "channel-nextcloud-talk")]
+    #[test]
+    fn parse_known_channel_session_send_target_decodes_nextcloud_talk_route_segments() {
+        let config: LoongClawConfig = serde_json::from_value(serde_json::json!({
+            "nextcloud_talk": {
+                "enabled": true,
+                "accounts": {
+                    "ops": {
+                        "account_id": "talk-bot-ops",
+                        "server_url": "https://cloud.example.test",
+                        "shared_secret": "nextcloud-shared-secret"
+                    }
+                }
+            }
+        }))
+        .expect("deserialize nextcloud talk config");
+        let resolved = config
+            .nextcloud_talk
+            .resolve_account(None)
+            .expect("resolve default nextcloud talk account");
+        let account_id = resolved.account.id;
+        let session_id = ChannelSession::with_account(
+            ChannelPlatform::NextcloudTalk,
+            account_id.as_str(),
+            "n3xtc10ud",
+        )
+        .session_key();
+
+        let parsed = parse_known_channel_session_send_target(&config, session_id.as_str())
+            .expect("parse nextcloud talk session send target");
+
+        assert_eq!(
+            parsed,
+            KnownChannelSessionSendTarget::NextcloudTalk {
+                account_id: Some(account_id),
+                conversation_id: "n3xtc10ud".to_owned(),
             }
         );
     }

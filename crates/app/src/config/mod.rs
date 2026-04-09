@@ -335,7 +335,10 @@ mod tests {
         assert_eq!(nextcloud_talk.id, "nextcloud-talk");
         assert_eq!(nextcloud_talk.surface_label, "nextcloud talk channel");
         assert_eq!(nextcloud_talk.runtime_kind, ChannelRuntimeKind::Service);
-        assert_eq!(nextcloud_talk.serve_subcommand, None);
+        assert_eq!(
+            nextcloud_talk.serve_subcommand,
+            Some("nextcloud-talk-serve")
+        );
 
         let synology_chat = channel_descriptor("synology-chat").expect("synology chat descriptor");
         assert_eq!(synology_chat.id, "synology-chat");

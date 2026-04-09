@@ -63,14 +63,15 @@ pub use super::catalog::{
     ChannelDoctorCheckTrigger, ChannelDoctorOperationSpec, ChannelOnboardingDescriptor,
     ChannelOnboardingStrategy, ChannelOperationDescriptor, ChannelRuntimeCommandDescriptor,
     FEISHU_RUNTIME_COMMAND_DESCRIPTOR, LINE_RUNTIME_COMMAND_DESCRIPTOR,
-    MATRIX_RUNTIME_COMMAND_DESCRIPTOR, TELEGRAM_RUNTIME_COMMAND_DESCRIPTOR,
-    WEBHOOK_RUNTIME_COMMAND_DESCRIPTOR, WECOM_RUNTIME_COMMAND_DESCRIPTOR,
-    WHATSAPP_RUNTIME_COMMAND_DESCRIPTOR, catalog_only_channel_entries, list_channel_catalog,
-    normalize_channel_catalog_id, normalize_channel_platform,
-    resolve_channel_catalog_command_family_descriptor, resolve_channel_catalog_entry,
-    resolve_channel_catalog_operation, resolve_channel_command_family_descriptor,
-    resolve_channel_doctor_operation_spec, resolve_channel_onboarding_descriptor,
-    resolve_channel_operation_descriptor, resolve_channel_runtime_command_descriptor,
+    MATRIX_RUNTIME_COMMAND_DESCRIPTOR, NEXTCLOUD_TALK_RUNTIME_COMMAND_DESCRIPTOR,
+    TELEGRAM_RUNTIME_COMMAND_DESCRIPTOR, WEBHOOK_RUNTIME_COMMAND_DESCRIPTOR,
+    WECOM_RUNTIME_COMMAND_DESCRIPTOR, WHATSAPP_RUNTIME_COMMAND_DESCRIPTOR,
+    catalog_only_channel_entries, list_channel_catalog, normalize_channel_catalog_id,
+    normalize_channel_platform, resolve_channel_catalog_command_family_descriptor,
+    resolve_channel_catalog_entry, resolve_channel_catalog_operation,
+    resolve_channel_command_family_descriptor, resolve_channel_doctor_operation_spec,
+    resolve_channel_onboarding_descriptor, resolve_channel_operation_descriptor,
+    resolve_channel_runtime_command_descriptor,
 };
 pub(crate) use super::catalog::{
     catalog_only_channel_entries_from, resolve_channel_selection_order,
@@ -2085,7 +2086,7 @@ const NEXTCLOUD_TALK_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOp
     id: CHANNEL_OPERATION_SERVE_ID,
     label: "talk room service",
     command: "nextcloud-talk-serve",
-    availability: ChannelCatalogOperationAvailability::Stub,
+    availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: true,
     requirements: NEXTCLOUD_TALK_SERVE_REQUIREMENTS,
     default_target_kind: None,
@@ -2098,6 +2099,24 @@ pub const NEXTCLOUD_TALK_CATALOG_COMMAND_FAMILY_DESCRIPTOR: ChannelCatalogComman
         send: NEXTCLOUD_TALK_SEND_OPERATION,
         serve: NEXTCLOUD_TALK_SERVE_OPERATION,
     };
+
+pub const NEXTCLOUD_TALK_COMMAND_FAMILY_DESCRIPTOR: ChannelCommandFamilyDescriptor =
+    ChannelCommandFamilyDescriptor {
+        runtime: NEXTCLOUD_TALK_RUNTIME_COMMAND_DESCRIPTOR,
+        catalog: NEXTCLOUD_TALK_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
+    };
+
+const NEXTCLOUD_TALK_SERVE_DOCTOR_CHECKS: &[ChannelDoctorCheckSpec] = &[
+    ChannelDoctorCheckSpec {
+        name: "nextcloud talk serve health",
+        trigger: ChannelDoctorCheckTrigger::OperationHealth,
+    },
+    ChannelDoctorCheckSpec {
+        name: "nextcloud talk serve runtime",
+        trigger: ChannelDoctorCheckTrigger::ReadyRuntime,
+    },
+];
+
 const NEXTCLOUD_TALK_OPERATIONS: &[ChannelRegistryOperationDescriptor] = &[
     ChannelRegistryOperationDescriptor {
         operation: NEXTCLOUD_TALK_CATALOG_COMMAND_FAMILY_DESCRIPTOR.send,
@@ -2105,13 +2124,20 @@ const NEXTCLOUD_TALK_OPERATIONS: &[ChannelRegistryOperationDescriptor] = &[
     },
     ChannelRegistryOperationDescriptor {
         operation: NEXTCLOUD_TALK_CATALOG_COMMAND_FAMILY_DESCRIPTOR.serve,
-        doctor_checks: &[],
+        doctor_checks: NEXTCLOUD_TALK_SERVE_DOCTOR_CHECKS,
     },
+];
+const NEXTCLOUD_TALK_CAPABILITIES: &[ChannelCapability] = &[
+    ChannelCapability::RuntimeBacked,
+    ChannelCapability::MultiAccount,
+    ChannelCapability::Send,
+    ChannelCapability::Serve,
+    ChannelCapability::RuntimeTracking,
 ];
 const NEXTCLOUD_TALK_ONBOARDING_DESCRIPTOR: ChannelOnboardingDescriptor =
     ChannelOnboardingDescriptor {
         strategy: ChannelOnboardingStrategy::ManualConfig,
-        setup_hint: "configure Nextcloud Talk bot credentials in loongclaw.toml under nextcloud_talk or nextcloud_talk.accounts.<account>; outbound room send is shipped, while inbound bot callback serve support remains planned",
+        setup_hint: "configure Nextcloud Talk bot credentials in loongclaw.toml under nextcloud_talk or nextcloud_talk.accounts.<account>; outbound room send and inbound bot callback serve are shipped, and nextcloud-talk-serve requires --bind plus an optional --path override at runtime",
         status_command: "loong doctor",
         repair_command: Some("loong doctor --fix"),
     };
@@ -3320,8 +3346,8 @@ fn build_mattermost_snapshots(
 fn build_nextcloud_talk_snapshots(
     descriptor: &ChannelRegistryDescriptor,
     config: &LoongClawConfig,
-    _runtime_dir: &Path,
-    _now_ms: u64,
+    runtime_dir: &Path,
+    now_ms: u64,
 ) -> Vec<ChannelStatusSnapshot> {
     let compiled = cfg!(feature = "channel-nextcloud-talk");
     let http_policy = super::http::outbound_http_policy_from_config(config);
@@ -3345,6 +3371,8 @@ fn build_nextcloud_talk_snapshots(
                     is_default_account,
                     default_account_source,
                     http_policy,
+                    runtime_dir,
+                    now_ms,
                 ),
                 Err(error) => build_invalid_nextcloud_talk_snapshot(
                     descriptor,
@@ -3353,6 +3381,8 @@ fn build_nextcloud_talk_snapshots(
                     is_default_account,
                     default_account_source,
                     error,
+                    runtime_dir,
+                    now_ms,
                 ),
             }
         })
@@ -4411,6 +4441,8 @@ fn build_nextcloud_talk_snapshot_for_account(
     is_default_account: bool,
     default_account_source: ChannelDefaultAccountSelectionSource,
     http_policy: super::http::ChannelOutboundHttpPolicy,
+    runtime_dir: &Path,
+    now_ms: u64,
 ) -> ChannelStatusSnapshot {
     let mut send_issues = Vec::new();
 
@@ -4436,22 +4468,44 @@ fn build_nextcloud_talk_snapshot_for_account(
             "disabled by nextcloud_talk account configuration".to_owned(),
         )
     } else if !send_issues.is_empty() {
-        misconfigured_operation(NEXTCLOUD_TALK_SEND_OPERATION, send_issues)
+        misconfigured_operation(NEXTCLOUD_TALK_SEND_OPERATION, send_issues.clone())
     } else {
         ready_operation(NEXTCLOUD_TALK_SEND_OPERATION)
     };
+    let send_operation = attach_runtime(
+        ChannelPlatform::NextcloudTalk,
+        NEXTCLOUD_TALK_SEND_OPERATION,
+        send_operation,
+        resolved.account.id.as_str(),
+        resolved.account.label.as_str(),
+        runtime_dir,
+        now_ms,
+    );
 
     let serve_operation = if !compiled {
         unsupported_operation(
             NEXTCLOUD_TALK_SERVE_OPERATION,
             "binary built without feature `channel-nextcloud-talk`".to_owned(),
         )
-    } else {
-        unsupported_operation(
+    } else if !resolved.enabled {
+        disabled_operation(
             NEXTCLOUD_TALK_SERVE_OPERATION,
-            "nextcloud talk bot callback serve is not implemented yet".to_owned(),
+            "disabled by nextcloud_talk account configuration".to_owned(),
         )
+    } else if !send_issues.is_empty() {
+        misconfigured_operation(NEXTCLOUD_TALK_SERVE_OPERATION, send_issues.clone())
+    } else {
+        ready_operation(NEXTCLOUD_TALK_SERVE_OPERATION)
     };
+    let serve_operation = attach_runtime(
+        ChannelPlatform::NextcloudTalk,
+        NEXTCLOUD_TALK_SERVE_OPERATION,
+        serve_operation,
+        resolved.account.id.as_str(),
+        resolved.account.label.as_str(),
+        runtime_dir,
+        now_ms,
+    );
 
     let mut notes = vec![
         format!("configured_account_id={}", resolved.configured_account_id),
@@ -6358,6 +6412,8 @@ fn build_invalid_nextcloud_talk_snapshot(
     is_default_account: bool,
     default_account_source: ChannelDefaultAccountSelectionSource,
     error: String,
+    runtime_dir: &Path,
+    now_ms: u64,
 ) -> ChannelStatusSnapshot {
     let send_operation = if !compiled {
         unsupported_operation(
@@ -6367,17 +6423,32 @@ fn build_invalid_nextcloud_talk_snapshot(
     } else {
         misconfigured_operation(NEXTCLOUD_TALK_SEND_OPERATION, vec![error.clone()])
     };
+    let send_operation = attach_runtime(
+        ChannelPlatform::NextcloudTalk,
+        NEXTCLOUD_TALK_SEND_OPERATION,
+        send_operation,
+        configured_account_id,
+        configured_account_id,
+        runtime_dir,
+        now_ms,
+    );
     let serve_operation = if !compiled {
         unsupported_operation(
             NEXTCLOUD_TALK_SERVE_OPERATION,
             "binary built without feature `channel-nextcloud-talk`".to_owned(),
         )
     } else {
-        unsupported_operation(
-            NEXTCLOUD_TALK_SERVE_OPERATION,
-            "nextcloud talk bot callback serve is not implemented yet".to_owned(),
-        )
+        misconfigured_operation(NEXTCLOUD_TALK_SERVE_OPERATION, vec![error.clone()])
     };
+    let serve_operation = attach_runtime(
+        ChannelPlatform::NextcloudTalk,
+        NEXTCLOUD_TALK_SERVE_OPERATION,
+        serve_operation,
+        configured_account_id,
+        configured_account_id,
+        runtime_dir,
+        now_ms,
+    );
 
     let mut notes = vec![
         format!("configured_account_id={configured_account_id}"),
@@ -8112,7 +8183,7 @@ mod tests {
     }
 
     #[test]
-    fn channel_catalog_includes_nextcloud_talk_config_backed_bot_surface() {
+    fn channel_catalog_includes_nextcloud_talk_runtime_backed_bot_surface() {
         let catalog = list_channel_catalog();
         let nextcloud_talk = catalog
             .iter()
@@ -8125,7 +8196,7 @@ mod tests {
 
         assert_eq!(
             nextcloud_talk.implementation_status,
-            ChannelCatalogImplementationStatus::ConfigBacked
+            ChannelCatalogImplementationStatus::RuntimeBacked
         );
         assert_eq!(nextcloud_talk.selection_order, 160);
         assert_eq!(nextcloud_talk.aliases, vec!["nextcloud", "nextcloudtalk"]);
@@ -8142,7 +8213,7 @@ mod tests {
         );
         assert_eq!(
             nextcloud_talk.operations[1].availability,
-            ChannelCatalogOperationAvailability::Stub
+            ChannelCatalogOperationAvailability::Implemented
         );
 
         assert_eq!(

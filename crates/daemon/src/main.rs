@@ -1049,6 +1049,24 @@ async fn main() {
             )
             .await
         }
+        Commands::NextcloudTalkServe {
+            config,
+            account,
+            bind,
+            path,
+        } => {
+            run_channel_serve_cli(
+                NEXTCLOUD_TALK_SERVE_CLI_SPEC,
+                ChannelServeCliArgs {
+                    config_path: config.as_deref(),
+                    account: account.as_deref(),
+                    once: false,
+                    bind_override: Some(bind.as_str()),
+                    path_override: path.as_deref(),
+                },
+            )
+            .await
+        }
         Commands::SynologyChatSend {
             config,
             account,

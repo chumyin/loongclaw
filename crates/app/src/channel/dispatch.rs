@@ -18,6 +18,7 @@ use crate::CliResult;
     feature = "channel-line",
     feature = "channel-matrix",
     feature = "channel-mattermost",
+    feature = "channel-nextcloud-talk",
     feature = "channel-signal",
     feature = "channel-twitch",
     feature = "channel-slack",
@@ -40,6 +41,7 @@ use crate::KernelContext;
     feature = "channel-line",
     feature = "channel-matrix",
     feature = "channel-mattermost",
+    feature = "channel-nextcloud-talk",
     feature = "channel-signal",
     feature = "channel-twitch",
     feature = "channel-slack",
@@ -63,6 +65,7 @@ use crate::config::LoongClawConfig;
     feature = "channel-line",
     feature = "channel-matrix",
     feature = "channel-mattermost",
+    feature = "channel-nextcloud-talk",
     feature = "channel-signal",
     feature = "channel-twitch",
     feature = "channel-slack",
@@ -86,6 +89,7 @@ use crate::context::{DEFAULT_TOKEN_TTL_S, bootstrap_kernel_context_with_config};
     feature = "channel-line",
     feature = "channel-matrix",
     feature = "channel-mattermost",
+    feature = "channel-nextcloud-talk",
     feature = "channel-signal",
     feature = "channel-slack",
     feature = "channel-irc",
@@ -141,6 +145,7 @@ use crate::config::ResolvedWhatsappChannelConfig;
     feature = "channel-feishu",
     feature = "channel-line",
     feature = "channel-matrix",
+    feature = "channel-nextcloud-talk",
     feature = "channel-wecom",
     feature = "channel-whatsapp",
 ))]
@@ -155,6 +160,7 @@ use crate::conversation::{
     feature = "channel-feishu",
     feature = "channel-line",
     feature = "channel-matrix",
+    feature = "channel-nextcloud-talk",
     feature = "channel-wecom",
     feature = "channel-whatsapp",
     feature = "channel-webhook",
@@ -1980,6 +1986,63 @@ pub async fn run_nextcloud_talk_send(
     }
 }
 
+#[allow(clippy::print_stdout)] // CLI startup banner
+pub async fn run_nextcloud_talk_channel(
+    config_path: Option<&str>,
+    account_id: Option<&str>,
+    bind_override: Option<&str>,
+    path_override: Option<&str>,
+) -> CliResult<()> {
+    if !cfg!(feature = "channel-nextcloud-talk") {
+        return Err(
+            "nextcloud_talk channel is disabled (enable feature `channel-nextcloud-talk`)"
+                .to_owned(),
+        );
+    }
+    #[cfg(not(feature = "channel-nextcloud-talk"))]
+    {
+        let _ = (config_path, account_id, bind_override, path_override);
+        return Err(
+            "nextcloud_talk channel is disabled (enable feature `channel-nextcloud-talk`)"
+                .to_owned(),
+        );
+    }
+
+    #[cfg(feature = "channel-nextcloud-talk")]
+    {
+        let context = load_nextcloud_talk_command_context(config_path, account_id)?;
+        nextcloud_talk::run_nextcloud_talk_channel_with_context(
+            context,
+            bind_override,
+            path_override,
+            ChannelServeStopHandle::new(),
+            true,
+        )
+        .await
+    }
+}
+
+#[cfg(feature = "channel-nextcloud-talk")]
+pub async fn run_nextcloud_talk_channel_with_stop(
+    resolved_path: PathBuf,
+    config: LoongClawConfig,
+    account_id: Option<&str>,
+    bind_override: Option<&str>,
+    path_override: Option<&str>,
+    stop: ChannelServeStopHandle,
+    initialize_runtime_environment: bool,
+) -> CliResult<()> {
+    let context = build_nextcloud_talk_command_context(resolved_path, config, account_id)?;
+    nextcloud_talk::run_nextcloud_talk_channel_with_context(
+        context,
+        bind_override,
+        path_override,
+        stop,
+        initialize_runtime_environment,
+    )
+    .await
+}
+
 #[allow(clippy::print_stdout)] // CLI output
 pub async fn run_synology_chat_send(
     config_path: Option<&str>,
@@ -3050,6 +3113,46 @@ pub(crate) async fn send_text_to_known_session(
                 })
             }
         }
+        KnownChannelSessionSendTarget::NextcloudTalk {
+            account_id,
+            conversation_id,
+        } => {
+            #[cfg(not(feature = "channel-nextcloud-talk"))]
+            {
+                let _ = (config, account_id, conversation_id, text);
+                Err(
+                    "nextcloud_talk channel is disabled (enable feature `channel-nextcloud-talk`)"
+                        .to_owned(),
+                )
+            }
+
+            #[cfg(feature = "channel-nextcloud-talk")]
+            {
+                let resolved = config
+                    .nextcloud_talk
+                    .resolve_account_for_session_account_id(account_id.as_deref())?;
+                if !resolved.enabled {
+                    return Err(
+                        "sessions_send_channel_disabled: nextcloud_talk channel is disabled by config"
+                            .to_owned(),
+                    );
+                }
+
+                nextcloud_talk::run_nextcloud_talk_send(
+                    &resolved,
+                    ChannelOutboundTargetKind::Conversation,
+                    conversation_id.as_str(),
+                    text,
+                    super::http::outbound_http_policy_from_config(config),
+                )
+                .await?;
+
+                Ok(ChannelSendReceipt {
+                    channel: "nextcloud-talk",
+                    target: conversation_id,
+                })
+            }
+        }
         KnownChannelSessionSendTarget::Matrix {
             account_id,
             room_id,
@@ -3421,6 +3524,7 @@ fn resolve_channel_acp_turn_hints(
                 working_directory,
             })
         }
+        ChannelPlatform::NextcloudTalk => Ok(ChannelResolvedAcpTurnHints::default()),
         ChannelPlatform::Webhook => Ok(ChannelResolvedAcpTurnHints::default()),
         ChannelPlatform::WhatsApp => Ok(ChannelResolvedAcpTurnHints::default()),
         ChannelPlatform::Irc => Ok(ChannelResolvedAcpTurnHints::default()),

@@ -296,13 +296,15 @@ const TEAMS_CHANNEL_REGISTRY_DESCRIPTOR: ChannelRegistryDescriptor = ChannelRegi
 const NEXTCLOUD_TALK_CHANNEL_REGISTRY_DESCRIPTOR: ChannelRegistryDescriptor =
     ChannelRegistryDescriptor {
         id: "nextcloud-talk",
-        runtime: None,
+        runtime: Some(ChannelRuntimeDescriptor {
+            family: NEXTCLOUD_TALK_COMMAND_FAMILY_DESCRIPTOR,
+        }),
         snapshot_builder: Some(build_nextcloud_talk_snapshots),
         selection_order: 160,
         selection_label: "self-hosted room bot",
-        blurb: "Shipped Nextcloud Talk bot outbound surface with config-backed room sends; inbound callback serve support remains planned.",
-        implementation_status: ChannelCatalogImplementationStatus::ConfigBacked,
-        capabilities: CONFIG_BACKED_SEND_CHANNEL_CAPABILITIES,
+        blurb: "Shipped Nextcloud Talk bot surface with signed room sends and callback serve support.",
+        implementation_status: ChannelCatalogImplementationStatus::RuntimeBacked,
+        capabilities: NEXTCLOUD_TALK_CAPABILITIES,
         label: "Nextcloud Talk",
         aliases: &["nextcloud", "nextcloudtalk"],
         transport: "nextcloud_talk_bot_api",

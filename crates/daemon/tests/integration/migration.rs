@@ -754,7 +754,14 @@ fn channel_registry_lists_registered_channel_ids() {
     assert_eq!(
         loongclaw_daemon::migration::channels::registered_channel_ids(),
         vec![
-            "telegram", "feishu", "matrix", "wecom", "line", "whatsapp", "webhook"
+            "telegram",
+            "feishu",
+            "matrix",
+            "nextcloud-talk",
+            "wecom",
+            "line",
+            "whatsapp",
+            "webhook"
         ]
     );
 }
@@ -814,6 +821,11 @@ fn channel_registry_collects_ready_channel_candidates() {
     config.feishu.app_secret = Some(loongclaw_contracts::SecretRef::Inline(
         "feishu-secret".to_owned(),
     ));
+    config.nextcloud_talk.enabled = true;
+    config.nextcloud_talk.server_url = Some("https://cloud.example.test".to_owned());
+    config.nextcloud_talk.shared_secret = Some(loongclaw_contracts::SecretRef::Inline(
+        "nextcloud-shared-secret".to_owned(),
+    ));
     config.line.enabled = true;
     config.line.channel_access_token = Some(loongclaw_contracts::SecretRef::Inline(
         "line-access-token".to_owned(),
@@ -862,7 +874,15 @@ fn channel_registry_collects_ready_channel_candidates() {
 
     assert_eq!(
         ids,
-        vec!["telegram", "feishu", "wecom", "line", "whatsapp", "webhook"]
+        vec![
+            "telegram",
+            "feishu",
+            "nextcloud-talk",
+            "wecom",
+            "line",
+            "whatsapp",
+            "webhook"
+        ]
     );
     assert!(
         previews.iter().all(|preview| {

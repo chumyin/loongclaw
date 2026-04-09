@@ -11,6 +11,7 @@ use super::types::{
 mod feishu;
 mod line;
 mod matrix;
+mod nextcloud_talk;
 mod plugin_bridge;
 mod telegram;
 mod webhook;
@@ -66,7 +67,7 @@ struct ChannelAdapter {
     apply_default_env_bindings: fn(&mut mvp::config::LoongClawConfig) -> Vec<String>,
 }
 
-const REGISTRY: [ChannelAdapter; 7] = [
+const REGISTRY: [ChannelAdapter; 8] = [
     ChannelAdapter {
         id: telegram::ID,
         collect_preview: telegram::collect_preview,
@@ -106,6 +107,16 @@ const REGISTRY: [ChannelAdapter; 7] = [
         collect_preflight_checks: matrix::collect_preflight_checks,
         collect_doctor_checks: matrix::collect_doctor_checks,
         apply_default_env_bindings: matrix::apply_default_env_bindings,
+    },
+    ChannelAdapter {
+        id: nextcloud_talk::ID,
+        collect_preview: nextcloud_talk::collect_preview,
+        apply: nextcloud_talk::apply,
+        readiness_state: nextcloud_talk::readiness_state,
+        apply_import_readiness: nextcloud_talk::apply_import_readiness,
+        collect_preflight_checks: nextcloud_talk::collect_preflight_checks,
+        collect_doctor_checks: nextcloud_talk::collect_doctor_checks,
+        apply_default_env_bindings: nextcloud_talk::apply_default_env_bindings,
     },
     ChannelAdapter {
         id: wecom::ID,

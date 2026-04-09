@@ -137,6 +137,10 @@ pub(in crate::channel) enum KnownChannelSessionSendTarget {
         account_id: Option<String>,
         address: String,
     },
+    NextcloudTalk {
+        account_id: Option<String>,
+        conversation_id: String,
+    },
     Matrix {
         account_id: Option<String>,
         room_id: String,
@@ -171,6 +175,9 @@ pub(in crate::channel) fn parse_known_channel_session_send_target(
         "telegram" => parse_telegram_session_send_target(config, session_id, scope.as_slice()),
         "feishu" | "lark" => parse_feishu_session_send_target(config, session_id, scope.as_slice()),
         "line" => parse_line_session_send_target(config, session_id, scope.as_slice()),
+        "nextcloud-talk" => {
+            parse_nextcloud_talk_session_send_target(config, session_id, scope.as_slice())
+        }
         "matrix" => parse_matrix_session_send_target(config, session_id, scope.as_slice()),
         "wecom" | "wechat-work" | "qywx" => {
             parse_wecom_session_send_target(config, session_id, scope.as_slice())
@@ -318,6 +325,49 @@ fn parse_line_session_send_target(
     Ok(KnownChannelSessionSendTarget::Line {
         account_id,
         address: address.to_owned(),
+    })
+}
+
+#[cfg(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-line",
+    feature = "channel-matrix",
+    feature = "channel-nextcloud-talk",
+    feature = "channel-wecom",
+    feature = "channel-whatsapp"
+))]
+fn parse_nextcloud_talk_session_send_target(
+    config: &LoongClawConfig,
+    session_id: &str,
+    scope: &[String],
+) -> CliResult<KnownChannelSessionSendTarget> {
+    let configured_account_ids = config.nextcloud_talk.configured_account_ids();
+    let runtime_account_ids = configured_runtime_account_ids(
+        configured_account_ids.as_slice(),
+        |configured_account_id| {
+            config
+                .nextcloud_talk
+                .resolve_account(Some(configured_account_id))
+                .map(|resolved| resolved.account.id)
+        },
+    );
+    let split_scope = split_known_channel_account_and_scope(
+        scope,
+        configured_account_ids.as_slice(),
+        runtime_account_ids.as_slice(),
+    );
+    let account_id = split_scope.0;
+    let scoped_path = split_scope.1;
+    let conversation_id = scoped_path
+        .first()
+        .map(String::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("sessions_send_channel_unsupported: `{session_id}`"))?;
+
+    Ok(KnownChannelSessionSendTarget::NextcloudTalk {
+        account_id,
+        conversation_id: conversation_id.to_owned(),
     })
 }
 

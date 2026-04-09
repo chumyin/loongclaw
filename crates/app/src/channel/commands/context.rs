@@ -8,6 +8,8 @@ use crate::config::ResolvedFeishuChannelConfig;
 use crate::config::ResolvedLineChannelConfig;
 #[cfg(feature = "channel-matrix")]
 use crate::config::ResolvedMatrixChannelConfig;
+#[cfg(feature = "channel-nextcloud-talk")]
+use crate::config::ResolvedNextcloudTalkChannelConfig;
 #[cfg(feature = "channel-telegram")]
 use crate::config::ResolvedTelegramChannelConfig;
 #[cfg(feature = "channel-webhook")]
@@ -80,6 +82,17 @@ impl ChannelResolvedRuntimeAccount for ResolvedLineChannelConfig {
 
 #[cfg(feature = "channel-matrix")]
 impl ChannelResolvedRuntimeAccount for ResolvedMatrixChannelConfig {
+    fn runtime_account_id(&self) -> &str {
+        self.account.id.as_str()
+    }
+
+    fn runtime_account_label(&self) -> &str {
+        self.account.label.as_str()
+    }
+}
+
+#[cfg(feature = "channel-nextcloud-talk")]
+impl ChannelResolvedRuntimeAccount for ResolvedNextcloudTalkChannelConfig {
     fn runtime_account_id(&self) -> &str {
         self.account.id.as_str()
     }
