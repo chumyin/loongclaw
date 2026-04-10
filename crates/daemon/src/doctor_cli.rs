@@ -14,6 +14,8 @@ use serde_json::json;
 use crate::plugin_bridge_account_summary::plugin_bridge_account_summary;
 use crate::provider_credential_policy;
 use crate::provider_model_probe_policy;
+use crate::tool_calling_readiness::RuntimeSnapshotToolCallingState;
+use crate::tool_calling_readiness::collect_runtime_snapshot_tool_calling_state;
 
 #[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
 pub enum DoctorCommands {
@@ -192,6 +194,7 @@ pub async fn run_doctor_cli(options: DoctorCommandOptions) -> CliResult<()> {
         &mut fixes,
         "create tool file root",
     ));
+    checks.push(tool_calling_readiness_doctor_check(&config));
     checks.extend(collect_browser_companion_doctor_checks(&config).await);
     checks.extend(collect_runtime_plugins_doctor_checks(&config));
 
@@ -1831,6 +1834,47 @@ fn provider_transport_doctor_check(provider: &mvp::config::ProviderConfig) -> Do
     }
 }
 
+fn collect_tool_calling_readiness_for_doctor(
+    config: &mvp::config::LoongClawConfig,
+) -> (usize, RuntimeSnapshotToolCallingState) {
+    let tool_runtime =
+        mvp::tools::runtime_config::ToolRuntimeConfig::from_loongclaw_config(config, None);
+    let tool_view = mvp::tools::runtime_tool_view_for_runtime_config(&tool_runtime);
+    let visible_tool_count = tool_view.tool_names().count();
+    let readiness = collect_runtime_snapshot_tool_calling_state(config, visible_tool_count);
+
+    (visible_tool_count, readiness)
+}
+
+fn tool_calling_readiness_doctor_check(config: &mvp::config::LoongClawConfig) -> DoctorCheck {
+    let (visible_tool_count, readiness) = collect_tool_calling_readiness_for_doctor(config);
+    let availability = readiness.availability.as_str();
+    let effective_tool_schema_mode =
+        crate::render_line_safe_text_value(readiness.effective_tool_schema_mode.as_str());
+    let active_model = crate::render_line_safe_text_value(readiness.active_model.as_str());
+    let reason = crate::render_line_safe_text_value(readiness.reason.as_str());
+    let level = match availability {
+        "ready" => DoctorCheckLevel::Pass,
+        "inactive" | "degraded" => DoctorCheckLevel::Warn,
+        _ => DoctorCheckLevel::Warn,
+    };
+    let detail = format!(
+        "availability={} structured_tool_schema_enabled={} mode={} active_model={} visible_tool_count={} reason={}",
+        availability,
+        readiness.structured_tool_schema_enabled,
+        effective_tool_schema_mode,
+        active_model,
+        visible_tool_count,
+        reason,
+    );
+
+    DoctorCheck {
+        name: "tool calling readiness".to_owned(),
+        level,
+        detail,
+    }
+}
+
 fn provider_route_probe_doctor_check(
     probe: &crate::provider_route_diagnostics::ProviderRouteProbe,
 ) -> DoctorCheck {
@@ -2431,6 +2475,42 @@ fn build_doctor_next_steps_with_channel_surfaces_and_path_env(
             format!(
                 "Review [runtime_plugins].roots, [runtime_plugins].supported_bridges, [runtime_plugins].supported_adapter_families, and package manifests, then re-run diagnostics: {rerun_command}"
             ),
+        );
+    }
+
+    if checks.iter().any(|check| {
+        check.name == "tool calling readiness" && check.level != DoctorCheckLevel::Pass
+    }) {
+        let (_, readiness) = collect_tool_calling_readiness_for_doctor(config);
+        let status_json_command = format!(
+            "{} status --config {} --json",
+            mvp::config::CLI_COMMAND_NAME,
+            crate::cli_handoff::shell_quote_argument(&config_path_display),
+        );
+        let is_degraded = readiness.availability == "degraded";
+        let is_inactive = readiness.availability == "inactive";
+
+        if is_degraded {
+            push_unique_step(
+                &mut steps,
+                format!(
+                    "Enable structured tool calling by setting `provider.tool_schema_mode = \"enabled_with_downgrade\"` or adjusting model-hint overrides, then re-run diagnostics: {rerun_command}"
+                ),
+            );
+        }
+
+        if is_inactive {
+            push_unique_step(
+                &mut steps,
+                format!(
+                    "Enable at least one runtime-visible tool surface in config, then re-run diagnostics: {rerun_command}"
+                ),
+            );
+        }
+
+        push_unique_step(
+            &mut steps,
+            format!("Inspect operator runtime status: {status_json_command}"),
         );
     }
 
@@ -3957,6 +4037,35 @@ mod tests {
                 .detail
                 .contains("retry chat_completions automatically"),
             "doctor should surface the automatic transport fallback in review mode: {check:#?}"
+        );
+    }
+
+    #[test]
+    fn tool_calling_readiness_doctor_check_passes_when_structured_schema_is_enabled() {
+        let config = mvp::config::LoongClawConfig::default();
+
+        let check = tool_calling_readiness_doctor_check(&config);
+
+        assert_eq!(check.name, "tool calling readiness");
+        assert_eq!(check.level, DoctorCheckLevel::Pass);
+        assert!(check.detail.contains("availability=ready"));
+        assert!(check.detail.contains("structured_tool_schema_enabled=true"));
+    }
+
+    #[test]
+    fn tool_calling_readiness_doctor_check_warns_when_tool_schema_is_disabled() {
+        let mut config = mvp::config::LoongClawConfig::default();
+        config.provider.tool_schema_mode = mvp::config::ProviderToolSchemaModeConfig::Disabled;
+
+        let check = tool_calling_readiness_doctor_check(&config);
+
+        assert_eq!(check.name, "tool calling readiness");
+        assert_eq!(check.level, DoctorCheckLevel::Warn);
+        assert!(check.detail.contains("availability=degraded"));
+        assert!(
+            check
+                .detail
+                .contains("structured_tool_schema_enabled=false")
         );
     }
 
@@ -6186,6 +6295,33 @@ mod tests {
                 .iter()
                 .all(|step| { !step.starts_with("Inspect runtime plugin inventory:") }),
             "disabled runtime plugins should not suggest inventory inspection before enablement: {next_steps:#?}"
+        );
+    }
+
+    #[test]
+    fn build_doctor_next_steps_guides_tool_schema_reenablement_when_tool_calling_is_degraded() {
+        let checks = vec![DoctorCheck {
+            name: "tool calling readiness".to_owned(),
+            level: DoctorCheckLevel::Warn,
+            detail: "availability=degraded".to_owned(),
+        }];
+        let mut config = mvp::config::LoongClawConfig::default();
+        config.provider.tool_schema_mode = mvp::config::ProviderToolSchemaModeConfig::Disabled;
+
+        let next_steps =
+            build_doctor_next_steps(&checks, Path::new("/tmp/loongclaw.toml"), &config, false);
+
+        assert!(
+            next_steps.iter().any(|step| {
+                step == "Enable structured tool calling by setting `provider.tool_schema_mode = \"enabled_with_downgrade\"` or adjusting model-hint overrides, then re-run diagnostics: loong doctor --config '/tmp/loongclaw.toml'"
+            }),
+            "doctor should guide users back onto the structured tool-calling path when readiness is degraded: {next_steps:#?}"
+        );
+        assert!(
+            next_steps.iter().any(|step| {
+                step == "Inspect operator runtime status: loong status --config '/tmp/loongclaw.toml' --json"
+            }),
+            "doctor should point degraded tool-calling users at the unified operator status surface: {next_steps:#?}"
         );
     }
 }
