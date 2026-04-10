@@ -1,3 +1,7 @@
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use kernel::verify_jsonl_audit_journal;
 use loongclaw_contracts::WorkRuntimeHealthSnapshot;
 use loongclaw_spec::CliResult;
 use serde::Serialize;
@@ -13,6 +17,29 @@ use crate::mvp;
 use crate::supervisor::LoadedSupervisorConfig;
 
 const STATUS_CLI_JSON_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub(crate) struct ToolWorkspaceBindingState {
+    pub binding: String,
+    pub configured_file_root: Option<String>,
+    pub effective_file_root: String,
+    pub current_working_directory: Option<String>,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub(crate) struct AuditIntegrityState {
+    pub availability: String,
+    pub mode: String,
+    pub journal_path: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StatusCliRuntimeDiagnosticsReadModel {
+    pub tool_workspace: ToolWorkspaceBindingState,
+    pub audit_integrity: AuditIntegrityState,
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct StatusCliJsonSchema {
@@ -42,6 +69,7 @@ pub struct StatusCliReadModel {
     pub config: String,
     pub schema: StatusCliJsonSchema,
     pub gateway: GatewayOperatorSummaryReadModel,
+    pub runtime_diagnostics: StatusCliRuntimeDiagnosticsReadModel,
     pub acp: StatusCliAcpReadModel,
     pub work_units: StatusCliWorkUnitReadModel,
     pub recipes: Vec<String>,
@@ -91,6 +119,10 @@ pub async fn collect_status_cli_read_model(
     };
     let gateway =
         build_operator_summary_read_model(&owner_status, &channel_inventory, &runtime_snapshot);
+    let runtime_diagnostics = StatusCliRuntimeDiagnosticsReadModel {
+        tool_workspace: collect_tool_workspace_binding_state(&config),
+        audit_integrity: collect_audit_integrity_state(&config.audit),
+    };
     let acp = collect_status_cli_acp_read_model(config_path_text, &config).await;
     let work_units = collect_status_cli_work_unit_read_model(&config);
     let recipes = build_status_cli_recipes(config_path_text);
@@ -104,10 +136,143 @@ pub async fn collect_status_cli_read_model(
         config: config_path_display,
         schema,
         gateway,
+        runtime_diagnostics,
         acp,
         work_units,
         recipes,
     })
+}
+
+pub(crate) fn collect_tool_workspace_binding_state(
+    config: &mvp::config::LoongClawConfig,
+) -> ToolWorkspaceBindingState {
+    let configured_file_root = config
+        .tools
+        .file_root
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    let effective_file_root_path = config.tools.resolved_file_root();
+    let effective_file_root = effective_file_root_path.display().to_string();
+    let current_directory_result = std::env::current_dir();
+    let current_directory = current_directory_result
+        .as_ref()
+        .ok()
+        .map(|path| path.display().to_string());
+
+    if configured_file_root.is_none() {
+        return ToolWorkspaceBindingState {
+            binding: "cwd_fallback".to_owned(),
+            configured_file_root: None,
+            effective_file_root,
+            current_working_directory: current_directory,
+            reason:
+                "runtime tools resolve relative to the current working directory because tools.file_root is unset"
+                    .to_owned(),
+        };
+    }
+
+    let current_directory_path = match current_directory_result {
+        Ok(path) => path,
+        Err(error) => {
+            return ToolWorkspaceBindingState {
+                binding: "unknown".to_owned(),
+                configured_file_root,
+                effective_file_root,
+                current_working_directory: None,
+                reason: format!("failed to resolve current working directory: {error}"),
+            };
+        }
+    };
+    let canonical_effective_file_root = canonicalize_path_for_comparison(&effective_file_root_path);
+    let canonical_current_directory = canonicalize_path_for_comparison(&current_directory_path);
+
+    if canonical_effective_file_root == canonical_current_directory {
+        return ToolWorkspaceBindingState {
+            binding: "aligned".to_owned(),
+            configured_file_root,
+            effective_file_root,
+            current_working_directory: Some(current_directory_path.display().to_string()),
+            reason: "runtime tools resolve under the current working directory".to_owned(),
+        };
+    }
+
+    ToolWorkspaceBindingState {
+        binding: "external".to_owned(),
+        configured_file_root,
+        effective_file_root,
+        current_working_directory: Some(current_directory_path.display().to_string()),
+        reason:
+            "runtime tools resolve outside the current working directory; file operations target the configured tool root instead"
+                .to_owned(),
+    }
+}
+
+pub(crate) fn collect_audit_integrity_state(
+    audit: &mvp::config::AuditConfig,
+) -> AuditIntegrityState {
+    let mode = audit.mode.as_str();
+    let journal_path = audit.resolved_path();
+    let journal_path_text = journal_path.display().to_string();
+
+    if matches!(audit.mode, mvp::config::AuditMode::InMemory) {
+        return AuditIntegrityState {
+            availability: "in_memory".to_owned(),
+            mode: mode.to_owned(),
+            journal_path: journal_path_text,
+            reason: "audit integrity verification is unavailable while audit.mode=in_memory"
+                .to_owned(),
+        };
+    }
+
+    if !journal_path.exists() {
+        return AuditIntegrityState {
+            availability: "missing".to_owned(),
+            mode: mode.to_owned(),
+            journal_path: journal_path_text,
+            reason:
+                "audit journal has not been created yet, so integrity verification is unavailable until the first durable write"
+                    .to_owned(),
+        };
+    }
+
+    match verify_jsonl_audit_journal(&journal_path) {
+        Ok(report) if report.valid => AuditIntegrityState {
+            availability: "verified".to_owned(),
+            mode: mode.to_owned(),
+            journal_path: journal_path_text,
+            reason: format!(
+                "verified {} of {} audit events (last_entry_hash={})",
+                report.verified_events,
+                report.total_events,
+                report.last_entry_hash.as_deref().unwrap_or("-")
+            ),
+        },
+        Ok(report) => AuditIntegrityState {
+            availability: "failed".to_owned(),
+            mode: mode.to_owned(),
+            journal_path: journal_path_text,
+            reason: format!(
+                "audit journal integrity failed at line {} ({})",
+                report
+                    .first_invalid_line
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "-".to_owned()),
+                report.reason.as_deref().unwrap_or("unknown reason")
+            ),
+        },
+        Err(error) => AuditIntegrityState {
+            availability: "unavailable".to_owned(),
+            mode: mode.to_owned(),
+            journal_path: journal_path_text,
+            reason: format!("audit integrity verification failed: {error}"),
+        },
+    }
+}
+
+fn canonicalize_path_for_comparison(path: &Path) -> PathBuf {
+    fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 async fn collect_status_cli_acp_read_model(
@@ -242,6 +407,8 @@ fn load_persisted_acp_session_count(config: &mvp::config::LoongClawConfig) -> Op
 fn build_status_cli_recipes(config_path: &str) -> Vec<String> {
     let command_name = crate::active_cli_command_name();
     let config_arg = crate::cli_handoff::shell_quote_argument(config_path);
+    let doctor_recipe = format!("{command_name} doctor --config {config_arg} --json");
+    let audit_verify_recipe = format!("{command_name} audit verify --config {config_arg}");
     let gateway_recipe = format!("{command_name} gateway status");
     let channels_recipe = format!("{command_name} channels --config {config_arg} --json");
     let acp_observability_recipe =
@@ -251,6 +418,8 @@ fn build_status_cli_recipes(config_path: &str) -> Vec<String> {
     let work_units_recipe = format!("{command_name} work-unit health --config {config_arg} --json");
 
     vec![
+        doctor_recipe,
+        audit_verify_recipe,
         gateway_recipe,
         channels_recipe,
         acp_observability_recipe,
@@ -280,6 +449,12 @@ fn render_status_cli_text(status: &StatusCliReadModel) -> String {
     let active_provider_label = active_provider_label_option.unwrap_or("-");
     let capability_snapshot_sha256 = runtime.capability_snapshot_sha256.as_str();
     let tool_calling = &runtime.tool_calling;
+    let runtime_diagnostics = &status.runtime_diagnostics;
+    let tool_workspace = &runtime_diagnostics.tool_workspace;
+    let audit_integrity = &runtime_diagnostics.audit_integrity;
+    let current_working_directory =
+        render_optional_text(tool_workspace.current_working_directory.as_deref());
+    let configured_file_root = render_optional_text(tool_workspace.configured_file_root.as_deref());
 
     let mut lines = Vec::new();
     lines.push(format!("config={}", status.config));
@@ -325,6 +500,21 @@ fn render_status_cli_text(status: &StatusCliReadModel) -> String {
         tool_calling.effective_tool_schema_mode,
         tool_calling.active_model,
         tool_calling.reason,
+    ));
+    lines.push(format!(
+        "tool_workspace binding={} configured_file_root={} effective_file_root={} current_working_directory={} reason={}",
+        tool_workspace.binding,
+        configured_file_root,
+        tool_workspace.effective_file_root,
+        current_working_directory,
+        tool_workspace.reason,
+    ));
+    lines.push(format!(
+        "audit_integrity availability={} mode={} journal_path={} reason={}",
+        audit_integrity.availability,
+        audit_integrity.mode,
+        audit_integrity.journal_path,
+        audit_integrity.reason,
     ));
     lines.push(render_status_cli_acp_text(&status.acp));
     lines.push(render_status_cli_work_units_text(&status.work_units));
@@ -407,6 +597,10 @@ fn render_optional_usize(value: Option<usize>) -> String {
     value.unwrap_or_else(|| "-".to_owned())
 }
 
+fn render_optional_text(value: Option<&str>) -> String {
+    value.unwrap_or("-").to_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -415,6 +609,90 @@ mod tests {
         GatewayOperatorRuntimeSummaryReadModel,
     };
     use crate::gateway::state::{GatewayOwnerMode, GatewayOwnerStatus};
+    use kernel::AuditSink;
+    use kernel::JsonlAuditSink;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn status_cli_temp_dir(prefix: &str) -> PathBuf {
+        static NEXT_STATUS_CLI_TEMP_DIR_SEED: AtomicUsize = AtomicUsize::new(1);
+        let seed = NEXT_STATUS_CLI_TEMP_DIR_SEED.fetch_add(1, Ordering::Relaxed);
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let process_id = std::process::id();
+
+        std::env::temp_dir().join(format!("{prefix}-{process_id}-{seed}-{nanos}"))
+    }
+
+    fn sample_audit_event(
+        event_id: &str,
+        occurred_at_ms: u64,
+        agent_id: Option<&str>,
+    ) -> kernel::AuditEvent {
+        kernel::AuditEvent {
+            event_id: event_id.to_owned(),
+            timestamp_epoch_s: occurred_at_ms,
+            agent_id: agent_id.map(ToOwned::to_owned),
+            kind: kernel::AuditEventKind::TokenRevoked {
+                token_id: format!("token-{event_id}"),
+            },
+        }
+    }
+
+    #[test]
+    fn collect_tool_workspace_binding_state_reports_external_root_when_file_root_differs() {
+        let root = status_cli_temp_dir("status-cli-tool-workspace");
+        fs::create_dir_all(&root).expect("create workspace root");
+        let mut config = mvp::config::LoongClawConfig::default();
+        config.tools.file_root = Some(root.display().to_string());
+
+        let state = collect_tool_workspace_binding_state(&config);
+        let root_text = root.display().to_string();
+
+        assert_eq!(state.binding, "external");
+        assert_eq!(
+            state.configured_file_root.as_deref(),
+            Some(root_text.as_str())
+        );
+        assert_eq!(state.effective_file_root, root_text);
+        assert_eq!(
+            state.reason,
+            "runtime tools resolve outside the current working directory; file operations target the configured tool root instead"
+        );
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn collect_audit_integrity_state_reports_failed_for_tampered_chain() {
+        let root = status_cli_temp_dir("status-cli-audit-integrity");
+        let journal_path = root.join("events.jsonl");
+        fs::create_dir_all(&root).expect("create audit root");
+        let sink = JsonlAuditSink::new(journal_path.clone()).expect("create jsonl sink");
+
+        sink.record(sample_audit_event("evt-1", 1_700_010_400, Some("agent-a")))
+            .expect("record first event");
+        sink.record(sample_audit_event("evt-2", 1_700_010_401, Some("agent-b")))
+            .expect("record second event");
+
+        let contents = fs::read_to_string(&journal_path).expect("read audit journal");
+        let tampered = contents.replacen("token-evt-2", "token-evt-x", 1);
+        fs::write(&journal_path, tampered).expect("rewrite tampered journal");
+
+        let state = collect_audit_integrity_state(&mvp::config::AuditConfig {
+            mode: mvp::config::AuditMode::Jsonl,
+            path: journal_path.display().to_string(),
+            retain_in_memory: false,
+        });
+
+        assert_eq!(state.availability, "failed");
+        assert_eq!(state.mode, "jsonl");
+        assert!(state.reason.contains("failed at line 2"));
+
+        fs::remove_dir_all(&root).ok();
+    }
 
     #[test]
     fn render_status_cli_text_surfaces_drill_down_recipes() {
@@ -481,6 +759,25 @@ mod tests {
                 purpose: "operator_runtime_summary",
             },
             gateway,
+            runtime_diagnostics: StatusCliRuntimeDiagnosticsReadModel {
+                tool_workspace: ToolWorkspaceBindingState {
+                    binding: "external".to_owned(),
+                    configured_file_root: Some("/tmp/workspace".to_owned()),
+                    effective_file_root: "/tmp/workspace".to_owned(),
+                    current_working_directory: Some("/Users/chum/loongclaw".to_owned()),
+                    reason:
+                        "runtime tools resolve outside the current working directory; file operations target the configured tool root instead"
+                            .to_owned(),
+                },
+                audit_integrity: AuditIntegrityState {
+                    availability: "missing".to_owned(),
+                    mode: "jsonl".to_owned(),
+                    journal_path: "/tmp/audit/events.jsonl".to_owned(),
+                    reason:
+                        "audit journal has not been created yet, so integrity verification is unavailable until the first durable write"
+                            .to_owned(),
+                },
+            },
             acp: StatusCliAcpReadModel {
                 enabled: false,
                 availability: "disabled".to_owned(),
@@ -503,15 +800,23 @@ mod tests {
                     expired_lease_count: 0,
                 }),
             },
-            recipes: vec!["loong gateway status".to_owned()],
+            recipes: vec![
+                "loong doctor --config '/tmp/config.toml' --json".to_owned(),
+                "loong audit verify --config '/tmp/config.toml'".to_owned(),
+                "loong gateway status".to_owned(),
+            ],
         };
 
         let rendered = render_status_cli_text(&status);
 
         assert!(rendered.contains("gateway phase=running"));
         assert!(rendered.contains("tool_calling availability=ready"));
+        assert!(rendered.contains("tool_workspace binding=external"));
+        assert!(rendered.contains("audit_integrity availability=missing"));
         assert!(rendered.contains("acp enabled=false availability=disabled"));
         assert!(rendered.contains("work_units availability=available total_count=0"));
-        assert!(rendered.contains("recipes:\n- loong gateway status"));
+        assert!(rendered.contains("recipes:"));
+        assert!(rendered.contains("gateway status"));
+        assert!(rendered.contains("audit verify --config"));
     }
 }

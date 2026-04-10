@@ -30,6 +30,7 @@ fn write_status_config(
     let sqlite_path = root.join("memory.sqlite3");
     let mut config = mvp::config::LoongClawConfig::default();
     config.memory.sqlite_path = sqlite_path.display().to_string();
+    config.audit.mode = mvp::config::AuditMode::InMemory;
     config.tools.file_root = Some(root.display().to_string());
     config.set_active_provider_profile(
         "demo-openai",
@@ -154,6 +155,14 @@ fn status_cli_json_rolls_up_gateway_acp_and_work_unit_sections() {
         payload["gateway"]["runtime"]["tool_calling"]["structured_tool_schema_enabled"],
         true
     );
+    assert_eq!(
+        payload["runtime_diagnostics"]["tool_workspace"]["binding"],
+        "external"
+    );
+    assert_eq!(
+        payload["runtime_diagnostics"]["audit_integrity"]["availability"],
+        "in_memory"
+    );
     assert_eq!(payload["acp"]["enabled"], true);
     let acp_availability = payload["acp"]["availability"]
         .as_str()
@@ -216,6 +225,8 @@ fn status_cli_text_surfaces_section_summaries_and_recipes() {
 
     assert!(stdout.contains("gateway phase=stopped"));
     assert!(stdout.contains("tool_calling availability=degraded"));
+    assert!(stdout.contains("tool_workspace binding=external"));
+    assert!(stdout.contains("audit_integrity availability=in_memory"));
     assert!(stdout.contains("structured_tool_schema_enabled=false"));
     assert!(stdout.contains("acp enabled=false availability=disabled"));
     assert!(stdout.contains("work_units availability="));

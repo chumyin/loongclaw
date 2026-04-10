@@ -5,7 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use clap::Subcommand;
-use kernel::{probe_jsonl_audit_journal_runtime_ready, verify_jsonl_audit_journal};
+use kernel::probe_jsonl_audit_journal_runtime_ready;
 use loongclaw_app as mvp;
 use loongclaw_contracts::SecretRef;
 use loongclaw_spec::CliResult;
@@ -14,6 +14,8 @@ use serde_json::json;
 use crate::plugin_bridge_account_summary::plugin_bridge_account_summary;
 use crate::provider_credential_policy;
 use crate::provider_model_probe_policy;
+use crate::status_cli::collect_audit_integrity_state;
+use crate::status_cli::collect_tool_workspace_binding_state;
 use crate::tool_calling_readiness::RuntimeSnapshotToolCallingState;
 use crate::tool_calling_readiness::collect_runtime_snapshot_tool_calling_state;
 
@@ -194,6 +196,7 @@ pub async fn run_doctor_cli(options: DoctorCommandOptions) -> CliResult<()> {
         &mut fixes,
         "create tool file root",
     ));
+    checks.push(tool_workspace_binding_doctor_check(&config));
     checks.push(tool_calling_readiness_doctor_check(&config));
     checks.extend(collect_browser_companion_doctor_checks(&config).await);
     checks.extend(collect_runtime_plugins_doctor_checks(&config));
@@ -543,55 +546,18 @@ fn durable_audit_runtime_probe(path: &Path) -> Result<(), String> {
 }
 
 fn audit_integrity_doctor_check(audit: &mvp::config::AuditConfig) -> DoctorCheck {
-    if matches!(audit.mode, mvp::config::AuditMode::InMemory) {
-        return DoctorCheck {
-            name: "audit integrity".to_owned(),
-            level: DoctorCheckLevel::Warn,
-            detail: "audit integrity verification is unavailable while audit.mode=in_memory"
-                .to_owned(),
-        };
-    }
+    let state = collect_audit_integrity_state(audit);
+    let level = match state.availability.as_str() {
+        "verified" => DoctorCheckLevel::Pass,
+        "in_memory" | "missing" => DoctorCheckLevel::Warn,
+        "failed" | "unavailable" => DoctorCheckLevel::Fail,
+        _ => DoctorCheckLevel::Fail,
+    };
 
-    let journal_path = audit.resolved_path();
-    if !journal_path.exists() {
-        return DoctorCheck {
-            name: "audit integrity".to_owned(),
-            level: DoctorCheckLevel::Warn,
-            detail: format!(
-                "audit journal {} has not been created yet, so integrity verification is not available until the first durable write",
-                journal_path.display()
-            ),
-        };
-    }
-
-    match verify_jsonl_audit_journal(&journal_path) {
-        Ok(report) if report.valid => DoctorCheck {
-            name: "audit integrity".to_owned(),
-            level: DoctorCheckLevel::Pass,
-            detail: format!(
-                "verified {} of {} audit events (last_entry_hash={})",
-                report.verified_events,
-                report.total_events,
-                report.last_entry_hash.as_deref().unwrap_or("-")
-            ),
-        },
-        Ok(report) => DoctorCheck {
-            name: "audit integrity".to_owned(),
-            level: DoctorCheckLevel::Fail,
-            detail: format!(
-                "audit journal integrity failed at line {} ({})",
-                report
-                    .first_invalid_line
-                    .map(|value| value.to_string())
-                    .unwrap_or_else(|| "-".to_owned()),
-                report.reason.as_deref().unwrap_or("unknown reason")
-            ),
-        },
-        Err(error) => DoctorCheck {
-            name: "audit integrity".to_owned(),
-            level: DoctorCheckLevel::Fail,
-            detail: format!("audit integrity verification failed: {error}"),
-        },
+    DoctorCheck {
+        name: "audit integrity".to_owned(),
+        level,
+        detail: state.reason,
     }
 }
 
@@ -1875,6 +1841,32 @@ fn tool_calling_readiness_doctor_check(config: &mvp::config::LoongClawConfig) ->
     }
 }
 
+fn tool_workspace_binding_doctor_check(config: &mvp::config::LoongClawConfig) -> DoctorCheck {
+    let state = collect_tool_workspace_binding_state(config);
+    let configured_file_root =
+        crate::render_line_safe_optional_text_value(state.configured_file_root.as_deref());
+    let current_working_directory =
+        crate::render_line_safe_optional_text_value(state.current_working_directory.as_deref());
+    let effective_file_root =
+        crate::render_line_safe_text_value(state.effective_file_root.as_str());
+    let reason = crate::render_line_safe_text_value(state.reason.as_str());
+    let level = match state.binding.as_str() {
+        "aligned" | "cwd_fallback" => DoctorCheckLevel::Pass,
+        "external" | "unknown" => DoctorCheckLevel::Warn,
+        _ => DoctorCheckLevel::Warn,
+    };
+    let detail = format!(
+        "binding={} configured_file_root={} effective_file_root={} current_working_directory={} reason={}",
+        state.binding, configured_file_root, effective_file_root, current_working_directory, reason,
+    );
+
+    DoctorCheck {
+        name: "tool workspace binding".to_owned(),
+        level,
+        detail,
+    }
+}
+
 fn provider_route_probe_doctor_check(
     probe: &crate::provider_route_diagnostics::ProviderRouteProbe,
 ) -> DoctorCheck {
@@ -2504,6 +2496,34 @@ fn build_doctor_next_steps_with_channel_surfaces_and_path_env(
                 &mut steps,
                 format!(
                     "Enable at least one runtime-visible tool surface in config, then re-run diagnostics: {rerun_command}"
+                ),
+            );
+        }
+
+        push_unique_step(
+            &mut steps,
+            format!("Inspect operator runtime status: {status_json_command}"),
+        );
+    }
+
+    if checks.iter().any(|check| {
+        check.name == "tool workspace binding" && check.level != DoctorCheckLevel::Pass
+    }) {
+        let workspace_binding = collect_tool_workspace_binding_state(config);
+        let status_json_command = format!(
+            "{} status --config {} --json",
+            mvp::config::CLI_COMMAND_NAME,
+            crate::cli_handoff::shell_quote_argument(&config_path_display),
+        );
+
+        if workspace_binding.binding == "external" {
+            let effective_file_root = crate::cli_handoff::shell_quote_argument(
+                workspace_binding.effective_file_root.as_str(),
+            );
+            push_unique_step(
+                &mut steps,
+                format!(
+                    "Either run from {effective_file_root} or update tools.file_root to the intended workspace, then re-run diagnostics: {rerun_command}"
                 ),
             );
         }
@@ -4067,6 +4087,22 @@ mod tests {
                 .detail
                 .contains("structured_tool_schema_enabled=false")
         );
+    }
+
+    #[test]
+    fn tool_workspace_binding_doctor_check_warns_when_file_root_differs_from_cwd() {
+        let root = browser_companion_temp_dir("tool-workspace-binding");
+        let mut config = mvp::config::LoongClawConfig::default();
+        config.tools.file_root = Some(root.display().to_string());
+
+        let check = tool_workspace_binding_doctor_check(&config);
+
+        assert_eq!(check.name, "tool workspace binding");
+        assert_eq!(check.level, DoctorCheckLevel::Warn);
+        assert!(check.detail.contains("binding=external"));
+        assert!(check.detail.contains("configured_file_root="));
+
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
@@ -6323,5 +6359,39 @@ mod tests {
             }),
             "doctor should point degraded tool-calling users at the unified operator status surface: {next_steps:#?}"
         );
+    }
+
+    #[test]
+    fn build_doctor_next_steps_guides_workspace_alignment_when_file_root_differs_from_cwd() {
+        let root = browser_companion_temp_dir("doctor-workspace-binding");
+        let checks = vec![DoctorCheck {
+            name: "tool workspace binding".to_owned(),
+            level: DoctorCheckLevel::Warn,
+            detail: "binding=external".to_owned(),
+        }];
+        let mut config = mvp::config::LoongClawConfig::default();
+        config.tools.file_root = Some(root.display().to_string());
+
+        let next_steps =
+            build_doctor_next_steps(&checks, Path::new("/tmp/loongclaw.toml"), &config, false);
+
+        let expected_workspace_step = format!(
+            "Either run from '{}' or update tools.file_root to the intended workspace, then re-run diagnostics: loong doctor --config '/tmp/loongclaw.toml'",
+            root.display()
+        );
+        assert!(
+            next_steps
+                .iter()
+                .any(|step| step == &expected_workspace_step),
+            "doctor should explain how to realign the active workspace with tools.file_root: {next_steps:#?}"
+        );
+        assert!(
+            next_steps.iter().any(|step| {
+                step == "Inspect operator runtime status: loong status --config '/tmp/loongclaw.toml' --json"
+            }),
+            "doctor should point workspace-alignment warnings back to unified operator status: {next_steps:#?}"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
     }
 }
