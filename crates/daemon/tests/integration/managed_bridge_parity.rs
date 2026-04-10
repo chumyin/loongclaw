@@ -69,6 +69,20 @@ fn runtime_snapshot_fixture(
         },
         runtime_diagnostics:
             loongclaw_daemon::gateway::read_models::GatewayRuntimeDiagnosticsReadModel {
+                verdict: loongclaw_daemon::RuntimeOperatorVerdictState {
+                    level: "degraded".to_owned(),
+                    summary:
+                        "operator diagnostics found degraded runtime conditions that can make the local agent appear unreliable"
+                            .to_owned(),
+                    recommended_actions: vec![
+                        "Enable at least one runtime-visible tool surface if this workflow is expected to use tools"
+                            .to_owned(),
+                        "Set tools.file_root explicitly if you want a stable workspace binding across shells and launches"
+                            .to_owned(),
+                        "Use audit.mode = \"fanout\" or \"jsonl\" if durable audit verification is required"
+                            .to_owned(),
+                    ],
+                },
                 tool_calling: loongclaw_daemon::RuntimeSnapshotToolCallingState {
                     availability: "inactive".to_owned(),
                     level: "degraded".to_owned(),

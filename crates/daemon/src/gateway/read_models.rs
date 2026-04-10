@@ -240,6 +240,7 @@ pub struct GatewayRuntimeSnapshotToolsReadModel {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayRuntimeDiagnosticsReadModel {
+    pub verdict: crate::RuntimeOperatorVerdictState,
     pub tool_calling: crate::RuntimeSnapshotToolCallingState,
     pub tool_workspace: crate::ToolWorkspaceBindingState,
     pub audit_integrity: crate::AuditIntegrityState,
@@ -935,6 +936,7 @@ fn build_runtime_diagnostics_read_model(
     state: &RuntimeOperatorDiagnosticsState,
 ) -> GatewayRuntimeDiagnosticsReadModel {
     GatewayRuntimeDiagnosticsReadModel {
+        verdict: state.verdict.clone(),
         tool_calling: state.tool_calling.clone(),
         tool_workspace: state.tool_workspace.clone(),
         audit_integrity: state.audit_integrity.clone(),

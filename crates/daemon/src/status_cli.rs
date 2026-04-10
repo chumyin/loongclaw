@@ -297,6 +297,12 @@ fn render_status_cli_text(status: &StatusCliReadModel) -> String {
     let tool_calling_remediation = render_optional_text(tool_calling.remediation.as_deref());
     let tool_workspace_remediation = render_optional_text(tool_workspace.remediation.as_deref());
     let audit_integrity_remediation = render_optional_text(audit_integrity.remediation.as_deref());
+    let verdict = &runtime_diagnostics.verdict;
+    let recommended_actions = if verdict.recommended_actions.is_empty() {
+        "-".to_owned()
+    } else {
+        verdict.recommended_actions.join(" | ")
+    };
 
     let mut lines = Vec::new();
     lines.push(format!("config={}", status.config));
@@ -334,6 +340,10 @@ fn render_status_cli_text(status: &StatusCliReadModel) -> String {
         active_provider_label,
         runtime.visible_tool_count,
         capability_snapshot_sha256,
+    ));
+    lines.push(format!(
+        "operator_verdict level={} summary={} recommended_actions={}",
+        verdict.level, verdict.summary, recommended_actions,
     ));
     lines.push(format!(
         "tool_calling availability={} level={} structured_tool_schema_enabled={} mode={} active_model={} reason={} remediation={}",
@@ -608,6 +618,18 @@ mod tests {
                     remediation: None,
                 },
                 runtime_diagnostics: crate::gateway::read_models::GatewayRuntimeDiagnosticsReadModel {
+                    verdict: crate::RuntimeOperatorVerdictState {
+                        level: "degraded".to_owned(),
+                        summary:
+                            "operator diagnostics found degraded runtime conditions that can make the local agent appear unreliable"
+                                .to_owned(),
+                        recommended_actions: vec![
+                            "Run from the configured tool workspace or update tools.file_root to the intended working tree"
+                                .to_owned(),
+                            "Perform a durable write and re-run verification before treating audit integrity as established"
+                                .to_owned(),
+                        ],
+                    },
                     tool_calling: crate::RuntimeSnapshotToolCallingState {
                         availability: "ready".to_owned(),
                         level: "healthy".to_owned(),
@@ -658,6 +680,18 @@ mod tests {
             },
             gateway,
             runtime_diagnostics: RuntimeOperatorDiagnosticsState {
+                verdict: crate::operator_runtime_diagnostics::RuntimeOperatorVerdictState {
+                    level: "degraded".to_owned(),
+                    summary:
+                        "operator diagnostics found degraded runtime conditions that can make the local agent appear unreliable"
+                            .to_owned(),
+                    recommended_actions: vec![
+                        "Run from the configured tool workspace or update tools.file_root to the intended working tree"
+                            .to_owned(),
+                        "Perform a durable write and re-run verification before treating audit integrity as established"
+                            .to_owned(),
+                    ],
+                },
                 tool_calling: crate::tool_calling_readiness::RuntimeSnapshotToolCallingState {
                     availability: "ready".to_owned(),
                     level: "healthy".to_owned(),
@@ -729,6 +763,7 @@ mod tests {
         let rendered = render_status_cli_text(&status);
 
         assert!(rendered.contains("gateway phase=running"));
+        assert!(rendered.contains("operator_verdict level=degraded"));
         assert!(rendered.contains("tool_calling availability=ready"));
         assert!(rendered.contains("level=healthy"));
         assert!(rendered.contains("tool_workspace binding=external"));

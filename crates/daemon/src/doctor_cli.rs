@@ -12,6 +12,7 @@ use loongclaw_spec::CliResult;
 use serde_json::json;
 
 use crate::operator_runtime_diagnostics::collect_audit_integrity_state;
+use crate::operator_runtime_diagnostics::collect_runtime_operator_diagnostics_state;
 use crate::operator_runtime_diagnostics::collect_tool_workspace_binding_state;
 use crate::plugin_bridge_account_summary::plugin_bridge_account_summary;
 use crate::provider_credential_policy;
@@ -196,6 +197,7 @@ pub async fn run_doctor_cli(options: DoctorCommandOptions) -> CliResult<()> {
         &mut fixes,
         "create tool file root",
     ));
+    checks.push(operator_runtime_verdict_doctor_check(&config));
     checks.push(tool_workspace_binding_doctor_check(&config));
     checks.push(tool_calling_readiness_doctor_check(&config));
     checks.extend(collect_browser_companion_doctor_checks(&config).await);
@@ -1822,6 +1824,13 @@ fn collect_tool_calling_readiness_for_doctor(
     (visible_tool_count, readiness)
 }
 
+fn collect_runtime_operator_diagnostics_for_doctor(
+    config: &mvp::config::LoongClawConfig,
+) -> crate::RuntimeOperatorDiagnosticsState {
+    let (visible_tool_count, _) = collect_tool_calling_readiness_for_doctor(config);
+    collect_runtime_operator_diagnostics_state(config, visible_tool_count)
+}
+
 fn tool_calling_readiness_doctor_check(config: &mvp::config::LoongClawConfig) -> DoctorCheck {
     let (visible_tool_count, readiness) = collect_tool_calling_readiness_for_doctor(config);
     let availability = readiness.availability.as_str();
@@ -1882,6 +1891,34 @@ fn tool_workspace_binding_doctor_check(config: &mvp::config::LoongClawConfig) ->
 
     DoctorCheck {
         name: "tool workspace binding".to_owned(),
+        level,
+        detail,
+    }
+}
+
+fn operator_runtime_verdict_doctor_check(config: &mvp::config::LoongClawConfig) -> DoctorCheck {
+    let diagnostics = collect_runtime_operator_diagnostics_for_doctor(config);
+    let verdict = diagnostics.verdict;
+    let recommended_actions = if verdict.recommended_actions.is_empty() {
+        "-".to_owned()
+    } else {
+        verdict.recommended_actions.join(" | ")
+    };
+    let rendered_summary = crate::render_line_safe_text_value(verdict.summary.as_str());
+    let rendered_actions = crate::render_line_safe_text_value(recommended_actions.as_str());
+    let level = match verdict.level.as_str() {
+        "healthy" => DoctorCheckLevel::Pass,
+        "advisory" | "degraded" => DoctorCheckLevel::Warn,
+        "blocked" => DoctorCheckLevel::Fail,
+        _ => DoctorCheckLevel::Warn,
+    };
+    let detail = format!(
+        "level={} summary={} recommended_actions={}",
+        verdict.level, rendered_summary, rendered_actions,
+    );
+
+    DoctorCheck {
+        name: "operator runtime verdict".to_owned(),
         level,
         detail,
     }
@@ -4121,6 +4158,23 @@ mod tests {
         assert_eq!(check.level, DoctorCheckLevel::Warn);
         assert!(check.detail.contains("binding=external"));
         assert!(check.detail.contains("configured_file_root="));
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn operator_runtime_verdict_doctor_check_warns_when_runtime_is_degraded() {
+        let root = browser_companion_temp_dir("operator-runtime-verdict");
+        let mut config = mvp::config::LoongClawConfig::default();
+        config.audit.mode = mvp::config::AuditMode::InMemory;
+        config.tools.file_root = Some(root.display().to_string());
+
+        let check = operator_runtime_verdict_doctor_check(&config);
+
+        assert_eq!(check.name, "operator runtime verdict");
+        assert_eq!(check.level, DoctorCheckLevel::Warn);
+        assert!(check.detail.contains("level=degraded"));
+        assert!(check.detail.contains("recommended_actions="));
 
         std::fs::remove_dir_all(&root).ok();
     }

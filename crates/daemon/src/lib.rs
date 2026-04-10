@@ -158,7 +158,7 @@ pub use loongclaw_spec::programmatic::{acquire_programmatic_circuit_slot, record
 pub use observability::{debug_variant_name, init_tracing, summarize_error};
 use operator_runtime_diagnostics::collect_runtime_operator_diagnostics_state;
 #[rustfmt::skip]
-pub use operator_runtime_diagnostics::{AuditIntegrityState, RuntimeOperatorDiagnosticsState, ToolWorkspaceBindingState};
+pub use operator_runtime_diagnostics::{AuditIntegrityState, RuntimeOperatorDiagnosticsState, RuntimeOperatorVerdictState, ToolWorkspaceBindingState};
 pub use runtime_snapshot_render::render_runtime_snapshot_text;
 #[rustfmt::skip]
 pub(crate) use runtime_snapshot_render::{runtime_snapshot_acp_json, runtime_snapshot_context_engine_json, runtime_snapshot_external_skills_json, runtime_snapshot_memory_system_json, runtime_snapshot_provider_json, runtime_snapshot_runtime_plugins_json, runtime_snapshot_tool_runtime_json};

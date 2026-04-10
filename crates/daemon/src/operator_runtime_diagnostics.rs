@@ -31,9 +31,17 @@ pub struct AuditIntegrityState {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RuntimeOperatorDiagnosticsState {
+    pub verdict: RuntimeOperatorVerdictState,
     pub tool_calling: RuntimeSnapshotToolCallingState,
     pub tool_workspace: ToolWorkspaceBindingState,
     pub audit_integrity: AuditIntegrityState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeOperatorVerdictState {
+    pub level: String,
+    pub summary: String,
+    pub recommended_actions: Vec<String>,
 }
 
 pub fn collect_runtime_operator_diagnostics_state(
@@ -43,12 +51,87 @@ pub fn collect_runtime_operator_diagnostics_state(
     let tool_calling = collect_runtime_snapshot_tool_calling_state(config, visible_tool_count);
     let tool_workspace = collect_tool_workspace_binding_state(config);
     let audit_integrity = collect_audit_integrity_state(&config.audit);
+    let verdict =
+        collect_runtime_operator_verdict_state(&tool_calling, &tool_workspace, &audit_integrity);
 
     RuntimeOperatorDiagnosticsState {
+        verdict,
         tool_calling,
         tool_workspace,
         audit_integrity,
     }
+}
+
+fn collect_runtime_operator_verdict_state(
+    tool_calling: &RuntimeSnapshotToolCallingState,
+    tool_workspace: &ToolWorkspaceBindingState,
+    audit_integrity: &AuditIntegrityState,
+) -> RuntimeOperatorVerdictState {
+    let levels = [
+        tool_calling.level.as_str(),
+        tool_workspace.level.as_str(),
+        audit_integrity.level.as_str(),
+    ];
+    let level = if levels.contains(&"blocked") {
+        "blocked"
+    } else if levels.contains(&"degraded") {
+        "degraded"
+    } else if levels.contains(&"advisory") {
+        "advisory"
+    } else {
+        "healthy"
+    };
+    let summary = match level {
+        "blocked" => {
+            "operator diagnostics found at least one blocking runtime issue that should be repaired before trusting the local agent"
+                .to_owned()
+        }
+        "degraded" => {
+            "operator diagnostics found degraded runtime conditions that can make the local agent appear unreliable"
+                .to_owned()
+        }
+        "advisory" => {
+            "operator diagnostics found advisory runtime drift worth addressing for a more predictable operator setup"
+                .to_owned()
+        }
+        _ => "operator diagnostics are healthy across tool calling, workspace binding, and audit integrity"
+            .to_owned(),
+    };
+    let mut recommended_actions = Vec::new();
+
+    push_unique_action(
+        &mut recommended_actions,
+        tool_calling.remediation.as_deref(),
+    );
+    push_unique_action(
+        &mut recommended_actions,
+        tool_workspace.remediation.as_deref(),
+    );
+    push_unique_action(
+        &mut recommended_actions,
+        audit_integrity.remediation.as_deref(),
+    );
+
+    RuntimeOperatorVerdictState {
+        level: level.to_owned(),
+        summary,
+        recommended_actions,
+    }
+}
+
+fn push_unique_action(actions: &mut Vec<String>, action: Option<&str>) {
+    let Some(action) = action else {
+        return;
+    };
+    let trimmed_action = action.trim();
+    if trimmed_action.is_empty() {
+        return;
+    }
+    let already_present = actions.iter().any(|existing| existing == trimmed_action);
+    if already_present {
+        return;
+    }
+    actions.push(trimmed_action.to_owned());
 }
 
 pub fn collect_tool_workspace_binding_state(
@@ -218,4 +301,22 @@ pub fn collect_audit_integrity_state(audit: &mvp::config::AuditConfig) -> AuditI
 
 fn canonicalize_path_for_comparison(path: &Path) -> PathBuf {
     fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::collect_runtime_operator_diagnostics_state;
+    use crate::mvp;
+
+    #[test]
+    fn runtime_operator_diagnostics_verdict_uses_strongest_present_level() {
+        let mut config = mvp::config::LoongClawConfig::default();
+        config.audit.mode = mvp::config::AuditMode::Jsonl;
+        config.audit.path = "/tmp/loongclaw-missing-audit-journal/does-not-exist.jsonl".to_owned();
+
+        let diagnostics = collect_runtime_operator_diagnostics_state(&config, 0);
+
+        assert_eq!(diagnostics.verdict.level, "degraded");
+        assert!(!diagnostics.verdict.recommended_actions.is_empty());
+    }
 }

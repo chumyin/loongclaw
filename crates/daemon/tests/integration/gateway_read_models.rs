@@ -423,6 +423,10 @@ fn gateway_read_model_runtime_snapshot_embeds_inventory_and_tool_summary() {
         "cwd_fallback"
     );
     assert_eq!(
+        encoded["runtime_diagnostics"]["verdict"]["level"],
+        "advisory"
+    );
+    assert_eq!(
         encoded["runtime_diagnostics"]["audit_integrity"]["availability"],
         "in_memory"
     );
@@ -511,6 +515,10 @@ fn gateway_read_model_operator_summary_keeps_owner_control_and_runtime_rollups()
     assert_eq!(
         summary.runtime.runtime_diagnostics.tool_workspace.binding,
         runtime_snapshot.runtime_diagnostics.tool_workspace.binding
+    );
+    assert_eq!(
+        summary.runtime.runtime_diagnostics.verdict.level,
+        runtime_snapshot.runtime_diagnostics.verdict.level
     );
     assert_eq!(
         summary

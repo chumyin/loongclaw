@@ -160,6 +160,10 @@ fn status_cli_json_rolls_up_gateway_acp_and_work_unit_sections() {
         "external"
     );
     assert_eq!(
+        payload["runtime_diagnostics"]["verdict"]["level"],
+        "degraded"
+    );
+    assert_eq!(
         payload["runtime_diagnostics"]["audit_integrity"]["availability"],
         "in_memory"
     );
@@ -224,6 +228,7 @@ fn status_cli_text_surfaces_section_summaries_and_recipes() {
     let stdout = render_output(&output.stdout);
 
     assert!(stdout.contains("gateway phase=stopped"));
+    assert!(stdout.contains("operator_verdict level=degraded"));
     assert!(stdout.contains("tool_calling availability=degraded"));
     assert!(stdout.contains("tool_workspace binding=external"));
     assert!(stdout.contains("audit_integrity availability=in_memory"));
