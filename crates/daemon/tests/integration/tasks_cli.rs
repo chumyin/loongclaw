@@ -9,6 +9,13 @@ use std::{
     sync::MutexGuard,
     time::{SystemTime, UNIX_EPOCH},
 };
+#[cfg(unix)]
+use std::{
+    process::{Child, Command, Stdio},
+    time::Duration,
+};
+#[cfg(unix)]
+use wait_timeout::ChildExt;
 
 fn unique_temp_dir(prefix: &str) -> PathBuf {
     let nanos = SystemTime::now()
@@ -195,6 +202,18 @@ pub(super) fn write_tasks_config(root: &Path) -> PathBuf {
 fn seed_background_task(config_path: &Path, root_session_id: &str, task_id: &str) {
     let repo = load_session_repository(config_path);
     seed_background_task_record(&repo, root_session_id, task_id, true);
+}
+
+#[cfg(unix)]
+fn spawn_sleeping_process() -> Child {
+    let mut command = Command::new("/bin/sh");
+    command.arg("-c");
+    command.arg("sleep 30");
+    command.stdin(Stdio::null());
+    command.stdout(Stdio::null());
+    command.stderr(Stdio::null());
+
+    command.spawn().expect("spawn sleeping process")
 }
 
 fn seed_background_task_record(
@@ -940,6 +959,87 @@ async fn execute_tasks_command_cancel_dry_run_surfaces_cancel_action() {
     );
     assert_eq!(execution.payload["task"]["task_id"], "delegate:task-1");
     assert_eq!(execution.payload["task"]["phase"], "queued");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn execute_tasks_command_cancel_apply_terminates_detached_owner() {
+    let root = TempDirGuard::new("loongclaw-tasks-cli-cancel-apply");
+    let _env = TasksCliEnvironmentGuard::set(&[]);
+    let config_path = write_tasks_config(root.path());
+    let repo = load_session_repository(&config_path);
+    let mut child_process = spawn_sleeping_process();
+    let child_process_id = child_process.id();
+
+    ensure_root_session(&repo, "ops-root");
+    seed_background_task_record(&repo, "ops-root", "delegate:task-1", true);
+    let transition_request = mvp::session::repository::TransitionSessionWithEventIfCurrentRequest {
+        expected_state: mvp::session::repository::SessionState::Ready,
+        next_state: mvp::session::repository::SessionState::Running,
+        last_error: None,
+        event_kind: "delegate_started".to_owned(),
+        actor_session_id: Some("ops-root".to_owned()),
+        event_payload_json: json!({
+            "task": "check release readiness",
+            "label": "Release Check",
+            "timeout_seconds": 60,
+        }),
+    };
+    let transitioned = repo
+        .transition_session_with_event_if_current("delegate:task-1", transition_request)
+        .expect("transition delegate child to running");
+    assert!(
+        transitioned.is_some(),
+        "expected running transition to succeed"
+    );
+    repo.append_event(mvp::session::repository::NewSessionEvent {
+        session_id: "delegate:task-1".to_owned(),
+        event_kind: "delegate_runtime_owner_bound".to_owned(),
+        actor_session_id: Some("ops-root".to_owned()),
+        payload_json: json!({
+            "owner_kind": "detached_process",
+            "process_id": child_process_id,
+        }),
+    })
+    .expect("append detached owner event");
+
+    let execution = loongclaw_daemon::tasks_cli::execute_tasks_command(
+        loongclaw_daemon::tasks_cli::TasksCommandOptions {
+            config: Some(config_path.display().to_string()),
+            json: false,
+            session: "ops-root".to_owned(),
+            command: loongclaw_daemon::tasks_cli::TasksCommands::Cancel {
+                task_id: "delegate:task-1".to_owned(),
+                dry_run: false,
+            },
+        },
+    )
+    .await
+    .expect("tasks cancel apply should succeed");
+
+    let wait_result = child_process
+        .wait_timeout(Duration::from_secs(5))
+        .expect("wait for detached owner");
+    let terminated = wait_result.is_some();
+
+    if !terminated {
+        let _ = child_process.kill();
+        let _ = child_process.wait();
+    }
+
+    assert!(terminated, "expected detached owner to exit after cancel");
+    assert_eq!(execution.payload["command"], "cancel");
+    assert_eq!(execution.payload["dry_run"], false);
+    assert_eq!(
+        execution.payload["action"]["kind"],
+        "running_async_owner_terminated"
+    );
+    assert_eq!(execution.payload["task"]["phase"], "failed");
+    assert_eq!(execution.payload["task"]["session_state"], "failed");
+    assert_eq!(
+        execution.payload["task"]["terminal_outcome"]["payload"]["error"],
+        "delegate_cancelled: operator_requested"
+    );
 }
 
 #[tokio::test]

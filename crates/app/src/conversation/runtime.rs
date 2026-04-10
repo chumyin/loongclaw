@@ -47,6 +47,8 @@ use super::{PromptFragment, PromptFrameAuthority, PromptLane};
 #[cfg(feature = "memory-sqlite")]
 use crate::memory::runtime_config::MemoryRuntimeConfig;
 #[cfg(feature = "memory-sqlite")]
+use crate::session::parse_delegate_cancelled_reason;
+#[cfg(feature = "memory-sqlite")]
 use crate::session::repository::{
     SessionKind, SessionRepository, SessionState, SessionToolPolicyRecord,
     TransitionSessionWithEventIfCurrentRequest,
@@ -829,6 +831,15 @@ pub async fn execute_async_delegate_spawn_request(
             )?;
 
             if started.is_none() {
+                let cancelled_before_start = session_cancelled_before_async_delegate_start(
+                    &repo,
+                    &child_session_id_for_spawn,
+                )?;
+
+                if cancelled_before_start {
+                    return Ok(());
+                }
+
                 return Err(format!(
                     "async_delegate_spawn_skipped: session `{}` was not in Ready state",
                     child_session_id_for_spawn
@@ -855,6 +866,24 @@ pub async fn execute_async_delegate_spawn_request(
     .await?;
 
     Ok(())
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn session_cancelled_before_async_delegate_start(
+    repo: &SessionRepository,
+    child_session_id: &str,
+) -> Result<bool, String> {
+    let summary = repo
+        .load_session_summary_with_legacy_fallback(child_session_id)?
+        .ok_or_else(|| format!("session_not_found: `{child_session_id}`"))?;
+    let last_error = summary.last_error.unwrap_or_default();
+    let terminal = matches!(
+        summary.state,
+        SessionState::Completed | SessionState::Failed | SessionState::TimedOut
+    );
+    let cancelled = terminal && parse_delegate_cancelled_reason(last_error.as_str()).is_some();
+
+    Ok(cancelled)
 }
 
 pub struct DefaultConversationRuntime<E = DefaultContextEngine> {
@@ -1844,6 +1873,8 @@ fn normalize_turn_middleware_ids(ids: Vec<String>) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::test_support::TurnTestHarness;
+    #[cfg(feature = "memory-sqlite")]
+    use serde_json::json;
 
     #[test]
     fn provider_runtime_binding_maps_direct_conversation_binding_to_advisory_only() {
@@ -1862,5 +1893,98 @@ mod tests {
             provider::ProviderRuntimeBinding::Kernel(kernel_ctx)
                 if std::ptr::eq(kernel_ctx, &harness.kernel_ctx)
         ));
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[tokio::test]
+    async fn execute_async_delegate_spawn_request_returns_ok_when_session_was_cancelled_before_start()
+     {
+        let temp_root = tempfile::tempdir().expect("tempdir");
+        let sqlite_path = temp_root.path().join("memory.sqlite3");
+        let mut config = LoongClawConfig::default();
+        config.memory.sqlite_path = sqlite_path.display().to_string();
+        let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+        let repo = SessionRepository::new(&memory_config).expect("session repository");
+        let root_session = crate::session::repository::NewSessionRecord {
+            session_id: "root-session".to_owned(),
+            kind: SessionKind::Root,
+            parent_session_id: None,
+            label: Some("Root".to_owned()),
+            state: SessionState::Ready,
+        };
+        repo.create_session(root_session)
+            .expect("create root session");
+        let child_session = crate::session::repository::NewSessionRecord {
+            session_id: "child-session".to_owned(),
+            kind: SessionKind::DelegateChild,
+            parent_session_id: Some("root-session".to_owned()),
+            label: Some("Child".to_owned()),
+            state: SessionState::Ready,
+        };
+        repo.create_session(child_session)
+            .expect("create child session");
+        let cancel_error = crate::session::delegate_cancelled_error(
+            crate::session::DELEGATE_CANCEL_REASON_OPERATOR_REQUESTED,
+        );
+        let terminal_request = crate::session::repository::FinalizeSessionTerminalRequest {
+            state: SessionState::Failed,
+            last_error: Some(cancel_error.clone()),
+            event_kind: crate::session::DELEGATE_CANCELLED_EVENT_KIND.to_owned(),
+            actor_session_id: Some("root-session".to_owned()),
+            event_payload_json: json!({
+                "reference": "queued",
+                "cancel_reason": crate::session::DELEGATE_CANCEL_REASON_OPERATOR_REQUESTED,
+            }),
+            outcome_status: "error".to_owned(),
+            outcome_payload_json: json!({
+                "error": cancel_error,
+            }),
+            frozen_result: None,
+        };
+        let finalized = repo
+            .finalize_session_terminal_if_current(
+                "child-session",
+                SessionState::Ready,
+                terminal_request,
+            )
+            .expect("finalize cancelled child");
+        assert!(finalized.is_some(), "expected terminalization to succeed");
+
+        let execution = ConstrainedSubagentExecution {
+            mode: crate::conversation::ConstrainedSubagentMode::Async,
+            isolation: crate::conversation::ConstrainedSubagentIsolation::Shared,
+            depth: 1,
+            max_depth: 1,
+            active_children: 0,
+            max_active_children: 5,
+            timeout_seconds: 60,
+            allow_shell_in_child: false,
+            child_tool_allowlist: vec![
+                "file.read".to_owned(),
+                "file.write".to_owned(),
+                "file.edit".to_owned(),
+            ],
+            workspace_root: None,
+            runtime_narrowing: ToolRuntimeNarrowing::default(),
+            kernel_bound: false,
+            identity: None,
+            profile: None,
+        };
+        let request = async_delegate_spawn_request_from_serialized_parts(
+            "child-session".to_owned(),
+            "root-session".to_owned(),
+            "say hi".to_owned(),
+            Some("Child".to_owned()),
+            None,
+            execution,
+            None,
+            60,
+            OwnedConversationRuntimeBinding::direct(),
+        )
+        .expect("async delegate spawn request");
+
+        let result = execute_async_delegate_spawn_request(&config, request).await;
+
+        assert!(result.is_ok(), "cancelled queued child should exit cleanly");
     }
 }

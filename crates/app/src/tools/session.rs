@@ -61,6 +61,11 @@ use crate::{
 };
 
 #[cfg(feature = "memory-sqlite")]
+const DETACHED_DELEGATE_OWNER_BOUND_EVENT_KIND: &str = "delegate_runtime_owner_bound";
+#[cfg(feature = "memory-sqlite")]
+const DETACHED_DELEGATE_OWNER_KIND: &str = "detached_process";
+
+#[cfg(feature = "memory-sqlite")]
 fn delegate_error_outcome(
     child_session_id: String,
     label: Option<String>,
@@ -115,6 +120,7 @@ struct SessionDelegateLifecycleRecord {
     execution: Option<ConstrainedSubagentExecution>,
     staleness: Option<SessionDelegateStalenessRecord>,
     cancellation: Option<SessionDelegateCancellationRecord>,
+    owner: Option<SessionDelegateOwnerRecord>,
 }
 
 #[cfg(feature = "memory-sqlite")]
@@ -134,6 +140,14 @@ struct SessionDelegateCancellationRecord {
     reference: String,
     requested_at: i64,
     reason: String,
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SessionDelegateOwnerRecord {
+    kind: String,
+    process_id: u32,
+    bound_at: i64,
 }
 
 #[cfg(feature = "memory-sqlite")]
@@ -212,6 +226,7 @@ struct SessionRecoverPlan {
 enum SessionCancelPlan {
     Queued,
     Running,
+    RunningDetachedProcess { process_id: u32 },
 }
 
 #[cfg(feature = "memory-sqlite")]
@@ -2598,6 +2613,82 @@ fn apply_session_cancel_plan(
                 action: session_cancel_action_json(&SessionCancelPlan::Running),
             })
         }
+        SessionCancelPlan::RunningDetachedProcess { process_id } => {
+            let requested = repo.transition_session_with_event_if_current(
+                target_session_id,
+                crate::session::repository::TransitionSessionWithEventIfCurrentRequest {
+                    expected_state: SessionState::Running,
+                    next_state: SessionState::Running,
+                    last_error: None,
+                    event_kind: DELEGATE_CANCEL_REQUESTED_EVENT_KIND.to_owned(),
+                    actor_session_id: Some(current_session_id.to_owned()),
+                    event_payload_json: json!({
+                        "reference": "running",
+                        "cancel_reason": DELEGATE_CANCEL_REASON_OPERATOR_REQUESTED,
+                        "owner_kind": DETACHED_DELEGATE_OWNER_KIND,
+                        "process_id": process_id,
+                    }),
+                },
+            )?;
+            if requested.is_none() {
+                let latest = repo
+                    .load_session_summary_with_legacy_fallback(target_session_id)?
+                    .ok_or_else(|| format!("session_not_found: `{target_session_id}`"))?;
+                return Err(format!(
+                    "session_cancel_state_changed: session `{target_session_id}` is no longer cancellable from state `{}`",
+                    latest.state.as_str()
+                ));
+            }
+
+            terminate_detached_delegate_process(process_id)?;
+
+            let cancel_error = delegate_cancelled_error(DELEGATE_CANCEL_REASON_OPERATOR_REQUESTED);
+            let outcome = delegate_error_outcome(
+                snapshot.session.session_id.clone(),
+                snapshot.session.label.clone(),
+                cancel_error.clone(),
+                0,
+            );
+            let frozen_result =
+                capture_frozen_result(&outcome, tool_config.delegate.max_frozen_bytes);
+            let outcome_status = outcome.status.clone();
+            let outcome_payload = outcome.payload;
+            let _finalized = repo.finalize_session_terminal_if_current(
+                target_session_id,
+                SessionState::Running,
+                crate::session::repository::FinalizeSessionTerminalRequest {
+                    state: SessionState::Failed,
+                    last_error: Some(cancel_error),
+                    event_kind: DELEGATE_CANCELLED_EVENT_KIND.to_owned(),
+                    actor_session_id: Some(current_session_id.to_owned()),
+                    event_payload_json: json!({
+                        "reference": "running",
+                        "cancel_reason": DELEGATE_CANCEL_REASON_OPERATOR_REQUESTED,
+                        "owner_kind": DETACHED_DELEGATE_OWNER_KIND,
+                        "process_id": process_id,
+                    }),
+                    outcome_status,
+                    outcome_payload_json: outcome_payload,
+                    frozen_result: Some(frozen_result),
+                },
+            )?;
+
+            let inspected_snapshot = inspect_visible_session_with_policies(
+                target_session_id,
+                current_session_id,
+                config,
+                tool_config,
+                10,
+            )?;
+            let action = session_cancel_action_json(&SessionCancelPlan::RunningDetachedProcess {
+                process_id,
+            });
+
+            Ok(SessionToolActionOutcome {
+                inspection: session_inspection_payload(inspected_snapshot),
+                action,
+            })
+        }
     }
 }
 
@@ -2618,7 +2709,58 @@ fn session_cancel_action_json(plan: &SessionCancelPlan) -> Value {
             "reference": "running",
             "reason": DELEGATE_CANCEL_REASON_OPERATOR_REQUESTED,
         }),
+        SessionCancelPlan::RunningDetachedProcess { process_id } => json!({
+            "kind": "running_async_owner_terminated",
+            "previous_state": "running",
+            "next_state": "failed",
+            "reference": "running",
+            "reason": DELEGATE_CANCEL_REASON_OPERATOR_REQUESTED,
+            "owner_kind": DETACHED_DELEGATE_OWNER_KIND,
+            "process_id": process_id,
+        }),
     }
+}
+
+#[cfg(all(feature = "memory-sqlite", unix))]
+fn terminate_detached_delegate_process(process_id: u32) -> Result<(), String> {
+    let pid = process_id.to_string();
+    let output = std::process::Command::new("kill")
+        .arg("-TERM")
+        .arg(pid.as_str())
+        .output()
+        .map_err(|error| {
+            format!(
+                "session_cancel_detached_owner_termination_failed: could not launch `kill` for detached owner pid `{process_id}`: {error}"
+            )
+        })?;
+    let succeeded = output.status.success();
+
+    if succeeded {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(output.stderr.as_slice());
+    let missing_process = stderr.contains("No such process");
+
+    if missing_process {
+        return Ok(());
+    }
+
+    let exit_status = output
+        .status
+        .code()
+        .map(|code| code.to_string())
+        .unwrap_or_else(|| "signal".to_owned());
+    let stderr = stderr.trim().to_owned();
+
+    Err(format!(
+        "session_cancel_detached_owner_termination_failed: `kill -TERM {process_id}` exited with status {exit_status}: {stderr}"
+    ))
+}
+
+#[cfg(all(feature = "memory-sqlite", not(unix)))]
+fn terminate_detached_delegate_process(_process_id: u32) -> Result<(), String> {
+    Err("session_cancel_detached_owner_termination_unsupported".to_owned())
 }
 
 #[cfg(feature = "memory-sqlite")]
@@ -2656,7 +2798,20 @@ fn build_session_cancel_plan(
     }
     match (snapshot.session.state, lifecycle.phase) {
         (SessionState::Ready, "queued") => Ok(SessionCancelPlan::Queued),
-        (SessionState::Running, "running") => Ok(SessionCancelPlan::Running),
+        (SessionState::Running, "running") => {
+            #[cfg(unix)]
+            if let Some(owner) = lifecycle.owner {
+                let owner_kind = owner.kind.as_str();
+
+                if owner_kind == DETACHED_DELEGATE_OWNER_KIND {
+                    return Ok(SessionCancelPlan::RunningDetachedProcess {
+                        process_id: owner.process_id,
+                    });
+                }
+            }
+
+            Ok(SessionCancelPlan::Running)
+        }
         _ => Err(format!(
             "session_cancel_not_cancellable: session `{}` is not queued or running",
             snapshot.session.session_id
@@ -2681,6 +2836,7 @@ fn session_delegate_lifecycle_at(
     let mut execution = None;
     let mut profile = None;
     let mut cancellation = None;
+    let mut owner = None;
     for event in recent_events {
         match event.event_kind.as_str() {
             "delegate_queued" => {
@@ -2740,6 +2896,29 @@ fn session_delegate_lifecycle_at(
                     requested_at: event.ts,
                     reason,
                 });
+            }
+            DETACHED_DELEGATE_OWNER_BOUND_EVENT_KIND => {
+                let owner_kind = event
+                    .payload_json
+                    .get("owner_kind")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or("unknown")
+                    .to_owned();
+                let process_id = event
+                    .payload_json
+                    .get("process_id")
+                    .and_then(Value::as_u64)
+                    .and_then(|process_id| u32::try_from(process_id).ok());
+
+                if let Some(process_id) = process_id {
+                    owner = Some(SessionDelegateOwnerRecord {
+                        kind: owner_kind,
+                        process_id,
+                        bound_at: event.ts,
+                    });
+                }
             }
             _ => {}
         }
@@ -2801,6 +2980,7 @@ fn session_delegate_lifecycle_at(
         } else {
             None
         },
+        owner,
     })
 }
 
@@ -2850,6 +3030,7 @@ fn session_delegate_lifecycle_json(
         "cancellation": lifecycle
             .cancellation
             .map(session_delegate_cancellation_json),
+        "owner": lifecycle.owner.map(session_delegate_owner_json),
     })
 }
 
@@ -2881,6 +3062,15 @@ fn session_delegate_cancellation_json(cancellation: SessionDelegateCancellationR
         "reference": cancellation.reference,
         "requested_at": cancellation.requested_at,
         "reason": cancellation.reason,
+    })
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn session_delegate_owner_json(owner: SessionDelegateOwnerRecord) -> Value {
+    json!({
+        "kind": owner.kind,
+        "process_id": owner.process_id,
+        "bound_at": owner.bound_at,
     })
 }
 
@@ -3753,10 +3943,16 @@ fn session_terminal_outcome_json(
 #[cfg(test)]
 mod tests {
     use std::fs;
+    #[cfg(unix)]
+    use std::process::{Child, Command, Stdio};
+    #[cfg(unix)]
+    use std::time::Duration;
 
     use loongclaw_contracts::{ToolCoreOutcome, ToolCoreRequest};
     use rusqlite::params;
     use serde_json::{Value, json};
+    #[cfg(unix)]
+    use wait_timeout::ChildExt;
 
     use crate::config::{SessionVisibility, ToolConfig};
     use crate::memory::append_turn_direct;
@@ -3838,6 +4034,18 @@ mod tests {
             .iter()
             .find(|item| item.get("session_id").and_then(Value::as_str) == Some(session_id))
             .unwrap_or_else(|| panic!("missing batch result for session `{session_id}`"))
+    }
+
+    #[cfg(unix)]
+    fn spawn_sleeping_process() -> Child {
+        let mut command = Command::new("/bin/sh");
+        command.arg("-c");
+        command.arg("sleep 30");
+        command.stdin(Stdio::null());
+        command.stdout(Stdio::null());
+        command.stderr(Stdio::null());
+
+        command.spawn().expect("spawn sleeping process")
     }
 
     #[test]
@@ -5963,6 +6171,109 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn session_cancel_terminates_running_detached_owner() {
+        let config = isolated_memory_config("session-cancel-detached-owner");
+        let repo = SessionRepository::new(&config).expect("repository");
+        let mut child_process = spawn_sleeping_process();
+        let child_process_id = child_process.id();
+
+        repo.create_session(NewSessionRecord {
+            session_id: "root-session".to_owned(),
+            kind: SessionKind::Root,
+            parent_session_id: None,
+            label: Some("Root".to_owned()),
+            state: SessionState::Ready,
+        })
+        .expect("create root");
+        repo.create_session(NewSessionRecord {
+            session_id: "child-session".to_owned(),
+            kind: SessionKind::DelegateChild,
+            parent_session_id: Some("root-session".to_owned()),
+            label: Some("Child".to_owned()),
+            state: SessionState::Running,
+        })
+        .expect("create child");
+        repo.append_event(NewSessionEvent {
+            session_id: "child-session".to_owned(),
+            event_kind: "delegate_queued".to_owned(),
+            actor_session_id: Some("root-session".to_owned()),
+            payload_json: json!({
+                "task": "research",
+                "timeout_seconds": 60
+            }),
+        })
+        .expect("append queued event");
+        repo.append_event(NewSessionEvent {
+            session_id: "child-session".to_owned(),
+            event_kind: "delegate_started".to_owned(),
+            actor_session_id: Some("root-session".to_owned()),
+            payload_json: json!({
+                "task": "research",
+                "timeout_seconds": 60
+            }),
+        })
+        .expect("append started event");
+        repo.append_event(NewSessionEvent {
+            session_id: "child-session".to_owned(),
+            event_kind: super::DETACHED_DELEGATE_OWNER_BOUND_EVENT_KIND.to_owned(),
+            actor_session_id: Some("root-session".to_owned()),
+            payload_json: json!({
+                "owner_kind": super::DETACHED_DELEGATE_OWNER_KIND,
+                "process_id": child_process_id
+            }),
+        })
+        .expect("append owner event");
+
+        let outcome = execute_session_mutation_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "session_cancel".to_owned(),
+                payload: json!({
+                    "session_id": "child-session"
+                }),
+            },
+            "root-session",
+            &config,
+        )
+        .expect("session_cancel outcome");
+
+        let wait_result = child_process
+            .wait_timeout(Duration::from_secs(5))
+            .expect("wait for detached owner");
+        let terminated = wait_result.is_some();
+
+        if !terminated {
+            let _ = child_process.kill();
+            let _ = child_process.wait();
+        }
+
+        assert!(
+            terminated,
+            "expected detached owner to exit after cancellation"
+        );
+        assert_eq!(outcome.status, "ok");
+        assert_eq!(outcome.payload["session"]["state"], "failed");
+        assert_eq!(outcome.payload["terminal_outcome_state"], "present");
+        assert_eq!(outcome.payload["terminal_outcome"]["status"], "error");
+        assert_eq!(
+            outcome.payload["cancel_action"]["kind"],
+            "running_async_owner_terminated"
+        );
+        assert_eq!(
+            outcome.payload["recent_events"]
+                .as_array()
+                .expect("recent events array")
+                .last()
+                .expect("latest recent event")["event_kind"],
+            "delegate_cancelled"
+        );
+        assert_eq!(
+            outcome.payload["terminal_outcome"]["payload"]["error"],
+            "delegate_cancelled: operator_requested"
+        );
+    }
+
     #[test]
     fn session_cancel_batch_dry_run_reports_mixed_results_without_mutation() {
         let config = isolated_memory_config("session-cancel-batch-dry-run");
@@ -6321,6 +6632,69 @@ mod tests {
         assert_eq!(
             outcome.payload["delegate_lifecycle"]["cancellation"]["reason"],
             "operator_requested"
+        );
+    }
+
+    #[test]
+    fn session_status_reports_detached_delegate_owner_metadata() {
+        let config = isolated_memory_config("session-status-detached-owner");
+        let repo = SessionRepository::new(&config).expect("repository");
+        repo.create_session(NewSessionRecord {
+            session_id: "root-session".to_owned(),
+            kind: SessionKind::Root,
+            parent_session_id: None,
+            label: Some("Root".to_owned()),
+            state: SessionState::Ready,
+        })
+        .expect("create root");
+        repo.create_session(NewSessionRecord {
+            session_id: "child-session".to_owned(),
+            kind: SessionKind::DelegateChild,
+            parent_session_id: Some("root-session".to_owned()),
+            label: Some("Child".to_owned()),
+            state: SessionState::Running,
+        })
+        .expect("create child");
+        repo.append_event(NewSessionEvent {
+            session_id: "child-session".to_owned(),
+            event_kind: "delegate_started".to_owned(),
+            actor_session_id: Some("root-session".to_owned()),
+            payload_json: json!({
+                "task": "research",
+                "timeout_seconds": 60
+            }),
+        })
+        .expect("append started event");
+        repo.append_event(NewSessionEvent {
+            session_id: "child-session".to_owned(),
+            event_kind: super::DETACHED_DELEGATE_OWNER_BOUND_EVENT_KIND.to_owned(),
+            actor_session_id: Some("root-session".to_owned()),
+            payload_json: json!({
+                "owner_kind": "detached_process",
+                "process_id": 4242
+            }),
+        })
+        .expect("append owner event");
+
+        let outcome = execute_session_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "session_status".to_owned(),
+                payload: json!({
+                    "session_id": "child-session"
+                }),
+            },
+            "root-session",
+            &config,
+        )
+        .expect("session_status outcome");
+
+        assert_eq!(
+            outcome.payload["delegate_lifecycle"]["owner"]["kind"],
+            "detached_process"
+        );
+        assert_eq!(
+            outcome.payload["delegate_lifecycle"]["owner"]["process_id"],
+            4242
         );
     }
 

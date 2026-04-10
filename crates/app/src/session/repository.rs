@@ -3100,6 +3100,7 @@ impl SessionRepository {
                    AND event_kind IN (
                         'delegate_queued',
                         'delegate_started',
+                        'delegate_runtime_owner_bound',
                         'delegate_cancel_requested'
                    )
                  ORDER BY id ASC",
