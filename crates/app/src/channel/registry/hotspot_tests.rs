@@ -198,7 +198,7 @@ fn channel_catalog_includes_openclaw_inspired_extended_surfaces() {
 
     assert_eq!(
         synology_chat.implementation_status,
-        ChannelCatalogImplementationStatus::ConfigBacked
+        ChannelCatalogImplementationStatus::RuntimeBacked
     );
     assert_eq!(synology_chat.selection_order, 165);
     assert_eq!(synology_chat.aliases, vec!["synologychat", "synochat"]);
@@ -218,7 +218,7 @@ fn channel_catalog_includes_openclaw_inspired_extended_surfaces() {
     );
     assert_eq!(
         synology_chat.operations[1].availability,
-        ChannelCatalogOperationAvailability::Stub
+        ChannelCatalogOperationAvailability::Implemented
     );
 
     assert_eq!(
@@ -537,7 +537,7 @@ fn channel_inventory_exposes_grouped_channel_surfaces() {
         .expect("synology chat surface");
     assert_eq!(
         synology_chat.catalog.implementation_status,
-        ChannelCatalogImplementationStatus::ConfigBacked
+        ChannelCatalogImplementationStatus::RuntimeBacked
     );
     assert_eq!(synology_chat.configured_accounts.len(), 1);
     assert_eq!(

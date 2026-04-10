@@ -1383,6 +1383,17 @@ pub enum Commands {
         #[arg(long)]
         text: String,
     },
+    /// Run Synology Chat outgoing webhook callback server and auto-reply via provider
+    SynologyChatServe {
+        #[arg(long)]
+        config: Option<String>,
+        #[arg(long)]
+        account: Option<String>,
+        #[arg(long)]
+        bind: String,
+        #[arg(long)]
+        path: Option<String>,
+    },
     /// Send one IRC message to a channel or nick
     IrcSend {
         #[arg(long)]
@@ -5137,6 +5148,11 @@ pub const SYNOLOGY_CHAT_SEND_CLI_SPEC: ChannelSendCliSpec = ChannelSendCliSpec {
     run: run_synology_chat_send_cli_impl,
 };
 
+pub const SYNOLOGY_CHAT_SERVE_CLI_SPEC: ChannelServeCliSpec = ChannelServeCliSpec {
+    family: mvp::channel::SYNOLOGY_CHAT_COMMAND_FAMILY_DESCRIPTOR,
+    run: run_synology_chat_serve_cli_impl,
+};
+
 pub const IRC_SEND_CLI_SPEC: ChannelSendCliSpec = ChannelSendCliSpec {
     family: mvp::channel::IRC_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
     run: run_irc_send_cli_impl,
@@ -5464,6 +5480,21 @@ pub fn run_synology_chat_send_cli_impl(
             args.target_kind,
             args.text,
         )
+        .await
+    })
+}
+
+pub fn run_synology_chat_serve_cli_impl(
+    args: ChannelServeCliArgs<'_>,
+) -> ChannelCliCommandFuture<'_> {
+    Box::pin(async move {
+        let _ = args.once;
+        with_graceful_shutdown(mvp::channel::run_synology_chat_channel(
+            args.config_path,
+            args.account,
+            args.bind_override,
+            args.path_override,
+        ))
         .await
     })
 }

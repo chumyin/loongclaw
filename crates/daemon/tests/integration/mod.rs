@@ -1138,13 +1138,13 @@ fn render_channel_surfaces_text_reports_catalog_only_channels() {
         "op serve (nextcloud-talk-serve) unsupported: nextcloud talk bot callback serve is not implemented yet target_kinds=conversation requirements=enabled,server_url,shared_secret"
     ));
     assert!(rendered.contains(
-        "Synology Chat [synology-chat] implementation_status=config_backed selection_order=165 selection_label=\"nas webhook bot\" capabilities=multi_account,send aliases=synologychat,synochat transport=synology_chat_outgoing_incoming_webhooks target_kinds=address configured_accounts=1 default_configured_account=default"
+        "Synology Chat [synology-chat] implementation_status=runtime_backed selection_order=165 selection_label=\"nas webhook bot\" capabilities=runtime_backed,multi_account,send,serve,runtime_tracking aliases=synologychat,synochat transport=synology_chat_outgoing_incoming_webhooks target_kinds=address configured_accounts=1 default_configured_account=default"
     ));
     assert!(rendered.contains(
         "op send (synology-chat-send) disabled: disabled by synology_chat account configuration target_kinds=address requirements=enabled,incoming_url"
     ));
     assert!(rendered.contains(
-        "op serve (synology-chat-serve) unsupported: synology chat outgoing webhook serve is not implemented yet target_kinds=address requirements=enabled,token,incoming_url,allowed_user_ids"
+        "op serve (synology-chat-serve) disabled: disabled by synology_chat account configuration target_kinds=address requirements=enabled,token,allowed_user_ids"
     ));
     assert!(rendered.contains(
         "iMessage [imessage] implementation_status=config_backed selection_order=180 selection_label=\"apple message bridge\" capabilities=multi_account,send aliases=bluebubbles,blue-bubbles transport=imessage_bridge_api target_kinds=conversation configured_accounts=1 default_configured_account=default"

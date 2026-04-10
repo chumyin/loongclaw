@@ -92,6 +92,7 @@ pub use registry::{
     MATTERMOST_CATALOG_COMMAND_FAMILY_DESCRIPTOR, NEXTCLOUD_TALK_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
     NOSTR_CATALOG_COMMAND_FAMILY_DESCRIPTOR, SIGNAL_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
     SLACK_CATALOG_COMMAND_FAMILY_DESCRIPTOR, SYNOLOGY_CHAT_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
+    SYNOLOGY_CHAT_COMMAND_FAMILY_DESCRIPTOR, SYNOLOGY_CHAT_RUNTIME_COMMAND_DESCRIPTOR,
     TEAMS_CATALOG_COMMAND_FAMILY_DESCRIPTOR, TELEGRAM_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
     TELEGRAM_COMMAND_FAMILY_DESCRIPTOR, TELEGRAM_RUNTIME_COMMAND_DESCRIPTOR,
     TLON_CATALOG_COMMAND_FAMILY_DESCRIPTOR, TWITCH_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
@@ -112,7 +113,10 @@ use runtime::state::ChannelOperationRuntimeTracker;
 #[cfg(any(
     feature = "channel-telegram",
     feature = "channel-feishu",
+    feature = "channel-line",
     feature = "channel-matrix",
+    feature = "channel-synology-chat",
+    feature = "channel-webhook",
     feature = "channel-wecom",
     feature = "channel-whatsapp"
 ))]
@@ -145,17 +149,23 @@ use commands::context::render_channel_route_notice;
 #[cfg(any(
     feature = "channel-telegram",
     feature = "channel-feishu",
+    feature = "channel-line",
     feature = "channel-matrix",
+    feature = "channel-synology-chat",
     feature = "channel-wecom",
     feature = "channel-whatsapp",
+    feature = "channel-webhook",
 ))]
 pub(crate) use dispatch::process_inbound_with_provider;
 #[cfg(any(
     feature = "channel-telegram",
     feature = "channel-feishu",
+    feature = "channel-line",
     feature = "channel-matrix",
+    feature = "channel-synology-chat",
     feature = "channel-wecom",
     feature = "channel-whatsapp",
+    feature = "channel-webhook",
 ))]
 pub use dispatch::run_channel_serve_runtime_probe_for_test;
 #[cfg(feature = "channel-feishu")]
@@ -164,6 +174,8 @@ pub use dispatch::run_feishu_channel_with_stop;
 pub use dispatch::run_line_channel_with_stop;
 #[cfg(feature = "channel-matrix")]
 pub use dispatch::run_matrix_channel_with_stop;
+#[cfg(feature = "channel-synology-chat")]
+pub use dispatch::run_synology_chat_channel_with_stop;
 #[cfg(feature = "channel-telegram")]
 pub use dispatch::run_telegram_channel_with_stop;
 #[cfg(feature = "channel-wecom")]
@@ -184,9 +196,10 @@ pub use dispatch::{
     run_dingtalk_send, run_discord_send, run_email_send, run_feishu_channel, run_feishu_send,
     run_google_chat_send, run_imessage_send, run_irc_send, run_line_channel, run_line_send,
     run_matrix_channel, run_matrix_send, run_mattermost_send, run_nextcloud_talk_send,
-    run_nostr_send, run_signal_send, run_slack_send, run_synology_chat_send, run_teams_send,
-    run_telegram_channel, run_telegram_send, run_webhook_channel, run_webhook_send,
-    run_wecom_channel, run_wecom_send, run_whatsapp_channel, run_whatsapp_send,
+    run_nostr_send, run_signal_send, run_slack_send, run_synology_chat_channel,
+    run_synology_chat_send, run_teams_send, run_telegram_channel, run_telegram_send,
+    run_webhook_channel, run_webhook_send, run_wecom_channel, run_wecom_send, run_whatsapp_channel,
+    run_whatsapp_send,
 };
 #[cfg(test)]
 use runtime::serve::ChannelServeRuntimeSpec;

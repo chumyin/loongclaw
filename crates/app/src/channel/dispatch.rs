@@ -141,6 +141,7 @@ use crate::config::ResolvedWhatsappChannelConfig;
     feature = "channel-feishu",
     feature = "channel-line",
     feature = "channel-matrix",
+    feature = "channel-synology-chat",
     feature = "channel-wecom",
     feature = "channel-whatsapp",
 ))]
@@ -155,6 +156,7 @@ use crate::conversation::{
     feature = "channel-feishu",
     feature = "channel-line",
     feature = "channel-matrix",
+    feature = "channel-synology-chat",
     feature = "channel-wecom",
     feature = "channel-whatsapp",
     feature = "channel-webhook",
@@ -170,6 +172,7 @@ pub(super) use super::commands::{
     feature = "channel-feishu",
     feature = "channel-line",
     feature = "channel-matrix",
+    feature = "channel-synology-chat",
     feature = "channel-wecom",
     feature = "channel-whatsapp",
     feature = "channel-webhook"
@@ -213,6 +216,7 @@ use super::runtime::state;
     feature = "channel-line",
     feature = "channel-matrix",
     feature = "channel-nextcloud-talk",
+    feature = "channel-synology-chat",
     feature = "channel-wecom",
     feature = "channel-whatsapp",
     feature = "channel-webhook",
@@ -221,7 +225,9 @@ use super::runtime::turn_feedback::ChannelTurnFeedbackCapture;
 #[cfg(any(
     feature = "channel-telegram",
     feature = "channel-feishu",
+    feature = "channel-line",
     feature = "channel-matrix",
+    feature = "channel-synology-chat",
     feature = "channel-wecom",
     feature = "channel-whatsapp",
 ))]
@@ -2045,6 +2051,62 @@ pub async fn run_synology_chat_send(
     }
 }
 
+#[allow(clippy::print_stdout)] // CLI startup banner
+pub async fn run_synology_chat_channel(
+    config_path: Option<&str>,
+    account_id: Option<&str>,
+    bind_override: Option<&str>,
+    path_override: Option<&str>,
+) -> CliResult<()> {
+    if !cfg!(feature = "channel-synology-chat") {
+        return Err(
+            "synology chat channel is disabled (enable feature `channel-synology-chat`)".to_owned(),
+        );
+    }
+
+    #[cfg(not(feature = "channel-synology-chat"))]
+    {
+        let _ = (config_path, account_id, bind_override, path_override);
+        return Err(
+            "synology chat channel is disabled (enable feature `channel-synology-chat`)".to_owned(),
+        );
+    }
+
+    #[cfg(feature = "channel-synology-chat")]
+    {
+        let context = load_synology_chat_command_context(config_path, account_id)?;
+        synology_chat::run_synology_chat_channel_with_context(
+            context,
+            bind_override,
+            path_override,
+            ChannelServeStopHandle::new(),
+            true,
+        )
+        .await
+    }
+}
+
+#[cfg(feature = "channel-synology-chat")]
+pub async fn run_synology_chat_channel_with_stop(
+    resolved_path: PathBuf,
+    config: LoongClawConfig,
+    account_id: Option<&str>,
+    bind_override: Option<&str>,
+    path_override: Option<&str>,
+    stop: ChannelServeStopHandle,
+    initialize_runtime_environment: bool,
+) -> CliResult<()> {
+    let context = build_synology_chat_command_context(resolved_path, config, account_id)?;
+    synology_chat::run_synology_chat_channel_with_context(
+        context,
+        bind_override,
+        path_override,
+        stop,
+        initialize_runtime_environment,
+    )
+    .await
+}
+
 #[allow(clippy::print_stdout)] // CLI output
 pub async fn run_irc_send(
     config_path: Option<&str>,
@@ -2391,6 +2453,7 @@ pub async fn run_feishu_channel_with_stop(
     feature = "channel-line",
     feature = "channel-matrix",
     feature = "channel-nextcloud-talk",
+    feature = "channel-synology-chat",
     feature = "channel-wecom",
     feature = "channel-whatsapp",
     feature = "channel-webhook"
@@ -3181,6 +3244,7 @@ pub(crate) async fn send_text_to_known_session(
     feature = "channel-feishu",
     feature = "channel-line",
     feature = "channel-matrix",
+    feature = "channel-synology-chat",
     feature = "channel-wecom",
     feature = "channel-whatsapp",
     feature = "channel-webhook"
@@ -3199,6 +3263,7 @@ pub(crate) async fn send_text_to_known_session(
     feature = "channel-line",
     feature = "channel-matrix",
     feature = "channel-nextcloud-talk",
+    feature = "channel-synology-chat",
     feature = "channel-wecom",
     feature = "channel-whatsapp",
     feature = "channel-webhook"
@@ -3238,7 +3303,9 @@ pub(super) async fn process_inbound_with_runtime_and_feedback<R: ConversationRun
 #[cfg(any(
     feature = "channel-telegram",
     feature = "channel-feishu",
+    feature = "channel-line",
     feature = "channel-matrix",
+    feature = "channel-synology-chat",
     feature = "channel-wecom",
     feature = "channel-whatsapp",
     feature = "channel-webhook"
@@ -3348,7 +3415,9 @@ pub(crate) async fn process_inbound_with_provider(
 #[cfg(any(
     feature = "channel-telegram",
     feature = "channel-feishu",
+    feature = "channel-line",
     feature = "channel-matrix",
+    feature = "channel-synology-chat",
     feature = "channel-wecom",
     feature = "channel-whatsapp",
     feature = "channel-webhook"
@@ -3366,7 +3435,9 @@ pub(super) fn reload_channel_turn_config(
 #[cfg(any(
     feature = "channel-telegram",
     feature = "channel-feishu",
+    feature = "channel-line",
     feature = "channel-matrix",
+    feature = "channel-synology-chat",
     feature = "channel-wecom",
     feature = "channel-whatsapp",
     feature = "channel-webhook"
@@ -3421,6 +3492,7 @@ fn resolve_channel_acp_turn_hints(
                 working_directory,
             })
         }
+        ChannelPlatform::SynologyChat => Ok(ChannelResolvedAcpTurnHints::default()),
         ChannelPlatform::Webhook => Ok(ChannelResolvedAcpTurnHints::default()),
         ChannelPlatform::WhatsApp => Ok(ChannelResolvedAcpTurnHints::default()),
         ChannelPlatform::Irc => Ok(ChannelResolvedAcpTurnHints::default()),
@@ -3433,6 +3505,7 @@ fn resolve_channel_acp_turn_hints(
     feature = "channel-line",
     feature = "channel-matrix",
     feature = "channel-nextcloud-talk",
+    feature = "channel-synology-chat",
     feature = "channel-wecom",
     feature = "channel-whatsapp",
     feature = "channel-webhook"
@@ -3451,6 +3524,7 @@ fn channel_message_acp_turn_provenance(message: &ChannelInboundMessage) -> AcpTu
     feature = "channel-line",
     feature = "channel-matrix",
     feature = "channel-nextcloud-talk",
+    feature = "channel-synology-chat",
     feature = "channel-wecom",
     feature = "channel-whatsapp",
     feature = "channel-webhook"
@@ -3510,6 +3584,7 @@ pub(super) fn channel_message_ingress_context(
     feature = "channel-feishu",
     feature = "channel-line",
     feature = "channel-matrix",
+    feature = "channel-synology-chat",
     feature = "channel-wecom",
     feature = "channel-whatsapp",
     feature = "channel-webhook"
@@ -3526,6 +3601,7 @@ fn trimmed_non_empty(value: Option<&str>) -> Option<String> {
     feature = "channel-feishu",
     feature = "channel-line",
     feature = "channel-matrix",
+    feature = "channel-synology-chat",
     feature = "channel-wecom",
     feature = "channel-whatsapp",
     feature = "channel-webhook"

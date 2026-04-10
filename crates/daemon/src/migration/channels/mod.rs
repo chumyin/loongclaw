@@ -12,6 +12,7 @@ mod feishu;
 mod line;
 mod matrix;
 mod plugin_bridge;
+mod synology_chat;
 mod telegram;
 mod webhook;
 mod wecom;
@@ -66,7 +67,7 @@ struct ChannelAdapter {
     apply_default_env_bindings: fn(&mut mvp::config::LoongClawConfig) -> Vec<String>,
 }
 
-const REGISTRY: [ChannelAdapter; 7] = [
+const REGISTRY: [ChannelAdapter; 8] = [
     ChannelAdapter {
         id: telegram::ID,
         collect_preview: telegram::collect_preview,
@@ -136,6 +137,16 @@ const REGISTRY: [ChannelAdapter; 7] = [
         collect_preflight_checks: webhook::collect_preflight_checks,
         collect_doctor_checks: webhook::collect_doctor_checks,
         apply_default_env_bindings: webhook::apply_default_env_bindings,
+    },
+    ChannelAdapter {
+        id: synology_chat::ID,
+        collect_preview: synology_chat::collect_preview,
+        apply: synology_chat::apply,
+        readiness_state: synology_chat::readiness_state,
+        apply_import_readiness: synology_chat::apply_import_readiness,
+        collect_preflight_checks: synology_chat::collect_preflight_checks,
+        collect_doctor_checks: synology_chat::collect_doctor_checks,
+        apply_default_env_bindings: synology_chat::apply_default_env_bindings,
     },
 ];
 

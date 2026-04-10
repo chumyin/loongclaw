@@ -313,13 +313,15 @@ const NEXTCLOUD_TALK_CHANNEL_REGISTRY_DESCRIPTOR: ChannelRegistryDescriptor =
 const SYNOLOGY_CHAT_CHANNEL_REGISTRY_DESCRIPTOR: ChannelRegistryDescriptor =
     ChannelRegistryDescriptor {
         id: "synology-chat",
-        runtime: None,
+        runtime: Some(ChannelRuntimeDescriptor {
+            family: SYNOLOGY_CHAT_COMMAND_FAMILY_DESCRIPTOR,
+        }),
         snapshot_builder: Some(build_synology_chat_snapshots),
         selection_order: 165,
         selection_label: "nas webhook bot",
-        blurb: "Shipped Synology Chat outbound surface with config-backed incoming-webhook sends; inbound outgoing-webhook serve support remains planned.",
-        implementation_status: ChannelCatalogImplementationStatus::ConfigBacked,
-        capabilities: CONFIG_BACKED_SEND_CHANNEL_CAPABILITIES,
+        blurb: "Shipped Synology Chat surface with incoming-webhook sends and outgoing-webhook callback runtime support.",
+        implementation_status: ChannelCatalogImplementationStatus::RuntimeBacked,
+        capabilities: SYNOLOGY_CHAT_CAPABILITIES,
         label: "Synology Chat",
         aliases: &["synologychat", "synochat"],
         transport: "synology_chat_outgoing_incoming_webhooks",

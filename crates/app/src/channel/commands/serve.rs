@@ -9,6 +9,7 @@ use crate::context::{DEFAULT_TOKEN_TTL_S, bootstrap_kernel_context_with_config};
     feature = "channel-feishu",
     feature = "channel-line",
     feature = "channel-matrix",
+    feature = "channel-synology-chat",
     feature = "channel-wecom",
     feature = "channel-whatsapp",
     feature = "channel-webhook"
@@ -19,6 +20,7 @@ use super::super::registry::ChannelCommandFamilyDescriptor;
     feature = "channel-feishu",
     feature = "channel-line",
     feature = "channel-matrix",
+    feature = "channel-synology-chat",
     feature = "channel-wecom",
     feature = "channel-whatsapp",
     feature = "channel-webhook"
@@ -31,6 +33,7 @@ use super::super::runtime::serve::{
     feature = "channel-feishu",
     feature = "channel-line",
     feature = "channel-matrix",
+    feature = "channel-synology-chat",
     feature = "channel-wecom",
     feature = "channel-whatsapp",
     feature = "channel-webhook"
@@ -44,6 +47,7 @@ use super::context::{ChannelCommandContext, ChannelResolvedRuntimeAccount};
     feature = "channel-feishu",
     feature = "channel-line",
     feature = "channel-matrix",
+    feature = "channel-synology-chat",
     feature = "channel-wecom",
     feature = "channel-whatsapp",
     feature = "channel-webhook"
@@ -58,6 +62,7 @@ pub(in crate::channel) struct ChannelServeCommandSpec {
     feature = "channel-feishu",
     feature = "channel-line",
     feature = "channel-matrix",
+    feature = "channel-synology-chat",
     feature = "channel-wecom",
     feature = "channel-whatsapp",
     feature = "channel-webhook"

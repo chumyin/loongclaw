@@ -59,4 +59,14 @@ fn command_kind_for_logging_uses_stable_variant_names() {
         .command_kind_for_logging(),
         "webhook_serve"
     );
+    assert_eq!(
+        Commands::SynologyChatServe {
+            config: None,
+            account: None,
+            bind: "127.0.0.1:9996".to_owned(),
+            path: None,
+        }
+        .command_kind_for_logging(),
+        "synology_chat_serve"
+    );
 }

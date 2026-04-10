@@ -63,14 +63,15 @@ pub use super::catalog::{
     ChannelDoctorCheckTrigger, ChannelDoctorOperationSpec, ChannelOnboardingDescriptor,
     ChannelOnboardingStrategy, ChannelOperationDescriptor, ChannelRuntimeCommandDescriptor,
     FEISHU_RUNTIME_COMMAND_DESCRIPTOR, LINE_RUNTIME_COMMAND_DESCRIPTOR,
-    MATRIX_RUNTIME_COMMAND_DESCRIPTOR, TELEGRAM_RUNTIME_COMMAND_DESCRIPTOR,
-    WEBHOOK_RUNTIME_COMMAND_DESCRIPTOR, WECOM_RUNTIME_COMMAND_DESCRIPTOR,
-    WHATSAPP_RUNTIME_COMMAND_DESCRIPTOR, catalog_only_channel_entries, list_channel_catalog,
-    normalize_channel_catalog_id, normalize_channel_platform,
-    resolve_channel_catalog_command_family_descriptor, resolve_channel_catalog_entry,
-    resolve_channel_catalog_operation, resolve_channel_command_family_descriptor,
-    resolve_channel_doctor_operation_spec, resolve_channel_onboarding_descriptor,
-    resolve_channel_operation_descriptor, resolve_channel_runtime_command_descriptor,
+    MATRIX_RUNTIME_COMMAND_DESCRIPTOR, SYNOLOGY_CHAT_RUNTIME_COMMAND_DESCRIPTOR,
+    TELEGRAM_RUNTIME_COMMAND_DESCRIPTOR, WEBHOOK_RUNTIME_COMMAND_DESCRIPTOR,
+    WECOM_RUNTIME_COMMAND_DESCRIPTOR, WHATSAPP_RUNTIME_COMMAND_DESCRIPTOR,
+    catalog_only_channel_entries, list_channel_catalog, normalize_channel_catalog_id,
+    normalize_channel_platform, resolve_channel_catalog_command_family_descriptor,
+    resolve_channel_catalog_entry, resolve_channel_catalog_operation,
+    resolve_channel_command_family_descriptor, resolve_channel_doctor_operation_spec,
+    resolve_channel_onboarding_descriptor, resolve_channel_operation_descriptor,
+    resolve_channel_runtime_command_descriptor,
 };
 pub(crate) use super::catalog::{
     catalog_only_channel_entries_from, resolve_channel_selection_order,
@@ -2173,7 +2174,6 @@ const SYNOLOGY_CHAT_SEND_REQUIREMENTS: &[ChannelCatalogOperationRequirement] = &
 const SYNOLOGY_CHAT_SERVE_REQUIREMENTS: &[ChannelCatalogOperationRequirement] = &[
     SYNOLOGY_CHAT_ENABLED_REQUIREMENT,
     SYNOLOGY_CHAT_TOKEN_REQUIREMENT,
-    SYNOLOGY_CHAT_INCOMING_URL_REQUIREMENT,
     SYNOLOGY_CHAT_ALLOWED_USER_IDS_REQUIREMENT,
 ];
 const SYNOLOGY_CHAT_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
@@ -2190,7 +2190,7 @@ const SYNOLOGY_CHAT_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOpe
     id: CHANNEL_OPERATION_SERVE_ID,
     label: "webhook service",
     command: "synology-chat-serve",
-    availability: ChannelCatalogOperationAvailability::Stub,
+    availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: true,
     requirements: SYNOLOGY_CHAT_SERVE_REQUIREMENTS,
     default_target_kind: None,
@@ -2203,6 +2203,21 @@ pub const SYNOLOGY_CHAT_CATALOG_COMMAND_FAMILY_DESCRIPTOR: ChannelCatalogCommand
         send: SYNOLOGY_CHAT_SEND_OPERATION,
         serve: SYNOLOGY_CHAT_SERVE_OPERATION,
     };
+pub const SYNOLOGY_CHAT_COMMAND_FAMILY_DESCRIPTOR: ChannelCommandFamilyDescriptor =
+    ChannelCommandFamilyDescriptor {
+        runtime: SYNOLOGY_CHAT_RUNTIME_COMMAND_DESCRIPTOR,
+        catalog: SYNOLOGY_CHAT_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
+    };
+const SYNOLOGY_CHAT_SERVE_DOCTOR_CHECKS: &[ChannelDoctorCheckSpec] = &[
+    ChannelDoctorCheckSpec {
+        name: "synology chat serve health",
+        trigger: ChannelDoctorCheckTrigger::OperationHealth,
+    },
+    ChannelDoctorCheckSpec {
+        name: "synology chat serve runtime",
+        trigger: ChannelDoctorCheckTrigger::ReadyRuntime,
+    },
+];
 const SYNOLOGY_CHAT_OPERATIONS: &[ChannelRegistryOperationDescriptor] = &[
     ChannelRegistryOperationDescriptor {
         operation: SYNOLOGY_CHAT_CATALOG_COMMAND_FAMILY_DESCRIPTOR.send,
@@ -2210,13 +2225,20 @@ const SYNOLOGY_CHAT_OPERATIONS: &[ChannelRegistryOperationDescriptor] = &[
     },
     ChannelRegistryOperationDescriptor {
         operation: SYNOLOGY_CHAT_CATALOG_COMMAND_FAMILY_DESCRIPTOR.serve,
-        doctor_checks: &[],
+        doctor_checks: SYNOLOGY_CHAT_SERVE_DOCTOR_CHECKS,
     },
+];
+const SYNOLOGY_CHAT_CAPABILITIES: &[ChannelCapability] = &[
+    ChannelCapability::RuntimeBacked,
+    ChannelCapability::MultiAccount,
+    ChannelCapability::Send,
+    ChannelCapability::Serve,
+    ChannelCapability::RuntimeTracking,
 ];
 const SYNOLOGY_CHAT_ONBOARDING_DESCRIPTOR: ChannelOnboardingDescriptor =
     ChannelOnboardingDescriptor {
         strategy: ChannelOnboardingStrategy::ManualConfig,
-        setup_hint: "configure Synology Chat incoming webhook credentials in loongclaw.toml under synology_chat or synology_chat.accounts.<account>; outbound incoming-webhook send is shipped, while inbound outgoing-webhook serve support remains planned",
+        setup_hint: "configure Synology Chat webhook credentials in loongclaw.toml under synology_chat or synology_chat.accounts.<account>; outbound incoming-webhook send and inbound outgoing-webhook serve are shipped, and synology-chat-serve requires --bind plus an optional --path override at runtime",
         status_command: "loong doctor",
         repair_command: Some("loong doctor --fix"),
     };
@@ -3362,8 +3384,8 @@ fn build_nextcloud_talk_snapshots(
 fn build_synology_chat_snapshots(
     descriptor: &ChannelRegistryDescriptor,
     config: &LoongClawConfig,
-    _runtime_dir: &Path,
-    _now_ms: u64,
+    runtime_dir: &Path,
+    now_ms: u64,
 ) -> Vec<ChannelStatusSnapshot> {
     let compiled = cfg!(feature = "channel-synology-chat");
     let http_policy = super::http::outbound_http_policy_from_config(config);
@@ -3387,6 +3409,8 @@ fn build_synology_chat_snapshots(
                     is_default_account,
                     default_account_source,
                     http_policy,
+                    runtime_dir,
+                    now_ms,
                 ),
                 Err(error) => build_invalid_synology_chat_snapshot(
                     descriptor,
@@ -3395,6 +3419,8 @@ fn build_synology_chat_snapshots(
                     is_default_account,
                     default_account_source,
                     error,
+                    runtime_dir,
+                    now_ms,
                 ),
             }
         })
@@ -4494,6 +4520,8 @@ fn build_synology_chat_snapshot_for_account(
     is_default_account: bool,
     default_account_source: ChannelDefaultAccountSelectionSource,
     http_policy: super::http::ChannelOutboundHttpPolicy,
+    runtime_dir: &Path,
+    now_ms: u64,
 ) -> ChannelStatusSnapshot {
     let mut send_issues = Vec::new();
 
@@ -4516,22 +4544,49 @@ fn build_synology_chat_snapshot_for_account(
             "disabled by synology_chat account configuration".to_owned(),
         )
     } else if !send_issues.is_empty() {
-        misconfigured_operation(SYNOLOGY_CHAT_SEND_OPERATION, send_issues)
+        misconfigured_operation(SYNOLOGY_CHAT_SEND_OPERATION, send_issues.clone())
     } else {
         ready_operation(SYNOLOGY_CHAT_SEND_OPERATION)
     };
+    let send_operation = attach_runtime(
+        ChannelPlatform::SynologyChat,
+        SYNOLOGY_CHAT_SEND_OPERATION,
+        send_operation,
+        resolved.account.id.as_str(),
+        resolved.account.label.as_str(),
+        runtime_dir,
+        now_ms,
+    );
+
+    let mut serve_issues = Vec::new();
+    if resolved.token().is_none() {
+        serve_issues.push("token is missing".to_owned());
+    }
 
     let serve_operation = if !compiled {
         unsupported_operation(
             SYNOLOGY_CHAT_SERVE_OPERATION,
             "binary built without feature `channel-synology-chat`".to_owned(),
         )
-    } else {
-        unsupported_operation(
+    } else if !resolved.enabled {
+        disabled_operation(
             SYNOLOGY_CHAT_SERVE_OPERATION,
-            "synology chat outgoing webhook serve is not implemented yet".to_owned(),
+            "disabled by synology_chat account configuration".to_owned(),
         )
+    } else if !serve_issues.is_empty() {
+        misconfigured_operation(SYNOLOGY_CHAT_SERVE_OPERATION, serve_issues)
+    } else {
+        ready_operation(SYNOLOGY_CHAT_SERVE_OPERATION)
     };
+    let serve_operation = attach_runtime(
+        ChannelPlatform::SynologyChat,
+        SYNOLOGY_CHAT_SERVE_OPERATION,
+        serve_operation,
+        resolved.account.id.as_str(),
+        resolved.account.label.as_str(),
+        runtime_dir,
+        now_ms,
+    );
 
     let mut notes = vec![
         format!("configured_account_id={}", resolved.configured_account_id),
@@ -4549,6 +4604,9 @@ fn build_synology_chat_snapshot_for_account(
     }
     if resolved.token().is_some() {
         notes.push("outgoing_webhook_token_configured=true".to_owned());
+    }
+    if resolved.incoming_url().is_some() {
+        notes.push("incoming_webhook_url_configured=true".to_owned());
     }
     if is_default_account {
         notes.push("default_account=true".to_owned());
@@ -6415,6 +6473,8 @@ fn build_invalid_synology_chat_snapshot(
     is_default_account: bool,
     default_account_source: ChannelDefaultAccountSelectionSource,
     error: String,
+    runtime_dir: &Path,
+    now_ms: u64,
 ) -> ChannelStatusSnapshot {
     let send_operation = if !compiled {
         unsupported_operation(
@@ -6424,17 +6484,32 @@ fn build_invalid_synology_chat_snapshot(
     } else {
         misconfigured_operation(SYNOLOGY_CHAT_SEND_OPERATION, vec![error.clone()])
     };
+    let send_operation = attach_runtime(
+        ChannelPlatform::SynologyChat,
+        SYNOLOGY_CHAT_SEND_OPERATION,
+        send_operation,
+        configured_account_id,
+        configured_account_id,
+        runtime_dir,
+        now_ms,
+    );
     let serve_operation = if !compiled {
         unsupported_operation(
             SYNOLOGY_CHAT_SERVE_OPERATION,
             "binary built without feature `channel-synology-chat`".to_owned(),
         )
     } else {
-        unsupported_operation(
-            SYNOLOGY_CHAT_SERVE_OPERATION,
-            "synology chat outgoing webhook serve is not implemented yet".to_owned(),
-        )
+        misconfigured_operation(SYNOLOGY_CHAT_SERVE_OPERATION, vec![error.clone()])
     };
+    let serve_operation = attach_runtime(
+        ChannelPlatform::SynologyChat,
+        SYNOLOGY_CHAT_SERVE_OPERATION,
+        serve_operation,
+        configured_account_id,
+        configured_account_id,
+        runtime_dir,
+        now_ms,
+    );
 
     let mut notes = vec![
         format!("configured_account_id={configured_account_id}"),
@@ -6655,6 +6730,8 @@ mod tests {
             resolve_channel_runtime_command_descriptor("lark").expect("lark runtime descriptor");
         let line =
             resolve_channel_runtime_command_descriptor("line").expect("line runtime descriptor");
+        let synology_chat = resolve_channel_runtime_command_descriptor("synology-chat")
+            .expect("synology chat runtime descriptor");
         let wecom =
             resolve_channel_runtime_command_descriptor("wecom").expect("wecom runtime descriptor");
         let webhook = resolve_channel_runtime_command_descriptor("webhook")
@@ -6671,6 +6748,13 @@ mod tests {
         assert_eq!(line.channel_id, "line");
         assert_eq!(line.platform, ChannelPlatform::Line);
         assert_eq!(line.serve_bootstrap_agent_id, "channel-line");
+
+        assert_eq!(synology_chat.channel_id, "synology-chat");
+        assert_eq!(synology_chat.platform, ChannelPlatform::SynologyChat);
+        assert_eq!(
+            synology_chat.serve_bootstrap_agent_id,
+            "channel-synology-chat"
+        );
 
         assert_eq!(wecom.channel_id, "wecom");
         assert_eq!(wecom.platform, ChannelPlatform::Wecom);
@@ -6736,10 +6820,14 @@ mod tests {
             .expect("telegram command family descriptor");
         let lark =
             resolve_channel_command_family_descriptor("lark").expect("lark family descriptor");
+        let synology_chat = resolve_channel_command_family_descriptor("synology-chat")
+            .expect("synology chat family descriptor");
         let telegram_catalog = resolve_channel_catalog_command_family_descriptor("telegram")
             .expect("telegram catalog family");
         let lark_catalog =
             resolve_channel_catalog_command_family_descriptor("lark").expect("lark catalog family");
+        let synology_catalog = resolve_channel_catalog_command_family_descriptor("synology-chat")
+            .expect("synology chat catalog family");
 
         assert_eq!(telegram.runtime.channel_id, "telegram");
         assert_eq!(telegram.runtime.platform, ChannelPlatform::Telegram);
@@ -6761,6 +6849,19 @@ mod tests {
         assert_eq!(
             lark.catalog.send.default_target_kind(),
             Some(lark.catalog.default_send_target_kind)
+        );
+
+        assert_eq!(synology_chat.runtime.channel_id, "synology-chat");
+        assert_eq!(
+            synology_chat.runtime.platform,
+            ChannelPlatform::SynologyChat
+        );
+        assert_eq!(synology_chat.catalog, synology_catalog);
+        assert_eq!(synology_chat.catalog.send.command, "synology-chat-send");
+        assert_eq!(synology_chat.catalog.serve.command, "synology-chat-serve");
+        assert_eq!(
+            synology_chat.catalog.send.default_target_kind(),
+            Some(synology_chat.catalog.default_send_target_kind)
         );
     }
 
@@ -7498,7 +7599,7 @@ mod tests {
                 .iter()
                 .map(|requirement| requirement.id)
                 .collect::<Vec<_>>(),
-            vec!["enabled", "token", "incoming_url", "allowed_user_ids"]
+            vec!["enabled", "token", "allowed_user_ids"]
         );
         assert_eq!(
             synology_chat.operations[0].requirements[1].default_env_var,
@@ -8147,7 +8248,7 @@ mod tests {
 
         assert_eq!(
             synology_chat.implementation_status,
-            ChannelCatalogImplementationStatus::ConfigBacked
+            ChannelCatalogImplementationStatus::RuntimeBacked
         );
         assert_eq!(synology_chat.selection_order, 165);
         assert_eq!(synology_chat.aliases, vec!["synologychat", "synochat"]);
@@ -8167,7 +8268,7 @@ mod tests {
         );
         assert_eq!(
             synology_chat.operations[1].availability,
-            ChannelCatalogOperationAvailability::Stub
+            ChannelCatalogOperationAvailability::Implemented
         );
     }
 
@@ -8578,7 +8679,7 @@ mod tests {
             .expect("synology chat surface");
         assert_eq!(
             synology_chat.catalog.implementation_status,
-            ChannelCatalogImplementationStatus::ConfigBacked
+            ChannelCatalogImplementationStatus::RuntimeBacked
         );
         assert_eq!(synology_chat.configured_accounts.len(), 1);
         assert_eq!(

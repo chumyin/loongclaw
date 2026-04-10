@@ -341,7 +341,7 @@ mod tests {
         assert_eq!(synology_chat.id, "synology-chat");
         assert_eq!(synology_chat.surface_label, "synology chat channel");
         assert_eq!(synology_chat.runtime_kind, ChannelRuntimeKind::Service);
-        assert_eq!(synology_chat.serve_subcommand, None);
+        assert_eq!(synology_chat.serve_subcommand, Some("synology-chat-serve"));
 
         let imessage = channel_descriptor("imessage").expect("imessage descriptor");
         assert_eq!(imessage.id, "imessage");

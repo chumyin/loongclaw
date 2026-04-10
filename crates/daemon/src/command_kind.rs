@@ -79,6 +79,7 @@ impl Commands {
             Self::MattermostSend { .. } => "mattermost_send",
             Self::NextcloudTalkSend { .. } => "nextcloud_talk_send",
             Self::SynologyChatSend { .. } => "synology_chat_send",
+            Self::SynologyChatServe { .. } => "synology_chat_serve",
             Self::IrcSend { .. } => "irc_send",
             Self::ImessageSend { .. } => "imessage_send",
             Self::NostrSend { .. } => "nostr_send",

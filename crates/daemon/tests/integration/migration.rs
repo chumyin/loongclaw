@@ -754,7 +754,14 @@ fn channel_registry_lists_registered_channel_ids() {
     assert_eq!(
         loongclaw_daemon::migration::channels::registered_channel_ids(),
         vec![
-            "telegram", "feishu", "matrix", "wecom", "line", "whatsapp", "webhook"
+            "telegram",
+            "feishu",
+            "matrix",
+            "wecom",
+            "line",
+            "whatsapp",
+            "webhook",
+            "synology-chat"
         ]
     );
 }
@@ -847,6 +854,13 @@ fn channel_registry_collects_ready_channel_candidates() {
     config.webhook.signing_secret = Some(loongclaw_contracts::SecretRef::Inline(
         "webhook-signing-secret".to_owned(),
     ));
+    config.synology_chat.enabled = true;
+    config.synology_chat.token = Some(loongclaw_contracts::SecretRef::Inline(
+        "synology-outgoing-token".to_owned(),
+    ));
+    config.synology_chat.incoming_url = Some(loongclaw_contracts::SecretRef::Inline(
+        "https://chat.example.test/webhook/incoming".to_owned(),
+    ));
 
     let previews = loongclaw_daemon::migration::channels::collect_channel_previews(
         &config,
@@ -862,7 +876,15 @@ fn channel_registry_collects_ready_channel_candidates() {
 
     assert_eq!(
         ids,
-        vec!["telegram", "feishu", "wecom", "line", "whatsapp", "webhook"]
+        vec![
+            "telegram",
+            "feishu",
+            "wecom",
+            "line",
+            "whatsapp",
+            "webhook",
+            "synology-chat"
+        ]
     );
     assert!(
         previews.iter().all(|preview| {

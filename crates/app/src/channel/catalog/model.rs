@@ -61,6 +61,13 @@ pub const WEBHOOK_RUNTIME_COMMAND_DESCRIPTOR: ChannelRuntimeCommandDescriptor =
         serve_bootstrap_agent_id: "channel-webhook",
     };
 
+pub const SYNOLOGY_CHAT_RUNTIME_COMMAND_DESCRIPTOR: ChannelRuntimeCommandDescriptor =
+    ChannelRuntimeCommandDescriptor {
+        channel_id: "synology-chat",
+        platform: ChannelPlatform::SynologyChat,
+        serve_bootstrap_agent_id: "channel-synology-chat",
+    };
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChannelCommandFamilyDescriptor {
     pub runtime: ChannelRuntimeCommandDescriptor,

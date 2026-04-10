@@ -69,7 +69,7 @@ needs.
 | Microsoft Teams | Config-backed outbound | Teams incoming webhook | `teams.enabled`, `teams.webhook_url` for sends; future bot runtime fields keep `teams.app_id`, `teams.app_password`, `teams.tenant_id`, `teams.allowed_conversation_ids` reserved for the planned serve path | `loong teams-send` |
 | Mattermost | Config-backed outbound | Mattermost REST API | `mattermost.enabled`, `mattermost.server_url`, `mattermost.bot_token` | `loong mattermost-send` |
 | Nextcloud Talk | Config-backed outbound | Nextcloud Talk bot API | `nextcloud_talk.enabled`, `nextcloud_talk.server_url`, `nextcloud_talk.shared_secret` | `loong nextcloud-talk-send` |
-| Synology Chat | Config-backed outbound | Synology Chat incoming webhook | `synology_chat.enabled`, `synology_chat.incoming_url` | `loong synology-chat-send` |
+| Synology Chat | Runtime-backed callback | Synology Chat incoming + outgoing webhooks | `synology_chat.enabled`, `synology_chat.incoming_url` for sends, `synology_chat.token` for outgoing-webhook serve | `loong synology-chat-send`, `loong synology-chat-serve` |
 | IRC | Config-backed outbound | IRC socket client | `irc.enabled`, `irc.server`, `irc.nickname`; `password` is optional, and `username`, `realname`, `channel_names` are optional operator hints | `loong irc-send` |
 | iMessage / BlueBubbles | Config-backed outbound | BlueBubbles bridge REST API | `imessage.enabled`, `imessage.bridge_url`, `imessage.bridge_token` | `loong imessage-send` |
 | Nostr | Config-backed outbound | relay publish over WebSocket | `nostr.enabled`, `nostr.relay_urls`, `nostr.private_key`; `allowed_pubkeys` stays reserved for the planned inbound path | `loong nostr-send` |
@@ -486,17 +486,17 @@ Nextcloud Talk is shipped through the official bot API send surface:
 
 ### Synology Chat
 
-Synology Chat is shipped through the incoming webhook send surface:
+Synology Chat is shipped through the incoming webhook send surface and the
+outgoing webhook callback runtime:
 
 - configure `synology_chat.incoming_url`
+- configure `synology_chat.token` for outgoing webhook callbacks
 - use `synology-chat-send` with no explicit target to post into the webhook's
   bound room
 - optionally pass a numeric user id target when the operator wants the webhook
   to direct-message a specific Synology Chat user
-- `synology_chat.token` is reserved for a future outbound webhook serve
-  contract and is not required for send readiness today
-- `synology-chat-serve` remains planned until LoongClaw owns the outbound
-  webhook callback contract
+- use `synology-chat-serve --bind ... [--path ...]` to receive outgoing webhook
+  callbacks and reply inline with the provider output
 
 ### IRC
 
