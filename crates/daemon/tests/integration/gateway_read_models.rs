@@ -14,7 +14,8 @@ fn unique_temp_dir(prefix: &str) -> PathBuf {
 fn write_gateway_test_config(root: &std::path::Path) -> PathBuf {
     fs::create_dir_all(root).expect("create gateway test root");
 
-    let config = mvp::config::LoongClawConfig::default();
+    let mut config = mvp::config::LoongClawConfig::default();
+    config.audit.mode = mvp::config::AuditMode::InMemory;
     let config_path = root.join("loongclaw.toml");
     let config_path_text = config_path
         .to_str()
@@ -417,6 +418,14 @@ fn gateway_read_model_runtime_snapshot_embeds_inventory_and_tool_summary() {
         encoded["tools"]["tool_calling"]["structured_tool_schema_enabled"],
         true
     );
+    assert_eq!(
+        encoded["runtime_diagnostics"]["tool_workspace"]["binding"],
+        "cwd_fallback"
+    );
+    assert_eq!(
+        encoded["runtime_diagnostics"]["audit_integrity"]["availability"],
+        "in_memory"
+    );
 
     fs::remove_dir_all(&root).ok();
 }
@@ -498,6 +507,21 @@ fn gateway_read_model_operator_summary_keeps_owner_control_and_runtime_rollups()
     assert_eq!(
         summary.runtime.tool_calling.availability,
         runtime_snapshot.tools.tool_calling.availability
+    );
+    assert_eq!(
+        summary.runtime.runtime_diagnostics.tool_workspace.binding,
+        runtime_snapshot.runtime_diagnostics.tool_workspace.binding
+    );
+    assert_eq!(
+        summary
+            .runtime
+            .runtime_diagnostics
+            .audit_integrity
+            .availability,
+        runtime_snapshot
+            .runtime_diagnostics
+            .audit_integrity
+            .availability
     );
     assert_eq!(
         encoded["control_surface"]["base_url"],

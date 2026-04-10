@@ -62,6 +62,33 @@ fn runtime_snapshot_fixture(
                 reason: "no runtime-visible tools are enabled".to_owned(),
             },
         },
+        runtime_diagnostics:
+            loongclaw_daemon::gateway::read_models::GatewayRuntimeDiagnosticsReadModel {
+                tool_calling: loongclaw_daemon::RuntimeSnapshotToolCallingState {
+                    availability: "inactive".to_owned(),
+                    structured_tool_schema_enabled: true,
+                    effective_tool_schema_mode: "enabled_with_downgrade".to_owned(),
+                    active_model: "gpt-4.1-mini".to_owned(),
+                    reason: "no runtime-visible tools are enabled".to_owned(),
+                },
+                tool_workspace: loongclaw_daemon::ToolWorkspaceBindingState {
+                        binding: "cwd_fallback".to_owned(),
+                        configured_file_root: None,
+                        effective_file_root: ".".to_owned(),
+                        current_working_directory: None,
+                        reason:
+                            "runtime tools resolve relative to the current working directory because tools.file_root is unset"
+                                .to_owned(),
+                    },
+                audit_integrity: loongclaw_daemon::AuditIntegrityState {
+                        availability: "in_memory".to_owned(),
+                        mode: "in_memory".to_owned(),
+                        journal_path: String::new(),
+                        reason:
+                            "audit integrity verification is unavailable while audit.mode=in_memory"
+                                .to_owned(),
+                    },
+            },
         runtime_plugins: serde_json::json!({}),
         external_skills: serde_json::json!({}),
     }

@@ -819,6 +819,26 @@ async fn gateway_owner_state_local_client_discovers_owner_reads_summary_and_stop
             .as_str()
             .unwrap_or_default()
     );
+    assert_eq!(
+        operator_summary
+            .runtime
+            .runtime_diagnostics
+            .tool_workspace
+            .binding,
+        runtime_snapshot["runtime_diagnostics"]["tool_workspace"]["binding"]
+            .as_str()
+            .unwrap_or_default()
+    );
+    assert_eq!(
+        operator_summary
+            .runtime
+            .runtime_diagnostics
+            .audit_integrity
+            .availability,
+        runtime_snapshot["runtime_diagnostics"]["audit_integrity"]["availability"]
+            .as_str()
+            .unwrap_or_default()
+    );
 
     let stop = client.stop().await.expect("request gateway stop");
     assert_eq!(stop.outcome, GatewayStopResponseOutcome::Requested);

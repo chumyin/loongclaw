@@ -1,6 +1,8 @@
+use serde::{Deserialize, Serialize};
+
 use crate::mvp;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RuntimeSnapshotToolCallingState {
     pub availability: String,
     pub structured_tool_schema_enabled: bool,

@@ -119,6 +119,7 @@ mod onboard_types;
 mod onboard_web_search;
 mod onboarding_model_policy;
 pub mod operator_prompt;
+mod operator_runtime_diagnostics;
 pub mod personalize_cli;
 mod plugin_bridge_account_summary;
 pub mod plugins_cli;
@@ -152,17 +153,15 @@ pub(crate) use channel_bridge_render::{
     render_line_safe_optional_text_value, render_line_safe_text_value, render_line_safe_text_values,
 };
 pub use gateway::read_models::{ChannelsCliJsonPayload, ChannelsCliJsonSchema};
-pub use loongclaw_spec::programmatic::{
-    acquire_programmatic_circuit_slot, record_programmatic_circuit_outcome,
-};
+#[rustfmt::skip]
+pub use loongclaw_spec::programmatic::{acquire_programmatic_circuit_slot, record_programmatic_circuit_outcome};
 pub use observability::{debug_variant_name, init_tracing, summarize_error};
+use operator_runtime_diagnostics::collect_runtime_operator_diagnostics_state;
+#[rustfmt::skip]
+pub use operator_runtime_diagnostics::{AuditIntegrityState, RuntimeOperatorDiagnosticsState, ToolWorkspaceBindingState};
 pub use runtime_snapshot_render::render_runtime_snapshot_text;
-pub(crate) use runtime_snapshot_render::{
-    runtime_snapshot_acp_json, runtime_snapshot_context_engine_json,
-    runtime_snapshot_external_skills_json, runtime_snapshot_memory_system_json,
-    runtime_snapshot_provider_json, runtime_snapshot_runtime_plugins_json,
-    runtime_snapshot_tool_runtime_json,
-};
+#[rustfmt::skip]
+pub(crate) use runtime_snapshot_render::{runtime_snapshot_acp_json, runtime_snapshot_context_engine_json, runtime_snapshot_external_skills_json, runtime_snapshot_memory_system_json, runtime_snapshot_provider_json, runtime_snapshot_runtime_plugins_json, runtime_snapshot_tool_runtime_json};
 pub use session_cli::{
     SESSION_SEARCH_ARTIFACT_JSON_SCHEMA_VERSION, SessionSearchArtifactDocument,
     SessionSearchArtifactResult, SessionSearchArtifactSchema, collect_session_search_artifact,
@@ -173,9 +172,7 @@ use task_execution::execute_daemon_task_with_supervisor;
 pub use task_execution::{DaemonTaskExecution, run_demo, run_task_cli};
 pub use tlon_cli::TLON_SEND_CLI_SPEC;
 use tlon_cli::{default_tlon_send_target_kind, parse_tlon_send_target_kind};
-use tool_calling_readiness::{
-    RuntimeSnapshotToolCallingState, collect_runtime_snapshot_tool_calling_state,
-};
+pub use tool_calling_readiness::RuntimeSnapshotToolCallingState;
 pub use trajectory_cli::{
     TRAJECTORY_EXPORT_ARTIFACT_JSON_SCHEMA_VERSION, TrajectoryExportArtifactDocument,
     TrajectoryExportArtifactSchema, TrajectoryExportEvent, TrajectoryExportSessionSummary,
@@ -2331,7 +2328,7 @@ pub struct RuntimeSnapshotCliState {
     pub visible_tool_names: Vec<String>,
     pub capability_snapshot: String,
     pub capability_snapshot_sha256: String,
-    pub tool_calling: RuntimeSnapshotToolCallingState,
+    pub runtime_diagnostics: RuntimeOperatorDiagnosticsState,
     pub runtime_plugins: RuntimeSnapshotRuntimePluginsState,
     pub external_skills: RuntimeSnapshotExternalSkillsState,
     pub restore_spec: RuntimeSnapshotRestoreSpec,
@@ -2590,7 +2587,8 @@ fn collect_runtime_snapshot_cli_state_from_parts(
     let capability_snapshot = mvp::tools::capability_snapshot_with_config(&snapshot_tool_runtime);
     let capability_snapshot_sha256 =
         runtime_snapshot_tool_digest(&visible_tool_names, &capability_snapshot)?;
-    let tool_calling = collect_runtime_snapshot_tool_calling_state(config, visible_tool_count);
+    let runtime_diagnostics =
+        collect_runtime_operator_diagnostics_state(config, visible_tool_count);
     let runtime_plugins = collect_runtime_snapshot_runtime_plugins_state(config);
     let restore_spec = build_runtime_snapshot_restore_spec(config, &external_skills);
 
@@ -2607,7 +2605,7 @@ fn collect_runtime_snapshot_cli_state_from_parts(
         visible_tool_names,
         capability_snapshot,
         capability_snapshot_sha256,
-        tool_calling,
+        runtime_diagnostics,
         runtime_plugins,
         external_skills,
         restore_spec,

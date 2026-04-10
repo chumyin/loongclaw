@@ -7,6 +7,7 @@ use serde_json::Value;
 use crate::CHANNELS_CLI_JSON_LEGACY_VIEWS;
 use crate::CHANNELS_CLI_JSON_SCHEMA_VERSION;
 use crate::RUNTIME_SNAPSHOT_CLI_JSON_SCHEMA_VERSION;
+use crate::RuntimeOperatorDiagnosticsState;
 use crate::RuntimeSnapshotCliState;
 use crate::mvp;
 use crate::plugin_bridge_account_summary::plugin_bridge_account_summary;
@@ -237,6 +238,13 @@ pub struct GatewayRuntimeSnapshotToolsReadModel {
     pub tool_calling: GatewayToolCallingReadModel,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GatewayRuntimeDiagnosticsReadModel {
+    pub tool_calling: crate::RuntimeSnapshotToolCallingState,
+    pub tool_workspace: crate::ToolWorkspaceBindingState,
+    pub audit_integrity: crate::AuditIntegrityState,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct GatewayRuntimeSnapshotReadModel {
     pub config: String,
@@ -248,6 +256,7 @@ pub struct GatewayRuntimeSnapshotReadModel {
     pub channels: GatewayRuntimeSnapshotChannelsReadModel,
     pub tool_runtime: Value,
     pub tools: GatewayRuntimeSnapshotToolsReadModel,
+    pub runtime_diagnostics: GatewayRuntimeDiagnosticsReadModel,
     pub runtime_plugins: Value,
     pub external_skills: Value,
 }
@@ -296,6 +305,7 @@ pub struct GatewayOperatorRuntimeSummaryReadModel {
     pub active_provider_profile_id: Option<String>,
     pub active_provider_label: Option<String>,
     pub tool_calling: GatewayToolCallingReadModel,
+    pub runtime_diagnostics: GatewayRuntimeDiagnosticsReadModel,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -455,7 +465,7 @@ pub fn build_runtime_snapshot_read_model(
     let visible_tool_names = snapshot.visible_tool_names.clone();
     let capability_snapshot_sha256 = snapshot.capability_snapshot_sha256.clone();
     let capability_snapshot = snapshot.capability_snapshot.clone();
-    let tool_calling = build_tool_calling_read_model(&snapshot.tool_calling);
+    let tool_calling = build_tool_calling_read_model(&snapshot.runtime_diagnostics.tool_calling);
     let tools = GatewayRuntimeSnapshotToolsReadModel {
         visible_tool_count,
         visible_tool_names,
@@ -463,6 +473,7 @@ pub fn build_runtime_snapshot_read_model(
         capability_snapshot,
         tool_calling,
     };
+    let runtime_diagnostics = build_runtime_diagnostics_read_model(&snapshot.runtime_diagnostics);
     let runtime_plugins = crate::runtime_snapshot_runtime_plugins_json(&snapshot.runtime_plugins);
     let external_skills = crate::runtime_snapshot_external_skills_json(&snapshot.external_skills);
 
@@ -476,6 +487,7 @@ pub fn build_runtime_snapshot_read_model(
         channels,
         tool_runtime,
         tools,
+        runtime_diagnostics,
         runtime_plugins,
         external_skills,
     }
@@ -903,6 +915,7 @@ fn build_operator_runtime_summary_read_model(
         json_string_field(&runtime_snapshot.provider, "active_profile_id");
     let active_provider_label = json_string_field(&runtime_snapshot.provider, "active_label");
     let tool_calling = runtime_snapshot.tools.tool_calling.clone();
+    let runtime_diagnostics = runtime_snapshot.runtime_diagnostics.clone();
 
     GatewayOperatorRuntimeSummaryReadModel {
         enabled_channel_ids,
@@ -912,6 +925,17 @@ fn build_operator_runtime_summary_read_model(
         active_provider_profile_id,
         active_provider_label,
         tool_calling,
+        runtime_diagnostics,
+    }
+}
+
+fn build_runtime_diagnostics_read_model(
+    state: &RuntimeOperatorDiagnosticsState,
+) -> GatewayRuntimeDiagnosticsReadModel {
+    GatewayRuntimeDiagnosticsReadModel {
+        tool_calling: state.tool_calling.clone(),
+        tool_workspace: state.tool_workspace.clone(),
+        audit_integrity: state.audit_integrity.clone(),
     }
 }
 
