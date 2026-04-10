@@ -1337,9 +1337,14 @@ fn canonicalize_whatsapp_channel_for_encoding(config: &mut WhatsappChannelConfig
 
 fn canonicalize_mattermost_channel_for_encoding(config: &mut MattermostChannelConfig) {
     canonicalize_env_secret_reference(&mut config.bot_token, &mut config.bot_token_env);
+    canonicalize_env_secret_reference(&mut config.outgoing_token, &mut config.outgoing_token_env);
 
     for account in config.accounts.values_mut() {
         canonicalize_env_secret_reference(&mut account.bot_token, &mut account.bot_token_env);
+        canonicalize_env_secret_reference(
+            &mut account.outgoing_token,
+            &mut account.outgoing_token_env,
+        );
     }
 }
 

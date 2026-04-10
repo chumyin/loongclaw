@@ -11,6 +11,7 @@ use super::types::{
 mod feishu;
 mod line;
 mod matrix;
+mod mattermost;
 mod plugin_bridge;
 mod telegram;
 mod webhook;
@@ -66,7 +67,7 @@ struct ChannelAdapter {
     apply_default_env_bindings: fn(&mut mvp::config::LoongClawConfig) -> Vec<String>,
 }
 
-const REGISTRY: [ChannelAdapter; 7] = [
+const REGISTRY: [ChannelAdapter; 8] = [
     ChannelAdapter {
         id: telegram::ID,
         collect_preview: telegram::collect_preview,
@@ -96,6 +97,16 @@ const REGISTRY: [ChannelAdapter; 7] = [
         collect_preflight_checks: line::collect_preflight_checks,
         collect_doctor_checks: line::collect_doctor_checks,
         apply_default_env_bindings: line::apply_default_env_bindings,
+    },
+    ChannelAdapter {
+        id: mattermost::ID,
+        collect_preview: mattermost::collect_preview,
+        apply: mattermost::apply,
+        readiness_state: mattermost::readiness_state,
+        apply_import_readiness: mattermost::apply_import_readiness,
+        collect_preflight_checks: mattermost::collect_preflight_checks,
+        collect_doctor_checks: mattermost::collect_doctor_checks,
+        apply_default_env_bindings: mattermost::apply_default_env_bindings,
     },
     ChannelAdapter {
         id: matrix::ID,

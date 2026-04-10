@@ -754,7 +754,14 @@ fn channel_registry_lists_registered_channel_ids() {
     assert_eq!(
         loongclaw_daemon::migration::channels::registered_channel_ids(),
         vec![
-            "telegram", "feishu", "matrix", "wecom", "line", "whatsapp", "webhook"
+            "telegram",
+            "feishu",
+            "matrix",
+            "wecom",
+            "line",
+            "whatsapp",
+            "webhook",
+            "mattermost"
         ]
     );
 }
@@ -814,6 +821,15 @@ fn channel_registry_collects_ready_channel_candidates() {
     config.feishu.app_secret = Some(loongclaw_contracts::SecretRef::Inline(
         "feishu-secret".to_owned(),
     ));
+    config.mattermost.enabled = true;
+    config.mattermost.server_url = Some("https://mattermost.example.test".to_owned());
+    config.mattermost.bot_token = Some(loongclaw_contracts::SecretRef::Inline(
+        "mattermost-bot-token".to_owned(),
+    ));
+    config.mattermost.outgoing_token = Some(loongclaw_contracts::SecretRef::Inline(
+        "mattermost-outgoing-token".to_owned(),
+    ));
+    config.mattermost.allowed_channel_ids = vec!["channel-town-square".to_owned()];
     config.line.enabled = true;
     config.line.channel_access_token = Some(loongclaw_contracts::SecretRef::Inline(
         "line-access-token".to_owned(),
@@ -862,7 +878,15 @@ fn channel_registry_collects_ready_channel_candidates() {
 
     assert_eq!(
         ids,
-        vec!["telegram", "feishu", "wecom", "line", "whatsapp", "webhook"]
+        vec![
+            "telegram",
+            "feishu",
+            "wecom",
+            "line",
+            "whatsapp",
+            "webhook",
+            "mattermost"
+        ]
     );
     assert!(
         previews.iter().all(|preview| {

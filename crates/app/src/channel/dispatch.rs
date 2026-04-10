@@ -140,6 +140,7 @@ use crate::config::ResolvedWhatsappChannelConfig;
     feature = "channel-telegram",
     feature = "channel-feishu",
     feature = "channel-line",
+    feature = "channel-mattermost",
     feature = "channel-matrix",
     feature = "channel-wecom",
     feature = "channel-whatsapp",
@@ -154,6 +155,7 @@ use crate::conversation::{
     feature = "channel-telegram",
     feature = "channel-feishu",
     feature = "channel-line",
+    feature = "channel-mattermost",
     feature = "channel-matrix",
     feature = "channel-wecom",
     feature = "channel-whatsapp",
@@ -169,6 +171,7 @@ pub(super) use super::commands::{
     feature = "channel-telegram",
     feature = "channel-feishu",
     feature = "channel-line",
+    feature = "channel-mattermost",
     feature = "channel-matrix",
     feature = "channel-wecom",
     feature = "channel-whatsapp",
@@ -211,6 +214,7 @@ use super::runtime::state;
     feature = "channel-telegram",
     feature = "channel-feishu",
     feature = "channel-line",
+    feature = "channel-mattermost",
     feature = "channel-matrix",
     feature = "channel-nextcloud-talk",
     feature = "channel-wecom",
@@ -221,6 +225,8 @@ use super::runtime::turn_feedback::ChannelTurnFeedbackCapture;
 #[cfg(any(
     feature = "channel-telegram",
     feature = "channel-feishu",
+    feature = "channel-line",
+    feature = "channel-mattermost",
     feature = "channel-matrix",
     feature = "channel-wecom",
     feature = "channel-whatsapp",
@@ -1918,6 +1924,62 @@ pub async fn run_mattermost_send(
     }
 }
 
+#[allow(clippy::print_stdout)] // CLI startup banner
+pub async fn run_mattermost_channel(
+    config_path: Option<&str>,
+    account_id: Option<&str>,
+    bind_override: Option<&str>,
+    path_override: Option<&str>,
+) -> CliResult<()> {
+    if !cfg!(feature = "channel-mattermost") {
+        return Err(
+            "mattermost channel is disabled (enable feature `channel-mattermost`)".to_owned(),
+        );
+    }
+
+    #[cfg(not(feature = "channel-mattermost"))]
+    {
+        let _ = (config_path, account_id, bind_override, path_override);
+        return Err(
+            "mattermost channel is disabled (enable feature `channel-mattermost`)".to_owned(),
+        );
+    }
+
+    #[cfg(feature = "channel-mattermost")]
+    {
+        let context = load_mattermost_command_context(config_path, account_id)?;
+        mattermost::run_mattermost_channel_with_context(
+            context,
+            bind_override,
+            path_override,
+            ChannelServeStopHandle::new(),
+            true,
+        )
+        .await
+    }
+}
+
+#[cfg(feature = "channel-mattermost")]
+pub async fn run_mattermost_channel_with_stop(
+    resolved_path: PathBuf,
+    config: LoongClawConfig,
+    account_id: Option<&str>,
+    bind_override: Option<&str>,
+    path_override: Option<&str>,
+    stop: ChannelServeStopHandle,
+    initialize_runtime_environment: bool,
+) -> CliResult<()> {
+    let context = build_mattermost_command_context(resolved_path, config, account_id)?;
+    mattermost::run_mattermost_channel_with_context(
+        context,
+        bind_override,
+        path_override,
+        stop,
+        initialize_runtime_environment,
+    )
+    .await
+}
+
 #[allow(clippy::print_stdout)] // CLI output
 pub async fn run_nextcloud_talk_send(
     config_path: Option<&str>,
@@ -3050,6 +3112,46 @@ pub(crate) async fn send_text_to_known_session(
                 })
             }
         }
+        KnownChannelSessionSendTarget::Mattermost {
+            account_id,
+            channel_id,
+        } => {
+            #[cfg(not(feature = "channel-mattermost"))]
+            {
+                let _ = (config, account_id, channel_id, text);
+                Err(
+                    "mattermost channel is disabled (enable feature `channel-mattermost`)"
+                        .to_owned(),
+                )
+            }
+
+            #[cfg(feature = "channel-mattermost")]
+            {
+                let resolved = config
+                    .mattermost
+                    .resolve_account_for_session_account_id(account_id.as_deref())?;
+                if !resolved.enabled {
+                    return Err(
+                        "sessions_send_channel_disabled: mattermost channel is disabled by config"
+                            .to_owned(),
+                    );
+                }
+
+                mattermost::run_mattermost_send(
+                    &resolved,
+                    ChannelOutboundTargetKind::Conversation,
+                    channel_id.as_str(),
+                    text,
+                    super::http::outbound_http_policy_from_config(config),
+                )
+                .await?;
+
+                Ok(ChannelSendReceipt {
+                    channel: "mattermost",
+                    target: channel_id,
+                })
+            }
+        }
         KnownChannelSessionSendTarget::Matrix {
             account_id,
             room_id,
@@ -3180,6 +3282,7 @@ pub(crate) async fn send_text_to_known_session(
     feature = "channel-telegram",
     feature = "channel-feishu",
     feature = "channel-line",
+    feature = "channel-mattermost",
     feature = "channel-matrix",
     feature = "channel-wecom",
     feature = "channel-whatsapp",
@@ -3197,6 +3300,7 @@ pub(crate) async fn send_text_to_known_session(
     feature = "channel-telegram",
     feature = "channel-feishu",
     feature = "channel-line",
+    feature = "channel-mattermost",
     feature = "channel-matrix",
     feature = "channel-nextcloud-talk",
     feature = "channel-wecom",
@@ -3238,6 +3342,8 @@ pub(super) async fn process_inbound_with_runtime_and_feedback<R: ConversationRun
 #[cfg(any(
     feature = "channel-telegram",
     feature = "channel-feishu",
+    feature = "channel-line",
+    feature = "channel-mattermost",
     feature = "channel-matrix",
     feature = "channel-wecom",
     feature = "channel-whatsapp",
@@ -3348,6 +3454,8 @@ pub(crate) async fn process_inbound_with_provider(
 #[cfg(any(
     feature = "channel-telegram",
     feature = "channel-feishu",
+    feature = "channel-line",
+    feature = "channel-mattermost",
     feature = "channel-matrix",
     feature = "channel-wecom",
     feature = "channel-whatsapp",
@@ -3399,6 +3507,7 @@ fn resolve_channel_acp_turn_hints(
             })
         }
         ChannelPlatform::Line => Ok(ChannelResolvedAcpTurnHints::default()),
+        ChannelPlatform::Mattermost => Ok(ChannelResolvedAcpTurnHints::default()),
         ChannelPlatform::Matrix => {
             let resolved = config
                 .matrix
@@ -3431,6 +3540,7 @@ fn resolve_channel_acp_turn_hints(
     feature = "channel-telegram",
     feature = "channel-feishu",
     feature = "channel-line",
+    feature = "channel-mattermost",
     feature = "channel-matrix",
     feature = "channel-nextcloud-talk",
     feature = "channel-wecom",
@@ -3449,6 +3559,7 @@ fn channel_message_acp_turn_provenance(message: &ChannelInboundMessage) -> AcpTu
     feature = "channel-telegram",
     feature = "channel-feishu",
     feature = "channel-line",
+    feature = "channel-mattermost",
     feature = "channel-matrix",
     feature = "channel-nextcloud-talk",
     feature = "channel-wecom",
@@ -3509,6 +3620,7 @@ pub(super) fn channel_message_ingress_context(
     feature = "channel-telegram",
     feature = "channel-feishu",
     feature = "channel-line",
+    feature = "channel-mattermost",
     feature = "channel-matrix",
     feature = "channel-wecom",
     feature = "channel-whatsapp",
@@ -3525,6 +3637,7 @@ fn trimmed_non_empty(value: Option<&str>) -> Option<String> {
     feature = "channel-telegram",
     feature = "channel-feishu",
     feature = "channel-line",
+    feature = "channel-mattermost",
     feature = "channel-matrix",
     feature = "channel-wecom",
     feature = "channel-whatsapp",

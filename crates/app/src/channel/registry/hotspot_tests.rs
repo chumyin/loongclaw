@@ -505,7 +505,7 @@ fn channel_inventory_exposes_grouped_channel_surfaces() {
         .expect("mattermost surface");
     assert_eq!(
         mattermost.catalog.implementation_status,
-        ChannelCatalogImplementationStatus::ConfigBacked
+        ChannelCatalogImplementationStatus::RuntimeBacked
     );
     assert_eq!(mattermost.configured_accounts.len(), 1);
     assert_eq!(

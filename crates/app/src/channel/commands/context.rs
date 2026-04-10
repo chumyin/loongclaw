@@ -8,6 +8,8 @@ use crate::config::ResolvedFeishuChannelConfig;
 use crate::config::ResolvedLineChannelConfig;
 #[cfg(feature = "channel-matrix")]
 use crate::config::ResolvedMatrixChannelConfig;
+#[cfg(feature = "channel-mattermost")]
+use crate::config::ResolvedMattermostChannelConfig;
 #[cfg(feature = "channel-telegram")]
 use crate::config::ResolvedTelegramChannelConfig;
 #[cfg(feature = "channel-webhook")]
@@ -69,6 +71,17 @@ impl ChannelResolvedRuntimeAccount for ResolvedFeishuChannelConfig {
 
 #[cfg(feature = "channel-line")]
 impl ChannelResolvedRuntimeAccount for ResolvedLineChannelConfig {
+    fn runtime_account_id(&self) -> &str {
+        self.account.id.as_str()
+    }
+
+    fn runtime_account_label(&self) -> &str {
+        self.account.label.as_str()
+    }
+}
+
+#[cfg(feature = "channel-mattermost")]
+impl ChannelResolvedRuntimeAccount for ResolvedMattermostChannelConfig {
     fn runtime_account_id(&self) -> &str {
         self.account.id.as_str()
     }

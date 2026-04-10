@@ -77,6 +77,7 @@ impl Commands {
             Self::SignalSend { .. } => "signal_send",
             Self::TwitchSend { .. } => "twitch_send",
             Self::MattermostSend { .. } => "mattermost_send",
+            Self::MattermostServe { .. } => "mattermost_serve",
             Self::NextcloudTalkSend { .. } => "nextcloud_talk_send",
             Self::SynologyChatSend { .. } => "synology_chat_send",
             Self::IrcSend { .. } => "irc_send",

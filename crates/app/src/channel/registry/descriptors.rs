@@ -196,13 +196,15 @@ pub(super) const TWITCH_CHANNEL_REGISTRY_DESCRIPTOR: ChannelRegistryDescriptor =
 pub(super) const MATTERMOST_CHANNEL_REGISTRY_DESCRIPTOR: ChannelRegistryDescriptor =
     ChannelRegistryDescriptor {
         id: "mattermost",
-        runtime: None,
+        runtime: Some(ChannelRuntimeDescriptor {
+            family: MATTERMOST_COMMAND_FAMILY_DESCRIPTOR,
+        }),
         snapshot_builder: Some(build_mattermost_snapshots),
         selection_order: 150,
         selection_label: "self-hosted workspace bot",
-        blurb: "Shipped Mattermost outbound surface with config-backed post sends; inbound websocket serve support remains planned.",
-        implementation_status: ChannelCatalogImplementationStatus::ConfigBacked,
-        capabilities: CONFIG_BACKED_SEND_CHANNEL_CAPABILITIES,
+        blurb: "Shipped Mattermost surface with REST post sends and outgoing webhook callback runtime support.",
+        implementation_status: ChannelCatalogImplementationStatus::RuntimeBacked,
+        capabilities: MATTERMOST_CAPABILITIES,
         label: "Mattermost",
         aliases: &["mm"],
         transport: "mattermost_rest_api",

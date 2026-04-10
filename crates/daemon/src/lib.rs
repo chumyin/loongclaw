@@ -1349,6 +1349,17 @@ pub enum Commands {
         #[arg(long)]
         text: String,
     },
+    /// Run Mattermost outgoing webhook callback server and auto-reply via provider
+    MattermostServe {
+        #[arg(long)]
+        config: Option<String>,
+        #[arg(long)]
+        account: Option<String>,
+        #[arg(long)]
+        bind: String,
+        #[arg(long)]
+        path: Option<String>,
+    },
     /// Send one Nextcloud Talk bot room message
     NextcloudTalkSend {
         #[arg(long)]
@@ -5127,6 +5138,11 @@ pub const MATTERMOST_SEND_CLI_SPEC: ChannelSendCliSpec = ChannelSendCliSpec {
     run: run_mattermost_send_cli_impl,
 };
 
+pub const MATTERMOST_SERVE_CLI_SPEC: ChannelServeCliSpec = ChannelServeCliSpec {
+    family: mvp::channel::MATTERMOST_COMMAND_FAMILY_DESCRIPTOR,
+    run: run_mattermost_serve_cli_impl,
+};
+
 pub const NEXTCLOUD_TALK_SEND_CLI_SPEC: ChannelSendCliSpec = ChannelSendCliSpec {
     family: mvp::channel::NEXTCLOUD_TALK_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
     run: run_nextcloud_talk_send_cli_impl,
@@ -5431,6 +5447,19 @@ pub fn run_mattermost_send_cli_impl(args: ChannelSendCliArgs<'_>) -> ChannelCliC
             args.target_kind,
             args.text,
         )
+        .await
+    })
+}
+
+pub fn run_mattermost_serve_cli_impl(args: ChannelServeCliArgs<'_>) -> ChannelCliCommandFuture<'_> {
+    Box::pin(async move {
+        let _ = args.once;
+        with_graceful_shutdown(mvp::channel::run_mattermost_channel(
+            args.config_path,
+            args.account,
+            args.bind_override,
+            args.path_override,
+        ))
         .await
     })
 }

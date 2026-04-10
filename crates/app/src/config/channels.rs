@@ -65,6 +65,7 @@ pub(crate) const LINE_CHANNEL_SECRET_ENV: &str = "LINE_CHANNEL_SECRET";
 pub(crate) const MATRIX_ACCESS_TOKEN_ENV: &str = "MATRIX_ACCESS_TOKEN";
 pub(crate) const MATTERMOST_SERVER_URL_ENV: &str = "MATTERMOST_SERVER_URL";
 pub(crate) const MATTERMOST_BOT_TOKEN_ENV: &str = "MATTERMOST_BOT_TOKEN";
+pub(crate) const MATTERMOST_OUTGOING_TOKEN_ENV: &str = "MATTERMOST_OUTGOING_TOKEN";
 pub(crate) const NEXTCLOUD_TALK_SERVER_URL_ENV: &str = "NEXTCLOUD_TALK_SERVER_URL";
 pub(crate) const NEXTCLOUD_TALK_SHARED_SECRET_ENV: &str = "NEXTCLOUD_TALK_SHARED_SECRET";
 pub(crate) const SYNOLOGY_CHAT_TOKEN_ENV: &str = "SYNOLOGY_CHAT_TOKEN";
@@ -1077,6 +1078,12 @@ pub struct MattermostAccountConfig {
     pub bot_token: Option<SecretRef>,
     #[serde(default)]
     pub bot_token_env: Option<String>,
+    #[serde(default)]
+    pub outgoing_token: Option<SecretRef>,
+    #[serde(default)]
+    pub outgoing_token_env: Option<String>,
+    #[serde(default)]
+    pub allowed_channel_ids: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1089,6 +1096,9 @@ pub struct ResolvedMattermostChannelConfig {
     pub server_url_env: Option<String>,
     pub bot_token: Option<SecretRef>,
     pub bot_token_env: Option<String>,
+    pub outgoing_token: Option<SecretRef>,
+    pub outgoing_token_env: Option<String>,
+    pub allowed_channel_ids: Vec<String>,
 }
 
 impl ResolvedMattermostChannelConfig {
@@ -1098,6 +1108,13 @@ impl ResolvedMattermostChannelConfig {
 
     pub fn bot_token(&self) -> Option<String> {
         resolve_secret_with_legacy_env(self.bot_token.as_ref(), self.bot_token_env.as_deref())
+    }
+
+    pub fn outgoing_token(&self) -> Option<String> {
+        resolve_secret_with_legacy_env(
+            self.outgoing_token.as_ref(),
+            self.outgoing_token_env.as_deref(),
+        )
     }
 }
 
@@ -1704,6 +1721,12 @@ pub struct MattermostChannelConfig {
     pub bot_token: Option<SecretRef>,
     #[serde(default)]
     pub bot_token_env: Option<String>,
+    #[serde(default)]
+    pub outgoing_token: Option<SecretRef>,
+    #[serde(default)]
+    pub outgoing_token_env: Option<String>,
+    #[serde(default)]
+    pub allowed_channel_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub accounts: BTreeMap<String, MattermostAccountConfig>,
 }
@@ -2429,6 +2452,9 @@ impl Default for MattermostChannelConfig {
             server_url_env: Some(MATTERMOST_SERVER_URL_ENV.to_owned()),
             bot_token: None,
             bot_token_env: Some(MATTERMOST_BOT_TOKEN_ENV.to_owned()),
+            outgoing_token: None,
+            outgoing_token_env: Some(MATTERMOST_OUTGOING_TOKEN_ENV.to_owned()),
+            allowed_channel_ids: Vec::new(),
             accounts: BTreeMap::new(),
         }
     }
@@ -4807,6 +4833,17 @@ impl MattermostChannelConfig {
             "mattermost.bot_token",
             self.bot_token.as_ref(),
         );
+        validate_mattermost_env_pointer(
+            &mut issues,
+            "mattermost.outgoing_token_env",
+            self.outgoing_token_env.as_deref(),
+            "mattermost.outgoing_token",
+        );
+        validate_mattermost_secret_ref_env_pointer(
+            &mut issues,
+            "mattermost.outgoing_token",
+            self.outgoing_token.as_ref(),
+        );
         for (raw_account_id, account) in &self.accounts {
             let account_id = normalize_channel_account_id(raw_account_id);
             let server_url_field_path = format!("mattermost.accounts.{account_id}.server_url");
@@ -4830,6 +4867,20 @@ impl MattermostChannelConfig {
                 bot_token_field_path.as_str(),
                 account.bot_token.as_ref(),
             );
+            let outgoing_token_field_path =
+                format!("mattermost.accounts.{account_id}.outgoing_token");
+            let outgoing_token_env_field_path = format!("{outgoing_token_field_path}_env");
+            validate_mattermost_env_pointer(
+                &mut issues,
+                outgoing_token_env_field_path.as_str(),
+                account.outgoing_token_env.as_deref(),
+                outgoing_token_field_path.as_str(),
+            );
+            validate_mattermost_secret_ref_env_pointer(
+                &mut issues,
+                outgoing_token_field_path.as_str(),
+                account.outgoing_token.as_ref(),
+            );
         }
         issues
     }
@@ -4840,6 +4891,13 @@ impl MattermostChannelConfig {
 
     pub fn bot_token(&self) -> Option<String> {
         resolve_secret_with_legacy_env(self.bot_token.as_ref(), self.bot_token_env.as_deref())
+    }
+
+    pub fn outgoing_token(&self) -> Option<String> {
+        resolve_secret_with_legacy_env(
+            self.outgoing_token.as_ref(),
+            self.outgoing_token_env.as_deref(),
+        )
     }
 
     pub fn configured_account_ids(&self) -> Vec<String> {
@@ -4907,6 +4965,15 @@ impl MattermostChannelConfig {
             bot_token_env: account_override
                 .and_then(|account| account.bot_token_env.clone())
                 .or_else(|| self.bot_token_env.clone()),
+            outgoing_token: account_override
+                .and_then(|account| account.outgoing_token.clone())
+                .or_else(|| self.outgoing_token.clone()),
+            outgoing_token_env: account_override
+                .and_then(|account| account.outgoing_token_env.clone())
+                .or_else(|| self.outgoing_token_env.clone()),
+            allowed_channel_ids: account_override
+                .and_then(|account| account.allowed_channel_ids.clone())
+                .unwrap_or_else(|| self.allowed_channel_ids.clone()),
             accounts: BTreeMap::new(),
         };
         let account = merged.resolved_account_identity();
@@ -4920,6 +4987,9 @@ impl MattermostChannelConfig {
             server_url_env: merged.server_url_env,
             bot_token: merged.bot_token,
             bot_token_env: merged.bot_token_env,
+            outgoing_token: merged.outgoing_token,
+            outgoing_token_env: merged.outgoing_token_env,
+            allowed_channel_ids: merged.allowed_channel_ids,
         })
     }
 
@@ -7514,6 +7584,8 @@ fn validate_mattermost_env_pointer(
 ) {
     let example_env_name = if field_path.ends_with("server_url_env") {
         MATTERMOST_SERVER_URL_ENV
+    } else if field_path.ends_with("outgoing_token_env") {
+        MATTERMOST_OUTGOING_TOKEN_ENV
     } else {
         MATTERMOST_BOT_TOKEN_ENV
     };
