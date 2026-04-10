@@ -553,11 +553,21 @@ fn audit_integrity_doctor_check(audit: &mvp::config::AuditConfig) -> DoctorCheck
         "failed" | "unavailable" => DoctorCheckLevel::Fail,
         _ => DoctorCheckLevel::Fail,
     };
+    let remediation = crate::render_line_safe_optional_text_value(state.remediation.as_deref());
+    let detail = format!(
+        "availability={} level={} mode={} journal_path={} reason={} remediation={}",
+        state.availability,
+        state.level,
+        state.mode,
+        crate::render_line_safe_text_value(state.journal_path.as_str()),
+        crate::render_line_safe_text_value(state.reason.as_str()),
+        remediation,
+    );
 
     DoctorCheck {
         name: "audit integrity".to_owned(),
         level,
-        detail: state.reason,
+        detail,
     }
 }
 
@@ -1819,19 +1829,22 @@ fn tool_calling_readiness_doctor_check(config: &mvp::config::LoongClawConfig) ->
         crate::render_line_safe_text_value(readiness.effective_tool_schema_mode.as_str());
     let active_model = crate::render_line_safe_text_value(readiness.active_model.as_str());
     let reason = crate::render_line_safe_text_value(readiness.reason.as_str());
+    let remediation = crate::render_line_safe_optional_text_value(readiness.remediation.as_deref());
     let level = match availability {
         "ready" => DoctorCheckLevel::Pass,
         "inactive" | "degraded" => DoctorCheckLevel::Warn,
         _ => DoctorCheckLevel::Warn,
     };
     let detail = format!(
-        "availability={} structured_tool_schema_enabled={} mode={} active_model={} visible_tool_count={} reason={}",
+        "availability={} level={} structured_tool_schema_enabled={} mode={} active_model={} visible_tool_count={} reason={} remediation={}",
         availability,
+        readiness.level,
         readiness.structured_tool_schema_enabled,
         effective_tool_schema_mode,
         active_model,
         visible_tool_count,
         reason,
+        remediation,
     );
 
     DoctorCheck {
@@ -1850,14 +1863,21 @@ fn tool_workspace_binding_doctor_check(config: &mvp::config::LoongClawConfig) ->
     let effective_file_root =
         crate::render_line_safe_text_value(state.effective_file_root.as_str());
     let reason = crate::render_line_safe_text_value(state.reason.as_str());
+    let remediation = crate::render_line_safe_optional_text_value(state.remediation.as_deref());
     let level = match state.binding.as_str() {
         "aligned" | "cwd_fallback" => DoctorCheckLevel::Pass,
         "external" | "unknown" => DoctorCheckLevel::Warn,
         _ => DoctorCheckLevel::Warn,
     };
     let detail = format!(
-        "binding={} configured_file_root={} effective_file_root={} current_working_directory={} reason={}",
-        state.binding, configured_file_root, effective_file_root, current_working_directory, reason,
+        "binding={} level={} configured_file_root={} effective_file_root={} current_working_directory={} reason={} remediation={}",
+        state.binding,
+        state.level,
+        configured_file_root,
+        effective_file_root,
+        current_working_directory,
+        reason,
+        remediation,
     );
 
     DoctorCheck {

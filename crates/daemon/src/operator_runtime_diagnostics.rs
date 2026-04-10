@@ -11,18 +11,22 @@ use crate::tool_calling_readiness::collect_runtime_snapshot_tool_calling_state;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ToolWorkspaceBindingState {
     pub binding: String,
+    pub level: String,
     pub configured_file_root: Option<String>,
     pub effective_file_root: String,
     pub current_working_directory: Option<String>,
     pub reason: String,
+    pub remediation: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AuditIntegrityState {
     pub availability: String,
+    pub level: String,
     pub mode: String,
     pub journal_path: String,
     pub reason: String,
+    pub remediation: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -68,12 +72,17 @@ pub fn collect_tool_workspace_binding_state(
     if configured_file_root.is_none() {
         return ToolWorkspaceBindingState {
             binding: "cwd_fallback".to_owned(),
+            level: "advisory".to_owned(),
             configured_file_root: None,
             effective_file_root,
             current_working_directory: current_directory,
             reason:
                 "runtime tools resolve relative to the current working directory because tools.file_root is unset"
                     .to_owned(),
+            remediation: Some(
+                "Set tools.file_root explicitly if you want a stable workspace binding across shells and launches"
+                    .to_owned(),
+            ),
         };
     }
 
@@ -82,10 +91,15 @@ pub fn collect_tool_workspace_binding_state(
         Err(error) => {
             return ToolWorkspaceBindingState {
                 binding: "unknown".to_owned(),
+                level: "degraded".to_owned(),
                 configured_file_root,
                 effective_file_root,
                 current_working_directory: None,
                 reason: format!("failed to resolve current working directory: {error}"),
+                remediation: Some(
+                    "Restore current working directory access or set tools.file_root explicitly before relying on file tools"
+                        .to_owned(),
+                ),
             };
         }
     };
@@ -95,21 +109,28 @@ pub fn collect_tool_workspace_binding_state(
     if canonical_effective_file_root == canonical_current_directory {
         return ToolWorkspaceBindingState {
             binding: "aligned".to_owned(),
+            level: "healthy".to_owned(),
             configured_file_root,
             effective_file_root,
             current_working_directory: Some(current_directory_path.display().to_string()),
             reason: "runtime tools resolve under the current working directory".to_owned(),
+            remediation: None,
         };
     }
 
     ToolWorkspaceBindingState {
         binding: "external".to_owned(),
+        level: "degraded".to_owned(),
         configured_file_root,
         effective_file_root,
         current_working_directory: Some(current_directory_path.display().to_string()),
         reason:
             "runtime tools resolve outside the current working directory; file operations target the configured tool root instead"
                 .to_owned(),
+        remediation: Some(
+            "Run from the configured tool workspace or update tools.file_root to the intended working tree"
+                .to_owned(),
+        ),
     }
 }
 
@@ -121,27 +142,38 @@ pub fn collect_audit_integrity_state(audit: &mvp::config::AuditConfig) -> AuditI
     if matches!(audit.mode, mvp::config::AuditMode::InMemory) {
         return AuditIntegrityState {
             availability: "in_memory".to_owned(),
+            level: "advisory".to_owned(),
             mode: mode.to_owned(),
             journal_path: journal_path_text,
             reason: "audit integrity verification is unavailable while audit.mode=in_memory"
                 .to_owned(),
+            remediation: Some(
+                "Use audit.mode = \"fanout\" or \"jsonl\" if durable audit verification is required"
+                    .to_owned(),
+            ),
         };
     }
 
     if !journal_path.exists() {
         return AuditIntegrityState {
             availability: "missing".to_owned(),
+            level: "advisory".to_owned(),
             mode: mode.to_owned(),
             journal_path: journal_path_text,
             reason:
                 "audit journal has not been created yet, so integrity verification is unavailable until the first durable write"
                     .to_owned(),
+            remediation: Some(
+                "Perform a durable write and re-run verification before treating audit integrity as established"
+                    .to_owned(),
+            ),
         };
     }
 
     match verify_jsonl_audit_journal(&journal_path) {
         Ok(report) if report.valid => AuditIntegrityState {
             availability: "verified".to_owned(),
+            level: "healthy".to_owned(),
             mode: mode.to_owned(),
             journal_path: journal_path_text,
             reason: format!(
@@ -150,9 +182,11 @@ pub fn collect_audit_integrity_state(audit: &mvp::config::AuditConfig) -> AuditI
                 report.total_events,
                 report.last_entry_hash.as_deref().unwrap_or("-")
             ),
+            remediation: None,
         },
         Ok(report) => AuditIntegrityState {
             availability: "failed".to_owned(),
+            level: "blocked".to_owned(),
             mode: mode.to_owned(),
             journal_path: journal_path_text,
             reason: format!(
@@ -163,12 +197,21 @@ pub fn collect_audit_integrity_state(audit: &mvp::config::AuditConfig) -> AuditI
                     .unwrap_or_else(|| "-".to_owned()),
                 report.reason.as_deref().unwrap_or("unknown reason")
             ),
+            remediation: Some(
+                "Inspect or repair the durable audit journal before trusting retained runtime evidence"
+                    .to_owned(),
+            ),
         },
         Err(error) => AuditIntegrityState {
             availability: "unavailable".to_owned(),
+            level: "blocked".to_owned(),
             mode: mode.to_owned(),
             journal_path: journal_path_text,
             reason: format!("audit integrity verification failed: {error}"),
+            remediation: Some(
+                "Repair the audit journal path or permissions before relying on durable audit evidence"
+                    .to_owned(),
+            ),
         },
     }
 }

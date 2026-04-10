@@ -311,10 +311,12 @@ pub struct GatewayOperatorRuntimeSummaryReadModel {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayToolCallingReadModel {
     pub availability: String,
+    pub level: String,
     pub structured_tool_schema_enabled: bool,
     pub effective_tool_schema_mode: String,
     pub active_model: String,
     pub reason: String,
+    pub remediation: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -944,10 +946,12 @@ fn build_tool_calling_read_model(
 ) -> GatewayToolCallingReadModel {
     GatewayToolCallingReadModel {
         availability: state.availability.clone(),
+        level: state.level.clone(),
         structured_tool_schema_enabled: state.structured_tool_schema_enabled,
         effective_tool_schema_mode: state.effective_tool_schema_mode.clone(),
         active_model: state.active_model.clone(),
         reason: state.reason.clone(),
+        remediation: state.remediation.clone(),
     }
 }
 

@@ -5,10 +5,12 @@ use crate::mvp;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RuntimeSnapshotToolCallingState {
     pub availability: String,
+    pub level: String,
     pub structured_tool_schema_enabled: bool,
     pub effective_tool_schema_mode: String,
     pub active_model: String,
     pub reason: String,
+    pub remediation: Option<String>,
 }
 
 pub fn collect_runtime_snapshot_tool_calling_state(
@@ -21,32 +23,44 @@ pub fn collect_runtime_snapshot_tool_calling_state(
     if no_visible_tools {
         return RuntimeSnapshotToolCallingState {
             availability: "inactive".to_owned(),
+            level: "degraded".to_owned(),
             structured_tool_schema_enabled: provider_readiness.structured_tool_schema_enabled,
             effective_tool_schema_mode: provider_readiness.effective_tool_schema_mode,
             active_model: provider_readiness.active_model,
             reason: "no runtime-visible tools are enabled".to_owned(),
+            remediation: Some(
+                "Enable at least one runtime-visible tool surface if this workflow is expected to use tools"
+                    .to_owned(),
+            ),
         };
     }
 
     if provider_readiness.structured_tool_schema_enabled {
         return RuntimeSnapshotToolCallingState {
             availability: "ready".to_owned(),
+            level: "healthy".to_owned(),
             structured_tool_schema_enabled: true,
             effective_tool_schema_mode: provider_readiness.effective_tool_schema_mode,
             active_model: provider_readiness.active_model,
             reason: "provider turns include structured tool definitions for the active model"
                 .to_owned(),
+            remediation: None,
         };
     }
 
     RuntimeSnapshotToolCallingState {
         availability: "degraded".to_owned(),
+        level: "degraded".to_owned(),
         structured_tool_schema_enabled: false,
         effective_tool_schema_mode: provider_readiness.effective_tool_schema_mode,
         active_model: provider_readiness.active_model,
         reason:
             "provider turns omit structured tool definitions for the active model; tool use relies on prompt-visible guidance only"
                 .to_owned(),
+        remediation: Some(
+            "Enable structured tool calling with provider.tool_schema_mode = \"enabled_with_downgrade\" or adjust model-hint overrides"
+                .to_owned(),
+        ),
     }
 }
 
@@ -62,7 +76,9 @@ mod tests {
         let state = collect_runtime_snapshot_tool_calling_state(&config, 0);
 
         assert_eq!(state.availability, "inactive");
+        assert_eq!(state.level, "degraded");
         assert_eq!(state.reason, "no runtime-visible tools are enabled");
+        assert!(state.remediation.is_some());
     }
 
     #[test]
@@ -78,7 +94,9 @@ mod tests {
         let state = collect_runtime_snapshot_tool_calling_state(&config, 2);
 
         assert_eq!(state.availability, "degraded");
+        assert_eq!(state.level, "degraded");
         assert!(!state.structured_tool_schema_enabled);
         assert_eq!(state.effective_tool_schema_mode, "disabled");
+        assert!(state.remediation.is_some());
     }
 }

@@ -56,37 +56,57 @@ fn runtime_snapshot_fixture(
             capability_snapshot: String::new(),
             tool_calling: loongclaw_daemon::gateway::read_models::GatewayToolCallingReadModel {
                 availability: "inactive".to_owned(),
+                level: "degraded".to_owned(),
                 structured_tool_schema_enabled: true,
                 effective_tool_schema_mode: "enabled_with_downgrade".to_owned(),
                 active_model: "gpt-4.1-mini".to_owned(),
                 reason: "no runtime-visible tools are enabled".to_owned(),
+                remediation: Some(
+                    "Enable at least one runtime-visible tool surface if this workflow is expected to use tools"
+                        .to_owned(),
+                ),
             },
         },
         runtime_diagnostics:
             loongclaw_daemon::gateway::read_models::GatewayRuntimeDiagnosticsReadModel {
                 tool_calling: loongclaw_daemon::RuntimeSnapshotToolCallingState {
                     availability: "inactive".to_owned(),
+                    level: "degraded".to_owned(),
                     structured_tool_schema_enabled: true,
                     effective_tool_schema_mode: "enabled_with_downgrade".to_owned(),
                     active_model: "gpt-4.1-mini".to_owned(),
                     reason: "no runtime-visible tools are enabled".to_owned(),
+                    remediation: Some(
+                        "Enable at least one runtime-visible tool surface if this workflow is expected to use tools"
+                            .to_owned(),
+                    ),
                 },
                 tool_workspace: loongclaw_daemon::ToolWorkspaceBindingState {
                         binding: "cwd_fallback".to_owned(),
+                        level: "advisory".to_owned(),
                         configured_file_root: None,
                         effective_file_root: ".".to_owned(),
                         current_working_directory: None,
                         reason:
                             "runtime tools resolve relative to the current working directory because tools.file_root is unset"
                                 .to_owned(),
+                        remediation: Some(
+                            "Set tools.file_root explicitly if you want a stable workspace binding across shells and launches"
+                                .to_owned(),
+                        ),
                     },
                 audit_integrity: loongclaw_daemon::AuditIntegrityState {
                         availability: "in_memory".to_owned(),
+                        level: "advisory".to_owned(),
                         mode: "in_memory".to_owned(),
                         journal_path: String::new(),
                         reason:
                             "audit integrity verification is unavailable while audit.mode=in_memory"
                                 .to_owned(),
+                        remediation: Some(
+                            "Use audit.mode = \"fanout\" or \"jsonl\" if durable audit verification is required"
+                                .to_owned(),
+                        ),
                     },
             },
         runtime_plugins: serde_json::json!({}),

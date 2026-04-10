@@ -294,6 +294,9 @@ fn render_status_cli_text(status: &StatusCliReadModel) -> String {
     let current_working_directory =
         render_optional_text(tool_workspace.current_working_directory.as_deref());
     let configured_file_root = render_optional_text(tool_workspace.configured_file_root.as_deref());
+    let tool_calling_remediation = render_optional_text(tool_calling.remediation.as_deref());
+    let tool_workspace_remediation = render_optional_text(tool_workspace.remediation.as_deref());
+    let audit_integrity_remediation = render_optional_text(audit_integrity.remediation.as_deref());
 
     let mut lines = Vec::new();
     lines.push(format!("config={}", status.config));
@@ -333,27 +336,33 @@ fn render_status_cli_text(status: &StatusCliReadModel) -> String {
         capability_snapshot_sha256,
     ));
     lines.push(format!(
-        "tool_calling availability={} structured_tool_schema_enabled={} mode={} active_model={} reason={}",
+        "tool_calling availability={} level={} structured_tool_schema_enabled={} mode={} active_model={} reason={} remediation={}",
         tool_calling.availability,
+        tool_calling.level,
         tool_calling.structured_tool_schema_enabled,
         tool_calling.effective_tool_schema_mode,
         tool_calling.active_model,
         tool_calling.reason,
+        tool_calling_remediation,
     ));
     lines.push(format!(
-        "tool_workspace binding={} configured_file_root={} effective_file_root={} current_working_directory={} reason={}",
+        "tool_workspace binding={} level={} configured_file_root={} effective_file_root={} current_working_directory={} reason={} remediation={}",
         tool_workspace.binding,
+        tool_workspace.level,
         configured_file_root,
         tool_workspace.effective_file_root,
         current_working_directory,
         tool_workspace.reason,
+        tool_workspace_remediation,
     ));
     lines.push(format!(
-        "audit_integrity availability={} mode={} journal_path={} reason={}",
+        "audit_integrity availability={} level={} mode={} journal_path={} reason={} remediation={}",
         audit_integrity.availability,
+        audit_integrity.level,
         audit_integrity.mode,
         audit_integrity.journal_path,
         audit_integrity.reason,
+        audit_integrity_remediation,
     ));
     lines.push(render_status_cli_acp_text(&status.acp));
     lines.push(render_status_cli_work_units_text(&status.work_units));
@@ -494,6 +503,7 @@ mod tests {
         let root_text = root.display().to_string();
 
         assert_eq!(state.binding, "external");
+        assert_eq!(state.level, "degraded");
         assert_eq!(
             state.configured_file_root.as_deref(),
             Some(root_text.as_str())
@@ -532,8 +542,10 @@ mod tests {
         );
 
         assert_eq!(state.availability, "failed");
+        assert_eq!(state.level, "blocked");
         assert_eq!(state.mode, "jsonl");
         assert!(state.reason.contains("failed at line 2"));
+        assert!(state.remediation.is_some());
 
         fs::remove_dir_all(&root).ok();
     }
@@ -586,39 +598,53 @@ mod tests {
                 active_provider_label: Some("Demo".to_owned()),
                 tool_calling: crate::gateway::read_models::GatewayToolCallingReadModel {
                     availability: "ready".to_owned(),
+                    level: "healthy".to_owned(),
                     structured_tool_schema_enabled: true,
                     effective_tool_schema_mode: "enabled_with_downgrade".to_owned(),
                     active_model: "gpt-4.1-mini".to_owned(),
                     reason:
                         "provider turns include structured tool definitions for the active model"
                             .to_owned(),
+                    remediation: None,
                 },
                 runtime_diagnostics: crate::gateway::read_models::GatewayRuntimeDiagnosticsReadModel {
                     tool_calling: crate::RuntimeSnapshotToolCallingState {
                         availability: "ready".to_owned(),
+                        level: "healthy".to_owned(),
                         structured_tool_schema_enabled: true,
                         effective_tool_schema_mode: "enabled_with_downgrade".to_owned(),
                         active_model: "gpt-4.1-mini".to_owned(),
                         reason:
                             "provider turns include structured tool definitions for the active model"
                                 .to_owned(),
+                        remediation: None,
                     },
                     tool_workspace: crate::ToolWorkspaceBindingState {
                         binding: "external".to_owned(),
+                        level: "degraded".to_owned(),
                         configured_file_root: Some("/tmp/workspace".to_owned()),
                         effective_file_root: "/tmp/workspace".to_owned(),
                         current_working_directory: Some("/Users/chum/loongclaw".to_owned()),
                         reason:
                             "runtime tools resolve outside the current working directory; file operations target the configured tool root instead"
                                 .to_owned(),
+                        remediation: Some(
+                            "Run from the configured tool workspace or update tools.file_root to the intended working tree"
+                                .to_owned(),
+                        ),
                     },
                     audit_integrity: crate::AuditIntegrityState {
                         availability: "missing".to_owned(),
+                        level: "advisory".to_owned(),
                         mode: "jsonl".to_owned(),
                         journal_path: "/tmp/audit/events.jsonl".to_owned(),
                         reason:
                             "audit journal has not been created yet, so integrity verification is unavailable until the first durable write"
                                 .to_owned(),
+                        remediation: Some(
+                            "Perform a durable write and re-run verification before treating audit integrity as established"
+                                .to_owned(),
+                        ),
                     },
                 },
             },
@@ -634,29 +660,41 @@ mod tests {
             runtime_diagnostics: RuntimeOperatorDiagnosticsState {
                 tool_calling: crate::tool_calling_readiness::RuntimeSnapshotToolCallingState {
                     availability: "ready".to_owned(),
+                    level: "healthy".to_owned(),
                     structured_tool_schema_enabled: true,
                     effective_tool_schema_mode: "enabled_with_downgrade".to_owned(),
                     active_model: "gpt-4.1-mini".to_owned(),
                     reason:
                         "provider turns include structured tool definitions for the active model"
                             .to_owned(),
+                    remediation: None,
                 },
                 tool_workspace: crate::operator_runtime_diagnostics::ToolWorkspaceBindingState {
                     binding: "external".to_owned(),
+                    level: "degraded".to_owned(),
                     configured_file_root: Some("/tmp/workspace".to_owned()),
                     effective_file_root: "/tmp/workspace".to_owned(),
                     current_working_directory: Some("/Users/chum/loongclaw".to_owned()),
                     reason:
                         "runtime tools resolve outside the current working directory; file operations target the configured tool root instead"
                             .to_owned(),
+                    remediation: Some(
+                        "Run from the configured tool workspace or update tools.file_root to the intended working tree"
+                            .to_owned(),
+                    ),
                 },
                 audit_integrity: crate::operator_runtime_diagnostics::AuditIntegrityState {
                     availability: "missing".to_owned(),
+                    level: "advisory".to_owned(),
                     mode: "jsonl".to_owned(),
                     journal_path: "/tmp/audit/events.jsonl".to_owned(),
                     reason:
                         "audit journal has not been created yet, so integrity verification is unavailable until the first durable write"
                             .to_owned(),
+                    remediation: Some(
+                        "Perform a durable write and re-run verification before treating audit integrity as established"
+                            .to_owned(),
+                    ),
                 },
             },
             acp: StatusCliAcpReadModel {
@@ -692,6 +730,7 @@ mod tests {
 
         assert!(rendered.contains("gateway phase=running"));
         assert!(rendered.contains("tool_calling availability=ready"));
+        assert!(rendered.contains("level=healthy"));
         assert!(rendered.contains("tool_workspace binding=external"));
         assert!(rendered.contains("audit_integrity availability=missing"));
         assert!(rendered.contains("acp enabled=false availability=disabled"));
