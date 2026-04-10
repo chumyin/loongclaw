@@ -73,6 +73,8 @@ pub(crate) const SIGNAL_SERVICE_URL_ENV: &str = "SIGNAL_SERVICE_URL";
 pub(crate) const SIGNAL_ACCOUNT_ENV: &str = "SIGNAL_ACCOUNT";
 pub(crate) const TWITCH_ACCESS_TOKEN_ENV: &str = "TWITCH_ACCESS_TOKEN";
 pub(crate) const SLACK_BOT_TOKEN_ENV: &str = "SLACK_BOT_TOKEN";
+pub(crate) const SLACK_APP_TOKEN_ENV: &str = "SLACK_APP_TOKEN";
+pub(crate) const SLACK_SIGNING_SECRET_ENV: &str = "SLACK_SIGNING_SECRET";
 pub(crate) const TEAMS_APP_ID_ENV: &str = "TEAMS_APP_ID";
 pub(crate) const TEAMS_APP_PASSWORD_ENV: &str = "TEAMS_APP_PASSWORD";
 pub(crate) const TEAMS_TENANT_ID_ENV: &str = "TEAMS_TENANT_ID";
@@ -1006,6 +1008,16 @@ pub struct SlackAccountConfig {
     #[serde(default)]
     pub bot_token_env: Option<String>,
     #[serde(default)]
+    pub app_token: Option<SecretRef>,
+    #[serde(default)]
+    pub app_token_env: Option<String>,
+    #[serde(default)]
+    pub signing_secret: Option<SecretRef>,
+    #[serde(default)]
+    pub signing_secret_env: Option<String>,
+    #[serde(default)]
+    pub allowed_channel_ids: Option<Vec<String>>,
+    #[serde(default)]
     pub api_base_url: Option<String>,
 }
 
@@ -1017,12 +1029,28 @@ pub struct ResolvedSlackChannelConfig {
     pub enabled: bool,
     pub bot_token: Option<SecretRef>,
     pub bot_token_env: Option<String>,
+    pub app_token: Option<SecretRef>,
+    pub app_token_env: Option<String>,
+    pub signing_secret: Option<SecretRef>,
+    pub signing_secret_env: Option<String>,
+    pub allowed_channel_ids: Vec<String>,
     pub api_base_url: Option<String>,
 }
 
 impl ResolvedSlackChannelConfig {
     pub fn bot_token(&self) -> Option<String> {
         resolve_secret_with_legacy_env(self.bot_token.as_ref(), self.bot_token_env.as_deref())
+    }
+
+    pub fn app_token(&self) -> Option<String> {
+        resolve_secret_with_legacy_env(self.app_token.as_ref(), self.app_token_env.as_deref())
+    }
+
+    pub fn signing_secret(&self) -> Option<String> {
+        resolve_secret_with_legacy_env(
+            self.signing_secret.as_ref(),
+            self.signing_secret_env.as_deref(),
+        )
     }
 
     pub fn resolved_api_base_url(&self) -> String {
@@ -1664,6 +1692,16 @@ pub struct SlackChannelConfig {
     pub bot_token: Option<SecretRef>,
     #[serde(default = "default_slack_bot_token_env")]
     pub bot_token_env: Option<String>,
+    #[serde(default)]
+    pub app_token: Option<SecretRef>,
+    #[serde(default = "default_slack_app_token_env")]
+    pub app_token_env: Option<String>,
+    #[serde(default)]
+    pub signing_secret: Option<SecretRef>,
+    #[serde(default = "default_slack_signing_secret_env")]
+    pub signing_secret_env: Option<String>,
+    #[serde(default)]
+    pub allowed_channel_ids: Vec<String>,
     #[serde(default)]
     pub api_base_url: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -2400,6 +2438,11 @@ impl Default for SlackChannelConfig {
             default_account: None,
             bot_token: None,
             bot_token_env: Some(SLACK_BOT_TOKEN_ENV.to_owned()),
+            app_token: None,
+            app_token_env: Some(SLACK_APP_TOKEN_ENV.to_owned()),
+            signing_secret: None,
+            signing_secret_env: Some(SLACK_SIGNING_SECRET_ENV.to_owned()),
+            allowed_channel_ids: Vec::new(),
             api_base_url: None,
             accounts: BTreeMap::new(),
         }
@@ -4489,6 +4532,28 @@ impl SlackChannelConfig {
             "slack.bot_token",
             self.bot_token.as_ref(),
         );
+        validate_slack_env_pointer(
+            &mut issues,
+            "slack.app_token_env",
+            self.app_token_env.as_deref(),
+            "slack.app_token",
+        );
+        validate_slack_secret_ref_env_pointer(
+            &mut issues,
+            "slack.app_token",
+            self.app_token.as_ref(),
+        );
+        validate_slack_env_pointer(
+            &mut issues,
+            "slack.signing_secret_env",
+            self.signing_secret_env.as_deref(),
+            "slack.signing_secret",
+        );
+        validate_slack_secret_ref_env_pointer(
+            &mut issues,
+            "slack.signing_secret",
+            self.signing_secret.as_ref(),
+        );
         for (raw_account_id, account) in &self.accounts {
             let account_id = normalize_channel_account_id(raw_account_id);
             let bot_token_field_path = format!("slack.accounts.{account_id}.bot_token");
@@ -4504,12 +4569,49 @@ impl SlackChannelConfig {
                 bot_token_field_path.as_str(),
                 account.bot_token.as_ref(),
             );
+            let app_token_field_path = format!("slack.accounts.{account_id}.app_token");
+            let app_token_env_field_path = format!("{app_token_field_path}_env");
+            validate_slack_env_pointer(
+                &mut issues,
+                app_token_env_field_path.as_str(),
+                account.app_token_env.as_deref(),
+                app_token_field_path.as_str(),
+            );
+            validate_slack_secret_ref_env_pointer(
+                &mut issues,
+                app_token_field_path.as_str(),
+                account.app_token.as_ref(),
+            );
+            let signing_secret_field_path = format!("slack.accounts.{account_id}.signing_secret");
+            let signing_secret_env_field_path = format!("{signing_secret_field_path}_env");
+            validate_slack_env_pointer(
+                &mut issues,
+                signing_secret_env_field_path.as_str(),
+                account.signing_secret_env.as_deref(),
+                signing_secret_field_path.as_str(),
+            );
+            validate_slack_secret_ref_env_pointer(
+                &mut issues,
+                signing_secret_field_path.as_str(),
+                account.signing_secret.as_ref(),
+            );
         }
         issues
     }
 
     pub fn bot_token(&self) -> Option<String> {
         resolve_secret_with_legacy_env(self.bot_token.as_ref(), self.bot_token_env.as_deref())
+    }
+
+    pub fn app_token(&self) -> Option<String> {
+        resolve_secret_with_legacy_env(self.app_token.as_ref(), self.app_token_env.as_deref())
+    }
+
+    pub fn signing_secret(&self) -> Option<String> {
+        resolve_secret_with_legacy_env(
+            self.signing_secret.as_ref(),
+            self.signing_secret_env.as_deref(),
+        )
     }
 
     pub fn configured_account_ids(&self) -> Vec<String> {
@@ -4571,6 +4673,21 @@ impl SlackChannelConfig {
             bot_token_env: account_override
                 .and_then(|account| account.bot_token_env.clone())
                 .or_else(|| self.bot_token_env.clone()),
+            app_token: account_override
+                .and_then(|account| account.app_token.clone())
+                .or_else(|| self.app_token.clone()),
+            app_token_env: account_override
+                .and_then(|account| account.app_token_env.clone())
+                .or_else(|| self.app_token_env.clone()),
+            signing_secret: account_override
+                .and_then(|account| account.signing_secret.clone())
+                .or_else(|| self.signing_secret.clone()),
+            signing_secret_env: account_override
+                .and_then(|account| account.signing_secret_env.clone())
+                .or_else(|| self.signing_secret_env.clone()),
+            allowed_channel_ids: account_override
+                .and_then(|account| account.allowed_channel_ids.clone())
+                .unwrap_or_else(|| self.allowed_channel_ids.clone()),
             api_base_url: account_override
                 .and_then(|account| account.api_base_url.clone())
                 .or_else(|| self.api_base_url.clone()),
@@ -4585,6 +4702,11 @@ impl SlackChannelConfig {
             enabled: merged.enabled,
             bot_token: merged.bot_token,
             bot_token_env: merged.bot_token_env,
+            app_token: merged.app_token,
+            app_token_env: merged.app_token_env,
+            signing_secret: merged.signing_secret,
+            signing_secret_env: merged.signing_secret_env,
+            allowed_channel_ids: merged.allowed_channel_ids,
             api_base_url: merged.api_base_url,
         })
     }
@@ -6616,6 +6738,14 @@ fn default_slack_bot_token_env() -> Option<String> {
     Some(SLACK_BOT_TOKEN_ENV.to_owned())
 }
 
+fn default_slack_app_token_env() -> Option<String> {
+    Some(SLACK_APP_TOKEN_ENV.to_owned())
+}
+
+fn default_slack_signing_secret_env() -> Option<String> {
+    Some(SLACK_SIGNING_SECRET_ENV.to_owned())
+}
+
 fn default_whatsapp_api_base_url() -> String {
     "https://graph.facebook.com/v25.0".to_owned()
 }
@@ -7554,12 +7684,19 @@ fn validate_slack_env_pointer(
     env_key: Option<&str>,
     inline_field_path: &str,
 ) {
+    let example_env_name = if field_path.ends_with("app_token_env") {
+        SLACK_APP_TOKEN_ENV
+    } else if field_path.ends_with("signing_secret_env") {
+        SLACK_SIGNING_SECRET_ENV
+    } else {
+        SLACK_BOT_TOKEN_ENV
+    };
     if let Err(issue) = validate_env_pointer_field(
         field_path,
         env_key,
         EnvPointerValidationHint {
             inline_field_path,
-            example_env_name: SLACK_BOT_TOKEN_ENV,
+            example_env_name,
             detect_telegram_token_shape: false,
         },
     ) {
@@ -7572,12 +7709,19 @@ fn validate_slack_secret_ref_env_pointer(
     field_path: &str,
     secret_ref: Option<&SecretRef>,
 ) {
+    let example_env_name = if field_path.ends_with("app_token") {
+        SLACK_APP_TOKEN_ENV
+    } else if field_path.ends_with("signing_secret") {
+        SLACK_SIGNING_SECRET_ENV
+    } else {
+        SLACK_BOT_TOKEN_ENV
+    };
     if let Err(issue) = validate_secret_ref_env_pointer_field(
         field_path,
         secret_ref,
         EnvPointerValidationHint {
             inline_field_path: field_path,
-            example_env_name: SLACK_BOT_TOKEN_ENV,
+            example_env_name,
             detect_telegram_token_shape: false,
         },
     ) {

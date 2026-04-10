@@ -1267,9 +1267,16 @@ fn canonicalize_email_channel_for_encoding(config: &mut EmailChannelConfig) {
 
 fn canonicalize_slack_channel_for_encoding(config: &mut SlackChannelConfig) {
     canonicalize_env_secret_reference(&mut config.bot_token, &mut config.bot_token_env);
+    canonicalize_env_secret_reference(&mut config.app_token, &mut config.app_token_env);
+    canonicalize_env_secret_reference(&mut config.signing_secret, &mut config.signing_secret_env);
 
     for account in config.accounts.values_mut() {
         canonicalize_env_secret_reference(&mut account.bot_token, &mut account.bot_token_env);
+        canonicalize_env_secret_reference(&mut account.app_token, &mut account.app_token_env);
+        canonicalize_env_secret_reference(
+            &mut account.signing_secret,
+            &mut account.signing_secret_env,
+        );
     }
 }
 
