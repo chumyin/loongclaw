@@ -6,7 +6,6 @@ SCRIPT_UNDER_TEST="$REPO_ROOT/scripts/install.sh"
 . "$REPO_ROOT/scripts/release_artifact_lib.sh"
 PACKAGE_NAME="loong"
 PRIMARY_BIN_NAME="loong"
-LEGACY_BIN_NAME="loongclaw"
 
 assert_contains() {
   local file="$1"
@@ -28,23 +27,18 @@ assert_not_contains() {
   fi
 }
 
-assert_installed_binary_pair() {
+assert_installed_primary_binary() {
   local install_dir="$1"
   local expected_output="$2"
-  local primary_output legacy_output
+  local primary_output
 
   [[ -x "$install_dir/$PRIMARY_BIN_NAME" ]]
-  [[ -x "$install_dir/$LEGACY_BIN_NAME" ]]
+  [[ ! -e "$install_dir/loongclaw" ]]
 
   primary_output="$("$install_dir/$PRIMARY_BIN_NAME")"
-  legacy_output="$("$install_dir/$LEGACY_BIN_NAME")"
 
   if [[ "$primary_output" != "$expected_output" ]]; then
     echo "expected primary binary output '$expected_output' but got '$primary_output'" >&2
-    exit 1
-  fi
-  if [[ "$legacy_output" != "$expected_output" ]]; then
-    echo "expected legacy binary output '$expected_output' but got '$legacy_output'" >&2
     exit 1
   fi
 }
@@ -74,7 +68,7 @@ make_release_fixture() {
 }
 
 write_release_fixture_asset() {
-  local fixture tag target binary_label archive_name checksum_name binary_name legacy_binary_name archive_path checksum_path release_dir staging_dir
+  local fixture tag target binary_label archive_name checksum_name binary_name archive_path checksum_path release_dir staging_dir
   fixture="${1:?fixture is required}"
   tag="${2:-v0.1.2}"
   target="${3:-$(host_target)}"
@@ -82,7 +76,6 @@ write_release_fixture_asset() {
   archive_name="$(release_archive_name "$PACKAGE_NAME" "$tag" "$target")"
   checksum_name="$(release_archive_checksum_name "$PACKAGE_NAME" "$tag" "$target")"
   binary_name="$(release_binary_name_for_target "$PRIMARY_BIN_NAME" "$target")"
-  legacy_binary_name="$(release_binary_name_for_target "$LEGACY_BIN_NAME" "$target")"
   release_dir="$fixture/releases/download/$tag"
   staging_dir="$fixture/staging/$target"
   mkdir -p "$release_dir" "$staging_dir"
@@ -111,15 +104,14 @@ fi
 printf '%s\n' "$binary_label"
 EOF
   chmod +x "$staging_dir/$binary_name"
-  cp "$staging_dir/$binary_name" "$staging_dir/$legacy_binary_name"
 
   archive_path="$release_dir/$archive_name"
   case "$archive_name" in
     *.tar.gz)
-      tar -C "$staging_dir" -czf "$archive_path" "$binary_name" "$legacy_binary_name"
+      tar -C "$staging_dir" -czf "$archive_path" "$binary_name"
       ;;
     *.zip)
-      (cd "$staging_dir" && zip -q "$archive_path" "$binary_name" "$legacy_binary_name")
+      (cd "$staging_dir" && zip -q "$archive_path" "$binary_name")
       ;;
     *)
       echo "unsupported archive format in fixture: $archive_name" >&2
@@ -308,7 +300,7 @@ run_linux_x86_64_prefers_gnu_when_glibc_is_supported_test() {
   )
 
   assert_contains "$output_file" "x86_64-unknown-linux-gnu"
-  assert_installed_binary_pair "$install_dir" "gnu-binary"
+  assert_installed_primary_binary "$install_dir" "gnu-binary"
 }
 
 
@@ -330,7 +322,7 @@ run_termux_arm64_installs_android_release_test() {
   )
 
   assert_contains "$output_file" "aarch64-linux-android"
-  assert_installed_binary_pair "$install_dir" "termux-binary"
+  assert_installed_primary_binary "$install_dir" "termux-binary"
 }
 
 run_linux_guest_with_termux_env_is_not_termux_test() {
@@ -375,7 +367,7 @@ run_linux_guest_with_termux_env_prefers_linux_release_test() {
   )
 
   assert_contains "$output_file" "x86_64-unknown-linux-gnu"
-  assert_installed_binary_pair "$install_dir" "gnu-binary"
+  assert_installed_primary_binary "$install_dir" "gnu-binary"
 }
 
 run_termux_x86_64_rejects_android_release_test() {
@@ -418,7 +410,7 @@ run_linux_x86_64_falls_back_to_musl_when_glibc_is_too_old_test() {
   )
 
   assert_contains "$output_file" "x86_64-unknown-linux-musl"
-  assert_installed_binary_pair "$install_dir" "musl-binary"
+  assert_installed_primary_binary "$install_dir" "musl-binary"
 }
 
 run_linux_x86_64_falls_back_to_musl_when_glibc_detection_fails_test() {
@@ -439,7 +431,7 @@ run_linux_x86_64_falls_back_to_musl_when_glibc_detection_fails_test() {
   )
 
   assert_contains "$output_file" "x86_64-unknown-linux-musl"
-  assert_installed_binary_pair "$install_dir" "musl-binary"
+  assert_installed_primary_binary "$install_dir" "musl-binary"
 }
 
 run_linux_x86_64_explicit_musl_override_test() {
@@ -460,7 +452,7 @@ run_linux_x86_64_explicit_musl_override_test() {
   )
 
   assert_contains "$output_file" "x86_64-unknown-linux-musl"
-  assert_installed_binary_pair "$install_dir" "musl-binary"
+  assert_installed_primary_binary "$install_dir" "musl-binary"
 }
 
 run_linux_x86_64_explicit_gnu_override_rejects_old_glibc_test() {
@@ -559,7 +551,7 @@ run_linux_x86_64_prefers_gnu_when_sort_version_is_unavailable_test() {
   )
 
   assert_contains "$output_file" "x86_64-unknown-linux-gnu"
-  assert_installed_binary_pair "$install_dir" "gnu-binary"
+  assert_installed_primary_binary "$install_dir" "gnu-binary"
 }
 
 run_linux_x86_64_explicit_gnu_override_rejects_musl_ldd_output_test() {
@@ -633,9 +625,9 @@ run_release_override_install_and_onboard_test() {
       bash "$SCRIPT_UNDER_TEST" --version v0.1.2 --prefix "$install_dir" --onboard >"$output_file" 2>&1
   )
 
-  assert_installed_binary_pair "$install_dir" "fixture-binary"
+  assert_installed_primary_binary "$install_dir" "fixture-binary"
   assert_contains "$output_file" "Installed loong to"
-  assert_contains "$output_file" "Installed compatible loongclaw command to"
+  assert_not_contains "$output_file" "Installed compatible loongclaw command to"
   assert_contains "$output_file" "Running guided onboarding"
   assert_contains "$marker" "onboard"
 }
@@ -665,7 +657,7 @@ run_release_install_adds_path_to_bashrc_and_prints_source_hint_test() {
       bash "$SCRIPT_UNDER_TEST" --version v0.1.2 --prefix "$install_dir" >"$output_file" 2>&1
   )
 
-  assert_installed_binary_pair "$install_dir" "fixture-binary"
+  assert_installed_primary_binary "$install_dir" "fixture-binary"
   assert_contains "$bashrc_file" "# Added by Loong installer"
   assert_contains "$bashrc_file" "$expected_path_line"
   assert_contains "$output_file" "Added $install_dir to PATH in $bashrc_file"
@@ -693,7 +685,7 @@ run_release_install_skips_source_hint_when_path_is_already_available_test() {
       bash "$SCRIPT_UNDER_TEST" --version v0.1.2 --prefix "$install_dir" >"$output_file" 2>&1
   )
 
-  assert_installed_binary_pair "$install_dir" "fixture-binary"
+  assert_installed_primary_binary "$install_dir" "fixture-binary"
   assert_not_contains "$output_file" "source \"$home_dir/.bashrc\""
   assert_not_contains "$output_file" "Add to PATH if needed:"
 }
@@ -722,7 +714,7 @@ run_release_install_keeps_source_hint_when_rc_already_has_path_entry_test() {
       bash "$SCRIPT_UNDER_TEST" --version v0.1.2 --prefix "$install_dir" >"$output_file" 2>&1
   )
 
-  assert_installed_binary_pair "$install_dir" "fixture-binary"
+  assert_installed_primary_binary "$install_dir" "fixture-binary"
   assert_contains "$output_file" "PATH entry already present in $bashrc_file"
   assert_contains "$output_file" "source \"$bashrc_file\""
 }
@@ -748,7 +740,7 @@ run_release_install_unsupported_shell_uses_manual_path_hint_only_test() {
       bash "$SCRIPT_UNDER_TEST" --version v0.1.2 --prefix "$install_dir" >"$output_file" 2>&1
   )
 
-  assert_installed_binary_pair "$install_dir" "fixture-binary"
+  assert_installed_primary_binary "$install_dir" "fixture-binary"
   assert_contains "$output_file" "Add to PATH if needed:"
   assert_not_contains "$output_file" 'source "$HOME/.profile"'
 }
@@ -783,7 +775,7 @@ run_release_override_install_and_onboard_failure_preserves_install_test() {
       bash "$SCRIPT_UNDER_TEST" --version v0.1.2 --prefix "$install_dir" --onboard >"$output_file" 2>&1
   )
 
-  assert_installed_binary_pair "$install_dir" "fixture-binary"
+  assert_installed_primary_binary "$install_dir" "fixture-binary"
   assert_contains "$marker" "onboard"
   assert_contains "$output_file" "Onboarding exited with code 130"
   assert_contains "$output_file" "You can run 'loong onboard' later to complete setup"

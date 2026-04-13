@@ -1681,7 +1681,7 @@ fn acp_event_summary_cli_rejects_zero_limit() {
 #[test]
 fn runtime_trajectory_cli_parses_flags() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         "runtime-trajectory",
         "export",
         "--session",
@@ -1717,7 +1717,7 @@ fn runtime_trajectory_cli_parses_flags() {
 #[test]
 fn runtime_trajectory_cli_parses_artifact_show_mode() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         "runtime-trajectory",
         "show",
         "--artifact",

@@ -71,7 +71,7 @@ fn check_legacy_home_migration() {
     if let Some(legacy) = mvp::config::detect_legacy_home(&user_home) {
         let new_home = user_home.join(mvp::config::HOME_DIR_NAME);
         tracing::warn!(
-            "Legacy home directory {} found, but {} does not exist. Rename {} to {} to migrate.",
+            "Legacy home directory {} found, but {} does not exist. Loong will open import preview by default; run `loong import` or rename {} to {} to migrate.",
             legacy.display(),
             new_home.display(),
             legacy.display(),

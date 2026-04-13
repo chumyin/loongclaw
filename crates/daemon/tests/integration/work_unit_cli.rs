@@ -48,7 +48,7 @@ fn render_output(bytes: &[u8]) -> String {
 }
 
 fn run_work_unit_cli_process(args: Vec<String>, context: &str) {
-    let output = Command::new(env!("CARGO_BIN_EXE_loongclaw"))
+    let output = Command::new(env!("CARGO_BIN_EXE_loong"))
         .args(args)
         .output()
         .expect(context);
@@ -273,6 +273,25 @@ fn work_unit_cli_create_claim_complete_and_archive_round_trip() {
     run_work_unit_cli_process(
         vec![
             "work-unit".to_owned(),
+            "note".to_owned(),
+            "--config".to_owned(),
+            config_path_string.clone(),
+            "--id".to_owned(),
+            work_unit_id.clone(),
+            "--actor".to_owned(),
+            "operator".to_owned(),
+            "--note".to_owned(),
+            "waiting on prerequisite".to_owned(),
+            "--now-ms".to_owned(),
+            "1090".to_owned(),
+            "--json".to_owned(),
+        ],
+        "append note via CLI subprocess",
+    );
+
+    run_work_unit_cli_process(
+        vec![
+            "work-unit".to_owned(),
             "update".to_owned(),
             "--config".to_owned(),
             config_path_string.clone(),
@@ -297,25 +316,6 @@ fn work_unit_cli_create_claim_complete_and_archive_round_trip() {
             "--json".to_owned(),
         ],
         "update work unit via CLI subprocess",
-    );
-
-    run_work_unit_cli_process(
-        vec![
-            "work-unit".to_owned(),
-            "note".to_owned(),
-            "--config".to_owned(),
-            config_path_string.clone(),
-            "--id".to_owned(),
-            work_unit_id.clone(),
-            "--actor".to_owned(),
-            "operator".to_owned(),
-            "--note".to_owned(),
-            "waiting on prerequisite".to_owned(),
-            "--now-ms".to_owned(),
-            "1090".to_owned(),
-            "--json".to_owned(),
-        ],
-        "append note via CLI subprocess",
     );
 
     run_work_unit_cli_process(

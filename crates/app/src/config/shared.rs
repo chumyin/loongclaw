@@ -990,18 +990,17 @@ mod tests {
         let mut env = ScopedEnv::new();
         let override_home = std::env::temp_dir().join("loong-home-env-test");
         env.set(LOONG_HOME_ENV, &override_home);
-        env.remove("LOONG_HOME");
 
         assert_eq!(default_loong_home(), override_home);
     }
 
     #[test]
-    fn default_loong_home_prefers_loong_home_over_loong_home() {
+    fn default_loong_home_prefers_loong_home_over_legacy_env_alias() {
         let mut env = ScopedEnv::new();
         let new_home = std::env::temp_dir().join("loong-home-preferred");
         let old_home = std::env::temp_dir().join("loong-home-deprecated");
         env.set(LOONG_HOME_ENV, &new_home);
-        env.set("LOONG_HOME", &old_home);
+        env.set("LOONGCLAW_HOME", &old_home);
 
         // The active env constant reads the preferred name, so the legacy
         // fallback stays ignored when both are present.
@@ -1017,7 +1016,7 @@ mod legacy_home_tests {
     #[test]
     fn detect_legacy_home_finds_legacy_dir() {
         let temp = tempfile::tempdir().unwrap();
-        let legacy = temp.path().join(".loong");
+        let legacy = temp.path().join(".loongclaw");
         fs::create_dir_all(&legacy).unwrap();
         // .loong does NOT exist
         let result = detect_legacy_home(temp.path());
@@ -1031,7 +1030,7 @@ mod legacy_home_tests {
     fn detect_legacy_home_no_warning_when_new_exists() {
         let temp = tempfile::tempdir().unwrap();
         let new_home = temp.path().join(".loong");
-        let legacy = temp.path().join(".loong");
+        let legacy = temp.path().join(".loongclaw");
         fs::create_dir_all(&new_home).unwrap();
         fs::create_dir_all(&legacy).unwrap();
         let result = detect_legacy_home(temp.path());

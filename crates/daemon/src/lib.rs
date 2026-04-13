@@ -1572,9 +1572,48 @@ fn default_onboard_command() -> Commands {
     }
 }
 
+fn default_import_command() -> Commands {
+    Commands::Import {
+        output: None,
+        force: false,
+        preview: false,
+        apply: false,
+        json: false,
+        from: None,
+        source_path: None,
+        provider: None,
+        include: Vec::new(),
+        exclude: Vec::new(),
+    }
+}
+
+fn should_offer_import_for_legacy_home() -> bool {
+    if std::env::var_os("LOONG_CONFIG_PATH")
+        .as_deref()
+        .is_some_and(|value| !value.is_empty())
+    {
+        return false;
+    }
+    if std::env::var_os("LOONG_HOME")
+        .as_deref()
+        .is_some_and(|value| !value.is_empty())
+    {
+        return false;
+    }
+    let Some(user_home) = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(std::path::PathBuf::from)
+    else {
+        return false;
+    };
+    mvp::config::detect_legacy_home(&user_home).is_some()
+}
+
 pub fn resolve_default_entry_command() -> Commands {
     if resolved_default_entry_config_path().is_file() {
         Commands::Welcome
+    } else if should_offer_import_for_legacy_home() {
+        default_import_command()
     } else {
         default_onboard_command()
     }
@@ -1687,6 +1726,39 @@ mod first_run_entry_tests {
         assert!(
             matches!(resolve_default_entry_command(), Commands::Welcome),
             "present config should route to welcome"
+        );
+    }
+
+    #[test]
+    fn resolve_default_entry_command_routes_to_import_when_only_legacy_config_exists() {
+        let (_env, home) = isolated_home("loong-default-entry-legacy");
+        let legacy_dir = home.join(mvp::config::LEGACY_HOME_DIR_NAME);
+        let legacy_path = legacy_dir.join("config.toml");
+        fs::create_dir_all(&legacy_dir).expect("create legacy config dir");
+        mvp::config::write(
+            Some(legacy_path.to_str().expect("utf8 legacy config path")),
+            &mvp::config::LoongConfig::default(),
+            true,
+        )
+        .expect("write legacy config");
+
+        assert!(
+            matches!(
+                resolve_default_entry_command(),
+                Commands::Import {
+                    output: None,
+                    force: false,
+                    preview: false,
+                    apply: false,
+                    json: false,
+                    from: None,
+                    source_path: None,
+                    provider: None,
+                    include: _,
+                    exclude: _,
+                }
+            ),
+            "legacy config should route to import preview"
         );
     }
 

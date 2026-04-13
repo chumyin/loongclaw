@@ -155,6 +155,34 @@ pub fn collect_import_candidates_with_path_list_and_readiness(
                 );
             }
         }
+    } else if let Some(user_home) = output_path.parent().and_then(Path::parent) {
+        let legacy_config_path = user_home
+            .join(mvp::config::LEGACY_HOME_DIR_NAME)
+            .join(output_path.file_name().unwrap_or_default());
+        if legacy_config_path.is_file() {
+            let Some(path_str) = legacy_config_path.to_str() else {
+                return Ok(candidates);
+            };
+            match mvp::config::load(Some(path_str)) {
+                Ok((_, config)) => {
+                    if let Some(candidate) = build_import_candidate(
+                        ImportSourceKind::ExplicitPath,
+                        legacy_config_path.display().to_string(),
+                        config,
+                        resolve_channel_import_readiness_from_config,
+                        guidance.clone(),
+                    ) {
+                        candidates.push(candidate);
+                    }
+                }
+                Err(error) => {
+                    println!(
+                        "Detected legacy config at {} but could not import it: {error}",
+                        legacy_config_path.display()
+                    );
+                }
+            }
+        }
     }
 
     let mut seen_codex_paths = BTreeSet::new();
@@ -687,6 +715,22 @@ fn memory_behavior_summary(config: &mvp::config::MemoryConfig) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::process;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    static UNIQUE_DISCOVERY_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let pid = process::id();
+        let counter = UNIQUE_DISCOVERY_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!("{prefix}-{pid}-{nanos}-{counter}"))
+    }
 
     #[test]
     fn cli_import_surface_detects_prompt_pack_metadata_changes() {
@@ -714,5 +758,39 @@ mod tests {
         let surface = provider_import_surface(&config).expect("provider surface should exist");
 
         assert_eq!(surface.level, ImportSurfaceLevel::Ready);
+    }
+
+    #[test]
+    fn collect_import_candidates_includes_legacy_home_config_when_current_home_is_missing() {
+        let mut env = crate::test_support::ScopedEnv::new();
+        let home = unique_temp_dir("loong-discovery-legacy-home");
+        let legacy_dir = home.join(mvp::config::LEGACY_HOME_DIR_NAME);
+        let legacy_path = legacy_dir.join("config.toml");
+        fs::create_dir_all(&legacy_dir).expect("create legacy config dir");
+        env.set("HOME", &home);
+        env.remove("LOONG_HOME");
+        env.remove("LOONG_CONFIG_PATH");
+        let mut config = mvp::config::LoongConfig::default();
+        config.cli.system_prompt = "legacy import me".to_owned();
+        mvp::config::write(Some(legacy_path.to_string_lossy().as_ref()), &config, true)
+            .expect("write legacy config");
+
+        let output_path = home.join(mvp::config::HOME_DIR_NAME).join("config.toml");
+        let candidates = collect_import_candidates_with_path_list(&output_path, &[], None)
+            .expect("collect import candidates");
+
+        assert!(
+            candidates.iter().any(|candidate| {
+                candidate.source_kind == ImportSourceKind::ExplicitPath
+                    && crate::source_presentation::source_path(
+                        Some(candidate.source_kind),
+                        &candidate.source,
+                    ) == Some(legacy_path.clone())
+            }),
+            "legacy home config should appear as an explicit import candidate: {candidates:#?}"
+        );
+
+        let _ = fs::remove_file(&legacy_path);
+        let _ = fs::remove_dir_all(&home);
     }
 }

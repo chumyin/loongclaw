@@ -82,26 +82,26 @@ mod tests {
     }
 
     #[test]
-    fn format_subcommand_with_config_can_render_legacy_binary_name() {
+    fn format_subcommand_with_config_uses_primary_binary_name() {
         assert_eq!(
             format_subcommand_with_config_for_command(
-                crate::LEGACY_CLI_COMMAND_NAME,
+                crate::CLI_COMMAND_NAME,
                 "doctor",
                 "/tmp/loong.toml",
             ),
-            "loongclaw doctor --config '/tmp/loong.toml'"
+            "loong doctor --config '/tmp/loong.toml'"
         );
     }
 
     #[test]
-    fn format_ask_with_config_can_render_legacy_binary_name() {
+    fn format_ask_with_config_uses_primary_binary_name() {
         assert_eq!(
             format_ask_with_config_for_command(
-                crate::LEGACY_CLI_COMMAND_NAME,
+                crate::CLI_COMMAND_NAME,
                 "/tmp/loong.toml",
                 "say hi",
             ),
-            "loongclaw ask --config '/tmp/loong.toml' --message 'say hi'"
+            "loong ask --config '/tmp/loong.toml' --message 'say hi'"
         );
     }
 }

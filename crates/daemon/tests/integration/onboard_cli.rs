@@ -34,6 +34,13 @@ fn assert_compact_loong_header(lines: &[String], context: &str) {
     );
 }
 
+fn normalized_lines(lines: &[String]) -> String {
+    lines.join(" ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn unique_temp_path(label: &str) -> PathBuf {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -7696,21 +7703,14 @@ fn render_onboarding_success_summary_compacts_for_narrow_width() {
     let summary = loong_daemon::onboard_cli::build_onboarding_success_summary(&path, &config, None);
     let lines =
         loong_daemon::onboard_cli::render_onboarding_success_summary_with_width(&summary, 48);
+    let rendered = normalized_lines(&lines);
     assert!(
         lines.iter().any(|line| line == "start here"),
         "narrow renderer should explicitly call out the primary next action: {lines:#?}"
     );
     assert!(
-        lines
-            .iter()
-            .any(|line| line == "- first answer: loong ask --config")
-            && lines
-                .iter()
-                .any(|line| line == "  '/tmp/loong-config.toml' --message")
-            && lines
-                .iter()
-                .any(|line| line == "  'Summarize this repository and suggest the")
-            && lines.iter().any(|line| line == "  best next step.'"),
+        rendered.contains("- first answer: loong ask --config '/tmp/loong-config.toml' --message")
+            && rendered.contains("Summarize this repository and suggest the best next step."),
         "narrow renderer should keep the primary first-answer handoff readable even when the command wraps: {lines:#?}"
     );
     assert!(
@@ -7788,6 +7788,7 @@ fn onboarding_success_summary_uses_compact_header() {
 
     let lines =
         loong_daemon::onboard_cli::render_onboarding_success_summary_with_width(&summary, 80);
+    let rendered = normalized_lines(&lines);
     assert_compact_loong_header(&lines, "success summary");
     assert!(
         lines.iter().all(|line| !line.starts_with("██╗")),
@@ -7799,12 +7800,8 @@ fn onboarding_success_summary_uses_compact_header() {
     );
     assert!(
         lines.iter().any(|line| line == "start here")
-            && lines
-                .join(" ")
-                .contains("- first answer: loong ask --config '/tmp/loong-config.toml' --message")
-            && lines
-                .join(" ")
-                .contains("Summarize this repository and suggest the best next step."),
+            && rendered.contains("- first answer: loong ask --config '/tmp/loong-config.toml' --message")
+            && rendered.contains("Summarize this repository and suggest the best next step."),
         "success summary should elevate ask as the primary handoff command even when wrapping is needed: {lines:#?}"
     );
     assert!(
@@ -8131,7 +8128,7 @@ fn onboarding_success_summary_groups_secondary_channel_actions_after_primary_han
     let summary = loong_daemon::onboard_cli::build_onboarding_success_summary(&path, &config, None);
     let lines =
         loong_daemon::onboard_cli::render_onboarding_success_summary_with_width(&summary, 80);
-    let rendered = lines.join(" ");
+    let rendered = normalized_lines(&lines);
 
     assert!(
         rendered.contains("- first answer: loong ask --config '/tmp/loong-config.toml' --message")

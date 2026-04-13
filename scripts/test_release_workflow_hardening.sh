@@ -46,10 +46,16 @@ assert_android_release_target_parity() {
   assert_not_contains ".github/workflows/release.yml" "target: x86_64-linux-android"
 }
 
+assert_single_bin_release_contract() {
+  assert_not_contains ".github/workflows/ci.yml" "LEGACY_BIN_NAME:"
+  assert_not_contains ".github/workflows/release.yml" "LEGACY_BIN_NAME:"
+}
+
 cd "$REPO_ROOT"
 
 assert_android_ndk_sha256_hardening ".github/workflows/ci.yml"
 assert_android_ndk_sha256_hardening ".github/workflows/release.yml"
 assert_android_release_target_parity
+assert_single_bin_release_contract
 
 echo "release workflow hardening checks passed"
