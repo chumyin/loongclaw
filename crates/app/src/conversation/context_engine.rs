@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use loong_contracts::Capability;
 use serde_json::{Value, json};
 
-use crate::config::LoongConfig;
+use crate::config::LoongClawConfig;
 use crate::{CliResult, KernelContext};
 
 #[cfg(feature = "memory-sqlite")]
@@ -144,7 +144,7 @@ pub trait ConversationContextEngine: Send + Sync {
 
     async fn bootstrap(
         &self,
-        _config: &LoongConfig,
+        _config: &LoongClawConfig,
         _session_id: &str,
         _kernel_ctx: &KernelContext,
     ) -> CliResult<ContextEngineBootstrapResult> {
@@ -173,7 +173,7 @@ pub trait ConversationContextEngine: Send + Sync {
 
     async fn compact_context(
         &self,
-        _config: &LoongConfig,
+        _config: &LoongClawConfig,
         _session_id: &str,
         _messages: &[Value],
         _kernel_ctx: &KernelContext,
@@ -201,7 +201,7 @@ pub trait ConversationContextEngine: Send + Sync {
 
     async fn assemble_context(
         &self,
-        config: &LoongConfig,
+        config: &LoongClawConfig,
         session_id: &str,
         include_system_prompt: bool,
         binding: ConversationRuntimeBinding<'_>,
@@ -213,7 +213,7 @@ pub trait ConversationContextEngine: Send + Sync {
 
     async fn assemble_messages(
         &self,
-        config: &LoongConfig,
+        config: &LoongClawConfig,
         session_id: &str,
         include_system_prompt: bool,
         binding: ConversationRuntimeBinding<'_>,
@@ -235,7 +235,7 @@ where
 
     async fn bootstrap(
         &self,
-        config: &LoongConfig,
+        config: &LoongClawConfig,
         session_id: &str,
         kernel_ctx: &KernelContext,
     ) -> CliResult<ContextEngineBootstrapResult> {
@@ -274,7 +274,7 @@ where
 
     async fn compact_context(
         &self,
-        config: &LoongConfig,
+        config: &LoongClawConfig,
         session_id: &str,
         messages: &[Value],
         kernel_ctx: &KernelContext,
@@ -308,7 +308,7 @@ where
 
     async fn assemble_context(
         &self,
-        config: &LoongConfig,
+        config: &LoongClawConfig,
         session_id: &str,
         include_system_prompt: bool,
         binding: ConversationRuntimeBinding<'_>,
@@ -320,7 +320,7 @@ where
 
     async fn assemble_messages(
         &self,
-        config: &LoongConfig,
+        config: &LoongClawConfig,
         session_id: &str,
         include_system_prompt: bool,
         binding: ConversationRuntimeBinding<'_>,
@@ -375,7 +375,7 @@ impl ConversationContextEngine for DefaultContextEngine {
 
     async fn compact_context(
         &self,
-        config: &LoongConfig,
+        config: &LoongClawConfig,
         session_id: &str,
         _messages: &[Value],
         kernel_ctx: &KernelContext,
@@ -422,7 +422,7 @@ impl ConversationContextEngine for DefaultContextEngine {
 
     async fn assemble_context(
         &self,
-        config: &LoongConfig,
+        config: &LoongClawConfig,
         session_id: &str,
         include_system_prompt: bool,
         binding: ConversationRuntimeBinding<'_>,
@@ -452,7 +452,7 @@ impl ConversationContextEngine for DefaultContextEngine {
                 .ok_or_else(|| "kernel-bound context engine requires kernel context".to_owned())?;
             let provider_binding = crate::provider::ProviderRuntimeBinding::kernel(kernel_ctx);
             let envelope = load_stage_envelope(config, session_id, binding).await?;
-            let runtime_tool_view = crate::tools::runtime_tool_view_from_loong_config(config);
+            let runtime_tool_view = crate::tools::runtime_tool_view_from_loongclaw_config(config);
             let projected = crate::provider::project_hydrated_memory_context_for_view_with_binding(
                 config,
                 include_system_prompt,
@@ -480,7 +480,7 @@ impl ConversationContextEngine for DefaultContextEngine {
 
     async fn assemble_messages(
         &self,
-        config: &LoongConfig,
+        config: &LoongClawConfig,
         session_id: &str,
         include_system_prompt: bool,
         binding: ConversationRuntimeBinding<'_>,
@@ -503,7 +503,7 @@ impl ConversationContextEngine for LegacyContextEngine {
 
     async fn assemble_messages(
         &self,
-        config: &LoongConfig,
+        config: &LoongClawConfig,
         session_id: &str,
         include_system_prompt: bool,
         _binding: ConversationRuntimeBinding<'_>,
@@ -513,7 +513,7 @@ impl ConversationContextEngine for LegacyContextEngine {
 }
 
 async fn load_memory_window_snapshot(
-    config: &LoongConfig,
+    config: &LoongClawConfig,
     session_id: &str,
     kernel_ctx: &KernelContext,
 ) -> CliResult<CompactionWindowSnapshot> {
@@ -590,7 +590,7 @@ async fn persist_memory_window(
 
 #[cfg(feature = "memory-sqlite")]
 async fn load_stage_envelope(
-    config: &LoongConfig,
+    config: &LoongClawConfig,
     session_id: &str,
     binding: ConversationRuntimeBinding<'_>,
 ) -> CliResult<memory::StageEnvelope> {
@@ -639,7 +639,7 @@ mod tests {
 
     #[cfg(feature = "memory-sqlite")]
     async fn provider_messages_with_kernel_binding(
-        config: &LoongConfig,
+        config: &LoongClawConfig,
         session_id: &str,
         kernel_ctx: &crate::KernelContext,
     ) -> Vec<Value> {
@@ -733,7 +733,7 @@ mod tests {
 
         std::fs::write(&agents_path, agents_text).expect("write AGENTS");
 
-        let mut config = LoongConfig::default();
+        let mut config = LoongClawConfig::default();
         config.tools.file_root = Some(harness.temp_dir.display().to_string());
 
         let messages = DefaultContextEngine
@@ -780,7 +780,7 @@ mod tests {
         let session_id = "kernel-summary-session";
         let sqlite_path = harness.temp_dir.join("memory.sqlite3");
         let sqlite_path_text = sqlite_path.display().to_string();
-        let mut config = LoongConfig::default();
+        let mut config = LoongClawConfig::default();
 
         config.tools.file_root = Some(harness.temp_dir.display().to_string());
         config.memory.profile = MemoryProfile::WindowPlusSummary;
@@ -837,7 +837,7 @@ mod tests {
         let sqlite_path = harness.temp_dir.join("memory.sqlite3");
         let sqlite_path_text = sqlite_path.display().to_string();
         let profile_note = "Imported ZeroClaw preferences";
-        let mut config = LoongConfig::default();
+        let mut config = LoongClawConfig::default();
 
         config.tools.file_root = Some(harness.temp_dir.display().to_string());
         config.memory.profile = MemoryProfile::ProfilePlusWindow;
@@ -896,7 +896,7 @@ mod tests {
         )
         .expect("write durable recall");
 
-        let mut config = LoongConfig::default();
+        let mut config = LoongClawConfig::default();
         config.tools.file_root = Some(harness.temp_dir.display().to_string());
         config.memory.sqlite_path = sqlite_path_text;
 
@@ -946,7 +946,7 @@ mod tests {
         )
         .expect("write durable recall");
 
-        let mut config = LoongConfig::default();
+        let mut config = LoongClawConfig::default();
         config.tools.file_root = Some(harness.temp_dir.display().to_string());
         config.memory.sqlite_path = sqlite_path_text;
         config.memory.system_id = Some(crate::memory::WORKSPACE_RECALL_MEMORY_SYSTEM_ID.to_owned());
@@ -1010,7 +1010,7 @@ mod tests {
         let sqlite_path = harness.temp_dir.join("memory.sqlite3");
         let sqlite_path_text = sqlite_path.display().to_string();
         let profile_note = "# Identity\n\n- Name: Advisory shadow";
-        let mut config = LoongConfig::default();
+        let mut config = LoongClawConfig::default();
 
         config.tools.file_root = Some(harness.temp_dir.display().to_string());
         config.memory.profile = MemoryProfile::ProfilePlusWindow;

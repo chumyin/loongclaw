@@ -345,7 +345,7 @@ pub async fn execute_tasks_command(
 
 async fn execute_create_command(
     resolved_config_path: &str,
-    config: &mvp::config::LoongConfig,
+    config: &mvp::config::LoongClawConfig,
     current_session_id: &str,
     memory_config: &mvp::memory::runtime_config::MemoryRuntimeConfig,
     tool_config: &mvp::config::ToolConfig,

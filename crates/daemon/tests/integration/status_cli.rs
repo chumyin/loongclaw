@@ -1,5 +1,5 @@
 use super::*;
-use loongclaw_contracts::SecretRef;
+use loong_contracts::SecretRef;
 use serde_json::Value;
 use std::{
     fs,
@@ -28,7 +28,7 @@ fn write_status_config(
     fs::create_dir_all(root).expect("create fixture root");
 
     let sqlite_path = root.join("memory.sqlite3");
-    let mut config = mvp::config::LoongClawConfig::default();
+    let mut config = mvp::config::LoongConfig::default();
     config.memory.sqlite_path = sqlite_path.display().to_string();
     config.tools.file_root = Some(root.display().to_string());
     config.set_active_provider_profile(
@@ -75,7 +75,7 @@ fn run_status_cli_process(
         .to_str()
         .expect("config path should be valid utf-8");
 
-    Command::new(env!("CARGO_BIN_EXE_loongclaw"))
+    Command::new(env!("CARGO_BIN_EXE_loong"))
         .arg("status")
         .arg("--config")
         .arg(config_path_text)

@@ -20,10 +20,8 @@ static TEMP_PATH_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn assert_compact_loong_header(lines: &[String], context: &str) {
     assert!(
-        lines
-            .first()
-            .is_some_and(|line| line.starts_with("LOONGCLAW")),
-        "{context} should start with the compact LOONGCLAW header: {lines:#?}"
+        lines.first().is_some_and(|line| line.starts_with("LOONG")),
+        "{context} should start with the compact LOONG header: {lines:#?}"
     );
     assert!(
         lines
@@ -35,7 +33,8 @@ fn assert_compact_loong_header(lines: &[String], context: &str) {
 }
 
 fn normalized_lines(lines: &[String]) -> String {
-    lines.join(" ")
+    lines
+        .join(" ")
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
@@ -2006,15 +2005,15 @@ async fn interactive_onboard_only_shows_large_logo_on_the_initial_screen() {
             .filter(|line| line.contains("██╗      ██████╗"))
             .count(),
         1,
-        "interactive onboarding should show the large LOONGCLAW banner only once, on the initial risk screen: {transcript:#?}"
+        "interactive onboarding should show the large LOONG banner only once, on the initial risk screen: {transcript:#?}"
     );
     assert!(
         transcript
             .iter()
-            .filter(|line| line.contains("LOONGCLAW"))
+            .filter(|line| line.contains("LOONG"))
             .count()
             >= 3,
-        "follow-up screens should keep using the compact LOONGCLAW header instead of dropping branding entirely: {transcript:#?}"
+        "follow-up screens should keep using the compact LOONG header instead of dropping branding entirely: {transcript:#?}"
     );
     assert!(
         transcript.iter().any(|line| line == "choose personality"),
@@ -2377,7 +2376,7 @@ fn onboard_risk_screen_uses_brand_header_and_continue_cancel_options() {
 
     assert!(
         lines[0].starts_with("██╗"),
-        "risk screen should keep the oversized LOONGCLAW brand banner on the initial guard screen: {lines:#?}"
+        "risk screen should keep the oversized LOONG brand banner on the initial guard screen: {lines:#?}"
     );
     assert!(
         lines
@@ -3714,7 +3713,7 @@ fn onboard_entry_screen_uses_compact_header_and_detected_setup_digest() {
     assert_compact_loong_header(&lines, "entry screen");
     assert!(
         lines.iter().all(|line| !line.starts_with("██╗")),
-        "entry screen should not repeat the large LOONGCLAW banner after the first screen: {lines:#?}"
+        "entry screen should not repeat the large LOONG banner after the first screen: {lines:#?}"
     );
     assert!(
         lines
@@ -4008,7 +4007,7 @@ fn onboard_provider_selection_screen_includes_focus_title_and_choices() {
     assert_compact_loong_header(&lines, "provider choice screen");
     assert!(
         lines.iter().all(|line| !line.starts_with("██╗")),
-        "provider choice screen should not re-render the large LOONGCLAW banner mid-onboarding: {lines:#?}"
+        "provider choice screen should not re-render the large LOONG banner mid-onboarding: {lines:#?}"
     );
     assert!(
         lines.iter().any(|line| line == "choose active provider"),
@@ -5326,7 +5325,7 @@ fn onboard_starting_point_selection_screen_wraps_header_title_and_subtitle_on_na
         lines.iter().all(|line| line.len() <= 22),
         "starting-point screen should keep brand subtitle and title within narrow widths: {lines:#?}"
     );
-    assert_eq!(lines[0], "LOONGCLAW");
+    assert_eq!(lines[0], "LOONG");
     assert!(
         lines.iter().any(|line| line == "choose detected"),
         "narrow starting-point screen should wrap the long title instead of leaving it on one overflowing line: {lines:#?}"
@@ -5425,7 +5424,7 @@ fn onboard_model_selection_screen_wraps_compact_header_and_progress_on_narrow_wi
         "model screen should keep compact header and progress copy within narrow terminal widths: {lines:#?}"
     );
     assert_eq!(
-        lines[0], "LOONGCLAW",
+        lines[0], "LOONG",
         "narrow model screen should split the compact header instead of forcing brand and version onto one line: {lines:#?}"
     );
     assert!(
@@ -5733,7 +5732,7 @@ fn onboard_personality_selection_screen_shows_native_personality_choices() {
     assert_compact_loong_header(&lines, "personality screen");
     assert!(
         lines.iter().all(|line| !line.starts_with("██╗")),
-        "personality screen should not repeat the large LOONGCLAW banner mid-onboarding: {lines:#?}"
+        "personality screen should not repeat the large LOONG banner mid-onboarding: {lines:#?}"
     );
     assert!(
         lines.iter().any(|line| line == "choose personality"),
@@ -6228,7 +6227,7 @@ fn onboard_existing_config_write_screen_offers_replace_backup_and_cancel() {
     assert_compact_loong_header(&lines, "existing-config write screen");
     assert!(
         lines.iter().all(|line| !line.starts_with("██╗")),
-        "existing-config write screen should not repeat the large LOONGCLAW banner after the first screen: {lines:#?}"
+        "existing-config write screen should not repeat the large LOONG banner after the first screen: {lines:#?}"
     );
     assert!(
         lines.iter().any(|line| line == "existing config found"),
@@ -7421,7 +7420,7 @@ fn onboard_review_lines_use_compact_header() {
     assert_compact_loong_header(&lines, "review screen");
     assert!(
         lines.iter().all(|line| !line.starts_with("██╗")),
-        "review screen should not repeat the large LOONGCLAW banner: {lines:#?}"
+        "review screen should not repeat the large LOONG banner: {lines:#?}"
     );
     assert!(
         lines.iter().any(|line| line == "review setup"),
@@ -7792,7 +7791,7 @@ fn onboarding_success_summary_uses_compact_header() {
     assert_compact_loong_header(&lines, "success summary");
     assert!(
         lines.iter().all(|line| !line.starts_with("██╗")),
-        "success summary should not repeat the large LOONGCLAW banner after onboarding has already started: {lines:#?}"
+        "success summary should not repeat the large LOONG banner after onboarding has already started: {lines:#?}"
     );
     assert!(
         lines.iter().any(|line| line == "onboarding complete"),
@@ -7800,7 +7799,8 @@ fn onboarding_success_summary_uses_compact_header() {
     );
     assert!(
         lines.iter().any(|line| line == "start here")
-            && rendered.contains("- first answer: loong ask --config '/tmp/loong-config.toml' --message")
+            && rendered
+                .contains("- first answer: loong ask --config '/tmp/loong-config.toml' --message")
             && rendered.contains("Summarize this repository and suggest the best next step."),
         "success summary should elevate ask as the primary handoff command even when wrapping is needed: {lines:#?}"
     );

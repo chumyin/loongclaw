@@ -1912,14 +1912,14 @@ fn inject_tool_search_visibility_context_trusted(
 
     let mut internal = if preserve_existing_internal_context {
         object
-            .remove(crate::tools::LOONG_INTERNAL_TOOL_CONTEXT_KEY)
+            .remove(crate::tools::LOONGCLAW_INTERNAL_TOOL_CONTEXT_KEY)
             .and_then(|value| value.as_object().cloned())
             .unwrap_or_default()
     } else {
         serde_json::Map::new()
     };
     let mut tool_search_context = internal
-        .remove(crate::tools::LOONG_INTERNAL_TOOL_SEARCH_KEY)
+        .remove(crate::tools::LOONGCLAW_INTERNAL_TOOL_SEARCH_KEY)
         .and_then(|value| value.as_object().cloned())
         .unwrap_or_default();
     let visible_tool_ids = session_context
@@ -1928,15 +1928,15 @@ fn inject_tool_search_visibility_context_trusted(
         .map(|tool_name| serde_json::Value::String(tool_name.to_owned()))
         .collect::<Vec<_>>();
     tool_search_context.insert(
-        crate::tools::LOONG_INTERNAL_TOOL_SEARCH_VISIBLE_TOOL_IDS_KEY.to_owned(),
+        crate::tools::LOONGCLAW_INTERNAL_TOOL_SEARCH_VISIBLE_TOOL_IDS_KEY.to_owned(),
         serde_json::Value::Array(visible_tool_ids),
     );
     internal.insert(
-        crate::tools::LOONG_INTERNAL_TOOL_SEARCH_KEY.to_owned(),
+        crate::tools::LOONGCLAW_INTERNAL_TOOL_SEARCH_KEY.to_owned(),
         serde_json::Value::Object(tool_search_context),
     );
     object.insert(
-        crate::tools::LOONG_INTERNAL_TOOL_CONTEXT_KEY.to_owned(),
+        crate::tools::LOONGCLAW_INTERNAL_TOOL_CONTEXT_KEY.to_owned(),
         serde_json::Value::Object(internal),
     );
     AugmentedToolPayload {
@@ -1972,19 +1972,19 @@ fn inject_runtime_narrowing_context_trusted(
     };
     let mut internal = if preserve_existing_internal_context {
         object
-            .remove(crate::tools::LOONG_INTERNAL_TOOL_CONTEXT_KEY)
+            .remove(crate::tools::LOONGCLAW_INTERNAL_TOOL_CONTEXT_KEY)
             .and_then(|value| value.as_object().cloned())
             .unwrap_or_default()
     } else {
         serde_json::Map::new()
     };
     internal.insert(
-        crate::tools::LOONG_INTERNAL_RUNTIME_NARROWING_KEY.to_owned(),
+        crate::tools::LOONGCLAW_INTERNAL_RUNTIME_NARROWING_KEY.to_owned(),
         serde_json::to_value(runtime_narrowing)
             .unwrap_or_else(|_| serde_json::Value::Object(serde_json::Map::new())),
     );
     object.insert(
-        crate::tools::LOONG_INTERNAL_TOOL_CONTEXT_KEY.to_owned(),
+        crate::tools::LOONGCLAW_INTERNAL_TOOL_CONTEXT_KEY.to_owned(),
         serde_json::Value::Object(internal),
     );
     AugmentedToolPayload {
@@ -2013,7 +2013,7 @@ fn inject_workspace_root_context_trusted(
     };
     let mut internal = if preserve_existing_internal_context {
         object
-            .remove(crate::tools::LOONG_INTERNAL_TOOL_CONTEXT_KEY)
+            .remove(crate::tools::LOONGCLAW_INTERNAL_TOOL_CONTEXT_KEY)
             .and_then(|value| value.as_object().cloned())
             .unwrap_or_default()
     } else {
@@ -2021,11 +2021,11 @@ fn inject_workspace_root_context_trusted(
     };
     let workspace_root_string = workspace_root.display().to_string();
     internal.insert(
-        crate::tools::LOONG_INTERNAL_WORKSPACE_ROOT_KEY.to_owned(),
+        crate::tools::LOONGCLAW_INTERNAL_WORKSPACE_ROOT_KEY.to_owned(),
         serde_json::Value::String(workspace_root_string),
     );
     object.insert(
-        crate::tools::LOONG_INTERNAL_TOOL_CONTEXT_KEY.to_owned(),
+        crate::tools::LOONGCLAW_INTERNAL_TOOL_CONTEXT_KEY.to_owned(),
         serde_json::Value::Object(internal),
     );
     AugmentedToolPayload {
@@ -2482,22 +2482,23 @@ async fn execute_tool_intent_via_kernel(
     kernel_ctx: &KernelContext,
     trusted_internal_context: bool,
 ) -> Result<ToolCoreOutcome, TurnFailure> {
-    crate::tools::execute_kernel_tool_request(kernel_ctx, request, trusted_internal_context)
-        .await
-        .map_err(|error| {
-            let reason = render_kernel_error_reason(&error);
-            match classify_kernel_error(&error) {
-                KernelFailureClass::PolicyDenied => {
-                    TurnFailure::policy_denied("kernel_policy_denied", reason)
-                }
-                KernelFailureClass::RetryableExecution => {
-                    TurnFailure::retryable("tool_execution_failed", reason)
-                }
-                KernelFailureClass::NonRetryable => {
-                    TurnFailure::non_retryable("kernel_execution_failed", reason)
-                }
+    let outcome: Result<ToolCoreOutcome, loong_kernel::KernelError> =
+        crate::tools::execute_kernel_tool_request(kernel_ctx, request, trusted_internal_context)
+            .await;
+    outcome.map_err(|error| {
+        let reason = render_kernel_error_reason(&error);
+        match classify_kernel_error(&error) {
+            KernelFailureClass::PolicyDenied => {
+                TurnFailure::policy_denied("kernel_policy_denied", reason)
             }
-        })
+            KernelFailureClass::RetryableExecution => {
+                TurnFailure::retryable("tool_execution_failed", reason)
+            }
+            KernelFailureClass::NonRetryable => {
+                TurnFailure::non_retryable("kernel_execution_failed", reason)
+            }
+        }
+    })
 }
 
 struct ObserverToolRuntimeEventSink {
@@ -3980,7 +3981,7 @@ mod tests {
 
     fn isolated_memory_config(test_name: &str) -> MemoryRuntimeConfig {
         let base = std::env::temp_dir().join(format!(
-            "loong-turn-engine-approval-{test_name}-{}",
+            "loongclaw-turn-engine-approval-{test_name}-{}",
             std::process::id()
         ));
         let _ = fs::create_dir_all(&base);
@@ -5629,7 +5630,7 @@ mod tests {
         })
         .expect("ensure root session");
 
-        let root = unique_browser_companion_temp_dir("loong-turn-engine-browser-companion");
+        let root = unique_browser_companion_temp_dir("loongclaw-turn-engine-browser-companion");
         fs::create_dir_all(&root).expect("create fixture root");
         let log_path = root.join("request.json");
         let script_path = write_browser_companion_script(
@@ -5661,7 +5662,7 @@ mod tests {
             .to_owned();
 
         let mut env = crate::test_support::ScopedEnv::new();
-        env.set("LOONG_BROWSER_COMPANION_READY", "true");
+        env.set("LOONGCLAW_BROWSER_COMPANION_READY", "true");
 
         let mut tool_config = ToolConfig::default();
         tool_config.browser_companion.enabled = true;
@@ -5730,7 +5731,8 @@ mod tests {
         })
         .expect("ensure root session");
 
-        let root = unique_browser_companion_temp_dir("loong-turn-engine-browser-companion-runtime");
+        let root =
+            unique_browser_companion_temp_dir("loongclaw-turn-engine-browser-companion-runtime");
         fs::create_dir_all(&root).expect("create fixture root");
         let log_path = root.join("request.json");
         let script_path = write_browser_companion_script(
@@ -5762,7 +5764,7 @@ mod tests {
             .to_owned();
 
         let mut env = crate::test_support::ScopedEnv::new();
-        env.set("LOONG_BROWSER_COMPANION_READY", "false");
+        env.set("LOONGCLAW_BROWSER_COMPANION_READY", "false");
 
         let mut tool_config = ToolConfig::default();
         tool_config.browser_companion.enabled = true;
@@ -5831,8 +5833,9 @@ mod tests {
         })
         .expect("ensure root session");
 
-        let root =
-            unique_browser_companion_temp_dir("loong-turn-engine-browser-companion-runtime-policy");
+        let root = unique_browser_companion_temp_dir(
+            "loongclaw-turn-engine-browser-companion-runtime-policy",
+        );
         fs::create_dir_all(&root).expect("create fixture root");
         let log_path = root.join("request.json");
         let script_path = write_browser_companion_script(
@@ -5864,10 +5867,10 @@ mod tests {
             .to_owned();
 
         let mut env = crate::test_support::ScopedEnv::new();
-        env.set("LOONG_BROWSER_COMPANION_ENABLED", "true");
-        env.set("LOONG_BROWSER_COMPANION_READY", "false");
+        env.set("LOONGCLAW_BROWSER_COMPANION_ENABLED", "true");
+        env.set("LOONGCLAW_BROWSER_COMPANION_READY", "false");
         env.set(
-            "LOONG_BROWSER_COMPANION_COMMAND",
+            "LOONGCLAW_BROWSER_COMPANION_COMMAND",
             script_path.display().to_string(),
         );
 
@@ -6272,14 +6275,14 @@ mod tests {
         let augmented = augment_tool_payload_for_kernel("tool.search", payload, &session_context);
 
         assert_eq!(
-            augmented.payload[crate::tools::LOONG_INTERNAL_TOOL_CONTEXT_KEY]
-                [crate::tools::LOONG_INTERNAL_TOOL_SEARCH_KEY]
-                [crate::tools::LOONG_INTERNAL_TOOL_SEARCH_VISIBLE_TOOL_IDS_KEY],
+            augmented.payload[crate::tools::LOONGCLAW_INTERNAL_TOOL_CONTEXT_KEY]
+                [crate::tools::LOONGCLAW_INTERNAL_TOOL_SEARCH_KEY]
+                [crate::tools::LOONGCLAW_INTERNAL_TOOL_SEARCH_VISIBLE_TOOL_IDS_KEY],
             json!(["file.read", "tool.invoke", "tool.search"])
         );
         assert_eq!(
-            augmented.payload[crate::tools::LOONG_INTERNAL_TOOL_CONTEXT_KEY]
-                [crate::tools::LOONG_INTERNAL_RUNTIME_NARROWING_KEY]["browser"]["max_sessions"],
+            augmented.payload[crate::tools::LOONGCLAW_INTERNAL_TOOL_CONTEXT_KEY]
+                [crate::tools::LOONGCLAW_INTERNAL_RUNTIME_NARROWING_KEY]["browser"]["max_sessions"],
             1
         );
     }

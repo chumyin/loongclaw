@@ -1456,6 +1456,22 @@ fn build_memory_systems_cli_json_payload_includes_runtime_policy() {
 
 #[test]
 fn render_memory_system_snapshot_text_reports_fail_open_policy() {
+    let home = unique_temp_dir("memory-system-snapshot-home");
+    let loong_home = home.join(mvp::config::HOME_DIR_NAME);
+    std::fs::create_dir_all(&loong_home).expect("create isolated loong home");
+    let sqlite_path = loong_home.join("memory.sqlite3");
+    let mut env = loong_daemon::test_support::ScopedEnv::new();
+    env.set("HOME", &home);
+    env.set("LOONG_HOME", &loong_home);
+    env.remove("LOONG_MEMORY_BACKEND");
+    env.remove("LOONG_MEMORY_PROFILE");
+    env.remove("LOONG_MEMORY_SYSTEM");
+    env.remove("LOONG_MEMORY_FAIL_OPEN");
+    env.remove("LOONG_MEMORY_INGEST_MODE");
+    env.set("LOONG_SQLITE_PATH", &sqlite_path);
+    env.remove("LOONG_SLIDING_WINDOW");
+    env.remove("LOONG_MEMORY_SUMMARY_MAX_CHARS");
+    env.remove("LOONG_MEMORY_PROFILE_NOTE");
     let config = mvp::config::LoongConfig {
         memory: mvp::config::MemoryConfig {
             profile: mvp::config::MemoryProfile::WindowPlusSummary,

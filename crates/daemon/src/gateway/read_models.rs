@@ -916,7 +916,7 @@ fn build_operator_runtime_summary_read_model(
 }
 
 fn build_tool_calling_read_model(
-    state: &crate::RuntimeSnapshotToolCallingState,
+    state: &crate::tool_calling_readiness::RuntimeSnapshotToolCallingState,
 ) -> GatewayToolCallingReadModel {
     GatewayToolCallingReadModel {
         availability: state.availability.clone(),
@@ -982,7 +982,7 @@ mod tests {
 
     #[test]
     fn operator_channel_surface_read_model_keeps_plugin_backed_summary_context() {
-        let config: mvp::config::LoongConfig = serde_json::from_value(serde_json::json!({
+        let config: mvp::config::LoongClawConfig = serde_json::from_value(serde_json::json!({
             "weixin": {
                 "enabled": true,
                 "default_account": "ops",
@@ -1023,7 +1023,7 @@ mod tests {
 
     #[test]
     fn operator_channel_surface_read_model_keeps_non_plugin_backed_summary_empty() {
-        let mut config = mvp::config::LoongConfig::default();
+        let mut config = mvp::config::LoongClawConfig::default();
         config.telegram.enabled = true;
         config.telegram.bot_token = Some(loong_contracts::SecretRef::Inline(
             "123456:test-token".to_owned(),

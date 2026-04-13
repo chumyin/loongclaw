@@ -98,6 +98,9 @@ mod command_kind;
 pub mod completions_cli;
 mod control_plane_server;
 mod copilot_onboarding;
+#[allow(dead_code)]
+#[doc(hidden)]
+pub mod delegate_child_cli;
 pub mod doctor_cli;
 pub mod doctor_security_cli;
 mod env_compat;
@@ -141,6 +144,7 @@ pub mod supervisor;
 mod task_execution;
 pub mod tasks_cli;
 mod tlon_cli;
+mod tool_calling_readiness;
 pub mod trajectory_cli;
 pub mod work_unit_cli;
 
@@ -255,7 +259,10 @@ pub fn native_spec_tool_executor(
     if mvp::tools::canonical_tool_name(request.tool_name.as_str()) != "config.import" {
         return None;
     }
-    Some(mvp::tools::execute_tool_core(request))
+    Some(mvp::tools::execute_tool_core_with_config(
+        request,
+        &mvp::tools::runtime_config::ToolRuntimeConfig::default(),
+    ))
 }
 
 pub type ChannelCliCommandFuture<'a> = Pin<Box<dyn Future<Output = CliResult<()>> + Send + 'a>>;
@@ -681,6 +688,13 @@ pub enum Commands {
         session: String,
         #[command(subcommand)]
         command: tasks_cli::TasksCommands,
+    },
+    #[command(hide = true)]
+    DelegateChildRun {
+        #[arg(long = "config-path")]
+        config_path: String,
+        #[arg(long = "payload-file")]
+        payload_file: String,
     },
     #[command(
         about = "Inspect and manage persisted runtime sessions through an operator-facing session shell",
@@ -2391,6 +2405,7 @@ pub struct RuntimeSnapshotCliState {
     pub channels: mvp::channel::ChannelInventory,
     pub tool_runtime: mvp::tools::runtime_config::ToolRuntimeConfig,
     pub visible_tool_names: Vec<String>,
+    pub tool_calling: crate::tool_calling_readiness::RuntimeSnapshotToolCallingState,
     pub capability_snapshot: String,
     pub capability_snapshot_sha256: String,
     pub runtime_plugins: RuntimeSnapshotRuntimePluginsState,
@@ -2647,6 +2662,10 @@ fn collect_runtime_snapshot_cli_state_from_parts(
         .tool_names()
         .map(str::to_owned)
         .collect::<Vec<_>>();
+    let tool_calling = crate::tool_calling_readiness::collect_runtime_snapshot_tool_calling_state(
+        config,
+        visible_tool_names.len(),
+    );
     let capability_snapshot = mvp::tools::capability_snapshot_with_config(&snapshot_tool_runtime);
     let capability_snapshot_sha256 =
         runtime_snapshot_tool_digest(&visible_tool_names, &capability_snapshot)?;
@@ -2664,6 +2683,7 @@ fn collect_runtime_snapshot_cli_state_from_parts(
         channels,
         tool_runtime: snapshot_tool_runtime,
         visible_tool_names,
+        tool_calling,
         capability_snapshot,
         capability_snapshot_sha256,
         runtime_plugins,

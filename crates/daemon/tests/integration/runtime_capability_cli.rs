@@ -58,6 +58,15 @@ impl RuntimeCapabilityEnvironmentGuard {
             ("HOME", Some(home_text.as_str())),
             ("LOONG_HOME", Some(loong_home_text.as_str())),
             ("LOONG_BROWSER_COMPANION_READY", None),
+            ("LOONG_MEMORY_BACKEND", None),
+            ("LOONG_MEMORY_PROFILE", None),
+            ("LOONG_MEMORY_SYSTEM", None),
+            ("LOONG_MEMORY_FAIL_OPEN", None),
+            ("LOONG_MEMORY_INGEST_MODE", None),
+            ("LOONG_SQLITE_PATH", None),
+            ("LOONG_SLIDING_WINDOW", None),
+            ("LOONG_MEMORY_SUMMARY_MAX_CHARS", None),
+            ("LOONG_MEMORY_PROFILE_NOTE", None),
         ];
         let mut saved = Vec::new();
         for (key, value) in pairs {
@@ -2588,7 +2597,6 @@ fn runtime_capability_plan_uses_memory_stage_profile_dry_run_artifact_surface() 
 #[test]
 fn runtime_capability_plan_scopes_memory_stage_profile_payload_provenance_to_accepted_evidence() {
     let root = unique_temp_dir("loong-runtime-capability-plan-memory-stage-profile-provenance");
-    write_runtime_capability_config(&root);
 
     let (run_a_path, _) = finish_runtime_experiment_variant_with_memory_compare_delta(
         &root,

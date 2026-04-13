@@ -23,10 +23,8 @@ fn normalized_path_text(value: &str) -> String {
 
 fn assert_compact_loong_header(lines: &[String], context: &str) {
     assert!(
-        lines
-            .first()
-            .is_some_and(|line| line.starts_with("LOONGCLAW")),
-        "{context} should start with the compact LOONGCLAW header: {lines:#?}"
+        lines.first().is_some_and(|line| line.starts_with("LOONG")),
+        "{context} should start with the compact LOONG header: {lines:#?}"
     );
     assert!(
         lines
@@ -502,7 +500,7 @@ fn import_cli_render_preview_includes_brand_header_and_title() {
 
     assert!(
         lines[0].starts_with("██╗"),
-        "import preview should start with the shared LOONGCLAW brand block: {lines:#?}"
+        "import preview should start with the shared LOONG brand block: {lines:#?}"
     );
     assert!(
         lines.iter().any(|line| line.starts_with('v')),

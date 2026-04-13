@@ -152,7 +152,7 @@ pub fn render_brand_banner_lines(width: usize) -> Vec<&'static str> {
     if width >= SPLIT_BANNER_MIN_WIDTH {
         return SPLIT_BANNER.to_vec();
     }
-    vec!["LOONGCLAW"]
+    vec!["LOONG"]
 }
 
 pub fn render_brand_header(
@@ -164,7 +164,7 @@ pub fn render_brand_header(
         .into_iter()
         .map(|line| BrandLine::new(BrandLineRole::Banner, line))
         .collect::<Vec<_>>();
-    let wrap_width = width.max("LOONGCLAW".len());
+    let wrap_width = width.max("LOONG".len());
     lines.extend(
         render_wrapped_text_line("", &build.render_version_line(), wrap_width)
             .into_iter()
@@ -187,7 +187,7 @@ pub fn render_compact_brand_header(
     build: &BuildVersionInfo,
     subtitle: Option<&str>,
 ) -> Vec<BrandLine> {
-    let brand = "LOONGCLAW";
+    let brand = "LOONG";
     let version = build.render_version_line();
     let width = width.max(brand.len());
     let combined = format!("{brand}  {version}");
@@ -562,7 +562,7 @@ mod tests {
     fn presentation_banner_variant_uses_plain_logo_for_narrow_width() {
         let lines = render_brand_banner_lines(32);
 
-        assert_eq!(lines, vec!["LOONGCLAW"]);
+        assert_eq!(lines, vec!["LOONG"]);
     }
 
     #[test]
@@ -614,7 +614,7 @@ mod tests {
     #[test]
     fn presentation_style_brand_lines_can_disable_color() {
         let lines = vec![
-            BrandLine::new(BrandLineRole::Banner, "LOONGCLAW"),
+            BrandLine::new(BrandLineRole::Banner, "LOONG"),
             BrandLine::new(BrandLineRole::Version, "v0.1.2 · dev"),
         ];
 
@@ -622,31 +622,31 @@ mod tests {
 
         assert_eq!(
             rendered,
-            vec!["LOONGCLAW".to_owned(), "v0.1.2 · dev".to_owned()]
+            vec!["LOONG".to_owned(), "v0.1.2 · dev".to_owned()]
         );
     }
 
     #[test]
     fn presentation_style_brand_lines_uses_soft_red_banner_by_default() {
-        let lines = vec![BrandLine::new(BrandLineRole::Banner, "LOONGCLAW")];
+        let lines = vec![BrandLine::new(BrandLineRole::Banner, "LOONG")];
 
         let rendered = style_brand_lines(&lines, true);
 
         assert_eq!(
             rendered,
-            vec!["\u{1b}[38;2;253;172;172mLOONGCLAW\u{1b}[0m".to_owned()]
+            vec!["\u{1b}[38;2;253;172;172mLOONG\u{1b}[0m".to_owned()]
         );
     }
 
     #[test]
     fn presentation_style_brand_lines_with_onboard_palette_uses_soft_red_banner() {
-        let lines = vec![BrandLine::new(BrandLineRole::Banner, "LOONGCLAW")];
+        let lines = vec![BrandLine::new(BrandLineRole::Banner, "LOONG")];
 
         let rendered = style_brand_lines_with_palette(&lines, true, ONBOARD_BRAND_PALETTE);
 
         assert_eq!(
             rendered,
-            vec!["\u{1b}[38;2;253;172;172mLOONGCLAW\u{1b}[0m".to_owned()]
+            vec!["\u{1b}[38;2;253;172;172mLOONG\u{1b}[0m".to_owned()]
         );
     }
 
@@ -657,7 +657,7 @@ mod tests {
         let lines = render_compact_brand_header(80, &build, Some("choose model"));
 
         assert_eq!(lines.len(), 2);
-        assert_eq!(lines[0].text, "LOONGCLAW  v0.1.2 · dev · 1a2b3c4");
+        assert_eq!(lines[0].text, "LOONG  v0.1.2 · dev · 1a2b3c4");
         assert_eq!(lines[1].text, "choose model");
     }
 
@@ -671,7 +671,7 @@ mod tests {
             lines.iter().all(|line| line.text.len() <= 22),
             "compact brand header should respect narrow widths instead of forcing the brand and version onto one overflowing line: {lines:#?}"
         );
-        assert_eq!(lines[0].text, "LOONGCLAW");
+        assert_eq!(lines[0].text, "LOONG");
         assert!(
             lines.iter().any(|line| line.role == BrandLineRole::Version),
             "narrow compact header should keep version information visible on its own wrapped line: {lines:#?}"
@@ -692,7 +692,7 @@ mod tests {
             lines.iter().all(|line| line.text.len() <= 18),
             "full brand header should respect narrow widths for version and subtitle lines: {lines:#?}"
         );
-        assert_eq!(lines[0].text, "LOONGCLAW");
+        assert_eq!(lines[0].text, "LOONG");
         assert!(
             lines
                 .iter()

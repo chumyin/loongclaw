@@ -17,7 +17,7 @@ use axum::{
         header::{AUTHORIZATION, CONTENT_TYPE},
     },
 };
-use loongclaw_daemon::{
+use loong_daemon::{
     CliResult,
     gateway::{
         client::{GatewayAcpSessionsRequest, GatewayAcpStatusRequest, GatewayLocalClient},
@@ -30,7 +30,7 @@ use loongclaw_daemon::{
             AcpSessionHandle, AcpSessionState, AcpSessionStore, AcpSqliteSessionStore,
             AcpTurnRequest, AcpTurnResult, AcpTurnStopReason, register_acp_backend,
         },
-        config::{AcpConfig, LoongClawConfig},
+        config::{AcpConfig, LoongConfig},
     },
     supervisor::{LoadedSupervisorConfig, SupervisorRuntimeHooks},
 };
@@ -65,7 +65,7 @@ impl AcpRuntimeBackend for GatewayEchoBackend {
 
     async fn ensure_session(
         &self,
-        _config: &LoongClawConfig,
+        _config: &LoongConfig,
         request: &AcpSessionBootstrap,
     ) -> CliResult<AcpSessionHandle> {
         let session_key = request.session_key.clone();
@@ -89,7 +89,7 @@ impl AcpRuntimeBackend for GatewayEchoBackend {
 
     async fn run_turn(
         &self,
-        _config: &LoongClawConfig,
+        _config: &LoongConfig,
         _session: &AcpSessionHandle,
         request: &AcpTurnRequest,
     ) -> CliResult<AcpTurnResult> {
@@ -108,15 +108,11 @@ impl AcpRuntimeBackend for GatewayEchoBackend {
         })
     }
 
-    async fn cancel(
-        &self,
-        _config: &LoongClawConfig,
-        _session: &AcpSessionHandle,
-    ) -> CliResult<()> {
+    async fn cancel(&self, _config: &LoongConfig, _session: &AcpSessionHandle) -> CliResult<()> {
         Ok(())
     }
 
-    async fn close(&self, _config: &LoongClawConfig, _session: &AcpSessionHandle) -> CliResult<()> {
+    async fn close(&self, _config: &LoongConfig, _session: &AcpSessionHandle) -> CliResult<()> {
         Ok(())
     }
 }
@@ -169,7 +165,7 @@ fn gateway_turn_loaded_config_fixture(
     sqlite_path: &Path,
     backend_id: &str,
 ) -> LoadedSupervisorConfig {
-    let mut config = LoongClawConfig::default();
+    let mut config = LoongConfig::default();
     let sqlite_path_text = sqlite_path.display().to_string();
     config.memory.sqlite_path = sqlite_path_text;
     config.acp = AcpConfig {

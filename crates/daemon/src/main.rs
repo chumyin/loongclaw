@@ -362,6 +362,10 @@ async fn main() {
             })
             .await
         }
+        Commands::DelegateChildRun {
+            config_path,
+            payload_file,
+        } => delegate_child_cli::run_detached_delegate_child_cli(&config_path, &payload_file).await,
         Commands::Plugins { json, command } => {
             plugins_cli::run_plugins_cli(plugins_cli::PluginsCommandOptions { json, command }).await
         }

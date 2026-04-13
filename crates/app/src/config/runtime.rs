@@ -2148,6 +2148,10 @@ pub fn default_loong_home() -> PathBuf {
     shared_default_loong_home()
 }
 
+pub fn default_loongclaw_home() -> PathBuf {
+    default_loong_home()
+}
+
 #[cfg(any(test, debug_assertions))]
 fn config_write_failure_injected(output_path: &Path) -> bool {
     #[cfg(test)]
@@ -2155,7 +2159,7 @@ fn config_write_failure_injected(output_path: &Path) -> bool {
         return true;
     }
 
-    let configured_path = std::env::var_os("LOONGCLAW_TEST_FAIL_CONFIG_WRITE_PATH");
+    let configured_path = std::env::var_os("LOONG_TEST_FAIL_CONFIG_WRITE_PATH");
     let Some(configured_path) = configured_path else {
         return false;
     };

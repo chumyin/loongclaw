@@ -329,7 +329,7 @@ pub(crate) fn default_gateway_owner_status(runtime_dir: &Path) -> GatewayOwnerSt
 }
 
 fn build_gateway_acp_session_manager(
-    config: &crate::mvp::config::LoongClawConfig,
+    config: &crate::mvp::config::LoongConfig,
 ) -> CliResult<Arc<AcpSessionManager>> {
     let manager = crate::mvp::acp::shared_acp_session_manager(config)?;
     Ok(manager)
@@ -337,8 +337,8 @@ fn build_gateway_acp_session_manager(
 
 fn acquire_gateway_acp_session_manager(
     tracker: &GatewayOwnerTracker,
-    config: &crate::mvp::config::LoongClawConfig,
-    builder: impl FnOnce(&crate::mvp::config::LoongClawConfig) -> CliResult<Arc<AcpSessionManager>>,
+    config: &crate::mvp::config::LoongConfig,
+    builder: impl FnOnce(&crate::mvp::config::LoongConfig) -> CliResult<Arc<AcpSessionManager>>,
 ) -> CliResult<Arc<AcpSessionManager>> {
     let manager_result = builder(config);
     let manager = match manager_result {
@@ -444,9 +444,9 @@ mod tests {
             1,
         )
         .expect("acquire gateway owner tracker");
-        let config = crate::mvp::config::LoongClawConfig::default();
+        let config = crate::mvp::config::LoongConfig::default();
         let expected_error = "simulated ACP manager init failure".to_owned();
-        let builder = |_config: &crate::mvp::config::LoongClawConfig| Err(expected_error.clone());
+        let builder = |_config: &crate::mvp::config::LoongConfig| Err(expected_error.clone());
 
         let manager_result = acquire_gateway_acp_session_manager(&tracker, &config, builder);
         let error = match manager_result {

@@ -567,8 +567,8 @@ mod tests {
 
         fn execute_core(
             &self,
-            _request: loongclaw_contracts::MemoryCoreRequest,
-        ) -> Result<loongclaw_contracts::MemoryCoreOutcome, String> {
+            _request: loong_contracts::MemoryCoreRequest,
+        ) -> Result<loong_contracts::MemoryCoreOutcome, String> {
             let error = "snapshot-only runtime should not execute core in this test".to_owned();
 
             Err(error)
@@ -958,12 +958,12 @@ mod tests {
         })
         .expect("register runtime metadata override system");
 
-        let config = LoongClawConfig {
+        let config = LoongConfig {
             memory: crate::config::MemoryConfig {
                 system_id: Some("registry-runtime-metadata-override".to_owned()),
                 ..crate::config::MemoryConfig::default()
             },
-            ..LoongClawConfig::default()
+            ..LoongConfig::default()
         };
         let snapshot =
             collect_memory_system_runtime_snapshot(&config).expect("collect runtime snapshot");

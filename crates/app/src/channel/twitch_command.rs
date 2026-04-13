@@ -1,11 +1,9 @@
 use std::path::PathBuf;
 
-use super::{
-    ChannelCommandContext, ChannelOutboundTargetKind, ChannelSendCommandSpec, LoongConfig, http,
-    run_channel_send_command, twitch,
-};
+use super::dispatch::{ChannelCommandContext, ChannelSendCommandSpec, run_channel_send_command};
+use super::{ChannelOutboundTargetKind, http, twitch};
 use crate::CliResult;
-use crate::config::{self, ResolvedTwitchChannelConfig};
+use crate::config::{self, LoongConfig, ResolvedTwitchChannelConfig};
 
 fn load_twitch_command_context(
     config_path: Option<&str>,

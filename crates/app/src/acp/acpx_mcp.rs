@@ -1,9 +1,12 @@
+#![allow(dead_code)]
+
 use std::io::ErrorKind;
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use tokio::process::Command;
 
 use crate::CliResult;
@@ -13,7 +16,6 @@ use crate::mcp::{McpRegistry, McpStdioServerLaunchSpec};
 use super::backend::AcpSessionBootstrap;
 
 const ACPX_MCP_PROXY_NODE_COMMAND: &str = "node";
-const ACPX_MCP_PROXY_SCRIPT_NAME: &str = "loong-acpx-mcp-proxy.mjs";
 const ACPX_MCP_PROXY_SCRIPT_SOURCE: &str = include_str!("assets/acpx-mcp-proxy.mjs");
 static ACPX_MCP_PROXY_SCRIPT_PATH: OnceLock<Result<String, String>> = OnceLock::new();
 
@@ -164,9 +166,14 @@ fn ensure_mcp_proxy_script_path() -> CliResult<String> {
 }
 
 fn materialize_mcp_proxy_script() -> Result<String, String> {
+    let digest = Sha256::digest(ACPX_MCP_PROXY_SCRIPT_SOURCE.as_bytes());
+    let digest_prefix = digest[..8]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
     let path = std::env::temp_dir()
         .join("loong")
-        .join(ACPX_MCP_PROXY_SCRIPT_NAME);
+        .join(format!("loong-acpx-mcp-proxy-{digest_prefix}.mjs"));
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|error| format!("create ACPX MCP proxy directory failed: {error}"))?;
@@ -203,6 +210,17 @@ fn materialize_mcp_proxy_payload_path(payload: &[u8]) -> CliResult<String> {
     if let Some(parent) = payload_path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|error| format!("create ACPX MCP payload directory failed: {error}"))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let mut permissions = std::fs::metadata(parent)
+                .map_err(|error| format!("stat ACPX MCP payload directory failed: {error}"))?
+                .permissions();
+            permissions.set_mode(0o700);
+            std::fs::set_permissions(parent, permissions)
+                .map_err(|error| format!("chmod ACPX MCP payload directory failed: {error}"))?;
+        }
     }
     std::fs::write(&payload_path, payload)
         .map_err(|error| format!("write ACPX MCP payload failed: {error}"))?;

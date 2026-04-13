@@ -161,7 +161,7 @@ fn gateway_acp_runtime_context(
     app_state: &GatewayControlAppState,
 ) -> Result<
     (
-        &crate::mvp::config::LoongClawConfig,
+        &crate::mvp::config::LoongConfig,
         &crate::mvp::acp::AcpSessionManager,
     ),
     GatewayAcpJsonResponse,

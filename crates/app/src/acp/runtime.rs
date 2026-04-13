@@ -379,7 +379,7 @@ pub(crate) async fn execute_acp_conversation_turn_for_address(
 }
 
 pub(crate) async fn execute_acp_conversation_turn_for_address_with_manager(
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     address: &ConversationSessionAddress,
     user_input: &str,
     options: &AcpConversationTurnOptions<'_>,
@@ -390,7 +390,7 @@ pub(crate) async fn execute_acp_conversation_turn_for_address_with_manager(
 }
 
 async fn execute_prepared_acp_conversation_turn(
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     prepared: PreparedAcpConversationTurn,
     options: &AcpConversationTurnOptions<'_>,
     manager: Arc<AcpSessionManager>,

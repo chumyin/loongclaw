@@ -954,11 +954,13 @@ mod tests {
     use serde_json::json;
     use sha2::{Digest, Sha256};
     use std::collections::{BTreeMap, BTreeSet};
+    use std::future::Future;
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
     use tokio::sync::Mutex;
 
     const MOCK_PROVIDER_MARKDOWN_REPLY: &str = "## structured inbound ack\n\n- rendered";
+    const FEISHU_WEBHOOK_TEST_STACK_SIZE_BYTES: usize = 32 * 1024 * 1024;
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct MockRequest {
@@ -981,6 +983,29 @@ mod tests {
                 .expect("clock")
                 .as_nanos()
         ))
+    }
+
+    fn run_webhook_test_on_large_stack<Fut>(
+        thread_name: &str,
+        operation: impl FnOnce() -> Fut + Send + 'static,
+    ) where
+        Fut: Future<Output = ()> + Send + 'static,
+    {
+        let join_handle = std::thread::Builder::new()
+            .name(thread_name.to_owned())
+            .stack_size(FEISHU_WEBHOOK_TEST_STACK_SIZE_BYTES)
+            .spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("create webhook test runtime");
+                runtime.block_on(operation());
+            })
+            .expect("spawn webhook test stack thread");
+        match join_handle.join() {
+            Ok(()) => {}
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
     }
 
     fn webhook_tool_runtime_config(config: &LoongConfig) -> ToolRuntimeConfig {
@@ -2269,112 +2294,118 @@ mod tests {
         feishu_server.abort();
     }
 
-    #[tokio::test]
-    async fn feishu_webhook_card_callback_reaches_provider_and_returns_safe_noop_body() {
-        let provider_requests = Arc::new(Mutex::new(Vec::<MockRequest>::new()));
-        let feishu_requests = Arc::new(Mutex::new(Vec::<MockRequest>::new()));
-        let (provider_base_url, provider_server) =
-            spawn_mock_provider_server(provider_requests.clone()).await;
-        let (feishu_base_url, feishu_server) =
-            spawn_mock_feishu_api_server(feishu_requests.clone(), "om_reply_unused").await;
+    #[test]
+    fn feishu_webhook_card_callback_reaches_provider_and_returns_safe_noop_body() {
+        run_webhook_test_on_large_stack("feishu-webhook-card-callback", || async {
+            let provider_requests = Arc::new(Mutex::new(Vec::<MockRequest>::new()));
+            let feishu_requests = Arc::new(Mutex::new(Vec::<MockRequest>::new()));
+            let (provider_base_url, provider_server) =
+                spawn_mock_provider_server(provider_requests.clone()).await;
+            let (feishu_base_url, feishu_server) =
+                spawn_mock_feishu_api_server(feishu_requests.clone(), "om_reply_unused").await;
 
-        let config = test_webhook_config(&provider_base_url, &feishu_base_url);
-        let resolved = config
-            .feishu
-            .resolve_account(None)
-            .expect("resolve feishu account");
-        let adapter = FeishuAdapter::new(&resolved).expect("build feishu adapter");
-        let kernel_ctx =
-            bootstrap_test_kernel_context("feishu-webhook-card-callback", DEFAULT_TOKEN_TTL_S)
-                .expect("bootstrap kernel context");
-        let runtime = Arc::new(
-            ChannelOperationRuntimeTracker::start(
-                ChannelPlatform::Feishu,
-                "serve",
-                resolved.account.id.as_str(),
-                resolved.account.label.as_str(),
+            let config = test_webhook_config(&provider_base_url, &feishu_base_url);
+            let resolved = config
+                .feishu
+                .resolve_account(None)
+                .expect("resolve feishu account");
+            let adapter = FeishuAdapter::new(&resolved).expect("build feishu adapter");
+            let kernel_ctx = bootstrap_webhook_kernel_context(
+                "feishu-webhook-card-callback",
+                DEFAULT_TOKEN_TTL_S,
+                &config,
+            )
+            .expect("bootstrap kernel context");
+            let runtime = Arc::new(
+                ChannelOperationRuntimeTracker::start(
+                    ChannelPlatform::Feishu,
+                    "serve",
+                    resolved.account.id.as_str(),
+                    resolved.account.label.as_str(),
+                )
+                .await
+                .expect("start runtime tracker"),
+            );
+            let state = FeishuWebhookState::new(config, &resolved, adapter, kernel_ctx, runtime);
+
+            let payload = json!({
+                "header": {
+                    "event_id": "evt_card_webhook_1",
+                    "event_type": "card.action.trigger",
+                    "token": "verify-token"
+                },
+                "event": {
+                    "token": "callback-token-1",
+                    "operator": {
+                        "operator_id": {
+                            "open_id": "ou_sender_1",
+                            "user_id": "u_sender_1"
+                        }
+                    },
+                    "action": {
+                        "tag": "button",
+                        "name": "approve_request",
+                        "value": {
+                            "ticket_id": "T-500"
+                        }
+                    },
+                    "context": {
+                        "open_message_id": "om_card_source_1",
+                        "open_chat_id": "oc_demo"
+                    }
+                }
+            });
+            let raw_body = serde_json::to_string(&payload).expect("serialize payload");
+            let headers = signed_headers(&raw_body, "encrypt-key");
+            let response = handle_feishu_webhook_payload(
+                state,
+                &headers,
+                raw_body.as_str(),
+                serde_json::from_str(raw_body.as_str()).expect("payload value"),
             )
             .await
-            .expect("start runtime tracker"),
-        );
-        let state = FeishuWebhookState::new(config, &resolved, adapter, kernel_ctx, runtime);
+            .expect("callback webhook should succeed");
 
-        let payload = json!({
-            "header": {
-                "event_id": "evt_card_webhook_1",
-                "event_type": "card.action.trigger",
-                "token": "verify-token"
-            },
-            "event": {
-                "token": "callback-token-1",
-                "operator": {
-                    "operator_id": {
-                        "open_id": "ou_sender_1",
-                        "user_id": "u_sender_1"
-                    }
-                },
-                "action": {
-                    "tag": "button",
-                    "name": "approve_request",
-                    "value": {
-                        "ticket_id": "T-500"
-                    }
-                },
-                "context": {
-                    "open_message_id": "om_card_source_1",
-                    "open_chat_id": "oc_demo"
-                }
-            }
+            assert_eq!(response.body(), &json!({}));
+
+            let provider_requests = provider_requests.lock().await.clone();
+            assert_eq!(provider_requests.len(), 1);
+            let provider_body =
+                serde_json::from_str::<Value>(&provider_requests[0].body).expect("provider body json");
+            let provider_user_content = provider_body
+                .get("messages")
+                .and_then(Value::as_array)
+                .and_then(|messages| {
+                    messages
+                        .iter()
+                        .rev()
+                        .find(|message| message.get("role").and_then(Value::as_str) == Some("user"))
+                })
+                .and_then(|message| message.get("content"))
+                .and_then(Value::as_str)
+                .expect("provider user content");
+            assert!(provider_user_content.contains("[feishu_card_callback]"));
+            assert!(provider_user_content.contains("\"name\":\"approve_request\""));
+            assert!(
+                !provider_requests[0].body.contains("callback-token-1"),
+                "callback token must stay out of provider-visible prompt state"
+            );
+
+            let feishu_requests = feishu_requests.lock().await.clone();
+            assert_eq!(
+                feishu_requests.len(),
+                0,
+                "callback flow should not send a normal Feishu reply"
+            );
+
+            provider_server.abort();
+            feishu_server.abort();
         });
-        let raw_body = serde_json::to_string(&payload).expect("serialize payload");
-        let headers = signed_headers(&raw_body, "encrypt-key");
-        let response = handle_feishu_webhook_payload(
-            state,
-            &headers,
-            raw_body.as_str(),
-            serde_json::from_str(raw_body.as_str()).expect("payload value"),
-        )
-        .await
-        .expect("callback webhook should succeed");
-
-        assert_eq!(response.body(), &json!({}));
-
-        let provider_requests = provider_requests.lock().await.clone();
-        assert_eq!(provider_requests.len(), 1);
-        let provider_body =
-            serde_json::from_str::<Value>(&provider_requests[0].body).expect("provider body json");
-        let provider_user_content = provider_body
-            .get("messages")
-            .and_then(Value::as_array)
-            .and_then(|messages| {
-                messages
-                    .iter()
-                    .rev()
-                    .find(|message| message.get("role").and_then(Value::as_str) == Some("user"))
-            })
-            .and_then(|message| message.get("content"))
-            .and_then(Value::as_str)
-            .expect("provider user content");
-        assert!(provider_user_content.contains("[feishu_card_callback]"));
-        assert!(provider_user_content.contains("\"name\":\"approve_request\""));
-        assert!(
-            !provider_requests[0].body.contains("callback-token-1"),
-            "callback token must stay out of provider-visible prompt state"
-        );
-
-        let feishu_requests = feishu_requests.lock().await.clone();
-        assert_eq!(
-            feishu_requests.len(),
-            0,
-            "callback flow should not send a normal Feishu reply"
-        );
-
-        provider_server.abort();
-        feishu_server.abort();
     }
 
-    #[tokio::test]
-    async fn feishu_webhook_card_callback_structured_toast_response_is_returned() {
+    #[test]
+    fn feishu_webhook_card_callback_structured_toast_response_is_returned() {
+        run_webhook_test_on_large_stack("feishu-webhook-card-callback-toast", || async {
         let provider_requests = Arc::new(Mutex::new(Vec::<MockRequest>::new()));
         let feishu_requests = Arc::new(Mutex::new(Vec::<MockRequest>::new()));
         let (provider_base_url, provider_server) = spawn_mock_provider_callback_toast_server(
@@ -2391,9 +2422,10 @@ mod tests {
             .resolve_account(None)
             .expect("resolve feishu account");
         let adapter = FeishuAdapter::new(&resolved).expect("build feishu adapter");
-        let kernel_ctx = bootstrap_test_kernel_context(
+        let kernel_ctx = bootstrap_webhook_kernel_context(
             "feishu-webhook-card-callback-toast",
             DEFAULT_TOKEN_TTL_S,
+            &config,
         )
         .expect("bootstrap kernel context");
         let runtime = Arc::new(
@@ -2461,10 +2493,12 @@ mod tests {
 
         provider_server.abort();
         feishu_server.abort();
+        });
     }
 
-    #[tokio::test]
-    async fn feishu_webhook_card_callback_structured_card_response_is_returned() {
+    #[test]
+    fn feishu_webhook_card_callback_structured_card_response_is_returned() {
+        run_webhook_test_on_large_stack("feishu-webhook-card-callback-card", || async {
         let provider_requests = Arc::new(Mutex::new(Vec::<MockRequest>::new()));
         let feishu_requests = Arc::new(Mutex::new(Vec::<MockRequest>::new()));
         let (provider_base_url, provider_server) = spawn_mock_provider_callback_toast_server(
@@ -2481,9 +2515,12 @@ mod tests {
             .resolve_account(None)
             .expect("resolve feishu account");
         let adapter = FeishuAdapter::new(&resolved).expect("build feishu adapter");
-        let kernel_ctx =
-            bootstrap_test_kernel_context("feishu-webhook-card-callback-card", DEFAULT_TOKEN_TTL_S)
-                .expect("bootstrap kernel context");
+        let kernel_ctx = bootstrap_webhook_kernel_context(
+            "feishu-webhook-card-callback-card",
+            DEFAULT_TOKEN_TTL_S,
+            &config,
+        )
+        .expect("bootstrap kernel context");
         let runtime = Arc::new(
             ChannelOperationRuntimeTracker::start(
                 ChannelPlatform::Feishu,
@@ -2553,10 +2590,14 @@ mod tests {
 
         provider_server.abort();
         feishu_server.abort();
+        });
     }
 
-    #[tokio::test]
-    async fn feishu_webhook_card_callback_structured_card_markdown_response_is_returned() {
+    #[test]
+    fn feishu_webhook_card_callback_structured_card_markdown_response_is_returned() {
+        run_webhook_test_on_large_stack(
+            "feishu-webhook-card-callback-card-markdown",
+            || async {
         let provider_requests = Arc::new(Mutex::new(Vec::<MockRequest>::new()));
         let feishu_requests = Arc::new(Mutex::new(Vec::<MockRequest>::new()));
         let (provider_base_url, provider_server) = spawn_mock_provider_callback_toast_server(
@@ -2573,9 +2614,10 @@ mod tests {
             .resolve_account(None)
             .expect("resolve feishu account");
         let adapter = FeishuAdapter::new(&resolved).expect("build feishu adapter");
-        let kernel_ctx = bootstrap_test_kernel_context(
+        let kernel_ctx = bootstrap_webhook_kernel_context(
             "feishu-webhook-card-callback-card-markdown",
             DEFAULT_TOKEN_TTL_S,
+            &config,
         )
         .expect("bootstrap kernel context");
         let runtime = Arc::new(
@@ -2653,10 +2695,15 @@ mod tests {
 
         provider_server.abort();
         feishu_server.abort();
+            },
+        );
     }
 
-    #[tokio::test]
-    async fn feishu_webhook_card_callback_structured_card_response_with_toast_is_returned() {
+    #[test]
+    fn feishu_webhook_card_callback_structured_card_response_with_toast_is_returned() {
+        run_webhook_test_on_large_stack(
+            "feishu-webhook-card-callback-card-with-toast",
+            || async {
         let provider_requests = Arc::new(Mutex::new(Vec::<MockRequest>::new()));
         let feishu_requests = Arc::new(Mutex::new(Vec::<MockRequest>::new()));
         let (provider_base_url, provider_server) = spawn_mock_provider_callback_toast_server(
@@ -2673,9 +2720,10 @@ mod tests {
             .resolve_account(None)
             .expect("resolve feishu account");
         let adapter = FeishuAdapter::new(&resolved).expect("build feishu adapter");
-        let kernel_ctx = bootstrap_test_kernel_context(
+        let kernel_ctx = bootstrap_webhook_kernel_context(
             "feishu-webhook-card-callback-card-with-toast",
             DEFAULT_TOKEN_TTL_S,
+            &config,
         )
         .expect("bootstrap kernel context");
         let runtime = Arc::new(
@@ -2751,11 +2799,15 @@ mod tests {
 
         provider_server.abort();
         feishu_server.abort();
+            },
+        );
     }
 
-    #[tokio::test]
-    async fn feishu_webhook_card_callback_structured_card_markdown_response_with_toast_is_returned()
-    {
+    #[test]
+    fn feishu_webhook_card_callback_structured_card_markdown_response_with_toast_is_returned() {
+        run_webhook_test_on_large_stack(
+            "feishu-webhook-card-callback-card-markdown-with-toast",
+            || async {
         let provider_requests = Arc::new(Mutex::new(Vec::<MockRequest>::new()));
         let feishu_requests = Arc::new(Mutex::new(Vec::<MockRequest>::new()));
         let (provider_base_url, provider_server) = spawn_mock_provider_callback_toast_server(
@@ -2772,9 +2824,10 @@ mod tests {
             .resolve_account(None)
             .expect("resolve feishu account");
         let adapter = FeishuAdapter::new(&resolved).expect("build feishu adapter");
-        let kernel_ctx = bootstrap_test_kernel_context(
+        let kernel_ctx = bootstrap_webhook_kernel_context(
             "feishu-webhook-card-callback-card-markdown-with-toast",
             DEFAULT_TOKEN_TTL_S,
+            &config,
         )
         .expect("bootstrap kernel context");
         let runtime = Arc::new(
@@ -2856,6 +2909,8 @@ mod tests {
 
         provider_server.abort();
         feishu_server.abort();
+            },
+        );
     }
 
     #[test]
@@ -2876,541 +2931,577 @@ mod tests {
         assert!(response.is_none());
     }
 
-    #[tokio::test]
-    async fn feishu_webhook_card_callback_invalid_structured_response_falls_back_to_safe_noop_body()
-    {
-        let provider_requests = Arc::new(Mutex::new(Vec::<MockRequest>::new()));
-        let feishu_requests = Arc::new(Mutex::new(Vec::<MockRequest>::new()));
-        let (provider_base_url, provider_server) = spawn_mock_provider_callback_toast_server(
-            provider_requests.clone(),
-            "[feishu_callback_response]\n{\"mode\":\"toast\",\"kind\":\"danger\",\"content\":\"nope\"}",
-        )
-        .await;
-        let (feishu_base_url, feishu_server) =
-            spawn_mock_feishu_api_server(feishu_requests.clone(), "om_reply_unused").await;
-
-        let config = test_webhook_config(&provider_base_url, &feishu_base_url);
-        let resolved = config
-            .feishu
-            .resolve_account(None)
-            .expect("resolve feishu account");
-        let adapter = FeishuAdapter::new(&resolved).expect("build feishu adapter");
-        let kernel_ctx = bootstrap_test_kernel_context(
+    #[test]
+    fn feishu_webhook_card_callback_invalid_structured_response_falls_back_to_safe_noop_body() {
+        run_webhook_test_on_large_stack(
             "feishu-webhook-card-callback-invalid-toast",
-            DEFAULT_TOKEN_TTL_S,
-        )
-        .expect("bootstrap kernel context");
-        let runtime = Arc::new(
-            ChannelOperationRuntimeTracker::start(
-                ChannelPlatform::Feishu,
-                "serve",
-                resolved.account.id.as_str(),
-                resolved.account.label.as_str(),
-            )
-            .await
-            .expect("start runtime tracker"),
-        );
-        let state = FeishuWebhookState::new(config, &resolved, adapter, kernel_ctx, runtime);
+            || async {
+                let provider_requests = Arc::new(Mutex::new(Vec::<MockRequest>::new()));
+                let feishu_requests = Arc::new(Mutex::new(Vec::<MockRequest>::new()));
+                let (provider_base_url, provider_server) = spawn_mock_provider_callback_toast_server(
+                    provider_requests.clone(),
+                    "[feishu_callback_response]\n{\"mode\":\"toast\",\"kind\":\"danger\",\"content\":\"nope\"}",
+                )
+                .await;
+                let (feishu_base_url, feishu_server) =
+                    spawn_mock_feishu_api_server(feishu_requests.clone(), "om_reply_unused").await;
 
-        let payload = json!({
-            "header": {
-                "event_id": "evt_card_webhook_invalid_toast_1",
-                "event_type": "card.action.trigger",
-                "token": "verify-token"
-            },
-            "event": {
-                "token": "callback-token-invalid-toast-1",
-                "operator": {
-                    "operator_id": {
-                        "open_id": "ou_sender_1"
+                let config = test_webhook_config(&provider_base_url, &feishu_base_url);
+                let resolved = config
+                    .feishu
+                    .resolve_account(None)
+                    .expect("resolve feishu account");
+                let adapter = FeishuAdapter::new(&resolved).expect("build feishu adapter");
+                let kernel_ctx = bootstrap_webhook_kernel_context(
+                    "feishu-webhook-card-callback-invalid-toast",
+                    DEFAULT_TOKEN_TTL_S,
+                    &config,
+                )
+                .expect("bootstrap kernel context");
+                let runtime = Arc::new(
+                    ChannelOperationRuntimeTracker::start(
+                        ChannelPlatform::Feishu,
+                        "serve",
+                        resolved.account.id.as_str(),
+                        resolved.account.label.as_str(),
+                    )
+                    .await
+                    .expect("start runtime tracker"),
+                );
+                let state = FeishuWebhookState::new(config, &resolved, adapter, kernel_ctx, runtime);
+
+                let payload = json!({
+                    "header": {
+                        "event_id": "evt_card_webhook_invalid_toast_1",
+                        "event_type": "card.action.trigger",
+                        "token": "verify-token"
+                    },
+                    "event": {
+                        "token": "callback-token-invalid-toast-1",
+                        "operator": {
+                            "operator_id": {
+                                "open_id": "ou_sender_1"
+                            }
+                        },
+                        "action": {
+                            "tag": "button",
+                            "name": "approve_request"
+                        },
+                        "context": {
+                            "open_message_id": "om_card_source_invalid_toast_1",
+                            "open_chat_id": "oc_demo"
+                        }
                     }
-                },
-                "action": {
-                    "tag": "button",
-                    "name": "approve_request"
-                },
-                "context": {
-                    "open_message_id": "om_card_source_invalid_toast_1",
-                    "open_chat_id": "oc_demo"
-                }
-            }
-        });
-        let raw_body = serde_json::to_string(&payload).expect("serialize payload");
-        let headers = signed_headers(&raw_body, "encrypt-key");
-        let response = handle_feishu_webhook_payload(
-            state,
-            &headers,
-            raw_body.as_str(),
-            serde_json::from_str(raw_body.as_str()).expect("payload value"),
-        )
-        .await
-        .expect("callback webhook should succeed");
-
-        assert_eq!(response.body(), &json!({}));
-        assert_eq!(provider_requests.lock().await.len(), 1);
-        assert_eq!(feishu_requests.lock().await.len(), 0);
-
-        provider_server.abort();
-        feishu_server.abort();
-    }
-
-    #[tokio::test]
-    async fn feishu_webhook_card_callback_invalid_structured_card_response_falls_back_to_safe_noop_body()
-     {
-        let provider_requests = Arc::new(Mutex::new(Vec::<MockRequest>::new()));
-        let feishu_requests = Arc::new(Mutex::new(Vec::<MockRequest>::new()));
-        let (provider_base_url, provider_server) = spawn_mock_provider_callback_toast_server(
-            provider_requests.clone(),
-            "[feishu_callback_response]\n{\"mode\":\"card\",\"toast\":{\"kind\":\"danger\",\"content\":\"nope\"},\"card\":true}",
-        )
-        .await;
-        let (feishu_base_url, feishu_server) =
-            spawn_mock_feishu_api_server(feishu_requests.clone(), "om_reply_unused").await;
-
-        let config = test_webhook_config(&provider_base_url, &feishu_base_url);
-        let resolved = config
-            .feishu
-            .resolve_account(None)
-            .expect("resolve feishu account");
-        let adapter = FeishuAdapter::new(&resolved).expect("build feishu adapter");
-        let kernel_ctx = bootstrap_test_kernel_context(
-            "feishu-webhook-card-callback-invalid-card",
-            DEFAULT_TOKEN_TTL_S,
-        )
-        .expect("bootstrap kernel context");
-        let runtime = Arc::new(
-            ChannelOperationRuntimeTracker::start(
-                ChannelPlatform::Feishu,
-                "serve",
-                resolved.account.id.as_str(),
-                resolved.account.label.as_str(),
-            )
-            .await
-            .expect("start runtime tracker"),
-        );
-        let state = FeishuWebhookState::new(config, &resolved, adapter, kernel_ctx, runtime);
-
-        let payload = json!({
-            "header": {
-                "event_id": "evt_card_webhook_invalid_card_1",
-                "event_type": "card.action.trigger",
-                "token": "verify-token"
-            },
-            "event": {
-                "token": "callback-token-invalid-card-1",
-                "operator": {
-                    "operator_id": {
-                        "open_id": "ou_sender_1"
-                    }
-                },
-                "action": {
-                    "tag": "button",
-                    "name": "approve_request"
-                },
-                "context": {
-                    "open_message_id": "om_card_source_invalid_card_1",
-                    "open_chat_id": "oc_demo"
-                }
-            }
-        });
-        let raw_body = serde_json::to_string(&payload).expect("serialize payload");
-        let headers = signed_headers(&raw_body, "encrypt-key");
-        let response = handle_feishu_webhook_payload(
-            state,
-            &headers,
-            raw_body.as_str(),
-            serde_json::from_str(raw_body.as_str()).expect("payload value"),
-        )
-        .await
-        .expect("callback webhook should succeed");
-
-        assert_eq!(response.body(), &json!({}));
-        assert_eq!(provider_requests.lock().await.len(), 1);
-        assert_eq!(feishu_requests.lock().await.len(), 0);
-
-        provider_server.abort();
-        feishu_server.abort();
-    }
-
-    #[tokio::test]
-    async fn feishu_webhook_card_callback_duplicate_is_deduped_safely() {
-        let provider_requests = Arc::new(Mutex::new(Vec::<MockRequest>::new()));
-        let feishu_requests = Arc::new(Mutex::new(Vec::<MockRequest>::new()));
-        let (provider_base_url, provider_server) =
-            spawn_mock_provider_server(provider_requests.clone()).await;
-        let (feishu_base_url, feishu_server) =
-            spawn_mock_feishu_api_server(feishu_requests.clone(), "om_reply_unused").await;
-
-        let config = test_webhook_config(&provider_base_url, &feishu_base_url);
-        let resolved = config
-            .feishu
-            .resolve_account(None)
-            .expect("resolve feishu account");
-        let adapter = FeishuAdapter::new(&resolved).expect("build feishu adapter");
-        let kernel_ctx = bootstrap_test_kernel_context(
-            "feishu-webhook-card-callback-dedupe",
-            DEFAULT_TOKEN_TTL_S,
-        )
-        .expect("bootstrap kernel context");
-        let runtime = Arc::new(
-            ChannelOperationRuntimeTracker::start(
-                ChannelPlatform::Feishu,
-                "serve",
-                resolved.account.id.as_str(),
-                resolved.account.label.as_str(),
-            )
-            .await
-            .expect("start runtime tracker"),
-        );
-        let state = FeishuWebhookState::new(config, &resolved, adapter, kernel_ctx, runtime);
-
-        let payload = json!({
-            "header": {
-                "event_id": "evt_card_webhook_dedupe_1",
-                "event_type": "card.action.trigger",
-                "token": "verify-token"
-            },
-            "event": {
-                "token": "callback-token-dedupe",
-                "operator": {
-                    "operator_id": {
-                        "open_id": "ou_sender_1"
-                    }
-                },
-                "action": {
-                    "tag": "button",
-                    "name": "approve_request"
-                },
-                "context": {
-                    "open_message_id": "om_card_source_dedupe",
-                    "open_chat_id": "oc_demo"
-                }
-            }
-        });
-        let raw_body = serde_json::to_string(&payload).expect("serialize payload");
-        let headers = signed_headers(&raw_body, "encrypt-key");
-
-        let first = handle_feishu_webhook_payload(
-            state.clone(),
-            &headers,
-            raw_body.as_str(),
-            serde_json::from_str(raw_body.as_str()).expect("payload value"),
-        )
-        .await
-        .expect("first callback should succeed");
-        let second = handle_feishu_webhook_payload(
-            state,
-            &headers,
-            raw_body.as_str(),
-            serde_json::from_str(raw_body.as_str()).expect("payload value"),
-        )
-        .await
-        .expect("second callback should succeed");
-
-        assert_eq!(first.body(), &json!({}));
-        assert_eq!(second.body(), &json!({}));
-        assert!(
-            !provider_requests.lock().await.is_empty(),
-            "callback failure path should still attempt provider processing"
-        );
-        assert_eq!(feishu_requests.lock().await.len(), 0);
-
-        provider_server.abort();
-        feishu_server.abort();
-    }
-
-    #[tokio::test]
-    async fn feishu_webhook_card_callback_delayed_update_waits_for_response_body_consumption() {
-        let provider_requests = Arc::new(Mutex::new(Vec::<MockRequest>::new()));
-        let feishu_requests = Arc::new(Mutex::new(Vec::<MockRequest>::new()));
-        let (provider_base_url, provider_server) =
-            spawn_mock_provider_card_update_server(provider_requests.clone()).await;
-        let (feishu_base_url, feishu_server) =
-            spawn_mock_feishu_api_server(feishu_requests.clone(), "om_reply_unused").await;
-
-        let config = test_webhook_config(&provider_base_url, &feishu_base_url);
-        let resolved = config
-            .feishu
-            .resolve_account(None)
-            .expect("resolve feishu account");
-        let adapter = FeishuAdapter::new(&resolved).expect("build feishu adapter");
-        let kernel_ctx = bootstrap_webhook_kernel_context(
-            "feishu-webhook-card-callback-delayed-update-response-order",
-            DEFAULT_TOKEN_TTL_S,
-            &config,
-        )
-        .expect("bootstrap kernel context");
-        let runtime = Arc::new(
-            ChannelOperationRuntimeTracker::start(
-                ChannelPlatform::Feishu,
-                "serve",
-                resolved.account.id.as_str(),
-                resolved.account.label.as_str(),
-            )
-            .await
-            .expect("start runtime tracker"),
-        );
-        let state = FeishuWebhookState::new(config, &resolved, adapter, kernel_ctx, runtime);
-
-        let payload = json!({
-            "header": {
-                "event_id": "evt_card_webhook_response_order_1",
-                "event_type": "card.action.trigger",
-                "token": "verify-token"
-            },
-            "event": {
-                "token": "callback-token-response-order",
-                "operator": {
-                    "operator_id": {
-                        "open_id": "ou_sender_1"
-                    }
-                },
-                "action": {
-                    "tag": "button",
-                    "name": "approve_request"
-                },
-                "context": {
-                    "open_message_id": "om_card_source_response_order",
-                    "open_chat_id": "oc_demo"
-                }
-            }
-        });
-        let raw_body = serde_json::to_string(&payload).expect("serialize payload");
-        let headers = signed_headers(&raw_body, "encrypt-key");
-
-        let response = feishu_webhook_handler(State(state), headers, Bytes::from(raw_body.clone()))
-            .await
-            .into_response();
-
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        assert_eq!(
-            feishu_requests
-                .lock()
+                });
+                let raw_body = serde_json::to_string(&payload).expect("serialize payload");
+                let headers = signed_headers(&raw_body, "encrypt-key");
+                let response = handle_feishu_webhook_payload(
+                    state,
+                    &headers,
+                    raw_body.as_str(),
+                    serde_json::from_str(raw_body.as_str()).expect("payload value"),
+                )
                 .await
-                .iter()
-                .filter(|request| request.path == "/open-apis/interactive/v1/card/update")
-                .count(),
-            0,
-            "delayed update must wait until the callback HTTP response body is consumed"
-        );
+                .expect("callback webhook should succeed");
 
-        let response_body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("read callback response body");
-        assert_eq!(
-            serde_json::from_slice::<Value>(&response_body).expect("response body json"),
-            json!({})
-        );
+                assert_eq!(response.body(), &json!({}));
+                assert_eq!(provider_requests.lock().await.len(), 1);
+                assert_eq!(feishu_requests.lock().await.len(), 0);
 
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        let feishu_requests = feishu_requests.lock().await.clone();
-        let provider_requests = provider_requests.lock().await.clone();
-        let delayed_update = feishu_requests
-            .iter()
-            .find(|request| request.path == "/open-apis/interactive/v1/card/update")
-            .unwrap_or_else(|| {
-                panic!(
-                    "delayed update request after body consumption; feishu_requests={feishu_requests:?}; provider_requests={provider_requests:?}"
-                )
-            });
-        assert_eq!(
-            delayed_update.authorization.as_deref(),
-            Some("Bearer t-token-webhook")
+                provider_server.abort();
+                feishu_server.abort();
+            },
         );
-        assert!(
-            delayed_update
-                .body
-                .contains("\"token\":\"callback-token-response-order\"")
-        );
-        assert!(
-            delayed_update
-                .body
-                .contains("\"content\":\"callback updated\"")
-        );
-        assert!(
-            !provider_requests.is_empty(),
-            "callback processing should still reach the provider before deferred dispatch"
-        );
-
-        provider_server.abort();
-        feishu_server.abort();
     }
 
-    #[tokio::test]
-    async fn feishu_webhook_card_callback_delayed_update_dispatches_when_response_body_is_dropped()
+    #[test]
+    fn feishu_webhook_card_callback_invalid_structured_card_response_falls_back_to_safe_noop_body()
     {
-        let provider_requests = Arc::new(Mutex::new(Vec::<MockRequest>::new()));
-        let feishu_requests = Arc::new(Mutex::new(Vec::<MockRequest>::new()));
-        let (provider_base_url, provider_server) =
-            spawn_mock_provider_card_update_server(provider_requests.clone()).await;
-        let (feishu_base_url, feishu_server) =
-            spawn_mock_feishu_api_server(feishu_requests.clone(), "om_reply_unused").await;
-
-        let config = test_webhook_config(&provider_base_url, &feishu_base_url);
-        let resolved = config
-            .feishu
-            .resolve_account(None)
-            .expect("resolve feishu account");
-        let adapter = FeishuAdapter::new(&resolved).expect("build feishu adapter");
-        let kernel_ctx = bootstrap_webhook_kernel_context(
-            "feishu-webhook-card-callback-delayed-update-response-drop",
-            DEFAULT_TOKEN_TTL_S,
-            &config,
-        )
-        .expect("bootstrap kernel context");
-        let runtime = Arc::new(
-            ChannelOperationRuntimeTracker::start(
-                ChannelPlatform::Feishu,
-                "serve",
-                resolved.account.id.as_str(),
-                resolved.account.label.as_str(),
-            )
-            .await
-            .expect("start runtime tracker"),
-        );
-        let state = FeishuWebhookState::new(config, &resolved, adapter, kernel_ctx, runtime);
-
-        let payload = json!({
-            "header": {
-                "event_id": "evt_card_webhook_response_drop_1",
-                "event_type": "card.action.trigger",
-                "token": "verify-token"
-            },
-            "event": {
-                "token": "callback-token-response-drop",
-                "operator": {
-                    "operator_id": {
-                        "open_id": "ou_sender_1"
-                    }
-                },
-                "action": {
-                    "tag": "button",
-                    "name": "approve_request"
-                },
-                "context": {
-                    "open_message_id": "om_card_source_response_drop",
-                    "open_chat_id": "oc_demo"
-                }
-            }
-        });
-        let raw_body = serde_json::to_string(&payload).expect("serialize payload");
-        let headers = signed_headers(&raw_body, "encrypt-key");
-
-        let response = feishu_webhook_handler(State(state), headers, Bytes::from(raw_body.clone()))
-            .await
-            .into_response();
-        drop(response);
-
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        let feishu_requests = feishu_requests.lock().await.clone();
-        let provider_requests = provider_requests.lock().await.clone();
-        let delayed_update = feishu_requests
-            .iter()
-            .find(|request| request.path == "/open-apis/interactive/v1/card/update")
-            .unwrap_or_else(|| {
-                panic!(
-                    "delayed update request after response drop; feishu_requests={feishu_requests:?}; provider_requests={provider_requests:?}"
+        run_webhook_test_on_large_stack(
+            "feishu-webhook-card-callback-invalid-card",
+            || async {
+                let provider_requests = Arc::new(Mutex::new(Vec::<MockRequest>::new()));
+                let feishu_requests = Arc::new(Mutex::new(Vec::<MockRequest>::new()));
+                let (provider_base_url, provider_server) = spawn_mock_provider_callback_toast_server(
+                    provider_requests.clone(),
+                    "[feishu_callback_response]\n{\"mode\":\"card\",\"toast\":{\"kind\":\"danger\",\"content\":\"nope\"},\"card\":true}",
                 )
-            });
-        assert_eq!(
-            delayed_update.authorization.as_deref(),
-            Some("Bearer t-token-webhook")
-        );
-        assert!(
-            delayed_update
-                .body
-                .contains("\"token\":\"callback-token-response-drop\"")
-        );
-        assert!(
-            delayed_update
-                .body
-                .contains("\"content\":\"callback updated\"")
-        );
-        assert!(
-            !provider_requests.is_empty(),
-            "callback processing should still reach the provider before deferred dispatch"
-        );
+                .await;
+                let (feishu_base_url, feishu_server) =
+                    spawn_mock_feishu_api_server(feishu_requests.clone(), "om_reply_unused").await;
 
-        provider_server.abort();
-        feishu_server.abort();
+                let config = test_webhook_config(&provider_base_url, &feishu_base_url);
+                let resolved = config
+                    .feishu
+                    .resolve_account(None)
+                    .expect("resolve feishu account");
+                let adapter = FeishuAdapter::new(&resolved).expect("build feishu adapter");
+                let kernel_ctx = bootstrap_webhook_kernel_context(
+                    "feishu-webhook-card-callback-invalid-card",
+                    DEFAULT_TOKEN_TTL_S,
+                    &config,
+                )
+                .expect("bootstrap kernel context");
+                let runtime = Arc::new(
+                    ChannelOperationRuntimeTracker::start(
+                        ChannelPlatform::Feishu,
+                        "serve",
+                        resolved.account.id.as_str(),
+                        resolved.account.label.as_str(),
+                    )
+                    .await
+                    .expect("start runtime tracker"),
+                );
+                let state = FeishuWebhookState::new(config, &resolved, adapter, kernel_ctx, runtime);
+
+                let payload = json!({
+                    "header": {
+                        "event_id": "evt_card_webhook_invalid_card_1",
+                        "event_type": "card.action.trigger",
+                        "token": "verify-token"
+                    },
+                    "event": {
+                        "token": "callback-token-invalid-card-1",
+                        "operator": {
+                            "operator_id": {
+                                "open_id": "ou_sender_1"
+                            }
+                        },
+                        "action": {
+                            "tag": "button",
+                            "name": "approve_request"
+                        },
+                        "context": {
+                            "open_message_id": "om_card_source_invalid_card_1",
+                            "open_chat_id": "oc_demo"
+                        }
+                    }
+                });
+                let raw_body = serde_json::to_string(&payload).expect("serialize payload");
+                let headers = signed_headers(&raw_body, "encrypt-key");
+                let response = handle_feishu_webhook_payload(
+                    state,
+                    &headers,
+                    raw_body.as_str(),
+                    serde_json::from_str(raw_body.as_str()).expect("payload value"),
+                )
+                .await
+                .expect("callback webhook should succeed");
+
+                assert_eq!(response.body(), &json!({}));
+                assert_eq!(provider_requests.lock().await.len(), 1);
+                assert_eq!(feishu_requests.lock().await.len(), 0);
+
+                provider_server.abort();
+                feishu_server.abort();
+            },
+        );
     }
 
-    #[tokio::test]
-    async fn feishu_webhook_card_callback_provider_failure_still_returns_safe_noop_body() {
-        let provider_requests = Arc::new(Mutex::new(Vec::<MockRequest>::new()));
-        let feishu_requests = Arc::new(Mutex::new(Vec::<MockRequest>::new()));
-        let (provider_base_url, provider_server) =
-            spawn_mock_provider_failure_server(provider_requests.clone()).await;
-        let (feishu_base_url, feishu_server) =
-            spawn_mock_feishu_api_server(feishu_requests.clone(), "om_reply_unused").await;
+    #[test]
+    fn feishu_webhook_card_callback_duplicate_is_deduped_safely() {
+        run_webhook_test_on_large_stack(
+            "feishu-webhook-card-callback-dedupe",
+            || async {
+                let provider_requests = Arc::new(Mutex::new(Vec::<MockRequest>::new()));
+                let feishu_requests = Arc::new(Mutex::new(Vec::<MockRequest>::new()));
+                let (provider_base_url, provider_server) =
+                    spawn_mock_provider_server(provider_requests.clone()).await;
+                let (feishu_base_url, feishu_server) =
+                    spawn_mock_feishu_api_server(feishu_requests.clone(), "om_reply_unused").await;
 
-        let config = test_webhook_config(&provider_base_url, &feishu_base_url);
-        let resolved = config
-            .feishu
-            .resolve_account(None)
-            .expect("resolve feishu account");
-        let adapter = FeishuAdapter::new(&resolved).expect("build feishu adapter");
-        let kernel_ctx = bootstrap_test_kernel_context(
-            "feishu-webhook-card-callback-failure",
-            DEFAULT_TOKEN_TTL_S,
-        )
-        .expect("bootstrap kernel context");
-        let runtime = Arc::new(
-            ChannelOperationRuntimeTracker::start(
-                ChannelPlatform::Feishu,
-                "serve",
-                resolved.account.id.as_str(),
-                resolved.account.label.as_str(),
-            )
-            .await
-            .expect("start runtime tracker"),
-        );
-        let state = FeishuWebhookState::new(config, &resolved, adapter, kernel_ctx, runtime);
+                let config = test_webhook_config(&provider_base_url, &feishu_base_url);
+                let resolved = config
+                    .feishu
+                    .resolve_account(None)
+                    .expect("resolve feishu account");
+                let adapter = FeishuAdapter::new(&resolved).expect("build feishu adapter");
+                let kernel_ctx = bootstrap_webhook_kernel_context(
+                    "feishu-webhook-card-callback-dedupe",
+                    DEFAULT_TOKEN_TTL_S,
+                    &config,
+                )
+                .expect("bootstrap kernel context");
+                let runtime = Arc::new(
+                    ChannelOperationRuntimeTracker::start(
+                        ChannelPlatform::Feishu,
+                        "serve",
+                        resolved.account.id.as_str(),
+                        resolved.account.label.as_str(),
+                    )
+                    .await
+                    .expect("start runtime tracker"),
+                );
+                let state = FeishuWebhookState::new(config, &resolved, adapter, kernel_ctx, runtime);
 
-        let payload = json!({
-            "header": {
-                "event_id": "evt_card_webhook_failure_1",
-                "event_type": "card.action.trigger",
-                "token": "verify-token"
-            },
-            "event": {
-                "token": "callback-token-failure",
-                "operator": {
-                    "operator_id": {
-                        "open_id": "ou_sender_1"
+                let payload = json!({
+                    "header": {
+                        "event_id": "evt_card_webhook_dedupe_1",
+                        "event_type": "card.action.trigger",
+                        "token": "verify-token"
+                    },
+                    "event": {
+                        "token": "callback-token-dedupe",
+                        "operator": {
+                            "operator_id": {
+                                "open_id": "ou_sender_1"
+                            }
+                        },
+                        "action": {
+                            "tag": "button",
+                            "name": "approve_request"
+                        },
+                        "context": {
+                            "open_message_id": "om_card_source_dedupe",
+                            "open_chat_id": "oc_demo"
+                        }
                     }
-                },
-                "action": {
-                    "tag": "button",
-                    "name": "approve_request"
-                },
-                "context": {
-                    "open_message_id": "om_card_source_failure",
-                    "open_chat_id": "oc_demo"
-                }
-            }
-        });
-        let raw_body = serde_json::to_string(&payload).expect("serialize payload");
-        let headers = signed_headers(&raw_body, "encrypt-key");
+                });
+                let raw_body = serde_json::to_string(&payload).expect("serialize payload");
+                let headers = signed_headers(&raw_body, "encrypt-key");
 
-        let response = handle_feishu_webhook_payload(
-            state,
-            &headers,
-            raw_body.as_str(),
-            serde_json::from_str(raw_body.as_str()).expect("payload value"),
-        )
-        .await
-        .expect("callback failure should still produce a safe Feishu body");
+                let first = handle_feishu_webhook_payload(
+                    state.clone(),
+                    &headers,
+                    raw_body.as_str(),
+                    serde_json::from_str(raw_body.as_str()).expect("payload value"),
+                )
+                .await
+                .expect("first callback should succeed");
+                let second = handle_feishu_webhook_payload(
+                    state,
+                    &headers,
+                    raw_body.as_str(),
+                    serde_json::from_str(raw_body.as_str()).expect("payload value"),
+                )
+                .await
+                .expect("second callback should succeed");
 
-        assert_eq!(response.body(), &json!({}));
-        assert!(
-            !provider_requests.lock().await.is_empty(),
-            "callback failure path should still attempt provider processing"
+                assert_eq!(first.body(), &json!({}));
+                assert_eq!(second.body(), &json!({}));
+                assert!(
+                    !provider_requests.lock().await.is_empty(),
+                    "callback failure path should still attempt provider processing"
+                );
+                assert_eq!(feishu_requests.lock().await.len(), 0);
+
+                provider_server.abort();
+                feishu_server.abort();
+            },
         );
-        assert_eq!(feishu_requests.lock().await.len(), 0);
+    }
 
-        provider_server.abort();
-        feishu_server.abort();
+    #[test]
+    fn feishu_webhook_card_callback_delayed_update_waits_for_response_body_consumption() {
+        run_webhook_test_on_large_stack(
+            "feishu-webhook-card-callback-delayed-update-response-order",
+            || async {
+                let provider_requests = Arc::new(Mutex::new(Vec::<MockRequest>::new()));
+                let feishu_requests = Arc::new(Mutex::new(Vec::<MockRequest>::new()));
+                let (provider_base_url, provider_server) =
+                    spawn_mock_provider_card_update_server(provider_requests.clone()).await;
+                let (feishu_base_url, feishu_server) =
+                    spawn_mock_feishu_api_server(feishu_requests.clone(), "om_reply_unused")
+                        .await;
+
+                let config = test_webhook_config(&provider_base_url, &feishu_base_url);
+                let resolved = config
+                    .feishu
+                    .resolve_account(None)
+                    .expect("resolve feishu account");
+                let adapter = FeishuAdapter::new(&resolved).expect("build feishu adapter");
+                let kernel_ctx = bootstrap_webhook_kernel_context(
+                    "feishu-webhook-card-callback-delayed-update-response-order",
+                    DEFAULT_TOKEN_TTL_S,
+                    &config,
+                )
+                .expect("bootstrap kernel context");
+                let runtime = Arc::new(
+                    ChannelOperationRuntimeTracker::start(
+                        ChannelPlatform::Feishu,
+                        "serve",
+                        resolved.account.id.as_str(),
+                        resolved.account.label.as_str(),
+                    )
+                    .await
+                    .expect("start runtime tracker"),
+                );
+                let state = FeishuWebhookState::new(config, &resolved, adapter, kernel_ctx, runtime);
+
+                let payload = json!({
+                    "header": {
+                        "event_id": "evt_card_webhook_response_order_1",
+                        "event_type": "card.action.trigger",
+                        "token": "verify-token"
+                    },
+                    "event": {
+                        "token": "callback-token-response-order",
+                        "operator": {
+                            "operator_id": {
+                                "open_id": "ou_sender_1"
+                            }
+                        },
+                        "action": {
+                            "tag": "button",
+                            "name": "approve_request"
+                        },
+                        "context": {
+                            "open_message_id": "om_card_source_response_order",
+                            "open_chat_id": "oc_demo"
+                        }
+                    }
+                });
+                let raw_body = serde_json::to_string(&payload).expect("serialize payload");
+                let headers = signed_headers(&raw_body, "encrypt-key");
+
+                let response =
+                    feishu_webhook_handler(State(state), headers, Bytes::from(raw_body.clone()))
+                        .await
+                        .into_response();
+
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                assert_eq!(
+                    feishu_requests
+                        .lock()
+                        .await
+                        .iter()
+                        .filter(|request| request.path == "/open-apis/interactive/v1/card/update")
+                        .count(),
+                    0,
+                    "delayed update must wait until the callback HTTP response body is consumed"
+                );
+
+                let response_body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .expect("read callback response body");
+                assert_eq!(
+                    serde_json::from_slice::<Value>(&response_body).expect("response body json"),
+                    json!({})
+                );
+
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                let feishu_requests = feishu_requests.lock().await.clone();
+                let provider_requests = provider_requests.lock().await.clone();
+                let delayed_update = feishu_requests
+                    .iter()
+                    .find(|request| request.path == "/open-apis/interactive/v1/card/update")
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "delayed update request after body consumption; feishu_requests={feishu_requests:?}; provider_requests={provider_requests:?}"
+                        )
+                    });
+                assert_eq!(
+                    delayed_update.authorization.as_deref(),
+                    Some("Bearer t-token-webhook")
+                );
+                assert!(
+                    delayed_update
+                        .body
+                        .contains("\"token\":\"callback-token-response-order\"")
+                );
+                assert!(
+                    delayed_update
+                        .body
+                        .contains("\"content\":\"callback updated\"")
+                );
+                assert!(
+                    !provider_requests.is_empty(),
+                    "callback processing should still reach the provider before deferred dispatch"
+                );
+
+                provider_server.abort();
+                feishu_server.abort();
+            },
+        );
+    }
+
+    #[test]
+    fn feishu_webhook_card_callback_delayed_update_dispatches_when_response_body_is_dropped() {
+        run_webhook_test_on_large_stack(
+            "feishu-webhook-card-callback-delayed-update-response-drop",
+            || async {
+                let provider_requests = Arc::new(Mutex::new(Vec::<MockRequest>::new()));
+                let feishu_requests = Arc::new(Mutex::new(Vec::<MockRequest>::new()));
+                let (provider_base_url, provider_server) =
+                    spawn_mock_provider_card_update_server(provider_requests.clone()).await;
+                let (feishu_base_url, feishu_server) =
+                    spawn_mock_feishu_api_server(feishu_requests.clone(), "om_reply_unused")
+                        .await;
+
+                let config = test_webhook_config(&provider_base_url, &feishu_base_url);
+                let resolved = config
+                    .feishu
+                    .resolve_account(None)
+                    .expect("resolve feishu account");
+                let adapter = FeishuAdapter::new(&resolved).expect("build feishu adapter");
+                let kernel_ctx = bootstrap_webhook_kernel_context(
+                    "feishu-webhook-card-callback-delayed-update-response-drop",
+                    DEFAULT_TOKEN_TTL_S,
+                    &config,
+                )
+                .expect("bootstrap kernel context");
+                let runtime = Arc::new(
+                    ChannelOperationRuntimeTracker::start(
+                        ChannelPlatform::Feishu,
+                        "serve",
+                        resolved.account.id.as_str(),
+                        resolved.account.label.as_str(),
+                    )
+                    .await
+                    .expect("start runtime tracker"),
+                );
+                let state = FeishuWebhookState::new(config, &resolved, adapter, kernel_ctx, runtime);
+
+                let payload = json!({
+                    "header": {
+                        "event_id": "evt_card_webhook_response_drop_1",
+                        "event_type": "card.action.trigger",
+                        "token": "verify-token"
+                    },
+                    "event": {
+                        "token": "callback-token-response-drop",
+                        "operator": {
+                            "operator_id": {
+                                "open_id": "ou_sender_1"
+                            }
+                        },
+                        "action": {
+                            "tag": "button",
+                            "name": "approve_request"
+                        },
+                        "context": {
+                            "open_message_id": "om_card_source_response_drop",
+                            "open_chat_id": "oc_demo"
+                        }
+                    }
+                });
+                let raw_body = serde_json::to_string(&payload).expect("serialize payload");
+                let headers = signed_headers(&raw_body, "encrypt-key");
+
+                let response =
+                    feishu_webhook_handler(State(state), headers, Bytes::from(raw_body.clone()))
+                        .await
+                        .into_response();
+                drop(response);
+
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                let feishu_requests = feishu_requests.lock().await.clone();
+                let provider_requests = provider_requests.lock().await.clone();
+                let delayed_update = feishu_requests
+                    .iter()
+                    .find(|request| request.path == "/open-apis/interactive/v1/card/update")
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "delayed update request after response drop; feishu_requests={feishu_requests:?}; provider_requests={provider_requests:?}"
+                        )
+                    });
+                assert_eq!(
+                    delayed_update.authorization.as_deref(),
+                    Some("Bearer t-token-webhook")
+                );
+                assert!(
+                    delayed_update
+                        .body
+                        .contains("\"token\":\"callback-token-response-drop\"")
+                );
+                assert!(
+                    delayed_update
+                        .body
+                        .contains("\"content\":\"callback updated\"")
+                );
+                assert!(
+                    !provider_requests.is_empty(),
+                    "callback processing should still reach the provider before deferred dispatch"
+                );
+
+                provider_server.abort();
+                feishu_server.abort();
+            },
+        );
+    }
+
+    #[test]
+    fn feishu_webhook_card_callback_provider_failure_still_returns_safe_noop_body() {
+        run_webhook_test_on_large_stack(
+            "feishu-webhook-card-callback-failure",
+            || async {
+                let provider_requests = Arc::new(Mutex::new(Vec::<MockRequest>::new()));
+                let feishu_requests = Arc::new(Mutex::new(Vec::<MockRequest>::new()));
+                let (provider_base_url, provider_server) =
+                    spawn_mock_provider_failure_server(provider_requests.clone()).await;
+                let (feishu_base_url, feishu_server) =
+                    spawn_mock_feishu_api_server(feishu_requests.clone(), "om_reply_unused").await;
+
+                let config = test_webhook_config(&provider_base_url, &feishu_base_url);
+                let resolved = config
+                    .feishu
+                    .resolve_account(None)
+                    .expect("resolve feishu account");
+                let adapter = FeishuAdapter::new(&resolved).expect("build feishu adapter");
+                let kernel_ctx = bootstrap_webhook_kernel_context(
+                    "feishu-webhook-card-callback-failure",
+                    DEFAULT_TOKEN_TTL_S,
+                    &config,
+                )
+                .expect("bootstrap kernel context");
+                let runtime = Arc::new(
+                    ChannelOperationRuntimeTracker::start(
+                        ChannelPlatform::Feishu,
+                        "serve",
+                        resolved.account.id.as_str(),
+                        resolved.account.label.as_str(),
+                    )
+                    .await
+                    .expect("start runtime tracker"),
+                );
+                let state = FeishuWebhookState::new(config, &resolved, adapter, kernel_ctx, runtime);
+
+                let payload = json!({
+                    "header": {
+                        "event_id": "evt_card_webhook_failure_1",
+                        "event_type": "card.action.trigger",
+                        "token": "verify-token"
+                    },
+                    "event": {
+                        "token": "callback-token-failure",
+                        "operator": {
+                            "operator_id": {
+                                "open_id": "ou_sender_1"
+                            }
+                        },
+                        "action": {
+                            "tag": "button",
+                            "name": "approve_request"
+                        },
+                        "context": {
+                            "open_message_id": "om_card_source_failure",
+                            "open_chat_id": "oc_demo"
+                        }
+                    }
+                });
+                let raw_body = serde_json::to_string(&payload).expect("serialize payload");
+                let headers = signed_headers(&raw_body, "encrypt-key");
+
+                let response = handle_feishu_webhook_payload(
+                    state,
+                    &headers,
+                    raw_body.as_str(),
+                    serde_json::from_str(raw_body.as_str()).expect("payload value"),
+                )
+                .await
+                .expect("callback failure should still produce a safe Feishu body");
+
+                assert_eq!(response.body(), &json!({}));
+                assert!(
+                    !provider_requests.lock().await.is_empty(),
+                    "callback failure path should still attempt provider processing"
+                );
+                assert_eq!(feishu_requests.lock().await.len(), 0);
+
+                provider_server.abort();
+                feishu_server.abort();
+            },
+        );
     }
 
     #[tokio::test]

@@ -765,7 +765,7 @@ impl AsyncDelegateSpawner for DefaultAsyncDelegateSpawner {
 
 #[cfg(feature = "memory-sqlite")]
 pub async fn execute_async_delegate_spawn_request(
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     request: AsyncDelegateSpawnRequest,
 ) -> Result<(), String> {
     let AsyncDelegateSpawnRequest {
@@ -1306,7 +1306,7 @@ pub trait ConversationRuntime: Send + Sync {
     #[cfg(feature = "memory-sqlite")]
     fn background_task_spawner(
         &self,
-        _config: &LoongClawConfig,
+        _config: &LoongConfig,
     ) -> Option<Arc<dyn AsyncDelegateSpawner>> {
         None
     }

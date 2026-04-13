@@ -333,7 +333,7 @@ async fn framework_timeout_supports_async_core_tool_calls() {
         }),
     };
 
-    let result = loongclaw_kernel::CoreToolAdapter::execute_core_tool(&adapter, request).await;
+    let result = loong_kernel::CoreToolAdapter::execute_core_tool(&adapter, request).await;
 
     assert!(
         result.is_ok(),

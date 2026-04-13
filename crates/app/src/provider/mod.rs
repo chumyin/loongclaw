@@ -64,7 +64,7 @@ pub struct ProviderToolSchemaReadiness {
     pub effective_tool_schema_mode: String,
 }
 
-pub fn provider_tool_schema_readiness(config: &LoongClawConfig) -> ProviderToolSchemaReadiness {
+pub fn provider_tool_schema_readiness(config: &LoongConfig) -> ProviderToolSchemaReadiness {
     let provider = &config.provider;
     let runtime_contract = provider_runtime_contract(provider);
     let capability_profile = capability_profile_runtime::ProviderCapabilityProfile::from_provider(

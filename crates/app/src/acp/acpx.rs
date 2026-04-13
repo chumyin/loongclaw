@@ -3,11 +3,13 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::OnceLock;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::time::{Duration, Instant, sleep, sleep_until, timeout};
@@ -33,7 +35,6 @@ const ACPX_PERMISSION_DENIED_EXIT_CODE: i32 = 5;
 const ACPX_SPAWN_RETRY_ATTEMPTS: usize = 5;
 const ACPX_SPAWN_RETRY_DELAY: Duration = Duration::from_millis(25);
 const ACPX_MCP_PROXY_NODE_COMMAND: &str = "node";
-const ACPX_MCP_PROXY_SCRIPT_NAME: &str = "loong-acpx-mcp-proxy.mjs";
 const ACPX_MCP_PROXY_SCRIPT_SOURCE: &str = include_str!("assets/acpx-mcp-proxy.mjs");
 static ACPX_MCP_PROXY_SCRIPT_PATH: OnceLock<Result<String, String>> = OnceLock::new();
 
@@ -934,12 +935,12 @@ fn build_mcp_proxy_agent_command(
         "mcpServers": mcp_servers,
     }))
     .map_err(|error| format!("serialize ACPX MCP proxy payload failed: {error}"))?;
-    let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload);
+    let payload_path = materialize_mcp_proxy_payload_path(payload.as_slice())?;
     Ok(join_command_line(&[
         ACPX_MCP_PROXY_NODE_COMMAND.to_owned(),
         script_path,
-        "--payload".to_owned(),
-        encoded,
+        "--payload-file".to_owned(),
+        payload_path,
     ]))
 }
 
@@ -950,9 +951,14 @@ fn ensure_mcp_proxy_script_path() -> CliResult<String> {
 }
 
 fn materialize_mcp_proxy_script() -> Result<String, String> {
+    let digest = Sha256::digest(ACPX_MCP_PROXY_SCRIPT_SOURCE.as_bytes());
+    let digest_prefix = digest[..8]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
     let path = std::env::temp_dir()
         .join("loong")
-        .join(ACPX_MCP_PROXY_SCRIPT_NAME);
+        .join(format!("loong-acpx-mcp-proxy-{digest_prefix}.mjs"));
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|error| format!("create ACPX MCP proxy directory failed: {error}"))?;
@@ -973,7 +979,51 @@ fn materialize_mcp_proxy_script() -> Result<String, String> {
     Ok(path.display().to_string())
 }
 
-async fn probe_mcp_proxy_support(
+fn materialize_mcp_proxy_payload_path(payload: &[u8]) -> CliResult<String> {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| format!("read system time for ACPX MCP payload failed: {error}"))?;
+    let payload_file_name = format!(
+        "acpx-mcp-payload-{}-{}.json",
+        std::process::id(),
+        timestamp.as_nanos()
+    );
+    let payload_path = std::env::temp_dir()
+        .join("loong")
+        .join("acpx-mcp-payloads")
+        .join(payload_file_name);
+    if let Some(parent) = payload_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("create ACPX MCP payload directory failed: {error}"))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let mut permissions = std::fs::metadata(parent)
+                .map_err(|error| format!("stat ACPX MCP payload directory failed: {error}"))?
+                .permissions();
+            permissions.set_mode(0o700);
+            std::fs::set_permissions(parent, permissions)
+                .map_err(|error| format!("chmod ACPX MCP payload directory failed: {error}"))?;
+        }
+    }
+    std::fs::write(&payload_path, payload)
+        .map_err(|error| format!("write ACPX MCP payload failed: {error}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut permissions = std::fs::metadata(&payload_path)
+            .map_err(|error| format!("stat ACPX MCP payload failed: {error}"))?
+            .permissions();
+        permissions.set_mode(0o600);
+        std::fs::set_permissions(&payload_path, permissions)
+            .map_err(|error| format!("chmod ACPX MCP payload failed: {error}"))?;
+    }
+    Ok(payload_path.display().to_string())
+}
+
+pub(crate) async fn probe_mcp_proxy_support(
     cwd: Option<&str>,
     timeout_duration: Duration,
 ) -> CliResult<(String, String)> {
@@ -1017,6 +1067,52 @@ async fn probe_mcp_proxy_support(
         ));
     }
     Ok((script_path, observed))
+}
+
+#[cfg(test)]
+pub(crate) async fn probe_mcp_proxy_support_with_runtime(
+    runtime_command: &str,
+    script_path: &str,
+    cwd: Option<&str>,
+    timeout_duration: Duration,
+) -> CliResult<(String, String)> {
+    let mut probe = Command::new(runtime_command);
+    probe.arg(script_path).arg("--version");
+    if let Some(cwd) = cwd {
+        probe.current_dir(cwd);
+    }
+    let output = wait_for_command_output(&mut probe, timeout_duration)
+        .await
+        .map_err(|error| match error {
+            CommandOutputError::TimedOut => {
+                "embedded ACPX MCP proxy runtime probe timed out".to_owned()
+            }
+            CommandOutputError::Io(error) => {
+                if error.kind() == ErrorKind::NotFound {
+                    format!("embedded ACPX MCP proxy requires `{runtime_command}` on PATH")
+                } else {
+                    format!("probe embedded ACPX MCP proxy runtime failed: {error}")
+                }
+            }
+        })?;
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    let observed = match (stdout.is_empty(), stderr.is_empty()) {
+        (false, true) => stdout,
+        (true, false) => stderr,
+        (false, false) => format!("{stdout} | {stderr}"),
+        (true, true) => "(empty)".to_owned(),
+    };
+    if !output.status.success() {
+        return Err(format!(
+            "embedded ACPX MCP proxy runtime probe exited with code {}: {observed}",
+            output
+                .status
+                .code()
+                .map_or_else(|| "unknown".to_owned(), |code| code.to_string())
+        ));
+    }
+    Ok((script_path.to_owned(), observed))
 }
 
 fn join_command_line(parts: &[String]) -> String {
@@ -2371,8 +2467,8 @@ exit 0
             "expected --agent proxy flag in log: {log}"
         );
         assert!(
-            log.contains("--payload"),
-            "expected MCP proxy payload flag in log: {log}"
+            log.contains("--payload-file"),
+            "expected MCP proxy payload-file flag in log: {log}"
         );
         assert!(
             log.contains("sessions ensure --name session-proxy"),

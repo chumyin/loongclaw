@@ -741,7 +741,7 @@ fn build_gateway_operator_summary_read_model(
     build_operator_summary_read_model(status, channel_inventory, runtime_snapshot)
 }
 
-fn gateway_control_config(app_state: &GatewayControlAppState) -> CliResult<&LoongClawConfig> {
+fn gateway_control_config(app_state: &GatewayControlAppState) -> CliResult<&LoongConfig> {
     let config = app_state
         .config
         .as_ref()
@@ -997,7 +997,7 @@ pub fn build_gateway_events_test_router(
 #[doc(hidden)]
 pub fn build_gateway_acp_test_router(
     bearer_token: String,
-    config: LoongClawConfig,
+    config: LoongConfig,
     acp_manager: Arc<AcpSessionManager>,
 ) -> Router {
     let mut state = GatewayControlAppState::test_minimal(bearer_token);

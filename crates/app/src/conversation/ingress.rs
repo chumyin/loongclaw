@@ -1,7 +1,7 @@
 use serde_json::{Map, Value, json};
 
-const LOONG_INTERNAL_TOOL_INGRESS_KEY: &str = "ingress";
-const LOONG_INTERNAL_TOOL_FEISHU_CALLBACK_KEY: &str = "feishu_callback";
+const LOONGCLAW_INTERNAL_TOOL_INGRESS_KEY: &str = "ingress";
+const LOONGCLAW_INTERNAL_TOOL_FEISHU_CALLBACK_KEY: &str = "feishu_callback";
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct InjectedToolPayload {
@@ -162,7 +162,7 @@ fn inject_feishu_internal_context(
     let mut internal = Map::new();
     if ingress.has_contextual_hints() {
         internal.insert(
-            LOONG_INTERNAL_TOOL_INGRESS_KEY.to_owned(),
+            LOONGCLAW_INTERNAL_TOOL_INGRESS_KEY.to_owned(),
             ingress.as_event_payload(),
         );
     }
@@ -172,7 +172,10 @@ fn inject_feishu_internal_context(
         .as_ref()
         .and_then(|value| value.as_json())
     {
-        internal.insert(LOONG_INTERNAL_TOOL_FEISHU_CALLBACK_KEY.to_owned(), callback);
+        internal.insert(
+            LOONGCLAW_INTERNAL_TOOL_FEISHU_CALLBACK_KEY.to_owned(),
+            callback,
+        );
     }
     if internal.is_empty() {
         return InjectedToolPayload {
@@ -181,7 +184,7 @@ fn inject_feishu_internal_context(
         };
     }
     body.insert(
-        crate::tools::LOONG_INTERNAL_TOOL_CONTEXT_KEY.to_owned(),
+        crate::tools::LOONGCLAW_INTERNAL_TOOL_CONTEXT_KEY.to_owned(),
         Value::Object(internal),
     );
     InjectedToolPayload {
@@ -429,23 +432,23 @@ mod tests {
 
         assert!(injected.trusted_internal_context);
         assert_eq!(
-            injected.payload["_loong"]["feishu_callback"]["callback_token"],
+            injected.payload["_loongclaw"]["feishu_callback"]["callback_token"],
             "callback-secret-1"
         );
         assert_eq!(
-            injected.payload["_loong"]["feishu_callback"]["operator_open_id"],
+            injected.payload["_loongclaw"]["feishu_callback"]["operator_open_id"],
             "ou_operator"
         );
         assert_eq!(
-            injected.payload["_loong"]["feishu_callback"]["deferred_context_id"],
+            injected.payload["_loongclaw"]["feishu_callback"]["deferred_context_id"],
             "evt_callback_1"
         );
         assert_eq!(
-            injected.payload["_loong"]["ingress"]["channel"]["conversation_id"],
+            injected.payload["_loongclaw"]["ingress"]["channel"]["conversation_id"],
             "oc_callback"
         );
         assert!(!untouched.trusted_internal_context);
-        assert!(untouched.payload.get("_loong").is_none());
+        assert!(untouched.payload.get("_loongclaw").is_none());
     }
 
     #[test]
@@ -454,7 +457,7 @@ mod tests {
             "feishu.messages.reply",
             json!({
                 "text": "hello",
-                "_loong": {
+                "_loongclaw": {
                     "ingress": {
                         "channel": {
                             "platform": "feishu",
@@ -468,7 +471,7 @@ mod tests {
 
         assert!(!injected.trusted_internal_context);
         assert_eq!(
-            injected.payload["_loong"]["ingress"]["channel"]["conversation_id"],
+            injected.payload["_loongclaw"]["ingress"]["channel"]["conversation_id"],
             "oc_forged"
         );
     }

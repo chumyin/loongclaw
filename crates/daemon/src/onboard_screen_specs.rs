@@ -57,7 +57,7 @@ pub(super) fn render_onboarding_risk_screen_lines_with_style(
 
 pub(super) fn build_onboard_shortcut_screen_spec(
     shortcut_kind: OnboardShortcutKind,
-    config: &mvp::config::LoongClawConfig,
+    config: &mvp::config::LoongConfig,
     import_source: Option<&str>,
     include_choices: bool,
 ) -> TuiScreenSpec {

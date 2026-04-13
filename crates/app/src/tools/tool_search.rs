@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::sync::OnceLock;
 
-use loongclaw_contracts::{Capability, ToolCoreOutcome, ToolCoreRequest};
+use loong_contracts::{Capability, ToolCoreOutcome, ToolCoreRequest};
 use serde_json::Value;
 use serde_json::json;
 use unicode_normalization::UnicodeNormalization;
@@ -12,8 +12,8 @@ use unicode_segmentation::UnicodeSegmentation;
 use super::catalog::{ToolDescriptor, ToolView};
 use super::runtime_config;
 use super::{
-    LOONGCLAW_INTERNAL_TOOL_CONTEXT_KEY, LOONGCLAW_INTERNAL_TOOL_SEARCH_KEY,
-    LOONGCLAW_INTERNAL_TOOL_SEARCH_VISIBLE_TOOL_IDS_KEY, TOOL_SEARCH_GRANTED_CAPABILITIES_FIELD,
+    LOONG_INTERNAL_TOOL_CONTEXT_KEY, LOONG_INTERNAL_TOOL_SEARCH_KEY,
+    LOONG_INTERNAL_TOOL_SEARCH_VISIBLE_TOOL_IDS_KEY, TOOL_SEARCH_GRANTED_CAPABILITIES_FIELD,
     canonical_tool_name, issue_tool_lease, memory_tools,
 };
 
@@ -307,9 +307,9 @@ pub(super) fn search_tool_view_from_payload(
 ) -> ToolView {
     let visible_tool_names = if super::trusted_internal_tool_payload_enabled() {
         payload
-            .get(LOONGCLAW_INTERNAL_TOOL_CONTEXT_KEY)
-            .and_then(|body| body.get(LOONGCLAW_INTERNAL_TOOL_SEARCH_KEY))
-            .and_then(|body| body.get(LOONGCLAW_INTERNAL_TOOL_SEARCH_VISIBLE_TOOL_IDS_KEY))
+            .get(LOONG_INTERNAL_TOOL_CONTEXT_KEY)
+            .and_then(|body| body.get(LOONG_INTERNAL_TOOL_SEARCH_KEY))
+            .and_then(|body| body.get(LOONG_INTERNAL_TOOL_SEARCH_VISIBLE_TOOL_IDS_KEY))
             .and_then(Value::as_array)
             .map(|tool_names| {
                 tool_names

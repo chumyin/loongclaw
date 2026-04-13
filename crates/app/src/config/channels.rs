@@ -139,14 +139,17 @@ pub fn service_channel_descriptors() -> Vec<&'static ChannelDescriptor> {
     sdk::service_channel_descriptors()
 }
 
+#[allow(dead_code)]
 pub(super) fn enabled_channel_ids(config: &LoongConfig) -> Vec<String> {
     enabled_channel_ids_for_runtime_kind(config, None)
 }
 
+#[allow(dead_code)]
 pub(super) fn enabled_service_channel_ids(config: &LoongConfig) -> Vec<String> {
     enabled_channel_ids_for_runtime_kind(config, Some(ChannelRuntimeKind::Service))
 }
 
+#[allow(dead_code)]
 fn enabled_channel_ids_for_runtime_kind(
     config: &LoongConfig,
     runtime_kind: Option<ChannelRuntimeKind>,
@@ -154,6 +157,7 @@ fn enabled_channel_ids_for_runtime_kind(
     sdk::enabled_channel_ids(config, runtime_kind)
 }
 
+#[allow(dead_code)]
 pub(super) fn collect_channel_validation_issues(
     config: &LoongConfig,
 ) -> Vec<ConfigValidationIssue> {

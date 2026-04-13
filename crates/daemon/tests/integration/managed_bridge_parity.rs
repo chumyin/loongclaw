@@ -54,7 +54,7 @@ fn runtime_snapshot_fixture(
             visible_tool_names: Vec::new(),
             capability_snapshot_sha256: String::new(),
             capability_snapshot: String::new(),
-            tool_calling: loongclaw_daemon::gateway::read_models::GatewayToolCallingReadModel {
+            tool_calling: loong_daemon::gateway::read_models::GatewayToolCallingReadModel {
                 availability: "inactive".to_owned(),
                 structured_tool_schema_enabled: true,
                 effective_tool_schema_mode: "enabled_with_downgrade".to_owned(),

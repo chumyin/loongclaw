@@ -219,13 +219,14 @@ where
                     .binding
                     .kernel_context()
                     .ok_or_else(|| "no_kernel_context".to_owned())?;
-                crate::tools::execute_kernel_tool_request(
-                    kernel_ctx,
-                    replay_request.request,
-                    replay_request.trusted_internal_context,
-                )
-                .await
-                .map_err(|error| error.to_string())
+                let outcome: Result<loong_contracts::ToolCoreOutcome, loong_kernel::KernelError> =
+                    crate::tools::execute_kernel_tool_request(
+                        kernel_ctx,
+                        replay_request.request,
+                        replay_request.trusted_internal_context,
+                    )
+                    .await;
+                outcome.map_err(|error: loong_kernel::KernelError| error.to_string())
             }
             crate::tools::ToolExecutionKind::App => {
                 let session_context = self

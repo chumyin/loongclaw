@@ -737,6 +737,10 @@ impl ToolRuntimeConfig {
         configured_root.unwrap_or(fallback_root)
     }
 
+    pub fn effective_workspace_root(&self) -> Option<&Path> {
+        self.file_root.as_deref()
+    }
+
     pub fn from_loong_config(config: &LoongConfig, config_path: Option<&Path>) -> Self {
         let memory_system_selection = crate::memory::resolve_memory_system_selection(config);
         let selected_memory_system_id = memory_system_selection.id;
@@ -896,6 +900,10 @@ impl ToolRuntimeConfig {
             #[cfg(feature = "feishu-integration")]
             feishu: FeishuToolRuntimeConfig::from_loong_config(config),
         }
+    }
+
+    pub fn from_loongclaw_config(config: &LoongConfig, config_path: Option<&Path>) -> Self {
+        Self::from_loong_config(config, config_path)
     }
 
     /// Build a config by reading the legacy environment variables.

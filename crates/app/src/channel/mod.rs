@@ -1,3 +1,4 @@
+#[cfg(test)]
 use crate::config::LoongConfig;
 
 mod catalog;
@@ -106,7 +107,6 @@ pub use registry::{
     resolve_channel_runtime_command_descriptor, validate_plugin_channel_bridge_manifest,
 };
 pub use runtime::state::ChannelOperationRuntime;
-use runtime::state::ChannelOperationRuntimeTracker;
 #[cfg(any(
     feature = "channel-telegram",
     feature = "channel-feishu",
@@ -115,7 +115,11 @@ use runtime::state::ChannelOperationRuntimeTracker;
     feature = "channel-whatsapp"
 ))]
 pub use runtime::turn_feedback::ChannelTurnFeedbackPolicy;
-pub use sdk::{background_channel_runtime_descriptors, is_background_channel_surface_enabled};
+pub use sdk::{
+    ChannelDescriptor, ChannelRuntimeKind, background_channel_runtime_descriptors,
+    channel_descriptor, is_background_channel_surface_enabled, service_channel_descriptors,
+};
+pub(crate) use sdk::{collect_channel_validation_issues, enabled_channel_ids};
 pub use tlon_command::run_tlon_send;
 
 mod types;
@@ -128,7 +132,16 @@ pub use types::{
 };
 
 pub use runtime::serve::ChannelServeStopHandle;
-#[cfg(test)]
+#[cfg(all(
+    test,
+    any(
+        feature = "channel-telegram",
+        feature = "channel-feishu",
+        feature = "channel-matrix",
+        feature = "channel-wecom",
+        feature = "channel-whatsapp"
+    )
+))]
 use runtime::serve::{
     with_channel_serve_runtime_in_dir, with_channel_serve_runtime_with_stop_in_dir,
 };
@@ -148,6 +161,8 @@ use commands::context::render_channel_route_notice;
     feature = "channel-whatsapp",
 ))]
 pub(crate) use dispatch::process_inbound_with_provider;
+#[cfg(all(test, feature = "config-toml"))]
+use dispatch::reload_channel_turn_config;
 #[cfg(any(
     feature = "channel-telegram",
     feature = "channel-feishu",
@@ -167,14 +182,23 @@ pub use dispatch::run_wecom_channel_with_stop;
 #[cfg(feature = "channel-whatsapp")]
 pub use dispatch::run_whatsapp_channel_with_stop;
 pub(crate) use dispatch::send_text_to_known_session;
-use dispatch::{ChannelCommandContext, ChannelSendCommandSpec, run_channel_send_command};
-#[cfg(test)]
-use dispatch::{
-    build_feishu_command_context, build_telegram_command_context, channel_message_ingress_context,
-    process_inbound_with_runtime_and_feedback, reload_channel_turn_config,
-    validate_feishu_security_config, validate_matrix_security_config,
-    validate_telegram_security_config,
-};
+#[cfg(all(test, feature = "channel-matrix"))]
+use dispatch::validate_matrix_security_config;
+#[cfg(all(test, feature = "channel-feishu"))]
+use dispatch::{build_feishu_command_context, validate_feishu_security_config};
+#[cfg(all(test, feature = "channel-telegram"))]
+use dispatch::{build_telegram_command_context, validate_telegram_security_config};
+#[cfg(all(
+    test,
+    any(
+        feature = "channel-telegram",
+        feature = "channel-feishu",
+        feature = "channel-matrix",
+        feature = "channel-wecom",
+        feature = "channel-whatsapp"
+    )
+))]
+use dispatch::{channel_message_ingress_context, process_inbound_with_runtime_and_feedback};
 pub use dispatch::{
     load_channel_operation_runtime_for_account_from_dir_for_test, run_background_channel_with_stop,
     run_dingtalk_send, run_discord_send, run_email_send, run_feishu_channel, run_feishu_send,
@@ -184,12 +208,38 @@ pub use dispatch::{
     run_telegram_send, run_webhook_send, run_wecom_channel, run_wecom_send, run_whatsapp_channel,
     run_whatsapp_send,
 };
-#[cfg(test)]
+#[cfg(all(
+    test,
+    any(
+        feature = "channel-telegram",
+        feature = "channel-feishu",
+        feature = "channel-matrix",
+        feature = "channel-wecom",
+        feature = "channel-whatsapp"
+    )
+))]
 use runtime::serve::ChannelServeRuntimeSpec;
-#[cfg(test)]
-use types::{
-    KnownChannelSessionSendTarget, parse_known_channel_session_send_target, process_channel_batch,
-};
+#[cfg(all(
+    test,
+    any(
+        feature = "channel-telegram",
+        feature = "channel-feishu",
+        feature = "channel-matrix",
+        feature = "channel-wecom",
+        feature = "channel-whatsapp"
+    )
+))]
+use types::process_channel_batch;
+#[cfg(all(
+    test,
+    any(
+        feature = "channel-telegram",
+        feature = "channel-feishu",
+        feature = "channel-matrix",
+        feature = "channel-wecom"
+    )
+))]
+use types::{KnownChannelSessionSendTarget, parse_known_channel_session_send_target};
 
 #[cfg(test)]
 mod tests {
@@ -204,7 +254,7 @@ mod tests {
 
     fn temp_runtime_dir(suffix: &str) -> PathBuf {
         let unique = format!(
-            "loong-channel-mod-{suffix}-{}",
+            "loongclaw-channel-mod-{suffix}-{}",
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .expect("clock")
@@ -670,7 +720,7 @@ mod tests {
     #[cfg(feature = "config-toml")]
     fn reload_channel_turn_config_refreshes_provider_state_without_mutating_channel_settings() {
         let path = std::env::temp_dir().join(format!(
-            "loong-channel-provider-reload-{}.toml",
+            "loongclaw-channel-provider-reload-{}.toml",
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .expect("clock")
@@ -1065,10 +1115,10 @@ mod tests {
         .expect("deserialize telegram context config");
 
         let context =
-            build_telegram_command_context(PathBuf::from("/tmp/loong.toml"), config, None)
+            build_telegram_command_context(PathBuf::from("/tmp/loongclaw.toml"), config, None)
                 .expect("build telegram command context");
 
-        assert_eq!(context.resolved_path, PathBuf::from("/tmp/loong.toml"));
+        assert_eq!(context.resolved_path, PathBuf::from("/tmp/loongclaw.toml"));
         assert_eq!(context.resolved.configured_account_id, "alerts");
         assert!(context.route.selected_by_default());
         assert!(context.route.uses_implicit_fallback_default());
@@ -1091,9 +1141,12 @@ mod tests {
         }))
         .expect("deserialize feishu context config");
 
-        let error =
-            build_feishu_command_context(PathBuf::from("/tmp/loong.toml"), config, Some("Primary"))
-                .expect_err("disabled feishu account should fail");
+        let error = build_feishu_command_context(
+            PathBuf::from("/tmp/loongclaw.toml"),
+            config,
+            Some("Primary"),
+        )
+        .expect_err("disabled feishu account should fail");
 
         assert!(error.contains("disabled"));
         assert!(error.contains("primary"));
@@ -1117,7 +1170,7 @@ mod tests {
         .expect("deserialize feishu context config");
 
         let context = build_feishu_command_context(
-            PathBuf::from("/tmp/loong.toml"),
+            PathBuf::from("/tmp/loongclaw.toml"),
             config,
             Some("feishu_shared"),
         )
@@ -1155,7 +1208,7 @@ mod tests {
         .expect("deserialize feishu context config");
 
         let error = build_feishu_command_context(
-            PathBuf::from("/tmp/loong.toml"),
+            PathBuf::from("/tmp/loongclaw.toml"),
             config,
             Some("feishu_shared"),
         )

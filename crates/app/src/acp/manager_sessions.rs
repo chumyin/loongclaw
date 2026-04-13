@@ -3,7 +3,7 @@ use super::*;
 impl AcpSessionManager {
     pub(super) fn resolve_existing_session(
         &self,
-        config: &LoongClawConfig,
+        config: &LoongConfig,
         selected_backend_id: &str,
         bootstrap: &AcpSessionBootstrap,
     ) -> CliResult<Option<AcpSessionMetadata>> {
@@ -87,7 +87,7 @@ impl AcpSessionManager {
 
     pub(super) fn enforce_max_concurrent_sessions(
         &self,
-        config: &LoongClawConfig,
+        config: &LoongConfig,
         requested_session_key: &str,
     ) -> CliResult<()> {
         if self.store.get(requested_session_key)?.is_some() {
@@ -103,7 +103,7 @@ impl AcpSessionManager {
         Ok(())
     }
 
-    pub(super) async fn cleanup_idle_sessions(&self, config: &LoongClawConfig) -> CliResult<()> {
+    pub(super) async fn cleanup_idle_sessions(&self, config: &LoongConfig) -> CliResult<()> {
         let ttl_ms = config.acp.session_idle_ttl_ms();
         if ttl_ms == 0 {
             return Ok(());
@@ -175,7 +175,7 @@ impl AcpSessionManager {
 
     pub(super) async fn request_active_turn_cancellation(
         &self,
-        config: &LoongClawConfig,
+        config: &LoongConfig,
         mut metadata: AcpSessionMetadata,
         active_turn: Arc<ActiveTurnState>,
     ) -> CliResult<()> {

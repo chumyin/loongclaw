@@ -62,6 +62,7 @@ axum = { workspace = true, features = ["query"] }
 clap.workspace = true
 clap_complete = "4.6"
 dialoguer.workspace = true
+async-trait.workspace = true
 kernel = { package = "loong-kernel", version = "0.1.0-alpha.3", path = "../kernel" }
 loong-bench = { version = "0.1.0-alpha.3", path = "../bench" }
 loong-app = { version = "0.1.0-alpha.3", path = "../app", default-features = false }

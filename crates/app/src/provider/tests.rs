@@ -83,7 +83,7 @@ fn next_model_cooldown_test_namespace() -> String {
 
 #[test]
 fn provider_tool_schema_readiness_reports_default_structured_mode() {
-    let config = LoongClawConfig::default();
+    let config = LoongConfig::default();
 
     let readiness = provider_tool_schema_readiness(&config);
 
@@ -97,25 +97,25 @@ fn provider_tool_schema_readiness_reports_default_structured_mode() {
 
 #[test]
 fn provider_tool_schema_readiness_honors_disabled_mode_and_model_hints() {
-    let disabled_config = LoongClawConfig {
+    let disabled_config = LoongConfig {
         provider: ProviderConfig {
             tool_schema_mode: crate::config::ProviderToolSchemaModeConfig::Disabled,
             ..ProviderConfig::default()
         },
-        ..LoongClawConfig::default()
+        ..LoongConfig::default()
     };
     let disabled_readiness = provider_tool_schema_readiness(&disabled_config);
 
     assert!(!disabled_readiness.structured_tool_schema_enabled);
     assert_eq!(disabled_readiness.effective_tool_schema_mode, "disabled");
 
-    let hinted_config = LoongClawConfig {
+    let hinted_config = LoongConfig {
         provider: ProviderConfig {
             model: "gpt-no-tools-preview".to_owned(),
             tool_schema_disabled_model_hints: vec!["no-tools".to_owned()],
             ..ProviderConfig::default()
         },
-        ..LoongClawConfig::default()
+        ..LoongConfig::default()
     };
     let hinted_readiness = provider_tool_schema_readiness(&hinted_config);
 
@@ -1766,14 +1766,14 @@ fn anthropic_turn_body_preserves_native_tool_use_and_tool_result_blocks() {
 #[cfg(any(feature = "tool-file", feature = "tool-shell"))]
 #[test]
 fn opencode_zen_gemini_turn_body_uses_google_generate_content_shape() {
-    let config = LoongClawConfig {
+    let config = LoongConfig {
         provider: ProviderConfig {
             kind: ProviderKind::OpencodeZen,
             api_key: Some(SecretRef::Inline("opencode-secret".to_owned())),
             max_tokens: Some(2048),
             ..ProviderConfig::default()
         },
-        ..LoongClawConfig::default()
+        ..LoongConfig::default()
     };
     let messages = vec![
         json!({
@@ -1826,12 +1826,12 @@ fn opencode_zen_gemini_turn_body_uses_google_generate_content_shape() {
 #[cfg(any(feature = "tool-file", feature = "tool-shell"))]
 #[test]
 fn opencode_zen_gemini_turn_body_preserves_native_tool_result_blocks() {
-    let config = LoongClawConfig {
+    let config = LoongConfig {
         provider: ProviderConfig {
             kind: ProviderKind::OpencodeZen,
             ..ProviderConfig::default()
         },
-        ..LoongClawConfig::default()
+        ..LoongConfig::default()
     };
     let messages = vec![
         json!({
@@ -1920,13 +1920,13 @@ fn opencode_zen_gemini_turn_body_preserves_native_tool_result_blocks() {
 #[cfg(any(feature = "tool-file", feature = "tool-shell"))]
 #[test]
 fn opencode_zen_gemini_turn_body_preserves_native_tool_results() {
-    let config = LoongClawConfig {
+    let config = LoongConfig {
         provider: ProviderConfig {
             kind: ProviderKind::OpencodeZen,
             api_key: Some(SecretRef::Inline("opencode-secret".to_owned())),
             ..ProviderConfig::default()
         },
-        ..LoongClawConfig::default()
+        ..LoongConfig::default()
     };
     let messages = vec![
         json!({

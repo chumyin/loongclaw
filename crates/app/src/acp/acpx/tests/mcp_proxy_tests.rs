@@ -165,7 +165,7 @@ fn build_mcp_proxy_agent_command_preserves_server_cwd() {
     let payload: Value = serde_json::from_slice(payload_bytes.as_slice()).expect("parse payload");
 
     assert!(
-        script_path.contains("loongclaw-acpx-mcp-proxy-"),
+        script_path.contains("loong-acpx-mcp-proxy-"),
         "expected versioned script path, got: {script_path}"
     );
     let script_file_name = std::path::Path::new(script_path.as_str())
@@ -173,7 +173,7 @@ fn build_mcp_proxy_agent_command_preserves_server_cwd() {
         .and_then(|name| name.to_str())
         .expect("script file name");
     assert!(
-        script_file_name != "loongclaw-acpx-mcp-proxy.mjs",
+        script_file_name != "loong-acpx-mcp-proxy.mjs",
         "expected hashed script file name, got: {script_file_name}"
     );
     assert!(

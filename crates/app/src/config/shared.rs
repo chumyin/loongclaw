@@ -1000,7 +1000,7 @@ mod tests {
         let new_home = std::env::temp_dir().join("loong-home-preferred");
         let old_home = std::env::temp_dir().join("loong-home-deprecated");
         env.set(LOONG_HOME_ENV, &new_home);
-        env.set("LOONGCLAW_HOME", &old_home);
+        env.set("LOONG_HOME", &old_home);
 
         // The active env constant reads the preferred name, so the legacy
         // fallback stays ignored when both are present.
