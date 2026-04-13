@@ -7,9 +7,24 @@ cd "$REPO_ROOT"
 
 REPORT_MONTH="${LOONG_ARCH_REPORT_MONTH:-$(date +%Y-%m)}"
 OUTPUT_PATH="${1:-docs/releases/architecture-drift-${REPORT_MONTH}.md}"
+LINK_REFERENCE_PATH="${LOONG_ARCH_REPORT_LINK_PATH:-$OUTPUT_PATH}"
 EXPLICIT_BASELINE="${LOONG_ARCH_DRIFT_BASELINE_REPORT:-}"
 EXPLICIT_BASELINE_DIR="${LOONG_ARCH_DRIFT_BASELINE_DIR:-}"
 GENERATED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+LINK_REFERENCE_DIR="$(dirname "$LINK_REFERENCE_PATH")"
+
+relative_link_from_output_dir() {
+  local target_path="${1:?target_path is required}"
+  python3 - "$LINK_REFERENCE_DIR" "$target_path" <<'PY'
+import os
+import sys
+
+output_dir = sys.argv[1]
+target_path = sys.argv[2]
+
+print(os.path.relpath(target_path, start=output_dir))
+PY
+}
 
 derive_previous_month() {
   local label="$1"
@@ -212,6 +227,10 @@ else
 fi
 
 {
+  release_template_link="$(relative_link_from_output_dir "docs/releases/support/TEMPLATE.md")"
+  architecture_gate_link="$(relative_link_from_output_dir "scripts/check_architecture_boundaries.sh")"
+  ci_workflow_link="$(relative_link_from_output_dir ".github/workflows/ci.yml")"
+
   echo "# Architecture Drift Report ${REPORT_MONTH}"
   echo
   echo "## Summary"
@@ -267,13 +286,13 @@ fi
   echo
   echo "## Refactor Budget Policy"
   echo "- Monthly drift report command: \`scripts/generate_architecture_drift_report.sh\`"
-  echo "- Release checklist budget field lives in \`docs/releases/TEMPLATE.md\`."
+  echo "- Release checklist budget field lives in \`docs/releases/support/TEMPLATE.md\`."
   echo "- Rule: each release must name at least one hotspot metric paid down or explicitly state why no paydown happened."
   echo
   echo "## Detail Links"
-  echo "- [Architecture gate](../../scripts/check_architecture_boundaries.sh)"
-  echo "- [Release template](TEMPLATE.md)"
-  echo "- [CI workflow](../../.github/workflows/ci.yml)"
+  echo "- [Architecture gate](${architecture_gate_link})"
+  echo "- [Release template](${release_template_link})"
+  echo "- [CI workflow](${ci_workflow_link})"
   echo
   while IFS='|' read -r key _classes _file lines _max_lines _line_headroom functions _max_functions _fn_headroom _peak_usage _pressure _prev_lines _line_growth _growth_status _prev_functions; do
     echo "<!-- arch-hotspot key=${key} lines=${lines} functions=${functions} -->"

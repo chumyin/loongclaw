@@ -40,6 +40,7 @@ fi
 
 LOONG_ARCH_REPORT_MONTH="$REPORT_MONTH" \
 LOONG_ARCH_DRIFT_BASELINE_DIR="$BASELINE_DIR_OVERRIDE" \
+LOONG_ARCH_REPORT_LINK_PATH="$REPORT_PATH" \
   scripts/generate_architecture_drift_report.sh "$TEMP_REPORT"
 normalize_architecture_drift_report "$REPORT_PATH" >"$NORMALIZED_TRACKED"
 normalize_architecture_drift_report "$TEMP_REPORT" >"$NORMALIZED_GENERATED"
