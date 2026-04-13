@@ -3168,7 +3168,7 @@ pub(crate) async fn process_inbound_with_provider(
                 .as_deref()
                 .is_some_and(|value| !value.trim().is_empty());
             tracing::debug!(
-                target: "loongclaw.channel",
+                target: "loong.channel",
                 platform = %message.session.platform.as_str(),
                 has_conversation_id,
                 has_configured_account_id,
@@ -3204,7 +3204,7 @@ pub(crate) async fn process_inbound_with_provider(
                 .as_deref()
                 .is_some_and(|value| !value.trim().is_empty());
             tracing::warn!(
-                target: "loongclaw.channel",
+                target: "loong.channel",
                 platform = %message.session.platform.as_str(),
                 has_conversation_id,
                 has_configured_account_id,

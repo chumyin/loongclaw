@@ -952,8 +952,9 @@ fn ensure_mcp_proxy_script_path() -> CliResult<String> {
 
 fn materialize_mcp_proxy_script() -> Result<String, String> {
     let digest = Sha256::digest(ACPX_MCP_PROXY_SCRIPT_SOURCE.as_bytes());
-    let digest_prefix = digest[..8]
+    let digest_prefix = digest
         .iter()
+        .take(8)
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     let path = std::env::temp_dir()

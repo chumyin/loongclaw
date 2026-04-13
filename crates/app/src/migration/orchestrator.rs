@@ -519,7 +519,7 @@ where
 }
 
 fn bridge_installable_external_skills(
-    config: &mut crate::config::LoongClawConfig,
+    config: &mut crate::config::LoongConfig,
     output_path: &Path,
     input_path: &Path,
     mapping: &super::ExternalSkillMappingPlan,
@@ -729,11 +729,11 @@ fn default_external_skills_install_root(output_path: &Path) -> PathBuf {
 }
 
 fn build_external_skills_bridge_runtime(
-    config: &crate::config::LoongClawConfig,
+    config: &crate::config::LoongConfig,
     output_path: &Path,
     input_path: &Path,
 ) -> crate::tools::runtime_config::ToolRuntimeConfig {
-    let mut runtime = crate::tools::runtime_config::ToolRuntimeConfig::from_loongclaw_config(
+    let mut runtime = crate::tools::runtime_config::ToolRuntimeConfig::from_loong_config(
         config,
         Some(output_path),
     );
@@ -816,7 +816,7 @@ fn remove_config_output_path(output_path: &Path) -> CliResult<()> {
 
 fn finalize_apply_import_selection_failure(
     error: String,
-    config: &crate::config::LoongClawConfig,
+    config: &crate::config::LoongConfig,
     output_path: &Path,
     input_path: Option<&Path>,
     installs: &[ExternalSkillsInstalledSkill],
@@ -846,7 +846,7 @@ fn installed_skill_ids(installs: &[ExternalSkillsInstalledSkill]) -> Vec<String>
 }
 
 fn rollback_bridged_external_skill_ids(
-    config: &crate::config::LoongClawConfig,
+    config: &crate::config::LoongConfig,
     output_path: &Path,
     input_path: Option<&Path>,
     skill_ids: &[String],
@@ -878,7 +878,7 @@ fn rollback_bridged_external_skill_ids(
 }
 
 fn rollback_bridged_external_skills(
-    config: &crate::config::LoongClawConfig,
+    config: &crate::config::LoongConfig,
     output_path: &Path,
     input_path: Option<&Path>,
     installs: &[ExternalSkillsInstalledSkill],
@@ -1183,12 +1183,12 @@ fn resolve_discovered_source<'a>(
         .ok_or_else(|| format!("selected import source `{source_id}` was not discovered"))
 }
 
-fn load_or_default_config(path: Option<&Path>) -> CliResult<crate::config::LoongClawConfig> {
+fn load_or_default_config(path: Option<&Path>) -> CliResult<crate::config::LoongConfig> {
     let Some(path) = path else {
-        return Ok(crate::config::LoongClawConfig::default());
+        return Ok(crate::config::LoongConfig::default());
     };
     if !path.exists() {
-        return Ok(crate::config::LoongClawConfig::default());
+        return Ok(crate::config::LoongConfig::default());
     }
     let path_string = path.display().to_string();
     let (_, config) = crate::config::load(Some(&path_string))?;
@@ -1474,7 +1474,7 @@ mod tests {
             .expect("discovery should succeed");
         let output_path = root.join("loongclaw.toml");
         let original_body =
-            crate::config::render(&crate::config::LoongClawConfig::default()).expect("render");
+            crate::config::render(&crate::config::LoongConfig::default()).expect("render");
         fs::write(&output_path, &original_body).expect("write original config");
 
         let result = apply_import_selection(&ApplyImportSelection {
@@ -1528,7 +1528,7 @@ mod tests {
             recommend_primary_source(&summary).expect("recommendation should succeed");
         let output_path = root.join("loongclaw.toml");
 
-        let mut existing = crate::config::LoongClawConfig::default();
+        let mut existing = crate::config::LoongConfig::default();
         existing.cli.system_prompt_addendum = Some("Native LoongClaw prompt".to_owned());
         let existing_body = crate::config::render(&existing).expect("render existing config");
         fs::write(&output_path, existing_body).expect("write existing config");
@@ -1593,7 +1593,7 @@ mod tests {
         let selected_source_id = summary.plans[1].source_id.clone();
         let output_path = root.join("loongclaw.toml");
         let original_body =
-            crate::config::render(&crate::config::LoongClawConfig::default()).expect("render");
+            crate::config::render(&crate::config::LoongConfig::default()).expect("render");
         fs::write(&output_path, original_body).expect("write original config");
 
         let result = apply_import_selection(&ApplyImportSelection {
@@ -1883,7 +1883,7 @@ mod tests {
         );
 
         let output_path = root.join("loongclaw.toml");
-        let mut baseline = crate::config::LoongClawConfig::default();
+        let mut baseline = crate::config::LoongConfig::default();
         baseline.external_skills.install_root =
             Some(root.join("managed-skills").display().to_string());
         let baseline_body = crate::config::render(&baseline).expect("render baseline config");
@@ -1946,7 +1946,7 @@ mod tests {
         );
 
         let output_path = root.join("readonly-loongclaw.toml");
-        let mut baseline = crate::config::LoongClawConfig::default();
+        let mut baseline = crate::config::LoongConfig::default();
         baseline.external_skills.install_root =
             Some(root.join("managed-skills").display().to_string());
         let baseline_body = crate::config::render(&baseline).expect("render baseline config");
@@ -2007,7 +2007,7 @@ mod tests {
         );
 
         let output_path = root.join("loongclaw.toml");
-        let mut baseline = crate::config::LoongClawConfig::default();
+        let mut baseline = crate::config::LoongConfig::default();
         baseline.external_skills.install_root =
             Some(root.join("managed-skills").display().to_string());
         let baseline_body = crate::config::render(&baseline).expect("render baseline config");
@@ -2072,7 +2072,7 @@ mod tests {
             .expect("discovery should succeed");
         let output_path = root.join("loongclaw.toml");
         let original_body =
-            crate::config::render(&crate::config::LoongClawConfig::default()).expect("render");
+            crate::config::render(&crate::config::LoongConfig::default()).expect("render");
         fs::write(&output_path, &original_body).expect("write original config");
 
         apply_import_selection(&ApplyImportSelection {
@@ -2117,7 +2117,7 @@ mod tests {
             .expect("discovery should succeed");
         let output_path = root.join("loongclaw.toml");
         let original_body =
-            crate::config::render(&crate::config::LoongClawConfig::default()).expect("render");
+            crate::config::render(&crate::config::LoongConfig::default()).expect("render");
         fs::write(&output_path, &original_body).expect("write original config");
 
         let result = apply_import_selection(&ApplyImportSelection {

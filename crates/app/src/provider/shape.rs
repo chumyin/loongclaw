@@ -2853,7 +2853,7 @@ mod tests {
             })
         );
         assert_eq!(
-            turn.raw_meta["loongclaw_provider_parse"]["invoke_block"]["status"],
+            turn.raw_meta["loong_provider_parse"]["invoke_block"]["status"],
             "parsed"
         );
     }

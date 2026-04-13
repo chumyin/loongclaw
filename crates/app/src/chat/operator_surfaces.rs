@@ -349,7 +349,10 @@ pub(super) fn render_cli_chat_missing_config_decline_lines_with_width(
             TuiSectionSpec::Callout {
                 tone: TuiCalloutTone::Info,
                 title: Some("setup skipped".to_owned()),
-                lines: vec![setup_hint, "Run setup now to unlock the full chat surface.".to_owned()],
+                lines: vec![
+                    setup_hint,
+                    "Run setup now to unlock the full chat surface.".to_owned(),
+                ],
             },
             TuiSectionSpec::ActionGroup {
                 title: Some("start later".to_owned()),

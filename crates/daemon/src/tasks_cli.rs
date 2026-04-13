@@ -88,7 +88,7 @@ struct DetachedTasksRuntime {
 
 #[cfg(feature = "memory-sqlite")]
 impl DetachedTasksRuntime {
-    fn from_config(config: &mvp::config::LoongClawConfig) -> CliResult<Self> {
+    fn from_config(config: &mvp::config::LoongConfig) -> CliResult<Self> {
         let inner = mvp::conversation::DefaultConversationRuntime::from_config_or_env(config)?;
         let background_task_spawner = Arc::new(DetachedTasksSpawner);
 
@@ -104,7 +104,7 @@ impl DetachedTasksRuntime {
 impl mvp::conversation::ConversationRuntime for DetachedTasksRuntime {
     fn session_context(
         &self,
-        config: &mvp::config::LoongClawConfig,
+        config: &mvp::config::LoongConfig,
         session_id: &str,
         binding: mvp::conversation::ConversationRuntimeBinding<'_>,
     ) -> CliResult<mvp::conversation::SessionContext> {
@@ -113,7 +113,7 @@ impl mvp::conversation::ConversationRuntime for DetachedTasksRuntime {
 
     fn tool_view(
         &self,
-        config: &mvp::config::LoongClawConfig,
+        config: &mvp::config::LoongConfig,
         session_id: &str,
         binding: mvp::conversation::ConversationRuntimeBinding<'_>,
     ) -> CliResult<mvp::tools::ToolView> {
@@ -122,14 +122,14 @@ impl mvp::conversation::ConversationRuntime for DetachedTasksRuntime {
 
     fn background_task_spawner(
         &self,
-        _config: &mvp::config::LoongClawConfig,
+        _config: &mvp::config::LoongConfig,
     ) -> Option<Arc<dyn mvp::conversation::AsyncDelegateSpawner>> {
         Some(self.background_task_spawner.clone())
     }
 
     async fn build_messages(
         &self,
-        config: &mvp::config::LoongClawConfig,
+        config: &mvp::config::LoongConfig,
         session_id: &str,
         include_system_prompt: bool,
         tool_view: &mvp::tools::ToolView,
@@ -148,7 +148,7 @@ impl mvp::conversation::ConversationRuntime for DetachedTasksRuntime {
 
     async fn request_completion(
         &self,
-        config: &mvp::config::LoongClawConfig,
+        config: &mvp::config::LoongConfig,
         messages: &[Value],
         binding: mvp::conversation::ConversationRuntimeBinding<'_>,
     ) -> CliResult<String> {
@@ -159,7 +159,7 @@ impl mvp::conversation::ConversationRuntime for DetachedTasksRuntime {
 
     async fn request_turn(
         &self,
-        config: &mvp::config::LoongClawConfig,
+        config: &mvp::config::LoongConfig,
         session_id: &str,
         turn_id: &str,
         messages: &[Value],
@@ -173,7 +173,7 @@ impl mvp::conversation::ConversationRuntime for DetachedTasksRuntime {
 
     async fn request_turn_streaming(
         &self,
-        config: &mvp::config::LoongClawConfig,
+        config: &mvp::config::LoongConfig,
         session_id: &str,
         turn_id: &str,
         messages: &[Value],
@@ -345,7 +345,7 @@ pub async fn execute_tasks_command(
 
 async fn execute_create_command(
     resolved_config_path: &str,
-    config: &mvp::config::LoongClawConfig,
+    config: &mvp::config::LoongConfig,
     current_session_id: &str,
     memory_config: &mvp::memory::runtime_config::MemoryRuntimeConfig,
     tool_config: &mvp::config::ToolConfig,
@@ -390,7 +390,7 @@ async fn execute_create_command(
 }
 
 fn build_tasks_create_runtime(
-    config: &mvp::config::LoongClawConfig,
+    config: &mvp::config::LoongConfig,
 ) -> CliResult<impl mvp::conversation::ConversationRuntime> {
     #[cfg(feature = "memory-sqlite")]
     {

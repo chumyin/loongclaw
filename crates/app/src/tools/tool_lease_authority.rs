@@ -210,8 +210,8 @@ fn tool_lease_secret() -> Result<String, String> {
 }
 
 fn default_tool_lease_secret_path() -> PathBuf {
-    let loongclaw_home = crate::config::default_loongclaw_home();
-    loongclaw_home.join(TOOL_LEASE_SECRET_FILE_NAME)
+    let loong_home = crate::config::default_loong_home();
+    loong_home.join(TOOL_LEASE_SECRET_FILE_NAME)
 }
 
 fn load_or_create_tool_lease_secret(secret_path: &Path) -> Result<String, String> {

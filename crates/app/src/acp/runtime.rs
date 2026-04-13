@@ -526,8 +526,10 @@ pub fn prepare_acp_conversation_turn_for_address(
         .extend_request_metadata(&mut request_metadata);
     if let Some(extra_metadata) = options.metadata {
         for (key, value) in extra_metadata {
-            let is_reserved_key =
-                key.starts_with("loongclaw.acp.") || key.starts_with("loongclaw.channel.");
+            let is_reserved_key = key.starts_with("loong.acp.")
+                || key.starts_with("loong.channel.")
+                || key.starts_with("loongclaw.acp.")
+                || key.starts_with("loongclaw.channel.");
             if is_reserved_key {
                 continue;
             }

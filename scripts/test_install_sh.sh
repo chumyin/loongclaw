@@ -653,7 +653,7 @@ run_release_install_adds_path_to_bashrc_and_prints_source_hint_test() {
     HOME="$home_dir" \
       SHELL="/bin/bash" \
       PATH="/usr/bin:/bin" \
-      LOONGCLAW_INSTALL_RELEASE_BASE_URL="file://$fixture/releases" \
+      LOONG_INSTALL_RELEASE_BASE_URL="file://$fixture/releases" \
       bash "$SCRIPT_UNDER_TEST" --version v0.1.2 --prefix "$install_dir" >"$output_file" 2>&1
   )
 
@@ -681,7 +681,7 @@ run_release_install_skips_source_hint_when_path_is_already_available_test() {
     HOME="$home_dir" \
       SHELL="/bin/bash" \
       PATH="$install_dir:/usr/bin:/bin" \
-      LOONGCLAW_INSTALL_RELEASE_BASE_URL="file://$fixture/releases" \
+      LOONG_INSTALL_RELEASE_BASE_URL="file://$fixture/releases" \
       bash "$SCRIPT_UNDER_TEST" --version v0.1.2 --prefix "$install_dir" >"$output_file" 2>&1
   )
 
@@ -710,7 +710,7 @@ run_release_install_keeps_source_hint_when_rc_already_has_path_entry_test() {
     HOME="$home_dir" \
       SHELL="/bin/bash" \
       PATH="/usr/bin:/bin" \
-      LOONGCLAW_INSTALL_RELEASE_BASE_URL="file://$fixture/releases" \
+      LOONG_INSTALL_RELEASE_BASE_URL="file://$fixture/releases" \
       bash "$SCRIPT_UNDER_TEST" --version v0.1.2 --prefix "$install_dir" >"$output_file" 2>&1
   )
 
@@ -736,7 +736,7 @@ run_release_install_unsupported_shell_uses_manual_path_hint_only_test() {
     HOME="$home_dir" \
       SHELL="/usr/bin/fish" \
       PATH="/usr/bin:/bin" \
-      LOONGCLAW_INSTALL_RELEASE_BASE_URL="file://$fixture/releases" \
+      LOONG_INSTALL_RELEASE_BASE_URL="file://$fixture/releases" \
       bash "$SCRIPT_UNDER_TEST" --version v0.1.2 --prefix "$install_dir" >"$output_file" 2>&1
   )
 
@@ -763,7 +763,7 @@ run_release_override_install_and_onboard_failure_preserves_install_test() {
     PATH="$fixture/fake-bin:$PATH" \
       ONBOARD_EXIT_CODE="130" \
       ONBOARD_MARKER="$marker" \
-      LOONGCLAW_INSTALL_RELEASE_BASE_URL="file://$fixture/releases" \
+      LOONG_INSTALL_RELEASE_BASE_URL="file://$fixture/releases" \
       BRAVE_API_KEY="" \
       TAVILY_API_KEY="" \
       PERPLEXITY_API_KEY="" \
@@ -771,7 +771,7 @@ run_release_override_install_and_onboard_failure_preserves_install_test() {
       FIRECRAWL_API_KEY="" \
       JINA_API_KEY="" \
       JINA_AUTH_TOKEN="" \
-      LOONGCLAW_WEB_SEARCH_PROVIDER="" \
+      LOONG_WEB_SEARCH_PROVIDER="" \
       bash "$SCRIPT_UNDER_TEST" --version v0.1.2 --prefix "$install_dir" --onboard >"$output_file" 2>&1
   )
 

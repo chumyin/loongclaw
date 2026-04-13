@@ -20,7 +20,7 @@ pub(super) fn render_onboarding_risk_screen_lines_with_style(
                 tone: TuiCalloutTone::Warning,
                 title: Some("what onboarding can do".to_owned()),
                 lines: vec![
-                    "LoongClaw can invoke tools and read local files when enabled.".to_owned(),
+                    "Loong can invoke tools and read local files when enabled.".to_owned(),
                     "Keep credentials in environment variables, not in prompts.".to_owned(),
                     "Prefer allowlist-style tool policy for shared environments.".to_owned(),
                 ],

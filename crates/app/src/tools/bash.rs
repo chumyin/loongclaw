@@ -25,6 +25,7 @@ const BASH_EXEC_ALLOWED_FIELDS: &[&str] = &[
     "command",
     "cwd",
     "timeout_ms",
+    super::LOONG_INTERNAL_TOOL_CONTEXT_KEY,
     super::LOONGCLAW_INTERNAL_TOOL_CONTEXT_KEY,
 ];
 
@@ -395,7 +396,7 @@ mod tests {
             tool_name: "bash.exec".to_owned(),
             payload: json!({
                 "command": "echo hi",
-                "_loongclaw": {
+                "_loong": {
                     "tool_search": {
                         "visible_tool_ids": ["bash.exec"]
                     }

@@ -6,7 +6,7 @@ use serde_json::{Map, Value, json};
 
 use super::download_guard::ByteBudget;
 
-const DEFAULT_HTTP_REQUEST_USER_AGENT: &str = "LoongClaw-HttpRequest/0.1";
+const DEFAULT_HTTP_REQUEST_USER_AGENT: &str = "Loong-HttpRequest/0.1";
 const MAX_HEADER_COUNT: usize = 64;
 
 pub(super) fn execute_http_request_tool_with_config(

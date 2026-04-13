@@ -129,22 +129,22 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          rm -f /tmp/loongclaw-docs-export.zip
+          rm -f /tmp/loong-docs-export.zip
           set +e
-          timeout 300s npm exec --yes --package=mintlify@${{ env.MINTLIFY_VERSION }} -- mintlify export --output /tmp/loongclaw-docs-export.zip
+          timeout 300s npm exec --yes --package=mintlify@${{ env.MINTLIFY_VERSION }} -- mintlify export --output /tmp/loong-docs-export.zip
           export_status=$?
           set -e
           if [ "$export_status" -eq 0 ]; then
             exit 0
           fi
-          if [ "$export_status" -eq 124 ] && [ -f /tmp/loongclaw-docs-export.zip ]; then
+          if [ "$export_status" -eq 124 ] && [ -f /tmp/loong-docs-export.zip ]; then
             echo "Mintlify export produced the artifact before timing out; treating CLI hang as non-fatal."
             exit 0
           fi
           exit "$export_status"
 
       - name: Assert export artifact exists
-        run: test -f /tmp/loongclaw-docs-export.zip
+        run: test -f /tmp/loong-docs-export.zip
 
   rust-quality:
     runs-on: ubuntu-latest

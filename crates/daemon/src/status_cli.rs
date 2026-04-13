@@ -1,5 +1,5 @@
 use loong_contracts::WorkRuntimeHealthSnapshot;
-use loongclaw_spec::CliResult;
+use loong_spec::CliResult;
 use serde::Serialize;
 use std::path::Path;
 

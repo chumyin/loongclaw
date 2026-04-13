@@ -194,11 +194,11 @@ run_report_with_baseline_passes_test() {
   local report_file="$fixture/docs/releases/support/architecture-drift-2099-01.md"
   (
     cd "$fixture"
-    LOONGCLAW_ARCH_REPORT_MONTH="2098-12" \
+    LOONG_ARCH_REPORT_MONTH="2098-12" \
       scripts/generate_architecture_drift_report.sh "$previous_report"
     git add "$previous_report"
     git commit -qm "seed previous architecture drift report"
-    LOONGCLAW_ARCH_REPORT_MONTH="2099-01" \
+    LOONG_ARCH_REPORT_MONTH="2099-01" \
       scripts/generate_architecture_drift_report.sh "$report_file"
     git add "$report_file"
     git commit -qm "seed fresh architecture drift report with baseline"
@@ -207,7 +207,7 @@ run_report_with_baseline_passes_test() {
   local output_file="$fixture/baseline.out"
   (
     cd "$fixture"
-    LOONGCLAW_ARCH_REPORT_MONTH="2099-01" \
+    LOONG_ARCH_REPORT_MONTH="2099-01" \
       scripts/check_architecture_drift_freshness.sh "$report_file" >"$output_file" 2>&1
   )
 
@@ -222,7 +222,7 @@ run_temp_report_path_uses_real_unique_name_test() {
   local report_file="$fixture/docs/releases/support/architecture-drift-2099-01.md"
   (
     cd "$fixture"
-    LOONGCLAW_ARCH_REPORT_MONTH="2099-01" \
+    LOONG_ARCH_REPORT_MONTH="2099-01" \
       scripts/generate_architecture_drift_report.sh "$report_file"
     git add "$report_file"
     git commit -qm "seed fresh architecture drift report"
@@ -231,7 +231,7 @@ run_temp_report_path_uses_real_unique_name_test() {
   local output_file="$fixture/temp-report-name.out"
   (
     cd "$fixture"
-    LOONGCLAW_ARCH_REPORT_MONTH="2099-01" \
+    LOONG_ARCH_REPORT_MONTH="2099-01" \
       scripts/check_architecture_drift_freshness.sh "$report_file" >"$output_file" 2>&1
   )
 

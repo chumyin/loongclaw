@@ -137,7 +137,7 @@ impl AcpSessionManager {
             if let Err(error) = close_result {
                 self.record_error(error.as_str())?;
                 tracing::warn!(
-                    target: "loongclaw.acp",
+                    target: "loong.acp",
                     session_key = %metadata.session_key,
                     backend_id = %metadata.backend_id,
                     error = %error,
