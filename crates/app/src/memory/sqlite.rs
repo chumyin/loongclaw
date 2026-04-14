@@ -2092,6 +2092,12 @@ fn ensure_channel_pairing_tables(conn: &Connection) -> Result<(), String> {
           approved_by_session_id TEXT NULL,
           UNIQUE(channel_id, configured_account_id, conversation_id, participant_id)
         );
+        CREATE TABLE IF NOT EXISTS channel_pairing_code_resolution_state(
+          scope_key TEXT PRIMARY KEY,
+          failed_attempt_count INTEGER NOT NULL,
+          lockout_until_ms INTEGER NULL,
+          updated_at_ms INTEGER NOT NULL
+        );
         ",
     )
     .map_err(|error| format!("ensure channel pairing storage failed: {error}"))?;

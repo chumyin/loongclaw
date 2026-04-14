@@ -115,8 +115,12 @@ code with:
 Current guardrails for this first pairing-code slice:
 
 - pairing codes expire after about one hour
+- each account keeps only a small number of pending pairing requests active at
+  once
 - repeated retries after an explicit rejection stay in a short cooldown window
   instead of immediately minting a fresh code
+- repeated invalid code approvals eventually trigger a temporary operator-side
+  lockout on code resolution
 - static sender allowlists still bypass dynamic pairing when present
 
 | Surface | Status | Transport | Required config | Operator commands |

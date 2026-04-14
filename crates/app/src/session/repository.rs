@@ -402,6 +402,14 @@ pub struct NewChannelPairingBindingRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChannelPairingCodeResolutionStateRecord {
+    pub scope_key: String,
+    pub failed_attempt_count: i64,
+    pub lockout_until_ms: Option<i64>,
+    pub updated_at_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionToolConsentRecord {
     pub scope_session_id: String,
     pub mode: ToolConsentMode,
@@ -2661,6 +2669,99 @@ impl SessionRepository {
             .transpose()
     }
 
+    pub fn count_pending_channel_pairing_requests_for_account(
+        &self,
+        channel_id: &str,
+        configured_account_id: &str,
+    ) -> Result<usize, String> {
+        let channel_id = normalize_required_text(channel_id, "channel_id")?;
+        let configured_account_id =
+            normalize_required_text(configured_account_id, "configured_account_id")?;
+        let conn = self.open_connection()?;
+        let count = conn
+            .query_row(
+                "SELECT COUNT(*)
+                 FROM channel_pairing_requests
+                 WHERE channel_id = ?1
+                   AND configured_account_id = ?2
+                   AND status = ?3",
+                params![
+                    channel_id,
+                    configured_account_id,
+                    ChannelPairingRequestStatus::Pending.as_str(),
+                ],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|error| format!("count pending channel pairing requests failed: {error}"))?;
+        let count = usize::try_from(count)
+            .map_err(|error| format!("pending channel pairing count overflowed usize: {error}"))?;
+        Ok(count)
+    }
+
+    pub fn load_channel_pairing_code_resolution_state(
+        &self,
+        scope_key: &str,
+    ) -> Result<Option<ChannelPairingCodeResolutionStateRecord>, String> {
+        let scope_key = normalize_required_text(scope_key, "scope_key")?;
+        let conn = self.open_connection()?;
+        let raw = conn
+            .query_row(
+                "SELECT
+                    scope_key,
+                    failed_attempt_count,
+                    lockout_until_ms,
+                    updated_at_ms
+                 FROM channel_pairing_code_resolution_state
+                 WHERE scope_key = ?1",
+                params![scope_key],
+                |row| {
+                    Ok(RawChannelPairingCodeResolutionStateRecord {
+                        scope_key: row.get(0)?,
+                        failed_attempt_count: row.get(1)?,
+                        lockout_until_ms: row.get(2)?,
+                        updated_at_ms: row.get(3)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|error| {
+                format!("load channel pairing code resolution state failed: {error}")
+            })?;
+        Ok(raw.map(ChannelPairingCodeResolutionStateRecord::try_from_raw))
+    }
+
+    pub fn upsert_channel_pairing_code_resolution_state(
+        &self,
+        record: &ChannelPairingCodeResolutionStateRecord,
+    ) -> Result<ChannelPairingCodeResolutionStateRecord, String> {
+        let scope_key = normalize_required_text(&record.scope_key, "scope_key")?;
+        let conn = self.open_connection()?;
+        conn.execute(
+            "INSERT INTO channel_pairing_code_resolution_state(
+                scope_key,
+                failed_attempt_count,
+                lockout_until_ms,
+                updated_at_ms
+             ) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(scope_key) DO UPDATE SET
+                failed_attempt_count = excluded.failed_attempt_count,
+                lockout_until_ms = excluded.lockout_until_ms,
+                updated_at_ms = excluded.updated_at_ms",
+            params![
+                scope_key,
+                record.failed_attempt_count,
+                record.lockout_until_ms,
+                record.updated_at_ms,
+            ],
+        )
+        .map_err(|error| format!("upsert channel pairing code resolution state failed: {error}"))?;
+
+        self.load_channel_pairing_code_resolution_state(scope_key.as_str())?
+            .ok_or_else(|| {
+                "channel pairing code resolution state disappeared after upsert".to_owned()
+            })
+    }
+
     pub fn list_channel_pairing_requests(
         &self,
         status: Option<ChannelPairingRequestStatus>,
@@ -4240,6 +4341,14 @@ struct RawChannelPairingBindingRecord {
 }
 
 #[derive(Debug)]
+struct RawChannelPairingCodeResolutionStateRecord {
+    scope_key: String,
+    failed_attempt_count: i64,
+    lockout_until_ms: Option<i64>,
+    updated_at_ms: i64,
+}
+
+#[derive(Debug)]
 struct RawSessionToolConsentRecord {
     scope_session_id: String,
     mode: String,
@@ -4494,6 +4603,17 @@ impl ChannelPairingBindingRecord {
             pairing_request_id: raw.pairing_request_id,
             approved_by_session_id: raw.approved_by_session_id,
         })
+    }
+}
+
+impl ChannelPairingCodeResolutionStateRecord {
+    fn try_from_raw(raw: RawChannelPairingCodeResolutionStateRecord) -> Self {
+        Self {
+            scope_key: raw.scope_key,
+            failed_attempt_count: raw.failed_attempt_count,
+            lockout_until_ms: raw.lockout_until_ms,
+            updated_at_ms: raw.updated_at_ms,
+        }
     }
 }
 

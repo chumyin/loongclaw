@@ -4316,6 +4316,9 @@ mod tests {
                 request.pairing_request_id
             }
             other @ mvp::channel::pairing::ChannelPairingDecision::Authorized
+            | other @ mvp::channel::pairing::ChannelPairingDecision::PendingLimitReached {
+                ..
+            }
             | other @ mvp::channel::pairing::ChannelPairingDecision::Cooldown { .. }
             | other @ mvp::channel::pairing::ChannelPairingDecision::Rejected { .. } => {
                 panic!("expected pending channel pairing request, got {other:?}")
@@ -4388,6 +4391,9 @@ mod tests {
                 request.pairing_code
             }
             other @ mvp::channel::pairing::ChannelPairingDecision::Authorized
+            | other @ mvp::channel::pairing::ChannelPairingDecision::PendingLimitReached {
+                ..
+            }
             | other @ mvp::channel::pairing::ChannelPairingDecision::Cooldown { .. }
             | other @ mvp::channel::pairing::ChannelPairingDecision::Rejected { .. } => {
                 panic!("expected pending channel pairing request, got {other:?}")

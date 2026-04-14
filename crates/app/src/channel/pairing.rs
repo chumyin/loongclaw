@@ -5,6 +5,8 @@ use crate::config::ChannelPairingMode;
 #[cfg(feature = "memory-sqlite")]
 use crate::memory::runtime_config::MemoryRuntimeConfig;
 #[cfg(feature = "memory-sqlite")]
+use crate::session::repository::ChannelPairingCodeResolutionStateRecord;
+#[cfg(feature = "memory-sqlite")]
 use crate::session::repository::ChannelPairingRequestRecord;
 #[cfg(feature = "memory-sqlite")]
 use crate::session::repository::ChannelPairingRequestStatus;
@@ -19,6 +21,10 @@ const CHANNEL_PAIRING_CODE_ALPHABET: &[u8; 32] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456
 const CHANNEL_PAIRING_CODE_LENGTH: usize = 8;
 const CHANNEL_PAIRING_CODE_TTL_MS: i64 = 60 * 60 * 1000;
 const CHANNEL_PAIRING_REQUEST_COOLDOWN_MS: i64 = 10 * 60 * 1000;
+const CHANNEL_PAIRING_MAX_PENDING_PER_ACCOUNT: usize = 3;
+const CHANNEL_PAIRING_CODE_LOCKOUT_MS: i64 = 60 * 60 * 1000;
+const CHANNEL_PAIRING_CODE_MAX_FAILED_ATTEMPTS: i64 = 5;
+const CHANNEL_PAIRING_CODE_RESOLUTION_SCOPE: &str = "global";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -27,6 +33,7 @@ pub enum ChannelPairingState {
     NotApplicable,
     Required,
     Pending,
+    PendingLimit,
     Cooldown,
     Approved,
     Rejected,
@@ -39,6 +46,7 @@ impl ChannelPairingState {
             Self::NotApplicable => "not_applicable",
             Self::Required => "required",
             Self::Pending => "pending",
+            Self::PendingLimit => "pending_limit",
             Self::Cooldown => "cooldown",
             Self::Approved => "approved",
             Self::Rejected => "rejected",
@@ -112,6 +120,10 @@ pub enum ChannelPairingDecision {
         request: Box<ChannelPairingRequestRecord>,
         created: bool,
     },
+    PendingLimitReached {
+        pending_count: usize,
+        limit: usize,
+    },
     Cooldown {
         request: Box<ChannelPairingRequestRecord>,
         retry_after_ms: i64,
@@ -144,6 +156,16 @@ pub fn evaluate_channel_pairing(
         subject.participant_id.as_str(),
     )?;
     let Some(latest_request) = latest_request else {
+        let pending_count = repo.count_pending_channel_pairing_requests_for_account(
+            subject.channel_id.as_str(),
+            subject.configured_account_id.as_str(),
+        )?;
+        if pending_count >= CHANNEL_PAIRING_MAX_PENDING_PER_ACCOUNT {
+            return Ok(ChannelPairingDecision::PendingLimitReached {
+                pending_count,
+                limit: CHANNEL_PAIRING_MAX_PENDING_PER_ACCOUNT,
+            });
+        }
         let request = create_channel_pairing_request(&repo, subject)?;
         return Ok(ChannelPairingDecision::PairingRequired {
             request: Box::new(request),
@@ -161,6 +183,16 @@ pub fn evaluate_channel_pairing(
                     None,
                     Some("expired".to_owned()),
                 )?;
+                let pending_count = repo.count_pending_channel_pairing_requests_for_account(
+                    subject.channel_id.as_str(),
+                    subject.configured_account_id.as_str(),
+                )?;
+                if pending_count >= CHANNEL_PAIRING_MAX_PENDING_PER_ACCOUNT {
+                    return Ok(ChannelPairingDecision::PendingLimitReached {
+                        pending_count,
+                        limit: CHANNEL_PAIRING_MAX_PENDING_PER_ACCOUNT,
+                    });
+                }
                 let request = create_channel_pairing_request(&repo, subject)?;
                 return Ok(ChannelPairingDecision::PairingRequired {
                     request: Box::new(request),
@@ -275,10 +307,47 @@ pub fn resolve_channel_pairing_request_by_code(
     approved_by_session_id: Option<String>,
 ) -> Result<Option<ChannelPairingRequestRecord>, String> {
     let repo = SessionRepository::new(memory_config)?;
+    let code_resolution_state =
+        repo.load_channel_pairing_code_resolution_state(CHANNEL_PAIRING_CODE_RESOLUTION_SCOPE)?;
+    if let Some(code_resolution_state) = code_resolution_state.as_ref()
+        && code_resolution_state
+            .lockout_until_ms
+            .is_some_and(|lockout_until_ms| lockout_until_ms > unix_time_ms_now())
+    {
+        let retry_after_ms = code_resolution_state
+            .lockout_until_ms
+            .unwrap_or_default()
+            .saturating_sub(unix_time_ms_now());
+        let retry_after_minutes = retry_after_minutes(retry_after_ms);
+        return Err(format!(
+            "channel pairing code resolution is temporarily locked; retry in about {retry_after_minutes} minutes"
+        ));
+    }
     let request = repo.load_latest_channel_pairing_request_by_code(pairing_code)?;
     let Some(request) = request else {
+        let failed_attempt_state = record_failed_code_attempt(&repo)?;
+        if failed_attempt_state
+            .lockout_until_ms
+            .is_some_and(|lockout_until_ms| lockout_until_ms > unix_time_ms_now())
+        {
+            let retry_after_ms = failed_attempt_state
+                .lockout_until_ms
+                .unwrap_or_default()
+                .saturating_sub(unix_time_ms_now());
+            let retry_after_minutes = retry_after_minutes(retry_after_ms);
+            return Err(format!(
+                "channel pairing code resolution is temporarily locked; retry in about {retry_after_minutes} minutes"
+            ));
+        }
         return Ok(None);
     };
+    let cleared_state = ChannelPairingCodeResolutionStateRecord {
+        scope_key: CHANNEL_PAIRING_CODE_RESOLUTION_SCOPE.to_owned(),
+        failed_attempt_count: 0,
+        lockout_until_ms: None,
+        updated_at_ms: unix_time_ms_now(),
+    };
+    let _ = repo.upsert_channel_pairing_code_resolution_state(&cleared_state)?;
     resolve_channel_pairing_request(
         memory_config,
         request.pairing_request_id.as_str(),
@@ -354,9 +423,18 @@ pub fn describe_channel_pairing_resolution(
         subject.participant_id.as_str(),
     )?;
     let Some(request) = request else {
+        let pending_count = repo.count_pending_channel_pairing_requests_for_account(
+            subject.channel_id.as_str(),
+            subject.configured_account_id.as_str(),
+        )?;
+        let state = if pending_count >= CHANNEL_PAIRING_MAX_PENDING_PER_ACCOUNT {
+            ChannelPairingState::PendingLimit
+        } else {
+            ChannelPairingState::Required
+        };
         return Ok(ChannelPairingResolution {
             mode,
-            state: ChannelPairingState::Required,
+            state,
             static_sender_gate_present,
             pairing_request_id: None,
             pairing_code: None,
@@ -406,6 +484,14 @@ pub fn render_channel_pairing_reply(decision: &ChannelPairingDecision) -> String
                 "This conversation requires operator pairing approval before I can respond. Share pairing_code={pairing_code} with the operator. It expires in about {expires_in_minutes} minutes. request_id={request_id}.{created_note}"
             )
         }
+        ChannelPairingDecision::PendingLimitReached {
+            pending_count,
+            limit,
+        } => {
+            format!(
+                "This channel already has {pending_count} pending pairing requests, which reaches the current limit of {limit}. Ask the operator to review existing pairing requests before retrying."
+            )
+        }
         ChannelPairingDecision::Cooldown {
             request,
             retry_after_ms,
@@ -451,6 +537,45 @@ fn create_channel_pairing_request(
 #[cfg(feature = "memory-sqlite")]
 fn request_is_expired(request: &ChannelPairingRequestRecord) -> bool {
     unix_time_ms_now() >= request.expires_at_ms
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn record_failed_code_attempt(
+    repo: &SessionRepository,
+) -> Result<ChannelPairingCodeResolutionStateRecord, String> {
+    let existing_state =
+        repo.load_channel_pairing_code_resolution_state(CHANNEL_PAIRING_CODE_RESOLUTION_SCOPE)?;
+    let now_ms = unix_time_ms_now();
+    let mut failed_attempt_count = existing_state
+        .as_ref()
+        .map(|record| record.failed_attempt_count)
+        .unwrap_or(0);
+    let existing_lockout_until_ms = existing_state
+        .as_ref()
+        .and_then(|record| record.lockout_until_ms);
+    let lockout_until_ms =
+        existing_lockout_until_ms.filter(|lockout_until_ms| *lockout_until_ms > now_ms);
+    if lockout_until_ms.is_none() {
+        failed_attempt_count += 1;
+    }
+    let next_lockout_until_ms = if failed_attempt_count >= CHANNEL_PAIRING_CODE_MAX_FAILED_ATTEMPTS
+    {
+        Some(now_ms + CHANNEL_PAIRING_CODE_LOCKOUT_MS)
+    } else {
+        lockout_until_ms
+    };
+    let persisted_failed_attempt_count = if next_lockout_until_ms.is_some() {
+        0
+    } else {
+        failed_attempt_count
+    };
+    let next_state = ChannelPairingCodeResolutionStateRecord {
+        scope_key: CHANNEL_PAIRING_CODE_RESOLUTION_SCOPE.to_owned(),
+        failed_attempt_count: persisted_failed_attempt_count,
+        lockout_until_ms: next_lockout_until_ms,
+        updated_at_ms: now_ms,
+    };
+    repo.upsert_channel_pairing_code_resolution_state(&next_state)
 }
 
 #[cfg(feature = "memory-sqlite")]
@@ -572,6 +697,21 @@ mod tests {
         .expect("build channel pairing subject")
     }
 
+    fn subject_with_participant(participant_id: &str) -> ChannelPairingSubject {
+        let route_session_id = format!("feishu:feishu_cli_a1b2c3:oc_demo:{participant_id}");
+        let sender_principal_key = format!("feishu_cli_a1b2c3:{participant_id}");
+        ChannelPairingSubject::new(
+            "feishu",
+            "work",
+            Some("feishu_cli_a1b2c3".to_owned()),
+            "oc_demo",
+            participant_id.to_owned(),
+            route_session_id,
+            Some(sender_principal_key),
+        )
+        .expect("build channel pairing subject")
+    }
+
     #[test]
     fn channel_pairing_creates_and_deduplicates_pending_request() {
         let (root, runtime) = pairing_test_memory("channel-pairing-pending");
@@ -587,6 +727,7 @@ mod tests {
                 request.pairing_request_id
             }
             other @ ChannelPairingDecision::Authorized
+            | other @ ChannelPairingDecision::PendingLimitReached { .. }
             | other @ ChannelPairingDecision::Cooldown { .. }
             | other @ ChannelPairingDecision::Rejected { .. } => {
                 panic!("expected pending request, got {other:?}")
@@ -598,6 +739,7 @@ mod tests {
                 request.pairing_request_id
             }
             other @ ChannelPairingDecision::Authorized
+            | other @ ChannelPairingDecision::PendingLimitReached { .. }
             | other @ ChannelPairingDecision::Cooldown { .. }
             | other @ ChannelPairingDecision::Rejected { .. } => {
                 panic!("expected reused pending request, got {other:?}")
@@ -617,6 +759,7 @@ mod tests {
         let pairing_request_id = match pending {
             ChannelPairingDecision::PairingRequired { request, .. } => request.pairing_request_id,
             other @ ChannelPairingDecision::Authorized
+            | other @ ChannelPairingDecision::PendingLimitReached { .. }
             | other @ ChannelPairingDecision::Cooldown { .. }
             | other @ ChannelPairingDecision::Rejected { .. } => {
                 panic!("expected pending request, got {other:?}")
@@ -647,6 +790,7 @@ mod tests {
         let pairing_code = match pending {
             ChannelPairingDecision::PairingRequired { request, .. } => request.pairing_code,
             other @ ChannelPairingDecision::Authorized
+            | other @ ChannelPairingDecision::PendingLimitReached { .. }
             | other @ ChannelPairingDecision::Cooldown { .. }
             | other @ ChannelPairingDecision::Rejected { .. } => {
                 panic!("expected pending request, got {other:?}")
@@ -677,6 +821,7 @@ mod tests {
         let pairing_request_id = match pending {
             ChannelPairingDecision::PairingRequired { request, .. } => request.pairing_request_id,
             other @ ChannelPairingDecision::Authorized
+            | other @ ChannelPairingDecision::PendingLimitReached { .. }
             | other @ ChannelPairingDecision::Cooldown { .. }
             | other @ ChannelPairingDecision::Rejected { .. } => {
                 panic!("expected pending request, got {other:?}")
@@ -697,6 +842,7 @@ mod tests {
         let seen_request_id = match decision {
             ChannelPairingDecision::Cooldown { request, .. } => request.pairing_request_id,
             other @ ChannelPairingDecision::Authorized
+            | other @ ChannelPairingDecision::PendingLimitReached { .. }
             | other @ ChannelPairingDecision::PairingRequired { .. }
             | other @ ChannelPairingDecision::Rejected { .. } => {
                 panic!("expected cooldown after rejection, got {other:?}")
@@ -724,6 +870,7 @@ mod tests {
         let pairing_request_id = match pending {
             ChannelPairingDecision::PairingRequired { request, .. } => request.pairing_request_id,
             other @ ChannelPairingDecision::Authorized
+            | other @ ChannelPairingDecision::PendingLimitReached { .. }
             | other @ ChannelPairingDecision::Cooldown { .. }
             | other @ ChannelPairingDecision::Rejected { .. } => {
                 panic!("expected pending request, got {other:?}")
@@ -787,6 +934,7 @@ mod tests {
         let pairing_request_id = match pending {
             ChannelPairingDecision::PairingRequired { request, .. } => request.pairing_request_id,
             other @ ChannelPairingDecision::Authorized
+            | other @ ChannelPairingDecision::PendingLimitReached { .. }
             | other @ ChannelPairingDecision::Cooldown { .. }
             | other @ ChannelPairingDecision::Rejected { .. } => {
                 panic!("expected pending request, got {other:?}")
@@ -813,6 +961,79 @@ mod tests {
         )
         .expect("describe cooldown");
         assert_eq!(resolution.state, ChannelPairingState::Cooldown);
+        cleanup_pairing_test_memory(&root);
+    }
+
+    #[test]
+    fn channel_pairing_limits_pending_requests_per_account() {
+        let (root, runtime) = pairing_test_memory("channel-pairing-pending-limit");
+
+        for participant_id in ["ou_sender_1", "ou_sender_2", "ou_sender_3"] {
+            let subject = subject_with_participant(participant_id);
+            let decision =
+                evaluate_channel_pairing(&runtime, &subject).expect("create pending request");
+            assert!(matches!(
+                decision,
+                ChannelPairingDecision::PairingRequired { .. }
+            ));
+        }
+
+        let fourth_subject = subject_with_participant("ou_sender_4");
+        let decision =
+            evaluate_channel_pairing(&runtime, &fourth_subject).expect("evaluate fourth request");
+        match decision {
+            ChannelPairingDecision::PendingLimitReached {
+                pending_count,
+                limit,
+            } => {
+                assert_eq!(pending_count, CHANNEL_PAIRING_MAX_PENDING_PER_ACCOUNT);
+                assert_eq!(limit, CHANNEL_PAIRING_MAX_PENDING_PER_ACCOUNT);
+            }
+            other @ ChannelPairingDecision::Authorized
+            | other @ ChannelPairingDecision::PairingRequired { .. }
+            | other @ ChannelPairingDecision::Cooldown { .. }
+            | other @ ChannelPairingDecision::Rejected { .. } => {
+                panic!("expected pending limit reached, got {other:?}")
+            }
+        }
+
+        let resolution = describe_channel_pairing_resolution(
+            &runtime,
+            ChannelPairingMode::ParticipantApproval,
+            false,
+            Some(&fourth_subject),
+        )
+        .expect("describe pending-limit state");
+        assert_eq!(resolution.state, ChannelPairingState::PendingLimit);
+        cleanup_pairing_test_memory(&root);
+    }
+
+    #[test]
+    fn channel_pairing_code_lockout_triggers_after_repeated_failures() {
+        let (root, runtime) = pairing_test_memory("channel-pairing-lockout");
+        let subject = subject();
+        let _ = evaluate_channel_pairing(&runtime, &subject).expect("create pending request");
+
+        for _ in 0..4 {
+            let result = resolve_channel_pairing_request_by_code(
+                &runtime,
+                "WRONGCODE",
+                true,
+                Some("root-session".to_owned()),
+            )
+            .expect("wrong code should not error before lockout");
+            assert!(result.is_none());
+        }
+
+        let locked = resolve_channel_pairing_request_by_code(
+            &runtime,
+            "WRONGCODE",
+            true,
+            Some("root-session".to_owned()),
+        )
+        .expect_err("fifth wrong code should trigger lockout");
+        assert!(locked.contains("temporarily locked"));
+
         cleanup_pairing_test_memory(&root);
     }
 }
