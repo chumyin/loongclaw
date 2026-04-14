@@ -112,6 +112,13 @@ code with:
 - `loong channel-pairing-resolve --pairing-code <code> --approve`
 - `loong channel-pairing-resolve --pairing-request-id <id> --reject`
 
+Current guardrails for this first pairing-code slice:
+
+- pairing codes expire after about one hour
+- repeated retries after an explicit rejection stay in a short cooldown window
+  instead of immediately minting a fresh code
+- static sender allowlists still bypass dynamic pairing when present
+
 | Surface | Status | Transport | Required config | Operator commands |
 | --- | --- | --- | --- | --- |
 | CLI | Shipped | local interactive runtime | none beyond base provider config | `loong ask`, `loong chat` |

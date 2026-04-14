@@ -18,6 +18,7 @@ use crate::session::repository::SessionRepository;
 const CHANNEL_PAIRING_CODE_ALPHABET: &[u8; 32] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const CHANNEL_PAIRING_CODE_LENGTH: usize = 8;
 const CHANNEL_PAIRING_CODE_TTL_MS: i64 = 60 * 60 * 1000;
+const CHANNEL_PAIRING_REQUEST_COOLDOWN_MS: i64 = 10 * 60 * 1000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -26,6 +27,7 @@ pub enum ChannelPairingState {
     NotApplicable,
     Required,
     Pending,
+    Cooldown,
     Approved,
     Rejected,
 }
@@ -37,6 +39,7 @@ impl ChannelPairingState {
             Self::NotApplicable => "not_applicable",
             Self::Required => "required",
             Self::Pending => "pending",
+            Self::Cooldown => "cooldown",
             Self::Approved => "approved",
             Self::Rejected => "rejected",
         }
@@ -109,6 +112,10 @@ pub enum ChannelPairingDecision {
         request: Box<ChannelPairingRequestRecord>,
         created: bool,
     },
+    Cooldown {
+        request: Box<ChannelPairingRequestRecord>,
+        retry_after_ms: i64,
+    },
     Rejected {
         request: Box<ChannelPairingRequestRecord>,
     },
@@ -165,9 +172,18 @@ pub fn evaluate_channel_pairing(
                 created: false,
             })
         }
-        ChannelPairingRequestStatus::Rejected => Ok(ChannelPairingDecision::Rejected {
-            request: Box::new(latest_request),
-        }),
+        ChannelPairingRequestStatus::Rejected => {
+            let retry_after_ms = retry_after_ms_for_request(&latest_request);
+            if retry_after_ms > 0 {
+                return Ok(ChannelPairingDecision::Cooldown {
+                    request: Box::new(latest_request),
+                    retry_after_ms,
+                });
+            }
+            Ok(ChannelPairingDecision::Rejected {
+                request: Box::new(latest_request),
+            })
+        }
     }
 }
 
@@ -352,7 +368,14 @@ pub fn describe_channel_pairing_resolution(
     let state = match request.status {
         ChannelPairingRequestStatus::Pending => ChannelPairingState::Pending,
         ChannelPairingRequestStatus::Approved => ChannelPairingState::Approved,
-        ChannelPairingRequestStatus::Rejected => ChannelPairingState::Rejected,
+        ChannelPairingRequestStatus::Rejected => {
+            let retry_after_ms = retry_after_ms_for_request(&request);
+            if retry_after_ms > 0 {
+                ChannelPairingState::Cooldown
+            } else {
+                ChannelPairingState::Rejected
+            }
+        }
     };
 
     Ok(ChannelPairingResolution {
@@ -381,6 +404,16 @@ pub fn render_channel_pairing_reply(decision: &ChannelPairingDecision) -> String
             };
             format!(
                 "This conversation requires operator pairing approval before I can respond. Share pairing_code={pairing_code} with the operator. It expires in about {expires_in_minutes} minutes. request_id={request_id}.{created_note}"
+            )
+        }
+        ChannelPairingDecision::Cooldown {
+            request,
+            retry_after_ms,
+        } => {
+            let request_id = request.pairing_request_id.as_str();
+            let retry_after_minutes = retry_after_minutes(*retry_after_ms);
+            format!(
+                "A recent channel pairing request was already handled for this participant. Wait about {retry_after_minutes} minutes before requesting a new pairing code. request_id={request_id}."
             )
         }
         ChannelPairingDecision::Rejected { request } => {
@@ -418,6 +451,13 @@ fn create_channel_pairing_request(
 #[cfg(feature = "memory-sqlite")]
 fn request_is_expired(request: &ChannelPairingRequestRecord) -> bool {
     unix_time_ms_now() >= request.expires_at_ms
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn retry_after_ms_for_request(request: &ChannelPairingRequestRecord) -> i64 {
+    let retry_at_ms = request.requested_at_ms + CHANNEL_PAIRING_REQUEST_COOLDOWN_MS;
+    let now_ms = unix_time_ms_now();
+    retry_at_ms.saturating_sub(now_ms)
 }
 
 fn normalize_optional_field(value: Option<String>) -> Option<String> {
@@ -464,6 +504,11 @@ fn expires_in_minutes(expires_at_ms: i64) -> i64 {
     let now_ms = unix_time_ms_now();
     let remaining_ms = expires_at_ms.saturating_sub(now_ms);
     let remaining_minutes = remaining_ms / 60_000;
+    remaining_minutes.max(1)
+}
+
+fn retry_after_minutes(retry_after_ms: i64) -> i64 {
+    let remaining_minutes = retry_after_ms / 60_000;
     remaining_minutes.max(1)
 }
 
@@ -542,6 +587,7 @@ mod tests {
                 request.pairing_request_id
             }
             other @ ChannelPairingDecision::Authorized
+            | other @ ChannelPairingDecision::Cooldown { .. }
             | other @ ChannelPairingDecision::Rejected { .. } => {
                 panic!("expected pending request, got {other:?}")
             }
@@ -552,6 +598,7 @@ mod tests {
                 request.pairing_request_id
             }
             other @ ChannelPairingDecision::Authorized
+            | other @ ChannelPairingDecision::Cooldown { .. }
             | other @ ChannelPairingDecision::Rejected { .. } => {
                 panic!("expected reused pending request, got {other:?}")
             }
@@ -570,6 +617,7 @@ mod tests {
         let pairing_request_id = match pending {
             ChannelPairingDecision::PairingRequired { request, .. } => request.pairing_request_id,
             other @ ChannelPairingDecision::Authorized
+            | other @ ChannelPairingDecision::Cooldown { .. }
             | other @ ChannelPairingDecision::Rejected { .. } => {
                 panic!("expected pending request, got {other:?}")
             }
@@ -599,6 +647,7 @@ mod tests {
         let pairing_code = match pending {
             ChannelPairingDecision::PairingRequired { request, .. } => request.pairing_code,
             other @ ChannelPairingDecision::Authorized
+            | other @ ChannelPairingDecision::Cooldown { .. }
             | other @ ChannelPairingDecision::Rejected { .. } => {
                 panic!("expected pending request, got {other:?}")
             }
@@ -628,6 +677,7 @@ mod tests {
         let pairing_request_id = match pending {
             ChannelPairingDecision::PairingRequired { request, .. } => request.pairing_request_id,
             other @ ChannelPairingDecision::Authorized
+            | other @ ChannelPairingDecision::Cooldown { .. }
             | other @ ChannelPairingDecision::Rejected { .. } => {
                 panic!("expected pending request, got {other:?}")
             }
@@ -645,10 +695,11 @@ mod tests {
 
         let decision = evaluate_channel_pairing(&runtime, &subject).expect("re-evaluate rejection");
         let seen_request_id = match decision {
-            ChannelPairingDecision::Rejected { request } => request.pairing_request_id,
+            ChannelPairingDecision::Cooldown { request, .. } => request.pairing_request_id,
             other @ ChannelPairingDecision::Authorized
-            | other @ ChannelPairingDecision::PairingRequired { .. } => {
-                panic!("expected rejected request, got {other:?}")
+            | other @ ChannelPairingDecision::PairingRequired { .. }
+            | other @ ChannelPairingDecision::Rejected { .. } => {
+                panic!("expected cooldown after rejection, got {other:?}")
             }
         };
         assert_eq!(seen_request_id, pairing_request_id);
@@ -673,6 +724,7 @@ mod tests {
         let pairing_request_id = match pending {
             ChannelPairingDecision::PairingRequired { request, .. } => request.pairing_request_id,
             other @ ChannelPairingDecision::Authorized
+            | other @ ChannelPairingDecision::Cooldown { .. }
             | other @ ChannelPairingDecision::Rejected { .. } => {
                 panic!("expected pending request, got {other:?}")
             }
@@ -723,6 +775,44 @@ mod tests {
         assert!(reply.contains("pairing_code="));
         assert!(reply.contains("request_id="));
         assert!(reply.contains("-"));
+        cleanup_pairing_test_memory(&root);
+    }
+
+    #[test]
+    fn channel_pairing_resolution_reports_cooldown_after_rejection() {
+        let (root, runtime) = pairing_test_memory("channel-pairing-cooldown");
+        let subject = subject();
+
+        let pending = evaluate_channel_pairing(&runtime, &subject).expect("create pending request");
+        let pairing_request_id = match pending {
+            ChannelPairingDecision::PairingRequired { request, .. } => request.pairing_request_id,
+            other @ ChannelPairingDecision::Authorized
+            | other @ ChannelPairingDecision::Cooldown { .. }
+            | other @ ChannelPairingDecision::Rejected { .. } => {
+                panic!("expected pending request, got {other:?}")
+            }
+        };
+
+        let _ = resolve_channel_pairing_request(
+            &runtime,
+            pairing_request_id.as_str(),
+            false,
+            Some("root-session".to_owned()),
+        )
+        .expect("reject request")
+        .expect("persisted rejection");
+
+        let decision = evaluate_channel_pairing(&runtime, &subject).expect("re-evaluate rejection");
+        assert!(matches!(decision, ChannelPairingDecision::Cooldown { .. }));
+
+        let resolution = describe_channel_pairing_resolution(
+            &runtime,
+            ChannelPairingMode::ParticipantApproval,
+            false,
+            Some(&subject),
+        )
+        .expect("describe cooldown");
+        assert_eq!(resolution.state, ChannelPairingState::Cooldown);
         cleanup_pairing_test_memory(&root);
     }
 }

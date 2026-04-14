@@ -3501,6 +3501,9 @@ fn maybe_render_channel_pairing_gate_reply(
             super::pairing::ChannelPairingDecision::PairingRequired { .. } => {
                 render_channel_pairing_reply(&decision)
             }
+            super::pairing::ChannelPairingDecision::Cooldown { .. } => {
+                render_channel_pairing_reply(&decision)
+            }
             super::pairing::ChannelPairingDecision::Rejected { .. } => {
                 render_channel_pairing_reply(&decision)
             }
