@@ -46,6 +46,8 @@ impl Commands {
             Self::ListAcpSessions { .. } => "list_acp_sessions",
             Self::ListChannelPairings { .. } => "list_channel_pairings",
             Self::ChannelPairingResolve { .. } => "channel_pairing_resolve",
+            Self::ChannelPairingRevoke { .. } => "channel_pairing_revoke",
+            Self::ClearChannelPairings { .. } => "clear_channel_pairings",
             Self::AcpStatus { .. } => "acp_status",
             Self::AcpObservability { .. } => "acp_observability",
             Self::AcpEventSummary { .. } => "acp_event_summary",

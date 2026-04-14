@@ -370,6 +370,78 @@ fn channel_pairing_resolve_requires_control_pairing_capability() {
 }
 
 #[test]
+fn channel_pairing_revoke_requires_control_pairing_capability() {
+    let router = ProtocolRouter::default();
+    let resolved = router
+        .resolve("channel-pairing/revoke")
+        .expect("channel-pairing/revoke should resolve");
+    assert_eq!(
+        resolved.policy.required_capability.as_deref(),
+        Some("control_pairing")
+    );
+
+    let error = router
+        .authorize(
+            &resolved,
+            &RouteAuthorizationRequest {
+                authenticated: true,
+                capabilities: BTreeSet::from(["control.read".to_owned()]),
+            },
+        )
+        .expect_err("channel-pairing/revoke should require control.pairing");
+    assert!(matches!(
+        error,
+        RouteAuthorizationError::MissingCapability {
+            method,
+            required_capability
+        } if method == "channel-pairing/revoke" && required_capability == "control_pairing"
+    ));
+}
+
+#[test]
+fn channel_pairing_clear_pending_requires_control_pairing_capability() {
+    let router = ProtocolRouter::default();
+    let resolved = router
+        .resolve("channel-pairing/clear-pending")
+        .expect("channel-pairing/clear-pending should resolve");
+    assert_eq!(
+        resolved.policy.required_capability.as_deref(),
+        Some("control_pairing")
+    );
+
+    let error = router
+        .authorize(
+            &resolved,
+            &RouteAuthorizationRequest {
+                authenticated: true,
+                capabilities: BTreeSet::from(["control.read".to_owned()]),
+            },
+        )
+        .expect_err("channel-pairing/clear-pending should require control.pairing");
+    assert!(matches!(
+        error,
+        RouteAuthorizationError::MissingCapability {
+            method,
+            required_capability
+        } if method == "channel-pairing/clear-pending" && required_capability == "control_pairing"
+    ));
+}
+
+#[test]
+fn channel_pairing_revoke_route_method_roundtrips() {
+    let route = ProtocolRoute::from_method("channel-pairing/revoke");
+    assert_eq!(route, ProtocolRoute::ChannelPairingRevoke);
+    assert_eq!(route.method(), "channel-pairing/revoke");
+}
+
+#[test]
+fn channel_pairing_clear_pending_route_method_roundtrips() {
+    let route = ProtocolRoute::from_method("channel-pairing/clear-pending");
+    assert_eq!(route, ProtocolRoute::ChannelPairingClearPending);
+    assert_eq!(route.method(), "channel-pairing/clear-pending");
+}
+
+#[test]
 fn control_plane_scope_serializes_with_dot_notation() {
     let encoded =
         serde_json::to_string(&ControlPlaneScope::OperatorRead).expect("scope should serialize");
@@ -631,6 +703,60 @@ fn control_plane_channel_pairing_resolve_request_roundtrips_with_pairing_code() 
     let decoded: ControlPlaneChannelPairingResolveRequest =
         serde_json::from_str(&encoded).expect("request should deserialize");
     assert_eq!(decoded, request);
+}
+
+#[test]
+fn control_plane_channel_pairing_revoke_request_roundtrips_with_pairing_code() {
+    let request = ControlPlaneChannelPairingRevokeRequest {
+        pairing_request_id: None,
+        pairing_code: Some("ABCD2345".to_owned()),
+    };
+
+    let encoded = serde_json::to_string(&request).expect("request should serialize");
+    let decoded: ControlPlaneChannelPairingRevokeRequest =
+        serde_json::from_str(&encoded).expect("request should deserialize");
+    assert_eq!(decoded, request);
+}
+
+#[test]
+fn control_plane_channel_pairing_clear_pending_response_roundtrips_through_json() {
+    let response = ControlPlaneChannelPairingClearPendingResponse {
+        cleared_count: 2,
+        cleared_request_ids: vec!["cpr-1".to_owned(), "cpr-2".to_owned()],
+    };
+
+    let encoded = serde_json::to_string(&response).expect("response should serialize");
+    let decoded: ControlPlaneChannelPairingClearPendingResponse =
+        serde_json::from_str(&encoded).expect("response should deserialize");
+    assert_eq!(decoded, response);
+}
+
+#[test]
+fn control_plane_channel_pairing_revoke_response_roundtrips_through_json() {
+    let response = ControlPlaneChannelPairingRevokeResponse {
+        request: ControlPlaneChannelPairingRequestSummary {
+            pairing_request_id: "cpr-9".to_owned(),
+            channel_id: "matrix".to_owned(),
+            configured_account_id: "ops".to_owned(),
+            account_id: Some("matrix_bot".to_owned()),
+            conversation_id: "!room:example.org".to_owned(),
+            participant_id: "@alice:example.org".to_owned(),
+            route_session_id: "matrix:matrix_bot:!room%3Aexample.org:@alice%3Aexample.org"
+                .to_owned(),
+            sender_principal_key: Some("matrix:user:@alice:example.org".to_owned()),
+            pairing_code: "ABCD2345".to_owned(),
+            status: ControlPlanePairingStatus::Rejected,
+            requested_at_ms: 10,
+            expires_at_ms: 3_610,
+            resolved_at_ms: Some(20),
+            approved_binding_id: None,
+        },
+    };
+
+    let encoded = serde_json::to_string(&response).expect("response should serialize");
+    let decoded: ControlPlaneChannelPairingRevokeResponse =
+        serde_json::from_str(&encoded).expect("response should deserialize");
+    assert_eq!(decoded, response);
 }
 
 #[test]

@@ -25,8 +25,10 @@ use loongclaw_protocol::{
     ControlPlaneAcpSessionReadResponse, ControlPlaneAcpSessionState, ControlPlaneAcpSessionStatus,
     ControlPlaneApprovalDecision, ControlPlaneApprovalListResponse,
     ControlPlaneApprovalRequestStatus, ControlPlaneApprovalSummary, ControlPlaneChallengeResponse,
+    ControlPlaneChannelPairingClearPendingRequest, ControlPlaneChannelPairingClearPendingResponse,
     ControlPlaneChannelPairingListResponse, ControlPlaneChannelPairingRequestSummary,
     ControlPlaneChannelPairingResolveRequest, ControlPlaneChannelPairingResolveResponse,
+    ControlPlaneChannelPairingRevokeRequest, ControlPlaneChannelPairingRevokeResponse,
     ControlPlaneConnectErrorCode, ControlPlaneConnectErrorResponse, ControlPlaneConnectRequest,
     ControlPlaneConnectResponse, ControlPlaneEventEnvelope, ControlPlaneEventName,
     ControlPlanePairingListResponse, ControlPlanePairingRequestSummary,
@@ -2152,6 +2154,81 @@ async fn channel_pairing_resolve(
     }
 }
 
+#[cfg(feature = "memory-sqlite")]
+async fn channel_pairing_revoke(
+    headers: HeaderMap,
+    State(state): State<ControlPlaneHttpState>,
+    Json(request): Json<ControlPlaneChannelPairingRevokeRequest>,
+) -> Response {
+    if let Err(response) =
+        authorize_control_plane_request(&state, "channel-pairing/revoke", &headers)
+    {
+        return *response;
+    }
+    let Some(memory_config) = state.memory_config.as_ref() else {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "channel-pairing/revoke requires control-plane-serve --config <path>".to_owned(),
+        );
+    };
+    let selection = mvp::channel::pairing::ChannelPairingRequestSelection::new(
+        request.pairing_request_id,
+        request.pairing_code,
+    );
+    let selection = match selection {
+        Ok(selection) => selection,
+        Err(error) => return error_response(StatusCode::BAD_REQUEST, error),
+    };
+    match mvp::channel::pairing::revoke_channel_pairing(memory_config, &selection) {
+        Ok(Some(record)) => Json(ControlPlaneChannelPairingRevokeResponse {
+            request: map_channel_pairing_request(record),
+        })
+        .into_response(),
+        Ok(None) => error_response(
+            StatusCode::NOT_FOUND,
+            "channel pairing request not found".to_owned(),
+        ),
+        Err(error) => error_response(StatusCode::BAD_REQUEST, error),
+    }
+}
+
+#[cfg(feature = "memory-sqlite")]
+async fn channel_pairing_clear_pending(
+    headers: HeaderMap,
+    State(state): State<ControlPlaneHttpState>,
+    Json(request): Json<ControlPlaneChannelPairingClearPendingRequest>,
+) -> Response {
+    if let Err(response) =
+        authorize_control_plane_request(&state, "channel-pairing/clear-pending", &headers)
+    {
+        return *response;
+    }
+    let Some(memory_config) = state.memory_config.as_ref() else {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "channel-pairing/clear-pending requires control-plane-serve --config <path>".to_owned(),
+        );
+    };
+    let scope = mvp::channel::pairing::ChannelPairingPendingScope::new(
+        request.channel_id,
+        request.configured_account_id,
+        request.conversation_id,
+        request.participant_id,
+    );
+    let scope = match scope {
+        Ok(scope) => scope,
+        Err(error) => return error_response(StatusCode::BAD_REQUEST, error),
+    };
+    match mvp::channel::pairing::clear_pending_channel_pairings(memory_config, &scope) {
+        Ok(cleared_request_ids) => Json(ControlPlaneChannelPairingClearPendingResponse {
+            cleared_count: cleared_request_ids.len(),
+            cleared_request_ids,
+        })
+        .into_response(),
+        Err(error) => error_response(StatusCode::BAD_REQUEST, error),
+    }
+}
+
 async fn acp_session_list(
     headers: HeaderMap,
     State(state): State<ControlPlaneHttpState>,
@@ -2502,6 +2579,11 @@ fn build_control_plane_router_with_runtime(
         .route("/pairing/resolve", post(pairing_resolve))
         .route("/channel-pairing/list", get(channel_pairing_list))
         .route("/channel-pairing/resolve", post(channel_pairing_resolve))
+        .route("/channel-pairing/revoke", post(channel_pairing_revoke))
+        .route(
+            "/channel-pairing/clear-pending",
+            post(channel_pairing_clear_pending),
+        )
         .route("/acp/session/list", get(acp_session_list))
         .route("/acp/session/read", get(acp_session_read))
         .with_state(state);
@@ -4436,6 +4518,162 @@ mod tests {
             decision,
             mvp::channel::pairing::ChannelPairingDecision::Authorized
         ));
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[tokio::test]
+    async fn channel_pairing_revoke_removes_approved_binding() {
+        let memory_config = isolated_memory_config("channel-pairing-revoke");
+        let subject = mvp::channel::pairing::ChannelPairingSubject::new(
+            "feishu",
+            "work",
+            Some("feishu_cli_a1b2c3".to_owned()),
+            "oc_demo",
+            "ou_sender_revoke",
+            "feishu:feishu_cli_a1b2c3:oc_demo:ou_sender_revoke",
+            Some("feishu_cli_a1b2c3:ou_sender_revoke".to_owned()),
+        )
+        .expect("build channel pairing subject");
+        let pending = mvp::channel::pairing::evaluate_channel_pairing(&memory_config, &subject)
+            .expect("create pending request");
+        let pairing_request_id = match pending {
+            mvp::channel::pairing::ChannelPairingDecision::PairingRequired { request, .. } => {
+                request.pairing_request_id
+            }
+            other @ mvp::channel::pairing::ChannelPairingDecision::Authorized
+            | other @ mvp::channel::pairing::ChannelPairingDecision::PendingLimitReached {
+                ..
+            }
+            | other @ mvp::channel::pairing::ChannelPairingDecision::Cooldown { .. }
+            | other @ mvp::channel::pairing::ChannelPairingDecision::Rejected { .. } => {
+                panic!("expected pending channel pairing request, got {other:?}")
+            }
+        };
+        let _ = mvp::channel::pairing::resolve_channel_pairing_request(
+            &memory_config,
+            pairing_request_id.as_str(),
+            true,
+            Some("root-session".to_owned()),
+        )
+        .expect("approve request")
+        .expect("approved request");
+
+        let manager = Arc::new(mvp::control_plane::ControlPlaneManager::new());
+        manager.set_runtime_ready(true);
+        let router = build_control_plane_router_with_memory_config(manager, memory_config.clone());
+        let operator_token = connect_token(
+            &router,
+            std::collections::BTreeSet::from([ControlPlaneScope::OperatorPairing]),
+        )
+        .await;
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/channel-pairing/revoke")
+                    .method("POST")
+                    .header("authorization", format!("Bearer {operator_token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&ControlPlaneChannelPairingRevokeRequest {
+                            pairing_request_id: Some(pairing_request_id.clone()),
+                            pairing_code: None,
+                        })
+                        .expect("encode revoke request"),
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("channel pairing revoke response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body bytes");
+        let revoked: ControlPlaneChannelPairingRevokeResponse =
+            serde_json::from_slice(&body).expect("channel pairing revoke json");
+        assert_eq!(revoked.request.pairing_request_id, pairing_request_id);
+        assert_eq!(revoked.request.status, ControlPlanePairingStatus::Rejected);
+
+        let decision = mvp::channel::pairing::evaluate_channel_pairing(&memory_config, &subject)
+            .expect("re-evaluate revoked pairing");
+        assert!(matches!(
+            decision,
+            mvp::channel::pairing::ChannelPairingDecision::Cooldown { .. }
+        ));
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[tokio::test]
+    async fn channel_pairing_clear_pending_removes_scoped_requests() {
+        let memory_config = isolated_memory_config("channel-pairing-clear-pending");
+        let first_subject = mvp::channel::pairing::ChannelPairingSubject::new(
+            "feishu",
+            "work",
+            Some("feishu_cli_a1b2c3".to_owned()),
+            "oc_demo",
+            "ou_sender_a",
+            "feishu:feishu_cli_a1b2c3:oc_demo:ou_sender_a",
+            Some("feishu_cli_a1b2c3:ou_sender_a".to_owned()),
+        )
+        .expect("build first subject");
+        let second_subject = mvp::channel::pairing::ChannelPairingSubject::new(
+            "feishu",
+            "work",
+            Some("feishu_cli_a1b2c3".to_owned()),
+            "oc_demo",
+            "ou_sender_b",
+            "feishu:feishu_cli_a1b2c3:oc_demo:ou_sender_b",
+            Some("feishu_cli_a1b2c3:ou_sender_b".to_owned()),
+        )
+        .expect("build second subject");
+        let _ = mvp::channel::pairing::evaluate_channel_pairing(&memory_config, &first_subject)
+            .expect("create first pending request");
+        let _ = mvp::channel::pairing::evaluate_channel_pairing(&memory_config, &second_subject)
+            .expect("create second pending request");
+
+        let manager = Arc::new(mvp::control_plane::ControlPlaneManager::new());
+        manager.set_runtime_ready(true);
+        let router = build_control_plane_router_with_memory_config(manager, memory_config.clone());
+        let operator_token = connect_token(
+            &router,
+            std::collections::BTreeSet::from([ControlPlaneScope::OperatorPairing]),
+        )
+        .await;
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/channel-pairing/clear-pending")
+                    .method("POST")
+                    .header("authorization", format!("Bearer {operator_token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&ControlPlaneChannelPairingClearPendingRequest {
+                            channel_id: "feishu".to_owned(),
+                            configured_account_id: "work".to_owned(),
+                            conversation_id: Some("oc_demo".to_owned()),
+                            participant_id: None,
+                        })
+                        .expect("encode clear-pending request"),
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("clear-pending response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body bytes");
+        let cleared: ControlPlaneChannelPairingClearPendingResponse =
+            serde_json::from_slice(&body).expect("clear-pending json");
+        assert_eq!(cleared.cleared_count, 2);
+
+        let repo = mvp::session::repository::SessionRepository::new(&memory_config)
+            .expect("open repository");
+        let remaining = repo
+            .list_pending_channel_pairing_requests_in_scope("feishu", "work", Some("oc_demo"), None)
+            .expect("load remaining pending requests");
+        assert!(remaining.is_empty());
     }
 
     #[tokio::test]

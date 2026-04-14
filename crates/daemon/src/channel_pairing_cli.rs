@@ -181,3 +181,124 @@ pub fn run_resolve_channel_pairing_cli(
         Ok(())
     }
 }
+
+pub fn run_revoke_channel_pairing_cli(
+    config_path: Option<&str>,
+    pairing_request_id: Option<&str>,
+    pairing_code: Option<&str>,
+    as_json: bool,
+) -> CliResult<()> {
+    #[cfg(not(feature = "memory-sqlite"))]
+    {
+        let _ = (config_path, pairing_request_id, pairing_code, as_json);
+        Err("channel pairing persistence requires feature `memory-sqlite`".to_owned())
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    {
+        let (resolved_path, config) = mvp::config::load(config_path)?;
+        let memory_config =
+            mvp::memory::runtime_config::MemoryRuntimeConfig::from_memory_config(&config.memory);
+        let selection = mvp::channel::pairing::ChannelPairingRequestSelection::new(
+            pairing_request_id.map(str::to_owned),
+            pairing_code.map(str::to_owned),
+        )?;
+        let updated = mvp::channel::pairing::revoke_channel_pairing(&memory_config, &selection)?;
+        let Some(updated) = updated else {
+            return Err("channel pairing request not found".to_owned());
+        };
+
+        if as_json {
+            let payload = json!({
+                "config": resolved_path.display().to_string(),
+                "request": updated,
+            });
+            let pretty = serde_json::to_string_pretty(&payload).map_err(|error| {
+                format!("serialize channel pairing revoke output failed: {error}")
+            })?;
+            println!("{pretty}");
+            return Ok(());
+        }
+
+        println!(
+            "config={} pairing_request_id={} pairing_code={} status={} last_error={}",
+            resolved_path.display(),
+            updated.pairing_request_id,
+            updated.pairing_code,
+            updated.status.as_str(),
+            updated.last_error.as_deref().unwrap_or("(none)"),
+        );
+        Ok(())
+    }
+}
+
+pub fn run_clear_pending_channel_pairings_cli(
+    config_path: Option<&str>,
+    channel_id: &str,
+    configured_account_id: &str,
+    conversation_id: Option<&str>,
+    participant_id: Option<&str>,
+    as_json: bool,
+) -> CliResult<()> {
+    #[cfg(not(feature = "memory-sqlite"))]
+    {
+        let _ = (
+            config_path,
+            channel_id,
+            configured_account_id,
+            conversation_id,
+            participant_id,
+            as_json,
+        );
+        Err("channel pairing persistence requires feature `memory-sqlite`".to_owned())
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    {
+        let (resolved_path, config) = mvp::config::load(config_path)?;
+        let memory_config =
+            mvp::memory::runtime_config::MemoryRuntimeConfig::from_memory_config(&config.memory);
+        let scope = mvp::channel::pairing::ChannelPairingPendingScope::new(
+            channel_id.to_owned(),
+            configured_account_id.to_owned(),
+            conversation_id.map(str::to_owned),
+            participant_id.map(str::to_owned),
+        )?;
+        let cleared_request_ids =
+            mvp::channel::pairing::clear_pending_channel_pairings(&memory_config, &scope)?;
+        let cleared_count = cleared_request_ids.len();
+
+        if as_json {
+            let payload = json!({
+                "config": resolved_path.display().to_string(),
+                "channel_id": scope.channel_id,
+                "configured_account_id": scope.configured_account_id,
+                "conversation_id": scope.conversation_id,
+                "participant_id": scope.participant_id,
+                "cleared_count": cleared_count,
+                "cleared_request_ids": cleared_request_ids,
+            });
+            let pretty = serde_json::to_string_pretty(&payload).map_err(|error| {
+                format!("serialize clear pending channel pairings output failed: {error}")
+            })?;
+            println!("{pretty}");
+            return Ok(());
+        }
+
+        println!(
+            "config={} channel_id={} configured_account_id={} conversation_id={} participant_id={} cleared_count={} cleared_request_ids={}",
+            resolved_path.display(),
+            scope.channel_id,
+            scope.configured_account_id,
+            scope.conversation_id.as_deref().unwrap_or("(none)"),
+            scope.participant_id.as_deref().unwrap_or("(none)"),
+            cleared_count,
+            if cleared_request_ids.is_empty() {
+                "(none)".to_owned()
+            } else {
+                cleared_request_ids.join(",")
+            }
+        );
+        Ok(())
+    }
+}

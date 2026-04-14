@@ -480,6 +480,32 @@ async fn main() {
                 )
             }
         }
+        Commands::ChannelPairingRevoke {
+            config,
+            pairing_request_id,
+            pairing_code,
+            json,
+        } => run_revoke_channel_pairing_cli(
+            config.as_deref(),
+            pairing_request_id.as_deref(),
+            pairing_code.as_deref(),
+            json,
+        ),
+        Commands::ClearChannelPairings {
+            config,
+            channel_id,
+            configured_account_id,
+            conversation_id,
+            participant_id,
+            json,
+        } => run_clear_pending_channel_pairings_cli(
+            config.as_deref(),
+            channel_id.as_str(),
+            configured_account_id.as_str(),
+            conversation_id.as_deref(),
+            participant_id.as_deref(),
+            json,
+        ),
         Commands::AcpStatus {
             config,
             session,

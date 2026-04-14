@@ -111,6 +111,8 @@ code with:
 - `loong channel-pairing-resolve --pairing-request-id <id> --approve`
 - `loong channel-pairing-resolve --pairing-code <code> --approve`
 - `loong channel-pairing-resolve --pairing-request-id <id> --reject`
+- `loong channel-pairing-revoke --pairing-request-id <id>`
+- `loong clear-channel-pairings --channel-id <id> --configured-account-id <id>`
 
 Current guardrails for this first pairing-code slice:
 

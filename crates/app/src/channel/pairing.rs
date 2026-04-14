@@ -97,6 +97,65 @@ impl ChannelPairingSubject {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChannelPairingRequestSelection {
+    pub pairing_request_id: Option<String>,
+    pub pairing_code: Option<String>,
+}
+
+impl ChannelPairingRequestSelection {
+    pub fn new(
+        pairing_request_id: Option<String>,
+        pairing_code: Option<String>,
+    ) -> Result<Self, String> {
+        let pairing_request_id = normalize_optional_field(pairing_request_id);
+        let pairing_code = pairing_code.map(|value| normalize_pairing_code(value.as_str()));
+        let pairing_code = pairing_code.transpose()?;
+        match (pairing_request_id.as_ref(), pairing_code.as_ref()) {
+            (Some(_), Some(_)) => Err(
+                "channel pairing selection accepts either pairing_request_id or pairing_code"
+                    .to_owned(),
+            ),
+            (None, None) => Err(
+                "channel pairing selection requires pairing_request_id or pairing_code".to_owned(),
+            ),
+            _ => Ok(Self {
+                pairing_request_id,
+                pairing_code,
+            }),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChannelPairingPendingScope {
+    pub channel_id: String,
+    pub configured_account_id: String,
+    pub conversation_id: Option<String>,
+    pub participant_id: Option<String>,
+}
+
+impl ChannelPairingPendingScope {
+    pub fn new(
+        channel_id: impl Into<String>,
+        configured_account_id: impl Into<String>,
+        conversation_id: Option<String>,
+        participant_id: Option<String>,
+    ) -> Result<Self, String> {
+        let channel_id = normalize_required_field(channel_id.into(), "channel_id")?;
+        let configured_account_id =
+            normalize_required_field(configured_account_id.into(), "configured_account_id")?;
+        let conversation_id = normalize_optional_field(conversation_id);
+        let participant_id = normalize_optional_field(participant_id);
+        Ok(Self {
+            channel_id,
+            configured_account_id,
+            conversation_id,
+            participant_id,
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ChannelPairingResolution {
     pub mode: ChannelPairingMode,
@@ -227,6 +286,64 @@ pub fn list_channel_pairing_requests(
 ) -> Result<Vec<ChannelPairingRequestRecord>, String> {
     let repo = SessionRepository::new(memory_config)?;
     repo.list_channel_pairing_requests(status, limit)
+}
+
+#[cfg(feature = "memory-sqlite")]
+pub fn revoke_channel_pairing(
+    memory_config: &MemoryRuntimeConfig,
+    selection: &ChannelPairingRequestSelection,
+) -> Result<Option<ChannelPairingRequestRecord>, String> {
+    let repo = SessionRepository::new(memory_config)?;
+    let request = load_request_by_selection(&repo, selection)?;
+    let Some(request) = request else {
+        return Ok(None);
+    };
+
+    let binding = repo.load_channel_pairing_binding(
+        request.channel_id.as_str(),
+        request.configured_account_id.as_str(),
+        request.conversation_id.as_str(),
+        request.participant_id.as_str(),
+    )?;
+    let Some(_binding) = binding else {
+        return Err("channel pairing subject is not currently approved".to_owned());
+    };
+
+    let _ = repo.delete_channel_pairing_binding(
+        request.channel_id.as_str(),
+        request.configured_account_id.as_str(),
+        request.conversation_id.as_str(),
+        request.participant_id.as_str(),
+    )?;
+    repo.set_channel_pairing_request_resolution(
+        request.pairing_request_id.as_str(),
+        ChannelPairingRequestStatus::Rejected,
+        None,
+        Some("revoked_by_operator".to_owned()),
+    )
+}
+
+#[cfg(feature = "memory-sqlite")]
+pub fn clear_pending_channel_pairings(
+    memory_config: &MemoryRuntimeConfig,
+    scope: &ChannelPairingPendingScope,
+) -> Result<Vec<String>, String> {
+    let repo = SessionRepository::new(memory_config)?;
+    let pending_requests = repo.list_pending_channel_pairing_requests_in_scope(
+        scope.channel_id.as_str(),
+        scope.configured_account_id.as_str(),
+        scope.conversation_id.as_deref(),
+        scope.participant_id.as_deref(),
+    )?;
+    let mut cleared_request_ids = Vec::new();
+    for pending_request in pending_requests {
+        let pairing_request_id = pending_request.pairing_request_id;
+        let deleted = repo.delete_channel_pairing_request(pairing_request_id.as_str())?;
+        if deleted {
+            cleared_request_ids.push(pairing_request_id);
+        }
+    }
+    Ok(cleared_request_ids)
 }
 
 #[cfg(feature = "memory-sqlite")]
@@ -535,6 +652,29 @@ fn create_channel_pairing_request(
 }
 
 #[cfg(feature = "memory-sqlite")]
+fn load_request_by_selection(
+    repo: &SessionRepository,
+    selection: &ChannelPairingRequestSelection,
+) -> Result<Option<ChannelPairingRequestRecord>, String> {
+    match (
+        selection.pairing_request_id.as_deref(),
+        selection.pairing_code.as_deref(),
+    ) {
+        (Some(pairing_request_id), None) => repo.load_channel_pairing_request(pairing_request_id),
+        (None, Some(pairing_code)) => {
+            repo.load_latest_channel_pairing_request_by_code(pairing_code)
+        }
+        (Some(_), Some(_)) => Err(
+            "channel pairing selection accepts either pairing_request_id or pairing_code"
+                .to_owned(),
+        ),
+        (None, None) => {
+            Err("channel pairing selection requires pairing_request_id or pairing_code".to_owned())
+        }
+    }
+}
+
+#[cfg(feature = "memory-sqlite")]
 fn request_is_expired(request: &ChannelPairingRequestRecord) -> bool {
     unix_time_ms_now() >= request.expires_at_ms
 }
@@ -597,6 +737,21 @@ fn normalize_required_field(value: String, field: &str) -> Result<String, String
         return Err(format!("channel pairing {field} is empty"));
     }
     Ok(trimmed.to_owned())
+}
+
+fn normalize_pairing_code(value: &str) -> Result<String, String> {
+    let trimmed = normalize_required_field(value.to_owned(), "pairing_code")?;
+    let mut normalized = String::new();
+    for character in trimmed.chars() {
+        if character == '-' || character.is_ascii_whitespace() {
+            continue;
+        }
+        normalized.push(character.to_ascii_uppercase());
+    }
+    if normalized.is_empty() {
+        return Err("channel pairing pairing_code is empty".to_owned());
+    }
+    Ok(normalized)
 }
 
 #[cfg(feature = "memory-sqlite")]

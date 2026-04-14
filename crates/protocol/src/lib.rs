@@ -23,9 +23,11 @@ pub use control_plane::{
     ControlPlaneAcpSessionReadResponse, ControlPlaneAcpSessionState, ControlPlaneAcpSessionStatus,
     ControlPlaneApprovalDecision, ControlPlaneApprovalListResponse,
     ControlPlaneApprovalRequestStatus, ControlPlaneApprovalSummary, ControlPlaneAuthClaims,
-    ControlPlaneChallengeResponse, ControlPlaneChannelPairingListResponse,
+    ControlPlaneChallengeResponse, ControlPlaneChannelPairingClearPendingRequest,
+    ControlPlaneChannelPairingClearPendingResponse, ControlPlaneChannelPairingListResponse,
     ControlPlaneChannelPairingRequestSummary, ControlPlaneChannelPairingResolveRequest,
-    ControlPlaneChannelPairingResolveResponse, ControlPlaneClientIdentity,
+    ControlPlaneChannelPairingResolveResponse, ControlPlaneChannelPairingRevokeRequest,
+    ControlPlaneChannelPairingRevokeResponse, ControlPlaneClientIdentity,
     ControlPlaneConnectErrorCode, ControlPlaneConnectErrorResponse, ControlPlaneConnectRequest,
     ControlPlaneConnectResponse, ControlPlaneDeviceIdentity, ControlPlaneEventEnvelope,
     ControlPlaneEventName, ControlPlanePairingListResponse, ControlPlanePairingRequestSummary,
@@ -91,6 +93,8 @@ pub enum ProtocolRoute {
     PairingResolve,
     ChannelPairingList,
     ChannelPairingResolve,
+    ChannelPairingRevoke,
+    ChannelPairingClearPending,
     AcpSessionList,
     AcpSessionRead,
     Custom(String),
@@ -119,6 +123,8 @@ impl ProtocolRoute {
             "pairing/resolve" => Self::PairingResolve,
             "channel-pairing/list" => Self::ChannelPairingList,
             "channel-pairing/resolve" => Self::ChannelPairingResolve,
+            "channel-pairing/revoke" => Self::ChannelPairingRevoke,
+            "channel-pairing/clear-pending" => Self::ChannelPairingClearPending,
             "acp/session/list" => Self::AcpSessionList,
             "acp/session/read" => Self::AcpSessionRead,
             other => Self::Custom(other.to_owned()),
@@ -147,6 +153,8 @@ impl ProtocolRoute {
             Self::PairingResolve => "pairing/resolve",
             Self::ChannelPairingList => "channel-pairing/list",
             Self::ChannelPairingResolve => "channel-pairing/resolve",
+            Self::ChannelPairingRevoke => "channel-pairing/revoke",
+            Self::ChannelPairingClearPending => "channel-pairing/clear-pending",
             Self::AcpSessionList => "acp/session/list",
             Self::AcpSessionRead => "acp/session/read",
             Self::Custom(method) => method,
@@ -176,6 +184,8 @@ impl ProtocolRoute {
                 | Self::PairingResolve
                 | Self::ChannelPairingList
                 | Self::ChannelPairingResolve
+                | Self::ChannelPairingRevoke
+                | Self::ChannelPairingClearPending
                 | Self::AcpSessionList
                 | Self::AcpSessionRead
         )
@@ -300,7 +310,9 @@ impl ProtocolRouter {
             ProtocolRoute::PairingList
             | ProtocolRoute::PairingResolve
             | ProtocolRoute::ChannelPairingList
-            | ProtocolRoute::ChannelPairingResolve => Ok(ResolvedRoute {
+            | ProtocolRoute::ChannelPairingResolve
+            | ProtocolRoute::ChannelPairingRevoke
+            | ProtocolRoute::ChannelPairingClearPending => Ok(ResolvedRoute {
                 route,
                 policy: RoutePolicy {
                     allow_anonymous: false,
