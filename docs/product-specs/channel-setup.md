@@ -92,7 +92,12 @@ conversation/sender gating surfaces.
 
 `loong channels --resolve <channel-or-route-session>` resolves either a channel
 catalog alias/id or a known runtime-backed route session into operator-facing
-structured metadata.
+structured metadata. The text form is intentionally explainable rather than
+minimal: it includes catalog aliases, matched account readiness, stable target
+templates when the surface is plugin-backed, and the structured access policy
+that will gate the resolved runtime-backed account. The JSON form includes a
+dedicated `schema_version` so operators can automate against the resolver
+without scraping the list view.
 
 | Surface | Status | Transport | Required config | Operator commands |
 | --- | --- | --- | --- | --- |

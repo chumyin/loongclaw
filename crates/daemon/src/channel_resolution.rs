@@ -2,8 +2,11 @@ use serde::Serialize;
 
 use crate::{CliResult, mvp};
 
+pub const CHANNEL_RESOLVE_JSON_SCHEMA_VERSION: u32 = 1;
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ChannelResolveOutput {
+    pub schema_version: u32,
     pub config: String,
     pub input: String,
     pub resolution: ChannelResolveReadModel,
@@ -14,6 +17,7 @@ pub struct ChannelCatalogResolutionDetails {
     pub canonical_channel_id: String,
     pub catalog: mvp::channel::ChannelCatalogEntry,
     pub surface: Option<mvp::channel::ChannelSurface>,
+    pub access_policies: Vec<mvp::channel::ChannelConfiguredAccountAccessPolicy>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -23,6 +27,7 @@ pub struct ChannelSessionResolutionDetails {
     pub surface: Option<mvp::channel::ChannelSurface>,
     pub matched_configured_account_id: Option<String>,
     pub matched_account: Option<mvp::channel::ChannelStatusSnapshot>,
+    pub matched_access_policy: Option<mvp::channel::ChannelConfiguredAccountAccessPolicy>,
     pub send_operation: Option<mvp::channel::ChannelOperationStatus>,
     pub serve_operation: Option<mvp::channel::ChannelOperationStatus>,
 }
@@ -64,6 +69,19 @@ pub fn build_channel_resolution(
                         .cloned()
                 })
         });
+        let matched_access_policy =
+            matched_configured_account_id
+                .as_deref()
+                .and_then(|configured_account_id| {
+                    inventory
+                        .channel_access_policies
+                        .iter()
+                        .find(|policy| {
+                            policy.channel_id == target.channel_id
+                                && policy.configured_account_id == configured_account_id
+                        })
+                        .cloned()
+                });
         let send_operation = matched_account
             .as_ref()
             .and_then(|account| account.operation(mvp::channel::CHANNEL_OPERATION_SEND_ID))
@@ -74,6 +92,7 @@ pub fn build_channel_resolution(
             .cloned();
 
         return Ok(ChannelResolveOutput {
+            schema_version: CHANNEL_RESOLVE_JSON_SCHEMA_VERSION,
             config: config_path.to_owned(),
             input: trimmed_input.to_owned(),
             resolution: ChannelResolveReadModel::Session(Box::new(
@@ -83,6 +102,7 @@ pub fn build_channel_resolution(
                     surface,
                     matched_configured_account_id,
                     matched_account,
+                    matched_access_policy,
                     send_operation,
                     serve_operation,
                 },
@@ -98,20 +118,29 @@ pub fn build_channel_resolution(
         .iter()
         .find(|surface| surface.catalog.id == catalog.id)
         .cloned();
+    let access_policies = inventory
+        .channel_access_policies
+        .iter()
+        .filter(|policy| policy.channel_id == catalog.id)
+        .cloned()
+        .collect::<Vec<_>>();
 
     Ok(ChannelResolveOutput {
+        schema_version: CHANNEL_RESOLVE_JSON_SCHEMA_VERSION,
         config: config_path.to_owned(),
         input: trimmed_input.to_owned(),
         resolution: ChannelResolveReadModel::Catalog(Box::new(ChannelCatalogResolutionDetails {
             canonical_channel_id,
             catalog,
             surface,
+            access_policies,
         })),
     })
 }
 
 pub fn render_channel_resolution_text(resolution: &ChannelResolveOutput) -> String {
     let mut lines = vec![
+        format!("schema_version={}", resolution.schema_version),
         format!("config={}", resolution.config),
         format!("input={}", resolution.input),
     ];
@@ -121,9 +150,18 @@ pub fn render_channel_resolution_text(resolution: &ChannelResolveOutput) -> Stri
             let canonical_channel_id = details.canonical_channel_id.as_str();
             let catalog = &details.catalog;
             let surface = details.surface.as_ref();
+            let access_policies = &details.access_policies;
             lines.push("resolve_kind=catalog".to_owned());
             lines.push(format!("channel_id={canonical_channel_id}"));
             lines.push(format!("label={}", catalog.label));
+            lines.push(format!(
+                "aliases={}",
+                if catalog.aliases.is_empty() {
+                    "-".to_owned()
+                } else {
+                    catalog.aliases.join(",")
+                }
+            ));
             lines.push(format!(
                 "implementation_status={}",
                 catalog.implementation_status.as_str()
@@ -144,6 +182,37 @@ pub fn render_channel_resolution_text(resolution: &ChannelResolveOutput) -> Stri
                         .as_deref()
                         .unwrap_or("-")
                 ));
+                if let Some(discovery) = surface.plugin_bridge_discovery.as_ref() {
+                    lines.push(format!(
+                        "plugin_bridge_discovery_status={}",
+                        discovery.status.as_str()
+                    ));
+                    lines.push(format!(
+                        "plugin_bridge_selected_plugin={}",
+                        discovery.selected_plugin_id.as_deref().unwrap_or("-")
+                    ));
+                }
+            }
+            if let Some(contract) = catalog.plugin_bridge_contract.as_ref() {
+                lines.push(format!(
+                    "plugin_bridge_runtime_owner={}",
+                    contract.runtime_owner
+                ));
+                lines.push(format!(
+                    "plugin_bridge_required_setup_surface={}",
+                    contract.required_setup_surface
+                ));
+                for stable_target in &contract.stable_targets {
+                    lines.push(format!(
+                        "stable_target template={} target_kind={} description={}",
+                        stable_target.template,
+                        stable_target.target_kind.as_str(),
+                        stable_target.description,
+                    ));
+                }
+            }
+            for access_policy in access_policies {
+                lines.push(render_access_policy_resolution_line(access_policy));
             }
             for operation in &catalog.operations {
                 lines.push(format!(
@@ -166,6 +235,7 @@ pub fn render_channel_resolution_text(resolution: &ChannelResolveOutput) -> Stri
             let surface = details.surface.as_ref();
             let matched_configured_account_id = details.matched_configured_account_id.as_ref();
             let matched_account = details.matched_account.as_ref();
+            let matched_access_policy = details.matched_access_policy.as_ref();
             let send_operation = details.send_operation.as_ref();
             let serve_operation = details.serve_operation.as_ref();
             lines.push("resolve_kind=session".to_owned());
@@ -229,6 +299,9 @@ pub fn render_channel_resolution_text(resolution: &ChannelResolveOutput) -> Stri
                     matched_account.api_base_url.as_deref().unwrap_or("-")
                 ));
             }
+            if let Some(matched_access_policy) = matched_access_policy {
+                lines.push(render_access_policy_resolution_line(matched_access_policy));
+            }
             if let Some(send_operation) = send_operation {
                 lines.push(format!(
                     "send_health={} send_command={} send_detail={}",
@@ -249,6 +322,33 @@ pub fn render_channel_resolution_text(resolution: &ChannelResolveOutput) -> Stri
     }
 
     lines.join("\n")
+}
+
+fn render_access_policy_resolution_line(
+    access_policy: &mvp::channel::ChannelConfiguredAccountAccessPolicy,
+) -> String {
+    let conversations = if access_policy.summary.allowed_conversations.is_empty() {
+        "-".to_owned()
+    } else {
+        access_policy.summary.allowed_conversations.join(",")
+    };
+    let senders = if access_policy.summary.allowed_senders.is_empty() {
+        "-".to_owned()
+    } else {
+        access_policy.summary.allowed_senders.join(",")
+    };
+
+    format!(
+        "access_policy configured_account={} conversation_key={} conversation_mode={} sender_key={} sender_mode={} mention_required={} conversations={} senders={}",
+        access_policy.configured_account_id,
+        access_policy.conversation_config_key,
+        access_policy.summary.conversation_mode.as_str(),
+        access_policy.sender_config_key,
+        access_policy.summary.sender_mode.as_str(),
+        access_policy.summary.mention_required,
+        conversations,
+        senders,
+    )
 }
 
 fn matched_configured_account_id_for_target(
@@ -315,12 +415,17 @@ mod tests {
             build_channel_resolution("/tmp/loongclaw.toml", &config, &inventory, "lark")
                 .expect("resolve catalog");
 
+        assert_eq!(
+            resolution.schema_version,
+            CHANNEL_RESOLVE_JSON_SCHEMA_VERSION
+        );
         match resolution.resolution {
             ChannelResolveReadModel::Catalog(details) => {
                 let canonical_channel_id = details.canonical_channel_id.as_str();
                 let catalog = &details.catalog;
                 assert_eq!(canonical_channel_id, "feishu");
                 assert_eq!(catalog.id, "feishu");
+                assert_eq!(catalog.aliases, vec!["lark"]);
             }
             other => panic!("expected catalog resolution, got {other:?}"),
         }
@@ -352,10 +457,39 @@ mod tests {
 
         let rendered = render_channel_resolution_text(&resolution);
 
+        assert!(rendered.contains("schema_version=1"));
         assert!(rendered.contains("resolve_kind=session"));
         assert!(rendered.contains("channel_id=telegram"));
         assert!(rendered.contains("session_shape=telegram_chat"));
         assert!(rendered.contains("matched_configured_account=ops"));
         assert!(rendered.contains("send_command=telegram-send"));
+        assert!(rendered.contains("access_policy configured_account=ops"));
+    }
+
+    #[test]
+    fn channel_resolution_text_renders_catalog_access_policy_and_stable_targets() {
+        let config: mvp::config::LoongClawConfig = serde_json::from_value(serde_json::json!({
+            "telegram": {
+                "enabled": true,
+                "bot_token": "123456:test-token",
+                "allowed_chat_ids": [123],
+                "require_mention": true
+            }
+        }))
+        .expect("deserialize telegram config");
+        let inventory = mvp::channel::channel_inventory(&config);
+        let resolution =
+            build_channel_resolution("/tmp/loongclaw.toml", &config, &inventory, "telegram")
+                .expect("resolve catalog");
+
+        let rendered = render_channel_resolution_text(&resolution);
+
+        assert!(rendered.contains("schema_version=1"));
+        assert!(rendered.contains("resolve_kind=catalog"));
+        assert!(rendered.contains("channel_id=telegram"));
+        assert!(rendered.contains("aliases=-"));
+        assert!(rendered.contains("default_configured_account=bot_123456"));
+        assert!(rendered.contains("access_policy configured_account=bot_123456"));
+        assert!(rendered.contains("mention_required=true"));
     }
 }

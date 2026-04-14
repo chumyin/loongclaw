@@ -88,8 +88,8 @@ pub mod acp_cli;
 pub mod audit_cli;
 mod browser_companion_diagnostics;
 pub mod browser_preview;
-mod channel_bridge_render;
 mod channel_access_policy_render;
+mod channel_bridge_render;
 mod channel_resolution;
 #[cfg(test)]
 mod channel_send_cli_tests;
@@ -149,9 +149,6 @@ mod tool_calling_readiness;
 pub mod trajectory_cli;
 mod turn_cli;
 pub mod work_unit_cli;
-use channel_access_policy_render::{
-    channel_access_policy_by_account, render_channel_access_policy_line,
-};
 pub use self::acp_cli::{
     acp_backend_metadata_json, acp_binding_scope_json, acp_control_plane_json,
     acp_dispatch_decision_json, acp_dispatch_prediction_provenance_json, acp_doctor_json,
@@ -161,6 +158,9 @@ pub use self::acp_cli::{
     format_acp_event_summary, resolve_acp_status_session_key, run_acp_dispatch_cli,
     run_acp_doctor_cli, run_acp_event_summary_cli, run_acp_observability_cli, run_acp_status_cli,
     run_list_acp_backends_cli, run_list_acp_sessions_cli,
+};
+use channel_access_policy_render::{
+    channel_access_policy_by_account, render_channel_access_policy_line,
 };
 use channel_bridge_render::{
     push_channel_surface_managed_plugin_bridge_discovery,
@@ -746,7 +746,10 @@ pub enum Commands {
         #[command(subcommand)]
         command: plugins_cli::PluginsCommands,
     },
-    /// List compiled channel surfaces, aliases, and readiness status
+    #[command(
+        about = "List channel surfaces or resolve one channel/route-session into operator-facing target details",
+        long_about = "List compiled channel surfaces, aliases, access-policy summaries, and readiness status.\n\nUse `loong channels` to inspect the configured inventory, or add `--resolve <channel-or-route-session>` to explain one catalog alias/id or one known runtime-backed route session before sending or re-routing traffic. `--json` keeps the same command on a machine-readable surface for both list and resolve flows."
+    )]
     Channels {
         #[arg(long)]
         config: Option<String>,

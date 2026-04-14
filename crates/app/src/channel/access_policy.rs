@@ -12,6 +12,16 @@ pub enum ChannelAccessRestrictionMode {
     WildcardAllowlist,
 }
 
+impl ChannelAccessRestrictionMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::ExactAllowlist => "exact_allowlist",
+            Self::WildcardAllowlist => "wildcard_allowlist",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ChannelInboundAccessPolicySummary {
     pub conversation_mode: ChannelAccessRestrictionMode,
