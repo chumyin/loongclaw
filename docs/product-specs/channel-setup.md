@@ -99,6 +99,13 @@ that will gate the resolved runtime-backed account. The JSON form includes a
 dedicated `schema_version` so operators can automate against the resolver
 without scraping the list view.
 
+Telegram route sessions keep the legacy `telegram:<account>:<chat>:<thread>`
+shape when only a thread scope is present, but participant-aware sessions now
+tag the extra scopes explicitly as `p=<participant>` and `t=<thread>` when both
+participant and thread are present. That avoids the old numeric ambiguity
+between participant ids and topic/thread ids while keeping existing thread-only
+routes stable.
+
 For the shipped participant-aware runtime-backed surfaces, optional
 `pairing_mode = "participant_approval"` adds a dynamic approval layer inside
 the existing conversation allowlist boundary. The first inbound turn from an

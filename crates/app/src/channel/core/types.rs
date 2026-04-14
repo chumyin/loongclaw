@@ -188,11 +188,19 @@ impl ChannelSession {
             parts.push(encode_route_session_segment(account_id));
         }
         parts.push(encode_route_session_segment(conversation_id));
-        if let Some(participant_id) = participant_id {
-            parts.push(encode_route_session_segment(participant_id));
-        }
-        if let Some(thread_id) = thread_id {
-            parts.push(encode_route_session_segment(thread_id));
+        if self.platform == ChannelPlatform::Telegram {
+            let telegram_scope_segments = telegram_route_scope_segments(participant_id, thread_id);
+            for telegram_scope_segment in telegram_scope_segments {
+                let encoded_segment = encode_route_session_segment(telegram_scope_segment.as_str());
+                parts.push(encoded_segment);
+            }
+        } else {
+            if let Some(participant_id) = participant_id {
+                parts.push(encode_route_session_segment(participant_id));
+            }
+            if let Some(thread_id) = thread_id {
+                parts.push(encode_route_session_segment(thread_id));
+            }
         }
         parts.join(":")
     }
@@ -211,6 +219,26 @@ impl ChannelSession {
         }
         address
     }
+}
+
+fn telegram_route_scope_segments(
+    participant_id: Option<&str>,
+    thread_id: Option<&str>,
+) -> Vec<String> {
+    let mut segments = Vec::new();
+    if let Some(participant_id) = participant_id {
+        let participant_segment = format!("p={participant_id}");
+        segments.push(participant_segment);
+    }
+    if let Some(thread_id) = thread_id {
+        let thread_segment = if participant_id.is_some() {
+            format!("t={thread_id}")
+        } else {
+            thread_id.to_owned()
+        };
+        segments.push(thread_segment);
+    }
+    segments
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

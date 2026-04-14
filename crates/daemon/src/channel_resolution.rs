@@ -576,6 +576,39 @@ mod tests {
     }
 
     #[test]
+    fn channel_resolution_text_renders_telegram_participant_scope_without_rewriting_target() {
+        let config: mvp::config::LoongClawConfig = serde_json::from_value(serde_json::json!({
+            "telegram": {
+                "enabled": true,
+                "accounts": {
+                    "ops": {
+                        "account_id": "Ops-Bot",
+                        "bot_token": "123456:test-token",
+                        "allowed_chat_ids": [123]
+                    }
+                }
+            }
+        }))
+        .expect("deserialize telegram config");
+        let inventory = mvp::channel::channel_inventory(&config);
+        let resolution = build_channel_resolution(
+            "/tmp/loongclaw.toml",
+            &config,
+            &inventory,
+            "telegram:Ops-Bot:123:p=7:t=42",
+        )
+        .expect("resolve tagged telegram session");
+
+        let rendered = render_channel_resolution_text(&resolution);
+
+        assert!(rendered.contains("session_shape=telegram_thread"));
+        assert!(rendered.contains("target_id=123:42"));
+        assert!(rendered.contains("participant_id=7"));
+        assert!(rendered.contains("thread_id=42"));
+        assert!(rendered.contains("raw_scope=123:p=7:t=42"));
+    }
+
+    #[test]
     fn channel_resolution_text_renders_catalog_access_policy_and_stable_targets() {
         let config: mvp::config::LoongClawConfig = serde_json::from_value(serde_json::json!({
             "telegram": {

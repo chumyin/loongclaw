@@ -913,6 +913,10 @@ pub(super) fn parse_telegram_updates(
             account_id,
             chat_id.to_string(),
         );
+        if let Some(sender_id) = sender_id {
+            let participant_id = sender_id.to_string();
+            session = session.with_participant_id(participant_id);
+        }
         if let Some(ref tid) = thread_id {
             session.thread_id = Some(tid.clone());
         }
@@ -1145,6 +1149,7 @@ mod tests {
 
         assert_eq!(inbox.len(), 1);
         assert_eq!(inbox[0].session.session_key(), "telegram:bot_123456:123");
+        assert!(inbox[0].session.participant_id.is_none());
         assert_eq!(
             inbox[0].reply_target,
             ChannelOutboundTarget::telegram_chat(123)
@@ -1211,7 +1216,11 @@ mod tests {
 
         assert_eq!(inbox.len(), 1);
         assert_eq!(inbox[0].text, "allowed sender");
-        assert_eq!(inbox[0].session.session_key(), "telegram:bot_123456:123");
+        assert_eq!(
+            inbox[0].session.session_key(),
+            "telegram:bot_123456:123:p=7"
+        );
+        assert_eq!(inbox[0].session.participant_id.as_deref(), Some("7"));
         assert_eq!(
             inbox[0].delivery.sender_principal_key.as_deref(),
             Some("telegram:user:7")
@@ -1616,8 +1625,41 @@ mod tests {
                 .expect("parse telegram updates");
 
         assert_eq!(inbox.len(), 1);
+        assert_eq!(inbox[0].session.session_key(), "telegram:bot_123456:123:42");
+        assert!(inbox[0].session.participant_id.is_none());
         assert_eq!(inbox[0].session.thread_id, Some("42".to_string()));
         assert_eq!(inbox[0].reply_target.id, "123:42");
+    }
+
+    #[test]
+    fn parse_telegram_updates_tags_participant_when_present_with_thread() {
+        let payload = serde_json::json!({
+            "ok": true,
+            "result": [
+                {
+                    "update_id": 200,
+                    "message": {
+                        "text": "hello from sender thread",
+                        "chat": {"id": 123},
+                        "from": {"id": 7},
+                        "message_thread_id": 42
+                    }
+                }
+            ]
+        });
+
+        let access_policy = ChannelInboundAccessPolicy::from_i64_lists(&[123_i64], &[]);
+        let (inbox, _next_offset) =
+            parse_telegram_updates(&payload, &access_policy, false, None, 0, "bot_123456")
+                .expect("parse telegram updates");
+
+        assert_eq!(inbox.len(), 1);
+        assert_eq!(
+            inbox[0].session.session_key(),
+            "telegram:bot_123456:123:p=7:t=42"
+        );
+        assert_eq!(inbox[0].session.participant_id.as_deref(), Some("7"));
+        assert_eq!(inbox[0].session.thread_id.as_deref(), Some("42"));
     }
 
     #[test]
