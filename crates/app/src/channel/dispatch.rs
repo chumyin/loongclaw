@@ -215,6 +215,12 @@ use super::mattermost;
 use super::nextcloud_talk;
 #[cfg(feature = "channel-nostr")]
 use super::nostr;
+#[cfg(feature = "memory-sqlite")]
+use super::pairing::ChannelPairingSubject;
+#[cfg(feature = "memory-sqlite")]
+use super::pairing::evaluate_channel_pairing;
+#[cfg(feature = "memory-sqlite")]
+use super::pairing::render_channel_pairing_reply;
 use super::registry::{
     CHANNEL_OPERATION_SERVE_ID, FEISHU_COMMAND_FAMILY_DESCRIPTOR, MATRIX_COMMAND_FAMILY_DESCRIPTOR,
     WECOM_COMMAND_FAMILY_DESCRIPTOR,
@@ -275,6 +281,8 @@ use super::types::{
     ChannelResolvedAcpTurnHints, KnownChannelSessionSendTarget,
     parse_known_channel_session_send_target, process_channel_batch,
 };
+#[cfg(feature = "memory-sqlite")]
+use crate::memory::runtime_config::MemoryRuntimeConfig;
 
 #[cfg(any(
     feature = "channel-dingtalk",
@@ -3101,57 +3109,63 @@ pub(crate) async fn process_inbound_with_provider(
     let started_at = std::time::Instant::now();
     let result = match reload_channel_turn_config(config, resolved_path) {
         Ok(turn_config) => {
-            let address = message.session.conversation_address();
-            let acp_turn_hints = resolve_channel_acp_turn_hints(&turn_config, &message.session)?;
-            let request = crate::agent_runtime::AgentTurnRequest {
-                message: message.text.clone(),
-                turn_mode: crate::agent_runtime::AgentTurnMode::Oneshot,
-                channel_id: address.channel_id.clone(),
-                account_id: address.account_id.clone(),
-                conversation_id: address.conversation_id.clone(),
-                participant_id: address.participant_id.clone(),
-                thread_id: address.thread_id.clone(),
-                acp_bootstrap_mcp_servers: acp_turn_hints.bootstrap_mcp_servers.clone(),
-                acp_cwd: acp_turn_hints
-                    .working_directory
-                    .as_ref()
-                    .map(|path| path.display().to_string()),
-                ..Default::default()
-            };
-            let runtime =
-                crate::chat::initialize_cli_turn_runtime_with_loaded_config_and_kernel_ctx(
-                    resolved_path
-                        .map(std::path::Path::to_path_buf)
-                        .unwrap_or_default(),
-                    turn_config,
-                    Some(address.session_id.as_str()),
-                    &crate::chat::CliChatOptions {
-                        acp_requested: false,
-                        acp_event_stream: false,
-                        acp_bootstrap_mcp_servers: request.acp_bootstrap_mcp_servers.clone(),
-                        acp_working_directory: request
-                            .acp_cwd
-                            .as_deref()
-                            .map(std::path::PathBuf::from),
-                    },
-                    kernel_ctx.clone(),
-                    crate::chat::CliSessionRequirement::AllowImplicitDefault,
-                )?;
-            let ingress = channel_message_ingress_context(message);
-            let feedback_capture = ChannelTurnFeedbackCapture::new(feedback_policy);
-            let observer = feedback_capture.observer_handle();
-            let result = crate::agent_runtime::AgentRuntime::new()
-                .run_turn_with_runtime_and_observer_and_context_and_error_mode(
-                    &runtime,
-                    &request,
-                    None,
-                    observer,
-                    ingress.as_ref(),
-                    channel_message_acp_turn_provenance(message),
-                    crate::conversation::ProviderErrorMode::Propagate,
-                )
-                .await?;
-            Ok(feedback_capture.render_reply(result.output_text))
+            let pairing_reply = maybe_render_channel_pairing_gate_reply(&turn_config, message)?;
+            if let Some(pairing_reply) = pairing_reply {
+                Ok(pairing_reply)
+            } else {
+                let address = message.session.conversation_address();
+                let acp_turn_hints =
+                    resolve_channel_acp_turn_hints(&turn_config, &message.session)?;
+                let request = crate::agent_runtime::AgentTurnRequest {
+                    message: message.text.clone(),
+                    turn_mode: crate::agent_runtime::AgentTurnMode::Oneshot,
+                    channel_id: address.channel_id.clone(),
+                    account_id: address.account_id.clone(),
+                    conversation_id: address.conversation_id.clone(),
+                    participant_id: address.participant_id.clone(),
+                    thread_id: address.thread_id.clone(),
+                    acp_bootstrap_mcp_servers: acp_turn_hints.bootstrap_mcp_servers.clone(),
+                    acp_cwd: acp_turn_hints
+                        .working_directory
+                        .as_ref()
+                        .map(|path| path.display().to_string()),
+                    ..Default::default()
+                };
+                let runtime =
+                    crate::chat::initialize_cli_turn_runtime_with_loaded_config_and_kernel_ctx(
+                        resolved_path
+                            .map(std::path::Path::to_path_buf)
+                            .unwrap_or_default(),
+                        turn_config,
+                        Some(address.session_id.as_str()),
+                        &crate::chat::CliChatOptions {
+                            acp_requested: false,
+                            acp_event_stream: false,
+                            acp_bootstrap_mcp_servers: request.acp_bootstrap_mcp_servers.clone(),
+                            acp_working_directory: request
+                                .acp_cwd
+                                .as_deref()
+                                .map(std::path::PathBuf::from),
+                        },
+                        kernel_ctx.clone(),
+                        crate::chat::CliSessionRequirement::AllowImplicitDefault,
+                    )?;
+                let ingress = channel_message_ingress_context(message);
+                let feedback_capture = ChannelTurnFeedbackCapture::new(feedback_policy);
+                let observer = feedback_capture.observer_handle();
+                let result = crate::agent_runtime::AgentRuntime::new()
+                    .run_turn_with_runtime_and_observer_and_context_and_error_mode(
+                        &runtime,
+                        &request,
+                        None,
+                        observer,
+                        ingress.as_ref(),
+                        channel_message_acp_turn_provenance(message),
+                        crate::conversation::ProviderErrorMode::Propagate,
+                    )
+                    .await?;
+                Ok(feedback_capture.render_reply(result.output_text))
+            }
         }
         Err(error) => Err(error),
     };
@@ -3301,6 +3315,197 @@ fn resolve_channel_acp_turn_hints(
         }
         ChannelPlatform::WhatsApp => Ok(ChannelResolvedAcpTurnHints::default()),
         ChannelPlatform::Irc => Ok(ChannelResolvedAcpTurnHints::default()),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ChannelPairingPolicyState {
+    mode: crate::config::ChannelPairingMode,
+    static_sender_gate_present: bool,
+}
+
+fn resolve_channel_pairing_policy_state(
+    config: &LoongClawConfig,
+    message: &ChannelInboundMessage,
+) -> CliResult<ChannelPairingPolicyState> {
+    match message.session.platform {
+        ChannelPlatform::Telegram => {
+            let resolved = config
+                .telegram
+                .resolve_account_for_session_account_id(message.session.account_id.as_deref())?;
+            let access_policy = ChannelInboundAccessPolicy::from_i64_lists(
+                resolved.allowed_chat_ids.as_slice(),
+                resolved.allowed_sender_ids.as_slice(),
+            );
+            let static_sender_gate_present = access_policy.has_sender_restrictions();
+            Ok(ChannelPairingPolicyState {
+                mode: resolved.pairing_mode,
+                static_sender_gate_present,
+            })
+        }
+        ChannelPlatform::Feishu => {
+            let resolved = config
+                .feishu
+                .resolve_account_for_session_account_id(message.session.account_id.as_deref())?;
+            let access_policy = ChannelInboundAccessPolicy::from_string_lists(
+                resolved.allowed_chat_ids.as_slice(),
+                resolved.allowed_sender_ids.as_slice(),
+                true,
+            );
+            let static_sender_gate_present = access_policy.has_sender_restrictions();
+            Ok(ChannelPairingPolicyState {
+                mode: resolved.pairing_mode,
+                static_sender_gate_present,
+            })
+        }
+        ChannelPlatform::Matrix => {
+            let resolved = config
+                .matrix
+                .resolve_account_for_session_account_id(message.session.account_id.as_deref())?;
+            let access_policy = ChannelInboundAccessPolicy::from_string_lists(
+                resolved.allowed_room_ids.as_slice(),
+                resolved.allowed_sender_ids.as_slice(),
+                false,
+            );
+            let static_sender_gate_present = access_policy.has_sender_restrictions();
+            Ok(ChannelPairingPolicyState {
+                mode: resolved.pairing_mode,
+                static_sender_gate_present,
+            })
+        }
+        ChannelPlatform::Wecom => {
+            let resolved = config
+                .wecom
+                .resolve_account_for_session_account_id(message.session.account_id.as_deref())?;
+            let access_policy = ChannelInboundAccessPolicy::from_string_lists(
+                resolved.allowed_conversation_ids.as_slice(),
+                resolved.allowed_sender_ids.as_slice(),
+                false,
+            );
+            let static_sender_gate_present = access_policy.has_sender_restrictions();
+            Ok(ChannelPairingPolicyState {
+                mode: resolved.pairing_mode,
+                static_sender_gate_present,
+            })
+        }
+        ChannelPlatform::WhatsApp | ChannelPlatform::Irc => Ok(ChannelPairingPolicyState {
+            mode: crate::config::ChannelPairingMode::Disabled,
+            static_sender_gate_present: false,
+        }),
+    }
+}
+
+fn resolve_channel_pairing_subject(
+    message: &ChannelInboundMessage,
+) -> CliResult<Option<ChannelPairingSubject>> {
+    #[cfg(not(feature = "memory-sqlite"))]
+    {
+        let _ = message;
+        Ok(None)
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    {
+        let channel_id = message.session.platform.as_str();
+        let configured_account_id = message
+            .session
+            .configured_account_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "channel pairing requires configured_account_id".to_owned())?;
+        let participant_id = channel_pairing_participant_id(message);
+        let Some(participant_id) = participant_id else {
+            return Ok(None);
+        };
+        let subject = ChannelPairingSubject::new(
+            channel_id,
+            configured_account_id,
+            message.session.account_id.clone(),
+            message.session.conversation_id.clone(),
+            participant_id,
+            message.session.session_key(),
+            message.delivery.sender_principal_key.clone(),
+        )?;
+        Ok(Some(subject))
+    }
+}
+
+fn channel_pairing_participant_id(message: &ChannelInboundMessage) -> Option<String> {
+    let participant_id = message
+        .session
+        .participant_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    if participant_id.is_some() {
+        return participant_id;
+    }
+    match message.session.platform {
+        ChannelPlatform::Telegram => {
+            telegram_sender_id_from_principal_key(message.delivery.sender_principal_key.as_deref())
+        }
+        ChannelPlatform::Feishu
+        | ChannelPlatform::Matrix
+        | ChannelPlatform::Wecom
+        | ChannelPlatform::WhatsApp
+        | ChannelPlatform::Irc => None,
+    }
+}
+
+fn telegram_sender_id_from_principal_key(sender_principal_key: Option<&str>) -> Option<String> {
+    let sender_principal_key = sender_principal_key
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    let prefix = "telegram:user:";
+    let normalized = sender_principal_key.strip_prefix(prefix)?;
+    let trimmed = normalized.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.to_owned())
+}
+
+fn maybe_render_channel_pairing_gate_reply(
+    config: &LoongClawConfig,
+    message: &ChannelInboundMessage,
+) -> CliResult<Option<String>> {
+    let policy_state = resolve_channel_pairing_policy_state(config, message)?;
+    let mode = policy_state.mode;
+    if !mode.requires_participant_approval() {
+        return Ok(None);
+    }
+    if policy_state.static_sender_gate_present {
+        return Ok(None);
+    }
+
+    #[cfg(not(feature = "memory-sqlite"))]
+    {
+        return Err("channel pairing requires daemon/app feature `memory-sqlite`".to_owned());
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    {
+        let subject = resolve_channel_pairing_subject(message)?;
+        let Some(subject) = subject else {
+            let reply =
+                "This conversation requires operator pairing approval before I can respond."
+                    .to_owned();
+            return Ok(Some(reply));
+        };
+        let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+        let decision = evaluate_channel_pairing(&memory_config, &subject)?;
+        let reply = match &decision {
+            super::pairing::ChannelPairingDecision::Authorized => return Ok(None),
+            super::pairing::ChannelPairingDecision::PairingRequired { .. } => {
+                render_channel_pairing_reply(&decision)
+            }
+            super::pairing::ChannelPairingDecision::Rejected { .. } => {
+                render_channel_pairing_reply(&decision)
+            }
+        };
+        Ok(Some(reply))
     }
 }
 

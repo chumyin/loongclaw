@@ -29,6 +29,7 @@ pub struct ChannelInboundAccessPolicySummary {
     pub allowed_conversations: Vec<String>,
     pub allowed_senders: Vec<String>,
     pub mention_required: bool,
+    pub pairing_required: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -166,6 +167,7 @@ impl ChannelInboundAccessPolicy<i64> {
             allowed_conversations,
             allowed_senders,
             mention_required: false,
+            pairing_required: false,
         }
     }
 }
@@ -250,6 +252,7 @@ impl ChannelInboundAccessPolicy<String> {
             allowed_conversations,
             allowed_senders,
             mention_required: false,
+            pairing_required: false,
         }
     }
 
@@ -407,6 +410,7 @@ mod tests {
                 allowed_conversations: vec!["1001".to_owned()],
                 allowed_senders: Vec::new(),
                 mention_required: false,
+                pairing_required: false,
             }
         );
     }
@@ -427,6 +431,7 @@ mod tests {
                 allowed_conversations: vec!["*".to_owned()],
                 allowed_senders: vec!["ou_admin".to_owned()],
                 mention_required: false,
+                pairing_required: false,
             }
         );
     }

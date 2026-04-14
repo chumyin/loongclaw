@@ -193,6 +193,8 @@ pub struct TelegramChannelConfig {
     #[serde(default)]
     pub require_mention: bool,
     #[serde(default)]
+    pub pairing_mode: ChannelPairingMode,
+    #[serde(default)]
     pub acp: ChannelAcpConfig,
     #[serde(default)]
     pub streaming_mode: TelegramStreamingMode,
@@ -254,6 +256,30 @@ impl ChannelDefaultAccountSelectionSource {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChannelPairingMode {
+    #[default]
+    Disabled,
+    ParticipantApproval,
+}
+
+impl ChannelPairingMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::ParticipantApproval => "participant_approval",
+        }
+    }
+
+    pub const fn requires_participant_approval(self) -> bool {
+        match self {
+            Self::Disabled => false,
+            Self::ParticipantApproval => true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ChannelAccountIdentity {
     pub id: String,
@@ -308,6 +334,8 @@ pub struct TelegramAccountConfig {
     #[serde(default)]
     pub require_mention: Option<bool>,
     #[serde(default)]
+    pub pairing_mode: Option<ChannelPairingMode>,
+    #[serde(default)]
     pub acp: Option<ChannelAcpConfig>,
     #[serde(default)]
     pub streaming_mode: Option<TelegramStreamingMode>,
@@ -328,6 +356,7 @@ pub struct ResolvedTelegramChannelConfig {
     pub allowed_chat_ids: Vec<i64>,
     pub allowed_sender_ids: Vec<i64>,
     pub require_mention: bool,
+    pub pairing_mode: ChannelPairingMode,
     pub acp: ChannelAcpConfig,
     pub streaming_mode: TelegramStreamingMode,
     pub ack_reactions: bool,
@@ -378,6 +407,8 @@ pub struct FeishuAccountConfig {
     #[serde(default)]
     pub allowed_sender_ids: Option<Vec<String>>,
     #[serde(default)]
+    pub pairing_mode: Option<ChannelPairingMode>,
+    #[serde(default)]
     pub ack_reactions: Option<bool>,
     #[serde(default)]
     pub ignore_bot_messages: Option<bool>,
@@ -424,6 +455,7 @@ pub struct ResolvedFeishuChannelConfig {
     pub encrypt_key_env: Option<String>,
     pub allowed_chat_ids: Vec<String>,
     pub allowed_sender_ids: Vec<String>,
+    pub pairing_mode: ChannelPairingMode,
     pub ack_reactions: bool,
     pub ignore_bot_messages: bool,
     pub acp: ChannelAcpConfig,
@@ -482,6 +514,8 @@ pub struct MatrixAccountConfig {
     #[serde(default)]
     pub require_mention: Option<bool>,
     #[serde(default)]
+    pub pairing_mode: Option<ChannelPairingMode>,
+    #[serde(default)]
     pub ignore_self_messages: Option<bool>,
     #[serde(default)]
     pub acp: Option<ChannelAcpConfig>,
@@ -501,6 +535,7 @@ pub struct ResolvedMatrixChannelConfig {
     pub allowed_room_ids: Vec<String>,
     pub allowed_sender_ids: Vec<String>,
     pub require_mention: bool,
+    pub pairing_mode: ChannelPairingMode,
     pub ignore_self_messages: bool,
     pub acp: ChannelAcpConfig,
 }
@@ -544,6 +579,8 @@ pub struct WecomAccountConfig {
     #[serde(default)]
     pub allowed_sender_ids: Option<Vec<String>>,
     #[serde(default)]
+    pub pairing_mode: Option<ChannelPairingMode>,
+    #[serde(default)]
     pub acp: Option<ChannelAcpConfig>,
 }
 
@@ -562,6 +599,7 @@ pub struct ResolvedWecomChannelConfig {
     pub reconnect_interval_s: u64,
     pub allowed_conversation_ids: Vec<String>,
     pub allowed_sender_ids: Vec<String>,
+    pub pairing_mode: ChannelPairingMode,
     pub acp: ChannelAcpConfig,
 }
 
@@ -624,6 +662,8 @@ pub struct FeishuChannelConfig {
     pub allowed_chat_ids: Vec<String>,
     #[serde(default)]
     pub allowed_sender_ids: Vec<String>,
+    #[serde(default)]
+    pub pairing_mode: ChannelPairingMode,
     #[serde(default = "default_true")]
     pub ack_reactions: bool,
     #[serde(default = "default_true")]
@@ -658,6 +698,8 @@ pub struct MatrixChannelConfig {
     pub allowed_sender_ids: Vec<String>,
     #[serde(default)]
     pub require_mention: bool,
+    #[serde(default)]
+    pub pairing_mode: ChannelPairingMode,
     #[serde(default = "default_true")]
     pub ignore_self_messages: bool,
     #[serde(default)]
@@ -692,6 +734,8 @@ pub struct WecomChannelConfig {
     pub allowed_conversation_ids: Vec<String>,
     #[serde(default)]
     pub allowed_sender_ids: Vec<String>,
+    #[serde(default)]
+    pub pairing_mode: ChannelPairingMode,
     #[serde(default)]
     pub acp: ChannelAcpConfig,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -1993,6 +2037,7 @@ impl Default for TelegramChannelConfig {
             allowed_chat_ids: Vec::new(),
             allowed_sender_ids: Vec::new(),
             require_mention: false,
+            pairing_mode: ChannelPairingMode::Disabled,
             acp: ChannelAcpConfig::default(),
             streaming_mode: TelegramStreamingMode::default(),
             ack_reactions: true,
@@ -2118,6 +2163,9 @@ impl TelegramChannelConfig {
             require_mention: account_override
                 .and_then(|account| account.require_mention)
                 .unwrap_or(self.require_mention),
+            pairing_mode: account_override
+                .and_then(|account| account.pairing_mode)
+                .unwrap_or(self.pairing_mode),
             acp: resolve_channel_acp_config(
                 &self.acp,
                 account_override.and_then(|account| account.acp.as_ref()),
@@ -2144,6 +2192,7 @@ impl TelegramChannelConfig {
             allowed_chat_ids: merged.allowed_chat_ids,
             allowed_sender_ids: merged.allowed_sender_ids,
             require_mention: merged.require_mention,
+            pairing_mode: merged.pairing_mode,
             acp: merged.acp,
             streaming_mode: merged.streaming_mode,
             ack_reactions: merged.ack_reactions,
@@ -2222,6 +2271,7 @@ impl Default for FeishuChannelConfig {
             encrypt_key_env: Some(FEISHU_ENCRYPT_KEY_ENV.to_owned()),
             allowed_chat_ids: Vec::new(),
             allowed_sender_ids: Vec::new(),
+            pairing_mode: ChannelPairingMode::Disabled,
             ack_reactions: true,
             ignore_bot_messages: true,
             acp: ChannelAcpConfig::default(),
@@ -2244,6 +2294,7 @@ impl Default for MatrixChannelConfig {
             allowed_room_ids: Vec::new(),
             allowed_sender_ids: Vec::new(),
             require_mention: false,
+            pairing_mode: ChannelPairingMode::Disabled,
             ignore_self_messages: true,
             acp: ChannelAcpConfig::default(),
             accounts: BTreeMap::new(),
@@ -2266,6 +2317,7 @@ impl Default for WecomChannelConfig {
             reconnect_interval_s: default_wecom_reconnect_interval_seconds(),
             allowed_conversation_ids: Vec::new(),
             allowed_sender_ids: Vec::new(),
+            pairing_mode: ChannelPairingMode::Disabled,
             acp: ChannelAcpConfig::default(),
             accounts: BTreeMap::new(),
         }
@@ -2799,6 +2851,9 @@ impl FeishuChannelConfig {
             allowed_sender_ids: account_override
                 .and_then(|account| account.allowed_sender_ids.clone())
                 .unwrap_or_else(|| self.allowed_sender_ids.clone()),
+            pairing_mode: account_override
+                .and_then(|account| account.pairing_mode)
+                .unwrap_or(self.pairing_mode),
             ack_reactions: account_override
                 .and_then(|account| account.ack_reactions)
                 .unwrap_or(self.ack_reactions),
@@ -2834,6 +2889,7 @@ impl FeishuChannelConfig {
             encrypt_key_env: merged.encrypt_key_env,
             allowed_chat_ids: merged.allowed_chat_ids,
             allowed_sender_ids: merged.allowed_sender_ids,
+            pairing_mode: merged.pairing_mode,
             ack_reactions: merged.ack_reactions,
             ignore_bot_messages: merged.ignore_bot_messages,
             acp: merged.acp,
@@ -3023,6 +3079,9 @@ impl MatrixChannelConfig {
             require_mention: account_override
                 .and_then(|account| account.require_mention)
                 .unwrap_or(self.require_mention),
+            pairing_mode: account_override
+                .and_then(|account| account.pairing_mode)
+                .unwrap_or(self.pairing_mode),
             ignore_self_messages: account_override
                 .and_then(|account| account.ignore_self_messages)
                 .unwrap_or(self.ignore_self_messages),
@@ -3047,6 +3106,7 @@ impl MatrixChannelConfig {
             allowed_room_ids: merged.allowed_room_ids,
             allowed_sender_ids: merged.allowed_sender_ids,
             require_mention: merged.require_mention,
+            pairing_mode: merged.pairing_mode,
             ignore_self_messages: merged.ignore_self_messages,
             acp: merged.acp,
         })
@@ -3239,6 +3299,9 @@ impl WecomChannelConfig {
             allowed_sender_ids: account_override
                 .and_then(|account| account.allowed_sender_ids.clone())
                 .unwrap_or_else(|| self.allowed_sender_ids.clone()),
+            pairing_mode: account_override
+                .and_then(|account| account.pairing_mode)
+                .unwrap_or(self.pairing_mode),
             acp: resolve_channel_acp_config(
                 &self.acp,
                 account_override.and_then(|account| account.acp.as_ref()),
@@ -3261,6 +3324,7 @@ impl WecomChannelConfig {
             reconnect_interval_s: merged.reconnect_interval_s.clamp(1, 300),
             allowed_conversation_ids: merged.allowed_conversation_ids,
             allowed_sender_ids: merged.allowed_sender_ids,
+            pairing_mode: merged.pairing_mode,
             acp: merged.acp,
         })
     }

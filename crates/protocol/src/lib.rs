@@ -23,10 +23,12 @@ pub use control_plane::{
     ControlPlaneAcpSessionReadResponse, ControlPlaneAcpSessionState, ControlPlaneAcpSessionStatus,
     ControlPlaneApprovalDecision, ControlPlaneApprovalListResponse,
     ControlPlaneApprovalRequestStatus, ControlPlaneApprovalSummary, ControlPlaneAuthClaims,
-    ControlPlaneChallengeResponse, ControlPlaneClientIdentity, ControlPlaneConnectErrorCode,
-    ControlPlaneConnectErrorResponse, ControlPlaneConnectRequest, ControlPlaneConnectResponse,
-    ControlPlaneDeviceIdentity, ControlPlaneEventEnvelope, ControlPlaneEventName,
-    ControlPlanePairingListResponse, ControlPlanePairingRequestSummary,
+    ControlPlaneChallengeResponse, ControlPlaneChannelPairingListResponse,
+    ControlPlaneChannelPairingRequestSummary, ControlPlaneChannelPairingResolveRequest,
+    ControlPlaneChannelPairingResolveResponse, ControlPlaneClientIdentity,
+    ControlPlaneConnectErrorCode, ControlPlaneConnectErrorResponse, ControlPlaneConnectRequest,
+    ControlPlaneConnectResponse, ControlPlaneDeviceIdentity, ControlPlaneEventEnvelope,
+    ControlPlaneEventName, ControlPlanePairingListResponse, ControlPlanePairingRequestSummary,
     ControlPlanePairingResolveRequest, ControlPlanePairingResolveResponse,
     ControlPlanePairingStatus, ControlPlanePolicy, ControlPlanePrincipal,
     ControlPlaneRecentEventsResponse, ControlPlaneRole, ControlPlaneScope,
@@ -87,6 +89,8 @@ pub enum ProtocolRoute {
     ApprovalResolve,
     PairingList,
     PairingResolve,
+    ChannelPairingList,
+    ChannelPairingResolve,
     AcpSessionList,
     AcpSessionRead,
     Custom(String),
@@ -113,6 +117,8 @@ impl ProtocolRoute {
             "approval/resolve" => Self::ApprovalResolve,
             "pairing/list" => Self::PairingList,
             "pairing/resolve" => Self::PairingResolve,
+            "channel-pairing/list" => Self::ChannelPairingList,
+            "channel-pairing/resolve" => Self::ChannelPairingResolve,
             "acp/session/list" => Self::AcpSessionList,
             "acp/session/read" => Self::AcpSessionRead,
             other => Self::Custom(other.to_owned()),
@@ -139,6 +145,8 @@ impl ProtocolRoute {
             Self::ApprovalResolve => "approval/resolve",
             Self::PairingList => "pairing/list",
             Self::PairingResolve => "pairing/resolve",
+            Self::ChannelPairingList => "channel-pairing/list",
+            Self::ChannelPairingResolve => "channel-pairing/resolve",
             Self::AcpSessionList => "acp/session/list",
             Self::AcpSessionRead => "acp/session/read",
             Self::Custom(method) => method,
@@ -166,6 +174,8 @@ impl ProtocolRoute {
                 | Self::ApprovalResolve
                 | Self::PairingList
                 | Self::PairingResolve
+                | Self::ChannelPairingList
+                | Self::ChannelPairingResolve
                 | Self::AcpSessionList
                 | Self::AcpSessionRead
         )
@@ -287,7 +297,10 @@ impl ProtocolRouter {
                     required_capability: Some(CONTROL_APPROVALS_CAPABILITY.to_owned()),
                 },
             }),
-            ProtocolRoute::PairingList | ProtocolRoute::PairingResolve => Ok(ResolvedRoute {
+            ProtocolRoute::PairingList
+            | ProtocolRoute::PairingResolve
+            | ProtocolRoute::ChannelPairingList
+            | ProtocolRoute::ChannelPairingResolve => Ok(ResolvedRoute {
                 route,
                 policy: RoutePolicy {
                     allow_anonymous: false,

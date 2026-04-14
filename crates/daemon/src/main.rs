@@ -454,6 +454,30 @@ async fn main() {
         Commands::ListAcpSessions { config, json } => {
             run_list_acp_sessions_cli(config.as_deref(), json)
         }
+        Commands::ListChannelPairings {
+            config,
+            status,
+            limit,
+            json,
+        } => run_list_channel_pairings_cli(config.as_deref(), status.as_deref(), limit, json),
+        Commands::ChannelPairingResolve {
+            config,
+            pairing_request_id,
+            approve,
+            reject,
+            json,
+        } => {
+            if !approve && !reject {
+                Err("channel-pairing-resolve requires either --approve or --reject".to_owned())
+            } else {
+                run_resolve_channel_pairing_cli(
+                    config.as_deref(),
+                    pairing_request_id.as_str(),
+                    approve,
+                    json,
+                )
+            }
+        }
         Commands::AcpStatus {
             config,
             session,

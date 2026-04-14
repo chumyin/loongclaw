@@ -306,6 +306,44 @@ impl fmt::Debug for ControlPlanePairingResolveResponse {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ControlPlaneChannelPairingRequestSummary {
+    pub pairing_request_id: String,
+    pub channel_id: String,
+    pub configured_account_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+    pub conversation_id: String,
+    pub participant_id: String,
+    pub route_session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sender_principal_key: Option<String>,
+    pub status: ControlPlanePairingStatus,
+    pub requested_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approved_binding_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ControlPlaneChannelPairingListResponse {
+    pub matched_count: usize,
+    pub returned_count: usize,
+    pub requests: Vec<ControlPlaneChannelPairingRequestSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ControlPlaneChannelPairingResolveRequest {
+    pub pairing_request_id: String,
+    pub approve: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ControlPlaneChannelPairingResolveResponse {
+    pub request: ControlPlaneChannelPairingRequestSummary,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ControlPlaneConnectErrorCode {

@@ -99,6 +99,16 @@ that will gate the resolved runtime-backed account. The JSON form includes a
 dedicated `schema_version` so operators can automate against the resolver
 without scraping the list view.
 
+For the shipped participant-aware runtime-backed surfaces, optional
+`pairing_mode = "participant_approval"` adds a dynamic approval layer inside
+the existing conversation allowlist boundary. The first inbound turn from an
+unapproved participant creates a persisted pairing request instead of reaching
+the runtime. Operators can inspect and resolve those requests with:
+
+- `loong list-channel-pairings`
+- `loong channel-pairing-resolve --pairing-request-id <id> --approve`
+- `loong channel-pairing-resolve --pairing-request-id <id> --reject`
+
 | Surface | Status | Transport | Required config | Operator commands |
 | --- | --- | --- | --- | --- |
 | CLI | Shipped | local interactive runtime | none beyond base provider config | `loong ask`, `loong chat` |

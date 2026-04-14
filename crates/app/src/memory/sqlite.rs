@@ -1839,6 +1839,7 @@ fn ensure_sqlite_schema_repairs_if_needed(conn: &mut Connection) -> Result<(), S
 fn ensure_sqlite_runtime_schema_ready(conn: &mut Connection) -> Result<(), String> {
     ensure_sqlite_schema_repairs_if_needed(conn)?;
     ensure_control_plane_pairing_tables(conn)?;
+    ensure_channel_pairing_tables(conn)?;
     Ok(())
 }
 
@@ -2050,6 +2051,65 @@ fn ensure_control_plane_pairing_tables(conn: &Connection) -> Result<(), String> 
         ",
     )
     .map_err(|error| format!("ensure control-plane pairing storage failed: {error}"))?;
+
+    Ok(())
+}
+
+fn ensure_channel_pairing_tables(conn: &Connection) -> Result<(), String> {
+    #[cfg(test)]
+    test_support::record_sqlite_schema_repair("channel_pairing");
+
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS channel_pairing_requests(
+          pairing_request_id TEXT PRIMARY KEY,
+          channel_id TEXT NOT NULL,
+          configured_account_id TEXT NOT NULL,
+          account_id TEXT NULL,
+          conversation_id TEXT NOT NULL,
+          participant_id TEXT NOT NULL,
+          route_session_id TEXT NOT NULL,
+          sender_principal_key TEXT NULL,
+          status TEXT NOT NULL,
+          requested_at_ms INTEGER NOT NULL,
+          resolved_at_ms INTEGER NULL,
+          approved_binding_id TEXT NULL,
+          last_error TEXT NULL
+        );
+        CREATE TABLE IF NOT EXISTS channel_pairing_bindings(
+          binding_id TEXT PRIMARY KEY,
+          channel_id TEXT NOT NULL,
+          configured_account_id TEXT NOT NULL,
+          account_id TEXT NULL,
+          conversation_id TEXT NOT NULL,
+          participant_id TEXT NOT NULL,
+          route_session_id TEXT NOT NULL,
+          sender_principal_key TEXT NULL,
+          approved_at_ms INTEGER NOT NULL,
+          pairing_request_id TEXT NULL,
+          approved_by_session_id TEXT NULL,
+          UNIQUE(channel_id, configured_account_id, conversation_id, participant_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_channel_pairing_requests_status_requested_at
+          ON channel_pairing_requests(status, requested_at_ms DESC, pairing_request_id);
+        CREATE INDEX IF NOT EXISTS idx_channel_pairing_requests_subject
+          ON channel_pairing_requests(
+            channel_id,
+            configured_account_id,
+            conversation_id,
+            participant_id,
+            requested_at_ms DESC
+          );
+        CREATE INDEX IF NOT EXISTS idx_channel_pairing_bindings_subject
+          ON channel_pairing_bindings(
+            channel_id,
+            configured_account_id,
+            conversation_id,
+            participant_id
+          );
+        ",
+    )
+    .map_err(|error| format!("ensure channel pairing storage failed: {error}"))?;
 
     Ok(())
 }

@@ -90,6 +90,7 @@ mod browser_companion_diagnostics;
 pub mod browser_preview;
 mod channel_access_policy_render;
 mod channel_bridge_render;
+mod channel_pairing_cli;
 mod channel_resolution;
 #[cfg(test)]
 mod channel_send_cli_tests;
@@ -169,6 +170,7 @@ use channel_bridge_render::{
 pub(crate) use channel_bridge_render::{
     render_line_safe_optional_text_value, render_line_safe_text_value, render_line_safe_text_values,
 };
+pub use channel_pairing_cli::{run_list_channel_pairings_cli, run_resolve_channel_pairing_cli};
 pub use gateway::read_models::{ChannelsCliJsonPayload, ChannelsCliJsonSchema};
 pub use loongclaw_spec::programmatic::{
     acquire_programmatic_circuit_slot, record_programmatic_circuit_outcome,
@@ -853,6 +855,30 @@ pub enum Commands {
         #[arg(long, default_value_t = false)]
         json: bool,
     },
+    /// List persisted channel-side participant pairing requests
+    ListChannelPairings {
+        #[arg(long)]
+        config: Option<String>,
+        #[arg(long)]
+        status: Option<String>,
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
+    /// Approve or reject one channel-side participant pairing request
+    ChannelPairingResolve {
+        #[arg(long)]
+        config: Option<String>,
+        #[arg(long)]
+        pairing_request_id: String,
+        #[arg(long, default_value_t = false, conflicts_with = "reject")]
+        approve: bool,
+        #[arg(long, default_value_t = false, conflicts_with = "approve")]
+        reject: bool,
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
     /// Inspect live ACP session status by session key or conversation identity
     AcpStatus {
         #[arg(long)]
@@ -914,7 +940,7 @@ pub enum Commands {
     },
     #[command(
         about = "Run the loopback-only internal control-plane skeleton",
-        long_about = "Run the internal control-plane skeleton.\n\nBy default this control-plane listener binds 127.0.0.1 only. You may provide `--bind <host:port>` to override the listener address, but non-loopback binds require `--config` plus `control_plane.allow_remote=true` and a configured `control_plane.shared_token`. Baseline endpoints are `/readyz`, `/healthz`, `/control/challenge`, `/control/connect`, `/control/subscribe`, `/control/snapshot`, and `/control/events`. When `--config` is provided, repository-backed `/session/list`, `/session/read`, `/approval/list`, `/pairing/list`, `/pairing/resolve`, `/acp/session/list`, and `/acp/session/read` views become available for the selected session root."
+        long_about = "Run the internal control-plane skeleton.\n\nBy default this control-plane listener binds 127.0.0.1 only. You may provide `--bind <host:port>` to override the listener address, but non-loopback binds require `--config` plus `control_plane.allow_remote=true` and a configured `control_plane.shared_token`. Baseline endpoints are `/readyz`, `/healthz`, `/control/challenge`, `/control/connect`, `/control/subscribe`, `/control/snapshot`, and `/control/events`. When `--config` is provided, repository-backed `/session/list`, `/session/read`, `/approval/list`, `/pairing/list`, `/pairing/resolve`, `/channel-pairing/list`, `/channel-pairing/resolve`, `/acp/session/list`, and `/acp/session/read` views become available for the selected session root."
     )]
     ControlPlaneServe {
         #[arg(long)]

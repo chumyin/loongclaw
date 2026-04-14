@@ -30,6 +30,7 @@ mod mattermost;
 mod nextcloud_talk;
 #[cfg(feature = "channel-nostr")]
 mod nostr;
+pub mod pairing;
 mod registry;
 mod runtime;
 pub(crate) mod sdk;
@@ -132,7 +133,9 @@ pub(crate) use sdk::{collect_channel_validation_issues, enabled_channel_ids};
 pub use tlon_command::run_tlon_send;
 
 mod types;
+pub use crate::config::ChannelPairingMode;
 pub use access_policy::{ChannelAccessRestrictionMode, ChannelInboundAccessPolicySummary};
+pub use pairing::{ChannelPairingResolution, ChannelPairingState};
 pub use types::ChannelOutboundTargetKind as ChannelCatalogTargetKind;
 pub use types::{
     ChannelAdapter, ChannelDelivery, ChannelDeliveryFeishuCallback, ChannelDeliveryResource,

@@ -25,6 +25,8 @@ use loongclaw_protocol::{
     ControlPlaneAcpSessionReadResponse, ControlPlaneAcpSessionState, ControlPlaneAcpSessionStatus,
     ControlPlaneApprovalDecision, ControlPlaneApprovalListResponse,
     ControlPlaneApprovalRequestStatus, ControlPlaneApprovalSummary, ControlPlaneChallengeResponse,
+    ControlPlaneChannelPairingListResponse, ControlPlaneChannelPairingRequestSummary,
+    ControlPlaneChannelPairingResolveRequest, ControlPlaneChannelPairingResolveResponse,
     ControlPlaneConnectErrorCode, ControlPlaneConnectErrorResponse, ControlPlaneConnectRequest,
     ControlPlaneConnectResponse, ControlPlaneEventEnvelope, ControlPlaneEventName,
     ControlPlanePairingListResponse, ControlPlanePairingRequestSummary,
@@ -105,6 +107,8 @@ struct ControlPlaneHttpState {
     pairing_registry: Arc<mvp::control_plane::ControlPlanePairingRegistry>,
     kernel_authority: Arc<ControlPlaneKernelAuthority>,
     exposure_policy: Arc<ControlPlaneExposurePolicy>,
+    #[cfg(feature = "memory-sqlite")]
+    memory_config: Option<mvp::memory::runtime_config::MemoryRuntimeConfig>,
     #[cfg(feature = "memory-sqlite")]
     repository_view: Option<Arc<mvp::control_plane::ControlPlaneRepositoryView>>,
     #[cfg(feature = "memory-sqlite")]
@@ -754,6 +758,43 @@ fn map_pairing_request(
         status: map_pairing_status(request.status),
         requested_at_ms: request.requested_at_ms,
         resolved_at_ms: request.resolved_at_ms,
+    }
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn map_channel_pairing_status(
+    status: mvp::session::repository::ChannelPairingRequestStatus,
+) -> ControlPlanePairingStatus {
+    match status {
+        mvp::session::repository::ChannelPairingRequestStatus::Pending => {
+            ControlPlanePairingStatus::Pending
+        }
+        mvp::session::repository::ChannelPairingRequestStatus::Approved => {
+            ControlPlanePairingStatus::Approved
+        }
+        mvp::session::repository::ChannelPairingRequestStatus::Rejected => {
+            ControlPlanePairingStatus::Rejected
+        }
+    }
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn map_channel_pairing_request(
+    request: mvp::session::repository::ChannelPairingRequestRecord,
+) -> ControlPlaneChannelPairingRequestSummary {
+    ControlPlaneChannelPairingRequestSummary {
+        pairing_request_id: request.pairing_request_id,
+        channel_id: request.channel_id,
+        configured_account_id: request.configured_account_id,
+        account_id: request.account_id,
+        conversation_id: request.conversation_id,
+        participant_id: request.participant_id,
+        route_session_id: request.route_session_id,
+        sender_principal_key: request.sender_principal_key,
+        status: map_channel_pairing_status(request.status),
+        requested_at_ms: request.requested_at_ms as u64,
+        resolved_at_ms: request.resolved_at_ms.map(|value| value as u64),
+        approved_binding_id: request.approved_binding_id,
     }
 }
 
@@ -1987,6 +2028,97 @@ async fn pairing_resolve(
     }
 }
 
+#[cfg(feature = "memory-sqlite")]
+async fn channel_pairing_list(
+    headers: HeaderMap,
+    State(state): State<ControlPlaneHttpState>,
+    Query(query): Query<PairingListQuery>,
+) -> Response {
+    if let Err(response) = authorize_control_plane_request(&state, "channel-pairing/list", &headers)
+    {
+        return *response;
+    }
+    let Some(memory_config) = state.memory_config.as_ref() else {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "channel-pairing/list requires control-plane-serve --config <path>".to_owned(),
+        );
+    };
+    let status = match query.status.as_deref() {
+        Some(raw) => match parse_pairing_status(raw) {
+            Ok(status) => Some(status),
+            Err(error) => return error_response(StatusCode::BAD_REQUEST, error),
+        },
+        None => None,
+    };
+    let status = status.map(|status| match status {
+        mvp::control_plane::ControlPlanePairingStatus::Pending => {
+            mvp::session::repository::ChannelPairingRequestStatus::Pending
+        }
+        mvp::control_plane::ControlPlanePairingStatus::Approved => {
+            mvp::session::repository::ChannelPairingRequestStatus::Approved
+        }
+        mvp::control_plane::ControlPlanePairingStatus::Rejected => {
+            mvp::session::repository::ChannelPairingRequestStatus::Rejected
+        }
+    });
+    let limit = query.limit.unwrap_or(CONTROL_PLANE_DEFAULT_LIST_LIMIT);
+    match mvp::channel::pairing::list_channel_pairing_requests(memory_config, status, limit) {
+        Ok(requests) => {
+            let matched_count = requests.len();
+            let returned_count = matched_count;
+            Json(ControlPlaneChannelPairingListResponse {
+                matched_count,
+                returned_count,
+                requests: requests
+                    .into_iter()
+                    .map(map_channel_pairing_request)
+                    .collect::<Vec<_>>(),
+            })
+            .into_response()
+        }
+        Err(error) => error_response(StatusCode::BAD_REQUEST, error),
+    }
+}
+
+#[cfg(feature = "memory-sqlite")]
+async fn channel_pairing_resolve(
+    headers: HeaderMap,
+    State(state): State<ControlPlaneHttpState>,
+    Json(request): Json<ControlPlaneChannelPairingResolveRequest>,
+) -> Response {
+    if let Err(response) =
+        authorize_control_plane_request(&state, "channel-pairing/resolve", &headers)
+    {
+        return *response;
+    }
+    let Some(memory_config) = state.memory_config.as_ref() else {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "channel-pairing/resolve requires control-plane-serve --config <path>".to_owned(),
+        );
+    };
+    match mvp::channel::pairing::resolve_channel_pairing_request(
+        memory_config,
+        request.pairing_request_id.as_str(),
+        request.approve,
+        None,
+    ) {
+        Ok(Some(record)) => Json(ControlPlaneChannelPairingResolveResponse {
+            request: map_channel_pairing_request(record),
+        })
+        .into_response(),
+        Ok(None) => error_response(
+            StatusCode::NOT_FOUND,
+            format!(
+                "channel pairing request `{}` not found",
+                request.pairing_request_id.trim()
+            ),
+        ),
+        Err(error) => error_response(StatusCode::BAD_REQUEST, error),
+    }
+}
+
 async fn acp_session_list(
     headers: HeaderMap,
     State(state): State<ControlPlaneHttpState>,
@@ -2296,6 +2428,7 @@ async fn turn_stream(
 #[cfg(feature = "memory-sqlite")]
 fn build_control_plane_router_with_runtime(
     manager: Arc<mvp::control_plane::ControlPlaneManager>,
+    memory_config: Option<mvp::memory::runtime_config::MemoryRuntimeConfig>,
     repository_view: Option<Arc<mvp::control_plane::ControlPlaneRepositoryView>>,
     acp_view: Option<Arc<mvp::control_plane::ControlPlaneAcpView>>,
     turn_runtime: Option<Arc<ControlPlaneTurnRuntime>>,
@@ -2311,6 +2444,7 @@ fn build_control_plane_router_with_runtime(
         pairing_registry,
         kernel_authority,
         exposure_policy: Arc::new(exposure_policy),
+        memory_config,
         repository_view,
         acp_view,
         turn_runtime,
@@ -2333,6 +2467,8 @@ fn build_control_plane_router_with_runtime(
         .route("/approval/list", get(approval_list))
         .route("/pairing/list", get(pairing_list))
         .route("/pairing/resolve", post(pairing_resolve))
+        .route("/channel-pairing/list", get(channel_pairing_list))
+        .route("/channel-pairing/resolve", post(channel_pairing_resolve))
         .route("/acp/session/list", get(acp_session_list))
         .route("/acp/session/read", get(acp_session_read))
         .with_state(state);
@@ -2344,11 +2480,13 @@ fn build_control_plane_router_with_views(
     manager: Arc<mvp::control_plane::ControlPlaneManager>,
     repository_view: Option<Arc<mvp::control_plane::ControlPlaneRepositoryView>>,
     acp_view: Option<Arc<mvp::control_plane::ControlPlaneAcpView>>,
+    memory_config: Option<mvp::memory::runtime_config::MemoryRuntimeConfig>,
 ) -> Result<Router, String> {
     let pairing_registry = Arc::new(mvp::control_plane::ControlPlanePairingRegistry::new());
     let exposure_policy = default_loopback_exposure_policy();
     build_control_plane_router_with_runtime(
         manager,
+        memory_config,
         repository_view,
         acp_view,
         None,
@@ -2371,6 +2509,7 @@ fn build_control_plane_router_without_repository(
         pairing_registry: Arc::new(mvp::control_plane::ControlPlanePairingRegistry::new()),
         kernel_authority,
         exposure_policy: Arc::new(exposure_policy),
+        memory_config: None,
         turn_runtime: None,
     };
 
@@ -2402,7 +2541,7 @@ pub fn build_control_plane_router(
 ) -> Result<Router, String> {
     #[cfg(feature = "memory-sqlite")]
     {
-        build_control_plane_router_with_views(manager, None, None)
+        build_control_plane_router_with_views(manager, None, None, None)
     }
     #[cfg(not(feature = "memory-sqlite"))]
     {
@@ -2442,7 +2581,7 @@ pub async fn run_control_plane_serve_cli(
         None => None,
     };
     #[cfg(feature = "memory-sqlite")]
-    let (repository_view, acp_view) = match loaded_config.as_ref() {
+    let (memory_config, repository_view, acp_view) = match loaded_config.as_ref() {
         Some((resolved_path, config)) => {
             let memory_config =
                 mvp::memory::runtime_config::MemoryRuntimeConfig::from_memory_config(
@@ -2454,6 +2593,7 @@ pub async fn run_control_plane_serve_cli(
                 resolved_path.display()
             );
             (
+                Some(memory_config.clone()),
                 Some(Arc::new(
                     mvp::control_plane::ControlPlaneRepositoryView::new(memory_config, session_id),
                 )),
@@ -2463,7 +2603,7 @@ pub async fn run_control_plane_serve_cli(
                 ))),
             )
         }
-        None => (None, None),
+        None => (None, None, None),
     };
     #[cfg(feature = "memory-sqlite")]
     let pairing_registry = match loaded_config.as_ref() {
@@ -2484,6 +2624,7 @@ pub async fn run_control_plane_serve_cli(
     #[cfg(feature = "memory-sqlite")]
     let router = build_control_plane_router_with_runtime(
         manager,
+        memory_config,
         repository_view,
         acp_view,
         turn_runtime,
@@ -2521,7 +2662,7 @@ mod tests {
         repository_view: Option<Arc<mvp::control_plane::ControlPlaneRepositoryView>>,
         acp_view: Option<Arc<mvp::control_plane::ControlPlaneAcpView>>,
     ) -> Router {
-        super::build_control_plane_router_with_views(manager, repository_view, acp_view)
+        super::build_control_plane_router_with_views(manager, repository_view, acp_view, None)
             .expect("router")
     }
 
@@ -2535,7 +2676,27 @@ mod tests {
             manager,
             None,
             None,
+            None,
             Some(turn_runtime),
+            pairing_registry,
+            exposure_policy,
+        )
+        .expect("router")
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    fn build_control_plane_router_with_memory_config(
+        manager: Arc<mvp::control_plane::ControlPlaneManager>,
+        memory_config: mvp::memory::runtime_config::MemoryRuntimeConfig,
+    ) -> Router {
+        let pairing_registry = Arc::new(mvp::control_plane::ControlPlanePairingRegistry::new());
+        let exposure_policy = default_loopback_exposure_policy();
+        super::build_control_plane_router_with_runtime(
+            manager,
+            Some(memory_config),
+            None,
+            None,
+            None,
             pairing_registry,
             exposure_policy,
         )
@@ -2553,6 +2714,7 @@ mod tests {
         let exposure_policy = default_loopback_exposure_policy();
         super::build_control_plane_router_with_runtime(
             manager,
+            None,
             Some(repository_view),
             Some(acp_view),
             Some(turn_runtime),
@@ -2790,6 +2952,7 @@ mod tests {
         let pairing_registry = Arc::new(mvp::control_plane::ControlPlanePairingRegistry::new());
         super::build_control_plane_router_with_runtime(
             manager,
+            None,
             None,
             None,
             None,
@@ -4050,6 +4213,123 @@ mod tests {
         assert_eq!(list.returned_count, 1);
         assert_eq!(list.requests[0].status, ControlPlanePairingStatus::Pending);
         assert_eq!(list.requests[0].device_id, "device-1");
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[tokio::test]
+    async fn channel_pairing_list_surfaces_pending_request_for_unapproved_participant() {
+        let memory_config = isolated_memory_config("channel-pairing-list");
+        let subject = mvp::channel::pairing::ChannelPairingSubject::new(
+            "feishu",
+            "work",
+            Some("feishu_cli_a1b2c3".to_owned()),
+            "oc_demo",
+            "ou_sender_1",
+            "feishu:feishu_cli_a1b2c3:oc_demo:ou_sender_1",
+            Some("feishu_cli_a1b2c3:ou_sender_1".to_owned()),
+        )
+        .expect("build channel pairing subject");
+        let _ = mvp::channel::pairing::evaluate_channel_pairing(&memory_config, &subject)
+            .expect("create pending channel pairing request");
+
+        let manager = Arc::new(mvp::control_plane::ControlPlaneManager::new());
+        manager.set_runtime_ready(true);
+        let router = build_control_plane_router_with_memory_config(manager, memory_config);
+        let operator_token = connect_token(
+            &router,
+            std::collections::BTreeSet::from([ControlPlaneScope::OperatorPairing]),
+        )
+        .await;
+
+        let response = router
+            .oneshot(bearer_request(
+                "GET",
+                "/channel-pairing/list?status=pending&limit=10",
+                &operator_token,
+            ))
+            .await
+            .expect("channel pairing list response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body bytes");
+        let list: ControlPlaneChannelPairingListResponse =
+            serde_json::from_slice(&body).expect("channel pairing list json");
+        assert_eq!(list.matched_count, 1);
+        assert_eq!(list.returned_count, 1);
+        assert_eq!(list.requests[0].status, ControlPlanePairingStatus::Pending);
+        assert_eq!(list.requests[0].channel_id, "feishu");
+        assert_eq!(list.requests[0].participant_id, "ou_sender_1");
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[tokio::test]
+    async fn channel_pairing_resolve_approves_request_and_unblocks_subject() {
+        let memory_config = isolated_memory_config("channel-pairing-resolve");
+        let subject = mvp::channel::pairing::ChannelPairingSubject::new(
+            "matrix",
+            "ops",
+            Some("matrix_bot".to_owned()),
+            "!room:example.org",
+            "@alice:example.org",
+            "matrix:matrix_bot:!room%3Aexample.org:@alice%3Aexample.org",
+            Some("matrix:user:@alice:example.org".to_owned()),
+        )
+        .expect("build channel pairing subject");
+        let pending = mvp::channel::pairing::evaluate_channel_pairing(&memory_config, &subject)
+            .expect("create pending channel pairing request");
+        let pairing_request_id = match pending {
+            mvp::channel::pairing::ChannelPairingDecision::PairingRequired { request, .. } => {
+                request.pairing_request_id
+            }
+            other @ mvp::channel::pairing::ChannelPairingDecision::Authorized
+            | other @ mvp::channel::pairing::ChannelPairingDecision::Rejected { .. } => {
+                panic!("expected pending channel pairing request, got {other:?}")
+            }
+        };
+
+        let manager = Arc::new(mvp::control_plane::ControlPlaneManager::new());
+        manager.set_runtime_ready(true);
+        let router = build_control_plane_router_with_memory_config(manager, memory_config.clone());
+        let operator_token = connect_token(
+            &router,
+            std::collections::BTreeSet::from([ControlPlaneScope::OperatorPairing]),
+        )
+        .await;
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/channel-pairing/resolve")
+                    .method("POST")
+                    .header("authorization", format!("Bearer {operator_token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&ControlPlaneChannelPairingResolveRequest {
+                            pairing_request_id: pairing_request_id.clone(),
+                            approve: true,
+                        })
+                        .expect("encode channel pairing resolve request"),
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("channel pairing resolve response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body bytes");
+        let resolved: ControlPlaneChannelPairingResolveResponse =
+            serde_json::from_slice(&body).expect("channel pairing resolve json");
+        assert_eq!(resolved.request.status, ControlPlanePairingStatus::Approved);
+        assert!(resolved.request.approved_binding_id.is_some());
+
+        let decision = mvp::channel::pairing::evaluate_channel_pairing(&memory_config, &subject)
+            .expect("re-evaluate approved channel pairing");
+        assert!(matches!(
+            decision,
+            mvp::channel::pairing::ChannelPairingDecision::Authorized
+        ));
     }
 
     #[tokio::test]
