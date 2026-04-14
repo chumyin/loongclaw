@@ -99,6 +99,39 @@ that will gate the resolved runtime-backed account. The JSON form includes a
 dedicated `schema_version` so operators can automate against the resolver
 without scraping the list view.
 
+Telegram route sessions keep the legacy `telegram:<account>:<chat>:<thread>`
+shape when only a thread scope is present, but participant-aware sessions now
+tag the extra scopes explicitly as `p=<participant>` and `t=<thread>` when both
+participant and thread are present. That avoids the old numeric ambiguity
+between participant ids and topic/thread ids while keeping existing thread-only
+routes stable.
+
+For the shipped participant-aware runtime-backed surfaces, optional
+`pairing_mode = "participant_approval"` adds a dynamic approval layer inside
+the existing conversation allowlist boundary. The first inbound turn from an
+unapproved participant creates a persisted pairing request with a short pairing
+code instead of reaching the runtime. The user-facing reply includes that code,
+and operators can inspect or resolve the request by request id or by pairing
+code with:
+
+- `loong list-channel-pairings`
+- `loong channel-pairing-resolve --pairing-request-id <id> --approve`
+- `loong channel-pairing-resolve --pairing-code <code> --approve`
+- `loong channel-pairing-resolve --pairing-request-id <id> --reject`
+- `loong channel-pairing-revoke --pairing-request-id <id>`
+- `loong clear-channel-pairings --channel-id <id> --configured-account-id <id>`
+
+Current guardrails for this first pairing-code slice:
+
+- pairing codes expire after about one hour
+- each account keeps only a small number of pending pairing requests active at
+  once
+- repeated retries after an explicit rejection stay in a short cooldown window
+  instead of immediately minting a fresh code
+- repeated invalid code approvals eventually trigger a temporary operator-side
+  lockout on code resolution
+- static sender allowlists still bypass dynamic pairing when present
+
 | Surface | Status | Transport | Required config | Operator commands |
 | --- | --- | --- | --- | --- |
 | CLI | Shipped | local interactive runtime | none beyond base provider config | `loong ask`, `loong chat` |

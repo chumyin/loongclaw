@@ -28,6 +28,7 @@ pub struct ChannelSessionResolutionDetails {
     pub matched_configured_account_id: Option<String>,
     pub matched_account: Option<mvp::channel::ChannelStatusSnapshot>,
     pub matched_access_policy: Option<mvp::channel::ChannelConfiguredAccountAccessPolicy>,
+    pub pairing_resolution: Option<mvp::channel::ChannelPairingResolution>,
     pub send_operation: Option<mvp::channel::ChannelOperationStatus>,
     pub serve_operation: Option<mvp::channel::ChannelOperationStatus>,
 }
@@ -90,6 +91,8 @@ pub fn build_channel_resolution(
             .as_ref()
             .and_then(|account| account.operation(mvp::channel::CHANNEL_OPERATION_SERVE_ID))
             .cloned();
+        let pairing_resolution =
+            resolve_channel_pairing_resolution(config, &target, matched_access_policy.as_ref())?;
 
         return Ok(ChannelResolveOutput {
             schema_version: CHANNEL_RESOLVE_JSON_SCHEMA_VERSION,
@@ -103,6 +106,7 @@ pub fn build_channel_resolution(
                     matched_configured_account_id,
                     matched_account,
                     matched_access_policy,
+                    pairing_resolution,
                     send_operation,
                     serve_operation,
                 },
@@ -236,6 +240,7 @@ pub fn render_channel_resolution_text(resolution: &ChannelResolveOutput) -> Stri
             let matched_configured_account_id = details.matched_configured_account_id.as_ref();
             let matched_account = details.matched_account.as_ref();
             let matched_access_policy = details.matched_access_policy.as_ref();
+            let pairing_resolution = details.pairing_resolution.as_ref();
             let send_operation = details.send_operation.as_ref();
             let serve_operation = details.serve_operation.as_ref();
             lines.push("resolve_kind=session".to_owned());
@@ -302,6 +307,26 @@ pub fn render_channel_resolution_text(resolution: &ChannelResolveOutput) -> Stri
             if let Some(matched_access_policy) = matched_access_policy {
                 lines.push(render_access_policy_resolution_line(matched_access_policy));
             }
+            if let Some(pairing_resolution) = pairing_resolution {
+                lines.push(format!(
+                    "pairing_mode={} pairing_state={} pairing_request_id={} pairing_code={} pairing_code_expires_at_ms={} pairing_binding_id={}",
+                    pairing_resolution.mode.as_str(),
+                    pairing_resolution.state.as_str(),
+                    pairing_resolution
+                        .pairing_request_id
+                        .as_deref()
+                        .unwrap_or("-"),
+                    pairing_resolution
+                        .pairing_code
+                        .as_deref()
+                        .unwrap_or("-"),
+                    pairing_resolution
+                        .pairing_code_expires_at_ms
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "-".to_owned()),
+                    pairing_resolution.binding_id.as_deref().unwrap_or("-"),
+                ));
+            }
             if let Some(send_operation) = send_operation {
                 lines.push(format!(
                     "send_health={} send_command={} send_detail={}",
@@ -324,6 +349,89 @@ pub fn render_channel_resolution_text(resolution: &ChannelResolveOutput) -> Stri
     lines.join("\n")
 }
 
+fn resolve_channel_pairing_resolution(
+    config: &mvp::config::LoongClawConfig,
+    target: &mvp::channel::ResolvedKnownChannelSessionTarget,
+    matched_access_policy: Option<&mvp::channel::ChannelConfiguredAccountAccessPolicy>,
+) -> CliResult<Option<mvp::channel::ChannelPairingResolution>> {
+    let (configured_account_id, mode) = match target.channel_id.as_str() {
+        "telegram" => {
+            let resolved = config
+                .telegram
+                .resolve_account_for_session_account_id(target.account_id.as_deref())?;
+            (resolved.configured_account_id, resolved.pairing_mode)
+        }
+        "feishu" => {
+            let resolved = config
+                .feishu
+                .resolve_account_for_session_account_id(target.account_id.as_deref())?;
+            (resolved.configured_account_id, resolved.pairing_mode)
+        }
+        "matrix" => {
+            let resolved = config
+                .matrix
+                .resolve_account_for_session_account_id(target.account_id.as_deref())?;
+            (resolved.configured_account_id, resolved.pairing_mode)
+        }
+        "wecom" => {
+            let resolved = config
+                .wecom
+                .resolve_account_for_session_account_id(target.account_id.as_deref())?;
+            (resolved.configured_account_id, resolved.pairing_mode)
+        }
+        _ => return Ok(None),
+    };
+    let static_sender_gate_present = matched_access_policy
+        .map(|policy| {
+            policy.summary.sender_mode != mvp::channel::ChannelAccessRestrictionMode::Open
+        })
+        .unwrap_or(false);
+    let subject = target
+        .participant_id
+        .as_deref()
+        .map(|participant_id| {
+            mvp::channel::pairing::ChannelPairingSubject::new(
+                target.channel_id.as_str(),
+                configured_account_id.as_str(),
+                target.account_id.clone(),
+                target
+                    .conversation_id
+                    .clone()
+                    .unwrap_or_else(|| target.target_id.clone()),
+                participant_id.to_owned(),
+                target.route_session_id.clone(),
+                None,
+            )
+        })
+        .transpose()?;
+
+    #[cfg(feature = "memory-sqlite")]
+    {
+        let memory_config =
+            mvp::memory::runtime_config::MemoryRuntimeConfig::from_memory_config(&config.memory);
+        let resolution = mvp::channel::pairing::describe_channel_pairing_resolution(
+            &memory_config,
+            mode,
+            static_sender_gate_present,
+            subject.as_ref(),
+        )?;
+        Ok(Some(resolution))
+    }
+
+    #[cfg(not(feature = "memory-sqlite"))]
+    {
+        let resolution = mvp::channel::ChannelPairingResolution {
+            mode,
+            state: mvp::channel::ChannelPairingState::NotApplicable,
+            static_sender_gate_present,
+            pairing_request_id: None,
+            binding_id: None,
+        };
+        let _ = subject;
+        Ok(Some(resolution))
+    }
+}
+
 fn render_access_policy_resolution_line(
     access_policy: &mvp::channel::ChannelConfiguredAccountAccessPolicy,
 ) -> String {
@@ -339,13 +447,14 @@ fn render_access_policy_resolution_line(
     };
 
     format!(
-        "access_policy configured_account={} conversation_key={} conversation_mode={} sender_key={} sender_mode={} mention_required={} conversations={} senders={}",
+        "access_policy configured_account={} conversation_key={} conversation_mode={} sender_key={} sender_mode={} mention_required={} pairing_required={} conversations={} senders={}",
         access_policy.configured_account_id,
         access_policy.conversation_config_key,
         access_policy.summary.conversation_mode.as_str(),
         access_policy.sender_config_key,
         access_policy.summary.sender_mode.as_str(),
         access_policy.summary.mention_required,
+        access_policy.summary.pairing_required,
         conversations,
         senders,
     )
@@ -467,6 +576,39 @@ mod tests {
     }
 
     #[test]
+    fn channel_resolution_text_renders_telegram_participant_scope_without_rewriting_target() {
+        let config: mvp::config::LoongClawConfig = serde_json::from_value(serde_json::json!({
+            "telegram": {
+                "enabled": true,
+                "accounts": {
+                    "ops": {
+                        "account_id": "Ops-Bot",
+                        "bot_token": "123456:test-token",
+                        "allowed_chat_ids": [123]
+                    }
+                }
+            }
+        }))
+        .expect("deserialize telegram config");
+        let inventory = mvp::channel::channel_inventory(&config);
+        let resolution = build_channel_resolution(
+            "/tmp/loongclaw.toml",
+            &config,
+            &inventory,
+            "telegram:Ops-Bot:123:p=7:t=42",
+        )
+        .expect("resolve tagged telegram session");
+
+        let rendered = render_channel_resolution_text(&resolution);
+
+        assert!(rendered.contains("session_shape=telegram_thread"));
+        assert!(rendered.contains("target_id=123:42"));
+        assert!(rendered.contains("participant_id=7"));
+        assert!(rendered.contains("thread_id=42"));
+        assert!(rendered.contains("raw_scope=123:p=7:t=42"));
+    }
+
+    #[test]
     fn channel_resolution_text_renders_catalog_access_policy_and_stable_targets() {
         let config: mvp::config::LoongClawConfig = serde_json::from_value(serde_json::json!({
             "telegram": {
@@ -491,5 +633,62 @@ mod tests {
         assert!(rendered.contains("default_configured_account=bot_123456"));
         assert!(rendered.contains("access_policy configured_account=bot_123456"));
         assert!(rendered.contains("mention_required=true"));
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[test]
+    fn channel_resolution_text_renders_pairing_state_for_participant_scoped_session() {
+        let mut env = crate::test_support::ScopedEnv::new();
+        env.remove("LOONGCLAW_SQLITE_PATH");
+        let temp_root = std::env::temp_dir().join(format!(
+            "loongclaw-channel-resolution-pairing-{}",
+            std::process::id()
+        ));
+        let sqlite_path = temp_root.join("memory.sqlite3");
+        let config: mvp::config::LoongClawConfig = serde_json::from_value(serde_json::json!({
+            "memory": {
+                "sqlite_path": sqlite_path.to_string_lossy()
+            },
+            "feishu": {
+                "enabled": true,
+                "app_id": "cli_a1b2c3",
+                "app_secret": "secret",
+                "allowed_chat_ids": ["oc_123"],
+                "pairing_mode": "participant_approval"
+            }
+        }))
+        .expect("deserialize feishu config");
+        let memory_config =
+            mvp::memory::runtime_config::MemoryRuntimeConfig::from_memory_config(&config.memory);
+        let resolved = config
+            .feishu
+            .resolve_account(None)
+            .expect("resolve default feishu account");
+        let subject = mvp::channel::pairing::ChannelPairingSubject::new(
+            "feishu",
+            resolved.configured_account_id,
+            Some(resolved.account.id.clone()),
+            "oc_123",
+            "ou_sender_1",
+            format!("feishu:{}:oc_123:ou_sender_1", resolved.account.id),
+            Some(format!("{}:ou_sender_1", resolved.account.id)),
+        )
+        .expect("build pairing subject");
+        let _ = mvp::channel::pairing::evaluate_channel_pairing(&memory_config, &subject)
+            .expect("create pending pairing request");
+        let inventory = mvp::channel::channel_inventory(&config);
+        let resolution = build_channel_resolution(
+            "/tmp/loongclaw.toml",
+            &config,
+            &inventory,
+            format!("feishu:{}:oc_123:ou_sender_1", resolved.account.id).as_str(),
+        )
+        .expect("resolve feishu participant session");
+
+        let rendered = render_channel_resolution_text(&resolution);
+
+        assert!(rendered.contains("pairing_mode=participant_approval"));
+        assert!(rendered.contains("pairing_state=pending"));
+        assert!(rendered.contains("pairing_code="));
     }
 }

@@ -26,7 +26,7 @@ pub use channels::bridge::{
 #[allow(unused_imports)]
 pub use channels::{
     ChannelAccountIdentity, ChannelAccountIdentitySource, ChannelAcpConfig,
-    ChannelDefaultAccountSelection, ChannelDefaultAccountSelectionSource,
+    ChannelDefaultAccountSelection, ChannelDefaultAccountSelectionSource, ChannelPairingMode,
     ChannelResolvedAccountRoute, CliChannelConfig, DingtalkAccountConfig, DingtalkChannelConfig,
     DiscordAccountConfig, DiscordChannelConfig, EmailAccountConfig, EmailChannelConfig,
     FeishuAccountConfig, FeishuChannelConfig, FeishuChannelServeMode, FeishuDomain,

@@ -30,6 +30,7 @@ mod mattermost;
 mod nextcloud_talk;
 #[cfg(feature = "channel-nostr")]
 mod nostr;
+pub mod pairing;
 mod registry;
 mod runtime;
 pub(crate) mod sdk;
@@ -132,7 +133,9 @@ pub(crate) use sdk::{collect_channel_validation_issues, enabled_channel_ids};
 pub use tlon_command::run_tlon_send;
 
 mod types;
+pub use crate::config::ChannelPairingMode;
 pub use access_policy::{ChannelAccessRestrictionMode, ChannelInboundAccessPolicySummary};
+pub use pairing::{ChannelPairingResolution, ChannelPairingState};
 pub use types::ChannelOutboundTargetKind as ChannelCatalogTargetKind;
 pub use types::{
     ChannelAdapter, ChannelDelivery, ChannelDeliveryFeishuCallback, ChannelDeliveryResource,
@@ -840,6 +843,15 @@ mod tests {
             session.session_key(),
             "feishu:lark_cli_a1b2c3:oc_123:ou_sender_1"
         );
+    }
+
+    #[cfg(feature = "channel-telegram")]
+    #[test]
+    fn telegram_channel_session_key_tags_participant_and_thread_when_present() {
+        let session = ChannelSession::with_account(ChannelPlatform::Telegram, "bot_123456", "123")
+            .with_participant_id("7")
+            .with_thread_id("42");
+        assert_eq!(session.session_key(), "telegram:bot_123456:123:p=7:t=42");
     }
 
     #[cfg(any(
@@ -1828,6 +1840,63 @@ mod tests {
         assert_eq!(resolved.conversation_id.as_deref(), Some("123"));
         assert_eq!(resolved.thread_id.as_deref(), Some("42"));
         assert!(resolved.participant_id.is_none());
+    }
+
+    #[cfg(feature = "channel-telegram")]
+    #[test]
+    fn resolve_known_channel_session_target_describes_telegram_participant_shape() {
+        let config: LoongClawConfig = serde_json::from_value(serde_json::json!({
+            "telegram": {
+                "enabled": true,
+                "accounts": {
+                    "ops": {
+                        "account_id": "Ops-Bot",
+                        "bot_token": "123456:telegram-test-token",
+                        "allowed_chat_ids": [123]
+                    }
+                }
+            }
+        }))
+        .expect("deserialize telegram config");
+
+        let resolved =
+            resolve_known_channel_session_target(&config, "telegram:Ops-Bot:123:p=7:t=42")
+                .expect("resolve telegram participant session");
+
+        assert_eq!(resolved.channel_id, "telegram");
+        assert_eq!(resolved.account_id.as_deref(), Some("ops-bot"));
+        assert_eq!(resolved.target_id, "123:42");
+        assert_eq!(resolved.conversation_id.as_deref(), Some("123"));
+        assert_eq!(resolved.participant_id.as_deref(), Some("7"));
+        assert_eq!(resolved.thread_id.as_deref(), Some("42"));
+    }
+
+    #[cfg(feature = "channel-telegram")]
+    #[test]
+    fn resolve_known_channel_session_target_keeps_telegram_participant_without_rewriting_target() {
+        let config: LoongClawConfig = serde_json::from_value(serde_json::json!({
+            "telegram": {
+                "enabled": true,
+                "accounts": {
+                    "ops": {
+                        "account_id": "Ops-Bot",
+                        "bot_token": "123456:telegram-test-token",
+                        "allowed_chat_ids": [123]
+                    }
+                }
+            }
+        }))
+        .expect("deserialize telegram config");
+
+        let resolved = resolve_known_channel_session_target(&config, "telegram:Ops-Bot:123:p=7")
+            .expect("resolve telegram participant session");
+
+        assert_eq!(resolved.channel_id, "telegram");
+        assert_eq!(resolved.account_id.as_deref(), Some("ops-bot"));
+        assert_eq!(resolved.target_id, "123");
+        assert_eq!(resolved.conversation_id.as_deref(), Some("123"));
+        assert_eq!(resolved.participant_id.as_deref(), Some("7"));
+        assert_eq!(resolved.thread_id, None);
     }
 
     #[cfg(feature = "channel-feishu")]

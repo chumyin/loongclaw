@@ -454,6 +454,58 @@ async fn main() {
         Commands::ListAcpSessions { config, json } => {
             run_list_acp_sessions_cli(config.as_deref(), json)
         }
+        Commands::ListChannelPairings {
+            config,
+            status,
+            limit,
+            json,
+        } => run_list_channel_pairings_cli(config.as_deref(), status.as_deref(), limit, json),
+        Commands::ChannelPairingResolve {
+            config,
+            pairing_request_id,
+            pairing_code,
+            approve,
+            reject,
+            json,
+        } => {
+            if !approve && !reject {
+                Err("channel-pairing-resolve requires either --approve or --reject".to_owned())
+            } else {
+                run_resolve_channel_pairing_cli(
+                    config.as_deref(),
+                    pairing_request_id.as_deref(),
+                    pairing_code.as_deref(),
+                    approve,
+                    json,
+                )
+            }
+        }
+        Commands::ChannelPairingRevoke {
+            config,
+            pairing_request_id,
+            pairing_code,
+            json,
+        } => run_revoke_channel_pairing_cli(
+            config.as_deref(),
+            pairing_request_id.as_deref(),
+            pairing_code.as_deref(),
+            json,
+        ),
+        Commands::ClearChannelPairings {
+            config,
+            channel_id,
+            configured_account_id,
+            conversation_id,
+            participant_id,
+            json,
+        } => run_clear_pending_channel_pairings_cli(
+            config.as_deref(),
+            channel_id.as_str(),
+            configured_account_id.as_str(),
+            conversation_id.as_deref(),
+            participant_id.as_deref(),
+            json,
+        ),
         Commands::AcpStatus {
             config,
             session,

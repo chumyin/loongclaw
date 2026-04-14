@@ -74,7 +74,11 @@ impl ConversationSessionAddress {
 
     pub fn structured_route_session_id(&self) -> Option<String> {
         let channel_id = self.canonical_channel_id()?;
-        let path = self.structured_channel_path();
+        let path = if channel_id == "telegram" {
+            telegram_structured_channel_path(self)
+        } else {
+            self.structured_channel_path()
+        };
         if path.is_empty() {
             Some(channel_id)
         } else {
@@ -85,6 +89,35 @@ impl ConversationSessionAddress {
             Some(format!("{channel_id}:{}", encoded.join(":")))
         }
     }
+}
+
+fn telegram_structured_channel_path(address: &ConversationSessionAddress) -> Vec<String> {
+    let mut path = Vec::new();
+    let account_id = address.account_id.as_ref().and_then(trimmed_non_empty);
+    let conversation_id = address.conversation_id.as_ref().and_then(trimmed_non_empty);
+    let participant_id = address.participant_id.as_ref().and_then(trimmed_non_empty);
+    let thread_id = address.thread_id.as_ref().and_then(trimmed_non_empty);
+
+    if let Some(account_id) = account_id {
+        path.push(account_id);
+    }
+    if let Some(conversation_id) = conversation_id {
+        path.push(conversation_id);
+    }
+    let has_participant_scope = participant_id.is_some();
+    if let Some(participant_id) = participant_id {
+        let participant_segment = format!("p={participant_id}");
+        path.push(participant_segment);
+    }
+    if let Some(thread_id) = thread_id {
+        let thread_segment = if has_participant_scope {
+            format!("t={thread_id}")
+        } else {
+            thread_id
+        };
+        path.push(thread_segment);
+    }
+    path
 }
 
 pub fn encode_route_session_segment(value: &str) -> String {
@@ -159,6 +192,36 @@ mod tests {
         assert_eq!(
             address.structured_route_session_id().as_deref(),
             Some("feishu:lark_cli_a1b2c3:oc_123:ou_sender_1:om_thread_1")
+        );
+    }
+
+    #[test]
+    fn structured_route_session_id_tags_telegram_participant_scope() {
+        let address = ConversationSessionAddress::from_session_id("opaque")
+            .with_channel_scope("telegram", "123")
+            .with_account_id("Ops-Bot")
+            .with_participant_id("7")
+            .with_thread_id("42");
+
+        let route = address
+            .structured_route_session_id()
+            .expect("telegram route session id");
+
+        assert_eq!(route, "telegram:ops-bot:123:p=7:t=42");
+
+        let parsed = parse_route_session_id(route.as_str())
+            .expect("parse telegram route session id")
+            .expect("decoded telegram route session id");
+
+        assert_eq!(parsed.0, "telegram");
+        assert_eq!(
+            parsed.1,
+            vec![
+                "ops-bot".to_owned(),
+                "123".to_owned(),
+                "p=7".to_owned(),
+                "t=42".to_owned()
+            ]
         );
     }
 

@@ -226,10 +226,7 @@ fn parse_telegram_session_send_target(
         return Err(format!("sessions_send_channel_unsupported: `{session_id}`"));
     };
 
-    let thread_id = scoped_path
-        .last()
-        .filter(|_| scoped_path.len() >= 2)
-        .cloned();
+    let (_, thread_id) = parse_telegram_scope_context(scoped_path);
     Ok(KnownChannelSessionSendTarget::Telegram {
         account_id,
         chat_id: chat_id.to_owned(),
@@ -276,6 +273,7 @@ fn resolve_telegram_known_session_target(
             ));
         }
     };
+    let (participant_id, _) = parse_telegram_scope_context(scoped_path);
     let target_id = match thread_id.as_deref() {
         Some(thread_id) => format!("{chat_id}:{thread_id}"),
         None => chat_id.clone(),
@@ -295,11 +293,54 @@ fn resolve_telegram_known_session_target(
         target_id,
         raw_scope: scoped_path.to_vec(),
         conversation_id: Some(chat_id),
-        participant_id: None,
+        participant_id,
         thread_id,
         reply_message_id: None,
         chat_type: None,
     })
+}
+
+fn parse_telegram_scope_context(scoped_path: &[String]) -> (Option<String>, Option<String>) {
+    let mut participant_id = None;
+    let mut thread_id = None;
+    let tagged_scope_present = scoped_path
+        .iter()
+        .skip(1)
+        .any(|segment| telegram_scope_segment_tag(segment.as_str()).is_some());
+
+    if tagged_scope_present {
+        for segment in scoped_path.iter().skip(1) {
+            let scope_tag = telegram_scope_segment_tag(segment.as_str());
+            match scope_tag {
+                Some(("p", value)) => {
+                    participant_id = Some(value.to_owned());
+                }
+                Some(("t", value)) => {
+                    thread_id = Some(value.to_owned());
+                }
+                Some((_unknown_tag, _value)) => {}
+                None => {}
+            }
+        }
+        return (participant_id, thread_id);
+    }
+
+    let legacy_thread_id = scoped_path
+        .last()
+        .filter(|_| scoped_path.len() >= 2)
+        .cloned();
+    (None, legacy_thread_id)
+}
+
+fn telegram_scope_segment_tag(segment: &str) -> Option<(&str, &str)> {
+    let trimmed = segment.trim();
+    let (tag, value) = trimmed.split_once('=')?;
+    let tag = tag.trim();
+    let value = value.trim();
+    if tag.is_empty() || value.is_empty() {
+        return None;
+    }
+    Some((tag, value))
 }
 
 #[cfg(any(

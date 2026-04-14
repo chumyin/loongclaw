@@ -994,26 +994,27 @@ fn render_channel_surfaces_text_reports_aliases_and_operation_health() {
     assert!(feishu_section.contains("policy conversation_key=allowed_chat_ids"));
     assert!(feishu_section.contains("sender_key=allowed_sender_ids"));
     assert!(feishu_section.contains("mention_required=false"));
+    assert!(feishu_section.contains("pairing_required=false"));
     assert!(feishu_section.contains("senders=-"));
     assert!(rendered.contains(&format!(
         "op send ({}) ready: ready target_kinds=receive_id,message_reply requirements=enabled,app_id,app_secret",
         channel_send_command("feishu")
     )));
     assert!(rendered.contains(&format!(
-        "op serve ({}) misconfigured: allowed_chat_ids is empty target_kinds=message_reply requirements=enabled,app_id,app_secret,mode,allowed_chat_ids,allowed_sender_ids,verification_token,encrypt_key",
+        "op serve ({}) misconfigured: allowed_chat_ids is empty target_kinds=message_reply requirements=enabled,app_id,app_secret,mode,allowed_chat_ids,allowed_sender_ids,pairing_mode,verification_token,encrypt_key",
         channel_serve_command("feishu")
     )));
     assert!(rendered.contains("WeCom [wecom]"));
     assert!(rendered.contains("account=wecom:bot_test"));
     assert!(rendered.contains(
-        "policy conversation_key=allowed_conversation_ids conversation_mode=exact_allowlist sender_key=allowed_sender_ids sender_mode=open mention_required=false conversations=group_demo senders=-"
+        "policy conversation_key=allowed_conversation_ids conversation_mode=exact_allowlist sender_key=allowed_sender_ids sender_mode=open mention_required=false pairing_required=false conversations=group_demo senders=-"
     ));
     assert!(rendered.contains(&format!(
         "op send ({}) ready: ready target_kinds=conversation requirements=enabled,bot_id,secret,websocket_url",
         channel_send_command("wecom")
     )));
     assert!(rendered.contains(&format!(
-        "op serve ({}) ready: ready target_kinds=conversation requirements=enabled,bot_id,secret,allowed_conversation_ids,allowed_sender_ids,websocket_url,ping_interval_s",
+        "op serve ({}) ready: ready target_kinds=conversation requirements=enabled,bot_id,secret,allowed_conversation_ids,allowed_sender_ids,pairing_mode,websocket_url,ping_interval_s",
         channel_serve_command("wecom")
     )));
     assert!(rendered.contains("running=false"));
@@ -1628,6 +1629,7 @@ fn build_channels_cli_json_payload_includes_operation_requirement_metadata() {
                     "mode",
                     "allowed_chat_ids",
                     "allowed_sender_ids",
+                    "pairing_mode",
                     "verification_token",
                     "encrypt_key",
                 ])

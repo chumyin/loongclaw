@@ -5,6 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::{
     Connection, OptionalExtension, Transaction, TransactionBehavior, params, params_from_iter,
 };
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::frozen_result::FrozenResult;
@@ -309,6 +310,103 @@ pub struct NewControlPlaneDeviceTokenRecord {
     pub revoked_at_ms: Option<i64>,
     pub last_used_at_ms: Option<i64>,
     pub pairing_request_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ChannelPairingRequestStatus {
+    Pending,
+    Approved,
+    Rejected,
+}
+
+impl ChannelPairingRequestStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Approved => "approved",
+            Self::Rejected => "rejected",
+        }
+    }
+
+    fn from_db(value: &str) -> Result<Self, String> {
+        match value {
+            "pending" => Ok(Self::Pending),
+            "approved" => Ok(Self::Approved),
+            "rejected" => Ok(Self::Rejected),
+            _ => Err(format!("unknown channel pairing status `{value}`")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChannelPairingRequestRecord {
+    pub pairing_request_id: String,
+    pub channel_id: String,
+    pub configured_account_id: String,
+    pub account_id: Option<String>,
+    pub conversation_id: String,
+    pub participant_id: String,
+    pub route_session_id: String,
+    pub sender_principal_key: Option<String>,
+    pub pairing_code: String,
+    pub status: ChannelPairingRequestStatus,
+    pub requested_at_ms: i64,
+    pub expires_at_ms: i64,
+    pub resolved_at_ms: Option<i64>,
+    pub approved_binding_id: Option<String>,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewChannelPairingRequestRecord {
+    pub pairing_request_id: String,
+    pub channel_id: String,
+    pub configured_account_id: String,
+    pub account_id: Option<String>,
+    pub conversation_id: String,
+    pub participant_id: String,
+    pub route_session_id: String,
+    pub sender_principal_key: Option<String>,
+    pub pairing_code: String,
+    pub expires_at_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChannelPairingBindingRecord {
+    pub binding_id: String,
+    pub channel_id: String,
+    pub configured_account_id: String,
+    pub account_id: Option<String>,
+    pub conversation_id: String,
+    pub participant_id: String,
+    pub route_session_id: String,
+    pub sender_principal_key: Option<String>,
+    pub approved_at_ms: i64,
+    pub pairing_request_id: Option<String>,
+    pub approved_by_session_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewChannelPairingBindingRecord {
+    pub binding_id: String,
+    pub channel_id: String,
+    pub configured_account_id: String,
+    pub account_id: Option<String>,
+    pub conversation_id: String,
+    pub participant_id: String,
+    pub route_session_id: String,
+    pub sender_principal_key: Option<String>,
+    pub approved_at_ms: i64,
+    pub pairing_request_id: Option<String>,
+    pub approved_by_session_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChannelPairingCodeResolutionStateRecord {
+    pub scope_key: String,
+    pub failed_attempt_count: i64,
+    pub lockout_until_ms: Option<i64>,
+    pub updated_at_ms: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2312,6 +2410,790 @@ impl SessionRepository {
         Ok(tokens)
     }
 
+    pub fn ensure_channel_pairing_request(
+        &self,
+        record: NewChannelPairingRequestRecord,
+    ) -> Result<ChannelPairingRequestRecord, String> {
+        let pairing_request_id =
+            normalize_required_text(&record.pairing_request_id, "pairing_request_id")?;
+        let channel_id = normalize_required_text(&record.channel_id, "channel_id")?;
+        let configured_account_id =
+            normalize_required_text(&record.configured_account_id, "configured_account_id")?;
+        let account_id = normalize_optional_text(record.account_id);
+        let conversation_id = normalize_required_text(&record.conversation_id, "conversation_id")?;
+        let participant_id = normalize_required_text(&record.participant_id, "participant_id")?;
+        let route_session_id =
+            normalize_required_text(&record.route_session_id, "route_session_id")?;
+        let sender_principal_key = normalize_optional_text(record.sender_principal_key);
+        let pairing_code = normalize_pairing_code(&record.pairing_code)?;
+        let requested_at_ms = unix_time_ms_now();
+        let expires_at_ms = record.expires_at_ms;
+        let conn = self.open_connection()?;
+
+        match conn.execute(
+            "INSERT INTO channel_pairing_requests(
+                pairing_request_id,
+                channel_id,
+                configured_account_id,
+                account_id,
+                conversation_id,
+                participant_id,
+                route_session_id,
+                sender_principal_key,
+                pairing_code,
+                status,
+                requested_at_ms,
+                expires_at_ms,
+                resolved_at_ms,
+                approved_binding_id,
+                last_error
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, NULL, NULL, NULL)",
+            params![
+                &pairing_request_id,
+                channel_id,
+                configured_account_id,
+                account_id,
+                conversation_id,
+                participant_id,
+                route_session_id,
+                sender_principal_key,
+                pairing_code,
+                ChannelPairingRequestStatus::Pending.as_str(),
+                requested_at_ms,
+                expires_at_ms,
+            ],
+        ) {
+            Ok(_) => {}
+            Err(error) if error.to_string().contains("UNIQUE constraint failed") => {
+                return self
+                    .load_channel_pairing_request(&pairing_request_id)?
+                    .ok_or_else(|| {
+                        format!(
+                            "channel pairing request `{pairing_request_id}` missing after concurrent insert"
+                        )
+                    });
+            }
+            Err(error) => {
+                return Err(format!(
+                    "insert channel pairing request row failed: {error}"
+                ));
+            }
+        }
+
+        self.load_channel_pairing_request(&pairing_request_id)?
+            .ok_or_else(|| {
+                format!("channel pairing request `{pairing_request_id}` disappeared after insert")
+            })
+    }
+
+    pub fn load_channel_pairing_request(
+        &self,
+        pairing_request_id: &str,
+    ) -> Result<Option<ChannelPairingRequestRecord>, String> {
+        let pairing_request_id = normalize_required_text(pairing_request_id, "pairing_request_id")?;
+        let conn = self.open_connection()?;
+        let raw = conn
+            .query_row(
+                "SELECT
+                    pairing_request_id,
+                    channel_id,
+                    configured_account_id,
+                    account_id,
+                    conversation_id,
+                    participant_id,
+                    route_session_id,
+                    sender_principal_key,
+                    pairing_code,
+                    status,
+                    requested_at_ms,
+                    expires_at_ms,
+                    resolved_at_ms,
+                    approved_binding_id,
+                    last_error
+                 FROM channel_pairing_requests
+                 WHERE pairing_request_id = ?1",
+                params![pairing_request_id],
+                |row| {
+                    Ok(RawChannelPairingRequestRecord {
+                        pairing_request_id: row.get(0)?,
+                        channel_id: row.get(1)?,
+                        configured_account_id: row.get(2)?,
+                        account_id: row.get(3)?,
+                        conversation_id: row.get(4)?,
+                        participant_id: row.get(5)?,
+                        route_session_id: row.get(6)?,
+                        sender_principal_key: row.get(7)?,
+                        pairing_code: row.get(8)?,
+                        status: row.get(9)?,
+                        requested_at_ms: row.get(10)?,
+                        expires_at_ms: row.get(11)?,
+                        resolved_at_ms: row.get(12)?,
+                        approved_binding_id: row.get(13)?,
+                        last_error: row.get(14)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|error| format!("load channel pairing request row failed: {error}"))?;
+
+        raw.map(ChannelPairingRequestRecord::try_from_raw)
+            .transpose()
+    }
+
+    pub fn load_latest_channel_pairing_request_by_subject(
+        &self,
+        channel_id: &str,
+        configured_account_id: &str,
+        conversation_id: &str,
+        participant_id: &str,
+    ) -> Result<Option<ChannelPairingRequestRecord>, String> {
+        let channel_id = normalize_required_text(channel_id, "channel_id")?;
+        let configured_account_id =
+            normalize_required_text(configured_account_id, "configured_account_id")?;
+        let conversation_id = normalize_required_text(conversation_id, "conversation_id")?;
+        let participant_id = normalize_required_text(participant_id, "participant_id")?;
+        let conn = self.open_connection()?;
+        let raw = conn
+            .query_row(
+                "SELECT
+                    pairing_request_id,
+                    channel_id,
+                    configured_account_id,
+                    account_id,
+                    conversation_id,
+                    participant_id,
+                    route_session_id,
+                    sender_principal_key,
+                    pairing_code,
+                    status,
+                    requested_at_ms,
+                    expires_at_ms,
+                    resolved_at_ms,
+                    approved_binding_id,
+                    last_error
+                 FROM channel_pairing_requests
+                 WHERE channel_id = ?1
+                   AND configured_account_id = ?2
+                   AND conversation_id = ?3
+                   AND participant_id = ?4
+                 ORDER BY requested_at_ms DESC, pairing_request_id ASC
+                 LIMIT 1",
+                params![
+                    channel_id,
+                    configured_account_id,
+                    conversation_id,
+                    participant_id,
+                ],
+                |row| {
+                    Ok(RawChannelPairingRequestRecord {
+                        pairing_request_id: row.get(0)?,
+                        channel_id: row.get(1)?,
+                        configured_account_id: row.get(2)?,
+                        account_id: row.get(3)?,
+                        conversation_id: row.get(4)?,
+                        participant_id: row.get(5)?,
+                        route_session_id: row.get(6)?,
+                        sender_principal_key: row.get(7)?,
+                        pairing_code: row.get(8)?,
+                        status: row.get(9)?,
+                        requested_at_ms: row.get(10)?,
+                        expires_at_ms: row.get(11)?,
+                        resolved_at_ms: row.get(12)?,
+                        approved_binding_id: row.get(13)?,
+                        last_error: row.get(14)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|error| format!("load latest channel pairing request row failed: {error}"))?;
+
+        raw.map(ChannelPairingRequestRecord::try_from_raw)
+            .transpose()
+    }
+
+    pub fn load_latest_channel_pairing_request_by_code(
+        &self,
+        pairing_code: &str,
+    ) -> Result<Option<ChannelPairingRequestRecord>, String> {
+        let pairing_code = normalize_pairing_code(pairing_code)?;
+        let conn = self.open_connection()?;
+        let raw = conn
+            .query_row(
+                "SELECT
+                    pairing_request_id,
+                    channel_id,
+                    configured_account_id,
+                    account_id,
+                    conversation_id,
+                    participant_id,
+                    route_session_id,
+                    sender_principal_key,
+                    pairing_code,
+                    status,
+                    requested_at_ms,
+                    expires_at_ms,
+                    resolved_at_ms,
+                    approved_binding_id,
+                    last_error
+                 FROM channel_pairing_requests
+                 WHERE pairing_code = ?1
+                 ORDER BY requested_at_ms DESC, pairing_request_id ASC
+                 LIMIT 1",
+                params![pairing_code],
+                |row| {
+                    Ok(RawChannelPairingRequestRecord {
+                        pairing_request_id: row.get(0)?,
+                        channel_id: row.get(1)?,
+                        configured_account_id: row.get(2)?,
+                        account_id: row.get(3)?,
+                        conversation_id: row.get(4)?,
+                        participant_id: row.get(5)?,
+                        route_session_id: row.get(6)?,
+                        sender_principal_key: row.get(7)?,
+                        pairing_code: row.get(8)?,
+                        status: row.get(9)?,
+                        requested_at_ms: row.get(10)?,
+                        expires_at_ms: row.get(11)?,
+                        resolved_at_ms: row.get(12)?,
+                        approved_binding_id: row.get(13)?,
+                        last_error: row.get(14)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|error| {
+                format!("load latest channel pairing request by code failed: {error}")
+            })?;
+
+        raw.map(ChannelPairingRequestRecord::try_from_raw)
+            .transpose()
+    }
+
+    pub fn count_pending_channel_pairing_requests_for_account(
+        &self,
+        channel_id: &str,
+        configured_account_id: &str,
+    ) -> Result<usize, String> {
+        let channel_id = normalize_required_text(channel_id, "channel_id")?;
+        let configured_account_id =
+            normalize_required_text(configured_account_id, "configured_account_id")?;
+        let conn = self.open_connection()?;
+        let count = conn
+            .query_row(
+                "SELECT COUNT(*)
+                 FROM channel_pairing_requests
+                 WHERE channel_id = ?1
+                   AND configured_account_id = ?2
+                   AND status = ?3",
+                params![
+                    channel_id,
+                    configured_account_id,
+                    ChannelPairingRequestStatus::Pending.as_str(),
+                ],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|error| format!("count pending channel pairing requests failed: {error}"))?;
+        let count = usize::try_from(count)
+            .map_err(|error| format!("pending channel pairing count overflowed usize: {error}"))?;
+        Ok(count)
+    }
+
+    pub fn load_channel_pairing_code_resolution_state(
+        &self,
+        scope_key: &str,
+    ) -> Result<Option<ChannelPairingCodeResolutionStateRecord>, String> {
+        let scope_key = normalize_required_text(scope_key, "scope_key")?;
+        let conn = self.open_connection()?;
+        let raw = conn
+            .query_row(
+                "SELECT
+                    scope_key,
+                    failed_attempt_count,
+                    lockout_until_ms,
+                    updated_at_ms
+                 FROM channel_pairing_code_resolution_state
+                 WHERE scope_key = ?1",
+                params![scope_key],
+                |row| {
+                    Ok(RawChannelPairingCodeResolutionStateRecord {
+                        scope_key: row.get(0)?,
+                        failed_attempt_count: row.get(1)?,
+                        lockout_until_ms: row.get(2)?,
+                        updated_at_ms: row.get(3)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|error| {
+                format!("load channel pairing code resolution state failed: {error}")
+            })?;
+        Ok(raw.map(ChannelPairingCodeResolutionStateRecord::try_from_raw))
+    }
+
+    pub fn upsert_channel_pairing_code_resolution_state(
+        &self,
+        record: &ChannelPairingCodeResolutionStateRecord,
+    ) -> Result<ChannelPairingCodeResolutionStateRecord, String> {
+        let scope_key = normalize_required_text(&record.scope_key, "scope_key")?;
+        let conn = self.open_connection()?;
+        conn.execute(
+            "INSERT INTO channel_pairing_code_resolution_state(
+                scope_key,
+                failed_attempt_count,
+                lockout_until_ms,
+                updated_at_ms
+             ) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(scope_key) DO UPDATE SET
+                failed_attempt_count = excluded.failed_attempt_count,
+                lockout_until_ms = excluded.lockout_until_ms,
+                updated_at_ms = excluded.updated_at_ms",
+            params![
+                scope_key,
+                record.failed_attempt_count,
+                record.lockout_until_ms,
+                record.updated_at_ms,
+            ],
+        )
+        .map_err(|error| format!("upsert channel pairing code resolution state failed: {error}"))?;
+
+        self.load_channel_pairing_code_resolution_state(scope_key.as_str())?
+            .ok_or_else(|| {
+                "channel pairing code resolution state disappeared after upsert".to_owned()
+            })
+    }
+
+    pub fn list_channel_pairing_requests(
+        &self,
+        status: Option<ChannelPairingRequestStatus>,
+        limit: usize,
+    ) -> Result<Vec<ChannelPairingRequestRecord>, String> {
+        let limit = limit.max(1);
+        let conn = self.open_connection()?;
+        let mut requests = Vec::new();
+
+        match status {
+            Some(status) => {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT
+                            pairing_request_id,
+                            channel_id,
+                            configured_account_id,
+                            account_id,
+                            conversation_id,
+                            participant_id,
+                            route_session_id,
+                            sender_principal_key,
+                            pairing_code,
+                            status,
+                            requested_at_ms,
+                            expires_at_ms,
+                            resolved_at_ms,
+                            approved_binding_id,
+                            last_error
+                         FROM channel_pairing_requests
+                         WHERE status = ?1
+                         ORDER BY requested_at_ms DESC, pairing_request_id ASC
+                         LIMIT ?2",
+                    )
+                    .map_err(|error| {
+                        format!("prepare channel pairing request list query failed: {error}")
+                    })?;
+                let rows = stmt
+                    .query_map(params![status.as_str(), limit as i64], |row| {
+                        Ok(RawChannelPairingRequestRecord {
+                            pairing_request_id: row.get(0)?,
+                            channel_id: row.get(1)?,
+                            configured_account_id: row.get(2)?,
+                            account_id: row.get(3)?,
+                            conversation_id: row.get(4)?,
+                            participant_id: row.get(5)?,
+                            route_session_id: row.get(6)?,
+                            sender_principal_key: row.get(7)?,
+                            pairing_code: row.get(8)?,
+                            status: row.get(9)?,
+                            requested_at_ms: row.get(10)?,
+                            expires_at_ms: row.get(11)?,
+                            resolved_at_ms: row.get(12)?,
+                            approved_binding_id: row.get(13)?,
+                            last_error: row.get(14)?,
+                        })
+                    })
+                    .map_err(|error| {
+                        format!("query channel pairing request list failed: {error}")
+                    })?;
+
+                for row in rows {
+                    let raw = row.map_err(|error| {
+                        format!("decode channel pairing request row failed: {error}")
+                    })?;
+                    let request = ChannelPairingRequestRecord::try_from_raw(raw)?;
+                    requests.push(request);
+                }
+            }
+            None => {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT
+                            pairing_request_id,
+                            channel_id,
+                            configured_account_id,
+                            account_id,
+                            conversation_id,
+                            participant_id,
+                            route_session_id,
+                            sender_principal_key,
+                            pairing_code,
+                            status,
+                            requested_at_ms,
+                            expires_at_ms,
+                            resolved_at_ms,
+                            approved_binding_id,
+                            last_error
+                         FROM channel_pairing_requests
+                         ORDER BY requested_at_ms DESC, pairing_request_id ASC
+                         LIMIT ?1",
+                    )
+                    .map_err(|error| {
+                        format!("prepare channel pairing request list query failed: {error}")
+                    })?;
+                let rows = stmt
+                    .query_map(params![limit as i64], |row| {
+                        Ok(RawChannelPairingRequestRecord {
+                            pairing_request_id: row.get(0)?,
+                            channel_id: row.get(1)?,
+                            configured_account_id: row.get(2)?,
+                            account_id: row.get(3)?,
+                            conversation_id: row.get(4)?,
+                            participant_id: row.get(5)?,
+                            route_session_id: row.get(6)?,
+                            sender_principal_key: row.get(7)?,
+                            pairing_code: row.get(8)?,
+                            status: row.get(9)?,
+                            requested_at_ms: row.get(10)?,
+                            expires_at_ms: row.get(11)?,
+                            resolved_at_ms: row.get(12)?,
+                            approved_binding_id: row.get(13)?,
+                            last_error: row.get(14)?,
+                        })
+                    })
+                    .map_err(|error| {
+                        format!("query channel pairing request list failed: {error}")
+                    })?;
+
+                for row in rows {
+                    let raw = row.map_err(|error| {
+                        format!("decode channel pairing request row failed: {error}")
+                    })?;
+                    let request = ChannelPairingRequestRecord::try_from_raw(raw)?;
+                    requests.push(request);
+                }
+            }
+        }
+
+        Ok(requests)
+    }
+
+    pub fn list_pending_channel_pairing_requests_in_scope(
+        &self,
+        channel_id: &str,
+        configured_account_id: &str,
+        conversation_id: Option<&str>,
+        participant_id: Option<&str>,
+    ) -> Result<Vec<ChannelPairingRequestRecord>, String> {
+        let channel_id = normalize_required_text(channel_id, "channel_id")?;
+        let configured_account_id =
+            normalize_required_text(configured_account_id, "configured_account_id")?;
+        let conversation_id = conversation_id
+            .map(|value| normalize_required_text(value, "conversation_id"))
+            .transpose()?;
+        let participant_id = participant_id
+            .map(|value| normalize_required_text(value, "participant_id"))
+            .transpose()?;
+        let conn = self.open_connection()?;
+        let mut sql = String::from(
+            "SELECT
+                pairing_request_id,
+                channel_id,
+                configured_account_id,
+                account_id,
+                conversation_id,
+                participant_id,
+                route_session_id,
+                sender_principal_key,
+                pairing_code,
+                status,
+                requested_at_ms,
+                expires_at_ms,
+                resolved_at_ms,
+                approved_binding_id,
+                last_error
+             FROM channel_pairing_requests
+             WHERE channel_id = ?1
+               AND configured_account_id = ?2
+               AND status = ?3",
+        );
+        let mut params = vec![
+            rusqlite::types::Value::from(channel_id),
+            rusqlite::types::Value::from(configured_account_id),
+            rusqlite::types::Value::from(ChannelPairingRequestStatus::Pending.as_str().to_owned()),
+        ];
+        let mut next_index = 4;
+
+        if let Some(conversation_id) = conversation_id.as_ref() {
+            sql.push_str(format!(" AND conversation_id = ?{next_index}").as_str());
+            params.push(rusqlite::types::Value::from(conversation_id.clone()));
+            next_index += 1;
+        }
+        if let Some(participant_id) = participant_id.as_ref() {
+            sql.push_str(format!(" AND participant_id = ?{next_index}").as_str());
+            params.push(rusqlite::types::Value::from(participant_id.clone()));
+        }
+        sql.push_str(" ORDER BY requested_at_ms DESC, pairing_request_id ASC");
+
+        let mut stmt = conn.prepare(sql.as_str()).map_err(|error| {
+            format!("prepare pending channel pairing scope query failed: {error}")
+        })?;
+        let rows = stmt
+            .query_map(params_from_iter(params.iter()), |row| {
+                Ok(RawChannelPairingRequestRecord {
+                    pairing_request_id: row.get(0)?,
+                    channel_id: row.get(1)?,
+                    configured_account_id: row.get(2)?,
+                    account_id: row.get(3)?,
+                    conversation_id: row.get(4)?,
+                    participant_id: row.get(5)?,
+                    route_session_id: row.get(6)?,
+                    sender_principal_key: row.get(7)?,
+                    pairing_code: row.get(8)?,
+                    status: row.get(9)?,
+                    requested_at_ms: row.get(10)?,
+                    expires_at_ms: row.get(11)?,
+                    resolved_at_ms: row.get(12)?,
+                    approved_binding_id: row.get(13)?,
+                    last_error: row.get(14)?,
+                })
+            })
+            .map_err(|error| format!("query pending channel pairing scope failed: {error}"))?;
+        let mut requests = Vec::new();
+        for row in rows {
+            let raw = row.map_err(|error| {
+                format!("decode pending channel pairing scope row failed: {error}")
+            })?;
+            let request = ChannelPairingRequestRecord::try_from_raw(raw)?;
+            requests.push(request);
+        }
+        Ok(requests)
+    }
+
+    pub fn delete_channel_pairing_request(&self, pairing_request_id: &str) -> Result<bool, String> {
+        let pairing_request_id = normalize_required_text(pairing_request_id, "pairing_request_id")?;
+        let conn = self.open_connection()?;
+        let affected = conn
+            .execute(
+                "DELETE FROM channel_pairing_requests
+                 WHERE pairing_request_id = ?1",
+                params![pairing_request_id],
+            )
+            .map_err(|error| format!("delete channel pairing request failed: {error}"))?;
+        Ok(affected > 0)
+    }
+
+    pub fn set_channel_pairing_request_resolution(
+        &self,
+        pairing_request_id: &str,
+        status: ChannelPairingRequestStatus,
+        approved_binding_id: Option<String>,
+        last_error: Option<String>,
+    ) -> Result<Option<ChannelPairingRequestRecord>, String> {
+        let pairing_request_id = normalize_required_text(pairing_request_id, "pairing_request_id")?;
+        let approved_binding_id = normalize_optional_text(approved_binding_id);
+        let last_error = normalize_optional_text(last_error);
+        let resolved_at_ms = unix_time_ms_now();
+        let conn = self.open_connection()?;
+        let affected = conn
+            .execute(
+                "UPDATE channel_pairing_requests
+                 SET status = ?2,
+                     resolved_at_ms = ?3,
+                     approved_binding_id = ?4,
+                     last_error = ?5
+                 WHERE pairing_request_id = ?1",
+                params![
+                    &pairing_request_id,
+                    status.as_str(),
+                    resolved_at_ms,
+                    approved_binding_id,
+                    last_error,
+                ],
+            )
+            .map_err(|error| format!("update channel pairing request failed: {error}"))?;
+
+        if affected == 0 {
+            return Ok(None);
+        }
+
+        self.load_channel_pairing_request(&pairing_request_id)
+    }
+
+    pub fn load_channel_pairing_binding(
+        &self,
+        channel_id: &str,
+        configured_account_id: &str,
+        conversation_id: &str,
+        participant_id: &str,
+    ) -> Result<Option<ChannelPairingBindingRecord>, String> {
+        let channel_id = normalize_required_text(channel_id, "channel_id")?;
+        let configured_account_id =
+            normalize_required_text(configured_account_id, "configured_account_id")?;
+        let conversation_id = normalize_required_text(conversation_id, "conversation_id")?;
+        let participant_id = normalize_required_text(participant_id, "participant_id")?;
+        let conn = self.open_connection()?;
+        let raw = conn
+            .query_row(
+                "SELECT
+                    binding_id,
+                    channel_id,
+                    configured_account_id,
+                    account_id,
+                    conversation_id,
+                    participant_id,
+                    route_session_id,
+                    sender_principal_key,
+                    approved_at_ms,
+                    pairing_request_id,
+                    approved_by_session_id
+                 FROM channel_pairing_bindings
+                 WHERE channel_id = ?1
+                   AND configured_account_id = ?2
+                   AND conversation_id = ?3
+                   AND participant_id = ?4",
+                params![
+                    channel_id,
+                    configured_account_id,
+                    conversation_id,
+                    participant_id,
+                ],
+                |row| {
+                    Ok(RawChannelPairingBindingRecord {
+                        binding_id: row.get(0)?,
+                        channel_id: row.get(1)?,
+                        configured_account_id: row.get(2)?,
+                        account_id: row.get(3)?,
+                        conversation_id: row.get(4)?,
+                        participant_id: row.get(5)?,
+                        route_session_id: row.get(6)?,
+                        sender_principal_key: row.get(7)?,
+                        approved_at_ms: row.get(8)?,
+                        pairing_request_id: row.get(9)?,
+                        approved_by_session_id: row.get(10)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|error| format!("load channel pairing binding failed: {error}"))?;
+
+        raw.map(ChannelPairingBindingRecord::try_from_raw)
+            .transpose()
+    }
+
+    pub fn upsert_channel_pairing_binding(
+        &self,
+        record: NewChannelPairingBindingRecord,
+    ) -> Result<ChannelPairingBindingRecord, String> {
+        let binding_id = normalize_required_text(&record.binding_id, "binding_id")?;
+        let channel_id = normalize_required_text(&record.channel_id, "channel_id")?;
+        let configured_account_id =
+            normalize_required_text(&record.configured_account_id, "configured_account_id")?;
+        let account_id = normalize_optional_text(record.account_id);
+        let conversation_id = normalize_required_text(&record.conversation_id, "conversation_id")?;
+        let participant_id = normalize_required_text(&record.participant_id, "participant_id")?;
+        let route_session_id =
+            normalize_required_text(&record.route_session_id, "route_session_id")?;
+        let sender_principal_key = normalize_optional_text(record.sender_principal_key);
+        let pairing_request_id = normalize_optional_text(record.pairing_request_id);
+        let approved_by_session_id = normalize_optional_text(record.approved_by_session_id);
+        let approved_at_ms = record.approved_at_ms;
+        let conn = self.open_connection()?;
+
+        conn.execute(
+            "INSERT INTO channel_pairing_bindings(
+                binding_id,
+                channel_id,
+                configured_account_id,
+                account_id,
+                conversation_id,
+                participant_id,
+                route_session_id,
+                sender_principal_key,
+                approved_at_ms,
+                pairing_request_id,
+                approved_by_session_id
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+             ON CONFLICT(channel_id, configured_account_id, conversation_id, participant_id) DO UPDATE SET
+                account_id = excluded.account_id,
+                route_session_id = excluded.route_session_id,
+                sender_principal_key = excluded.sender_principal_key,
+                approved_at_ms = excluded.approved_at_ms,
+                pairing_request_id = excluded.pairing_request_id,
+                approved_by_session_id = excluded.approved_by_session_id",
+            params![
+                binding_id,
+                channel_id,
+                configured_account_id,
+                account_id,
+                conversation_id,
+                participant_id,
+                route_session_id,
+                sender_principal_key,
+                approved_at_ms,
+                pairing_request_id,
+                approved_by_session_id,
+            ],
+        )
+        .map_err(|error| format!("upsert channel pairing binding failed: {error}"))?;
+
+        self.load_channel_pairing_binding(
+            channel_id.as_str(),
+            configured_account_id.as_str(),
+            conversation_id.as_str(),
+            participant_id.as_str(),
+        )?
+        .ok_or_else(|| "channel pairing binding disappeared after upsert".to_owned())
+    }
+
+    pub fn delete_channel_pairing_binding(
+        &self,
+        channel_id: &str,
+        configured_account_id: &str,
+        conversation_id: &str,
+        participant_id: &str,
+    ) -> Result<bool, String> {
+        let channel_id = normalize_required_text(channel_id, "channel_id")?;
+        let configured_account_id =
+            normalize_required_text(configured_account_id, "configured_account_id")?;
+        let conversation_id = normalize_required_text(conversation_id, "conversation_id")?;
+        let participant_id = normalize_required_text(participant_id, "participant_id")?;
+        let conn = self.open_connection()?;
+        let affected = conn
+            .execute(
+                "DELETE FROM channel_pairing_bindings
+                 WHERE channel_id = ?1
+                   AND configured_account_id = ?2
+                   AND conversation_id = ?3
+                   AND participant_id = ?4",
+                params![
+                    channel_id,
+                    configured_account_id,
+                    conversation_id,
+                    participant_id,
+                ],
+            )
+            .map_err(|error| format!("delete channel pairing binding failed: {error}"))?;
+
+        Ok(affected > 0)
+    }
+
     pub fn upsert_terminal_outcome(
         &self,
         session_id: &str,
@@ -3530,6 +4412,48 @@ struct RawControlPlaneDeviceTokenRecord {
 }
 
 #[derive(Debug)]
+struct RawChannelPairingRequestRecord {
+    pairing_request_id: String,
+    channel_id: String,
+    configured_account_id: String,
+    account_id: Option<String>,
+    conversation_id: String,
+    participant_id: String,
+    route_session_id: String,
+    sender_principal_key: Option<String>,
+    pairing_code: String,
+    status: String,
+    requested_at_ms: i64,
+    expires_at_ms: i64,
+    resolved_at_ms: Option<i64>,
+    approved_binding_id: Option<String>,
+    last_error: Option<String>,
+}
+
+#[derive(Debug)]
+struct RawChannelPairingBindingRecord {
+    binding_id: String,
+    channel_id: String,
+    configured_account_id: String,
+    account_id: Option<String>,
+    conversation_id: String,
+    participant_id: String,
+    route_session_id: String,
+    sender_principal_key: Option<String>,
+    approved_at_ms: i64,
+    pairing_request_id: Option<String>,
+    approved_by_session_id: Option<String>,
+}
+
+#[derive(Debug)]
+struct RawChannelPairingCodeResolutionStateRecord {
+    scope_key: String,
+    failed_attempt_count: i64,
+    lockout_until_ms: Option<i64>,
+    updated_at_ms: i64,
+}
+
+#[derive(Debug)]
 struct RawSessionToolConsentRecord {
     scope_session_id: String,
     mode: String,
@@ -3747,6 +4671,57 @@ impl ControlPlaneDeviceTokenRecord {
     }
 }
 
+impl ChannelPairingRequestRecord {
+    fn try_from_raw(raw: RawChannelPairingRequestRecord) -> Result<Self, String> {
+        Ok(Self {
+            pairing_request_id: raw.pairing_request_id,
+            channel_id: raw.channel_id,
+            configured_account_id: raw.configured_account_id,
+            account_id: raw.account_id,
+            conversation_id: raw.conversation_id,
+            participant_id: raw.participant_id,
+            route_session_id: raw.route_session_id,
+            sender_principal_key: raw.sender_principal_key,
+            pairing_code: raw.pairing_code,
+            status: ChannelPairingRequestStatus::from_db(&raw.status)?,
+            requested_at_ms: raw.requested_at_ms,
+            expires_at_ms: raw.expires_at_ms,
+            resolved_at_ms: raw.resolved_at_ms,
+            approved_binding_id: raw.approved_binding_id,
+            last_error: raw.last_error,
+        })
+    }
+}
+
+impl ChannelPairingBindingRecord {
+    fn try_from_raw(raw: RawChannelPairingBindingRecord) -> Result<Self, String> {
+        Ok(Self {
+            binding_id: raw.binding_id,
+            channel_id: raw.channel_id,
+            configured_account_id: raw.configured_account_id,
+            account_id: raw.account_id,
+            conversation_id: raw.conversation_id,
+            participant_id: raw.participant_id,
+            route_session_id: raw.route_session_id,
+            sender_principal_key: raw.sender_principal_key,
+            approved_at_ms: raw.approved_at_ms,
+            pairing_request_id: raw.pairing_request_id,
+            approved_by_session_id: raw.approved_by_session_id,
+        })
+    }
+}
+
+impl ChannelPairingCodeResolutionStateRecord {
+    fn try_from_raw(raw: RawChannelPairingCodeResolutionStateRecord) -> Self {
+        Self {
+            scope_key: raw.scope_key,
+            failed_attempt_count: raw.failed_attempt_count,
+            lockout_until_ms: raw.lockout_until_ms,
+            updated_at_ms: raw.updated_at_ms,
+        }
+    }
+}
+
 fn encode_string_set_json(values: &BTreeSet<String>) -> Result<String, String> {
     let normalized = values
         .iter()
@@ -3766,6 +4741,21 @@ fn decode_string_set_json(encoded: &str) -> Result<BTreeSet<String>, String> {
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty())
         .collect::<BTreeSet<_>>())
+}
+
+fn normalize_pairing_code(value: &str) -> Result<String, String> {
+    let trimmed = normalize_required_text(value, "pairing_code")?;
+    let mut normalized = String::new();
+    for character in trimmed.chars() {
+        if character == '-' || character.is_ascii_whitespace() {
+            continue;
+        }
+        normalized.push(character.to_ascii_uppercase());
+    }
+    if normalized.is_empty() {
+        return Err("session repository requires pairing_code".to_owned());
+    }
+    Ok(normalized)
 }
 
 fn normalize_required_text(value: &str, field_name: &str) -> Result<String, String> {

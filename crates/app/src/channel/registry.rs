@@ -332,6 +332,17 @@ const TELEGRAM_REQUIRE_MENTION_REQUIREMENT: ChannelCatalogOperationRequirement =
         env_pointer_paths: &[],
         default_env_var: None,
     };
+const TELEGRAM_PAIRING_MODE_REQUIREMENT: ChannelCatalogOperationRequirement =
+    ChannelCatalogOperationRequirement {
+        id: "pairing_mode",
+        label: "participant approval inside allowed chats",
+        config_paths: &[
+            "telegram.pairing_mode",
+            "telegram.accounts.<account>.pairing_mode",
+        ],
+        env_pointer_paths: &[],
+        default_env_var: None,
+    };
 const TELEGRAM_SEND_REQUIREMENTS: &[ChannelCatalogOperationRequirement] =
     &[TELEGRAM_ENABLED_REQUIREMENT, TELEGRAM_BOT_TOKEN_REQUIREMENT];
 const TELEGRAM_SERVE_REQUIREMENTS: &[ChannelCatalogOperationRequirement] = &[
@@ -340,6 +351,7 @@ const TELEGRAM_SERVE_REQUIREMENTS: &[ChannelCatalogOperationRequirement] = &[
     TELEGRAM_ALLOWED_CHAT_IDS_REQUIREMENT,
     TELEGRAM_ALLOWED_SENDER_IDS_REQUIREMENT,
     TELEGRAM_REQUIRE_MENTION_REQUIREMENT,
+    TELEGRAM_PAIRING_MODE_REQUIREMENT,
 ];
 
 const TELEGRAM_SERVE_DOCTOR_CHECKS: &[ChannelDoctorCheckSpec] = &[
@@ -464,6 +476,17 @@ const FEISHU_ALLOWED_SENDER_IDS_REQUIREMENT: ChannelCatalogOperationRequirement 
         env_pointer_paths: &[],
         default_env_var: None,
     };
+const FEISHU_PAIRING_MODE_REQUIREMENT: ChannelCatalogOperationRequirement =
+    ChannelCatalogOperationRequirement {
+        id: "pairing_mode",
+        label: "participant approval inside allowed chats",
+        config_paths: &[
+            "feishu.pairing_mode",
+            "feishu.accounts.<account>.pairing_mode",
+        ],
+        env_pointer_paths: &[],
+        default_env_var: None,
+    };
 const FEISHU_MODE_REQUIREMENT: ChannelCatalogOperationRequirement =
     ChannelCatalogOperationRequirement {
         id: "mode",
@@ -512,6 +535,7 @@ const FEISHU_SERVE_REQUIREMENTS: &[ChannelCatalogOperationRequirement] = &[
     FEISHU_MODE_REQUIREMENT,
     FEISHU_ALLOWED_CHAT_IDS_REQUIREMENT,
     FEISHU_ALLOWED_SENDER_IDS_REQUIREMENT,
+    FEISHU_PAIRING_MODE_REQUIREMENT,
     FEISHU_VERIFICATION_TOKEN_REQUIREMENT,
     FEISHU_ENCRYPT_KEY_REQUIREMENT,
 ];
@@ -689,6 +713,17 @@ const MATRIX_REQUIRE_MENTION_REQUIREMENT: ChannelCatalogOperationRequirement =
         env_pointer_paths: &[],
         default_env_var: None,
     };
+const MATRIX_PAIRING_MODE_REQUIREMENT: ChannelCatalogOperationRequirement =
+    ChannelCatalogOperationRequirement {
+        id: "pairing_mode",
+        label: "participant approval inside allowed rooms",
+        config_paths: &[
+            "matrix.pairing_mode",
+            "matrix.accounts.<account>.pairing_mode",
+        ],
+        env_pointer_paths: &[],
+        default_env_var: None,
+    };
 const MATRIX_USER_ID_REQUIREMENT: ChannelCatalogOperationRequirement =
     ChannelCatalogOperationRequirement {
         id: "user_id",
@@ -709,6 +744,7 @@ const MATRIX_SERVE_REQUIREMENTS: &[ChannelCatalogOperationRequirement] = &[
     MATRIX_ALLOWED_ROOM_IDS_REQUIREMENT,
     MATRIX_ALLOWED_SENDER_IDS_REQUIREMENT,
     MATRIX_REQUIRE_MENTION_REQUIREMENT,
+    MATRIX_PAIRING_MODE_REQUIREMENT,
     MATRIX_USER_ID_REQUIREMENT,
 ];
 
@@ -1117,6 +1153,17 @@ const WECOM_ALLOWED_SENDER_IDS_REQUIREMENT: ChannelCatalogOperationRequirement =
         env_pointer_paths: &[],
         default_env_var: None,
     };
+const WECOM_PAIRING_MODE_REQUIREMENT: ChannelCatalogOperationRequirement =
+    ChannelCatalogOperationRequirement {
+        id: "pairing_mode",
+        label: "participant approval inside allowed conversations",
+        config_paths: &[
+            "wecom.pairing_mode",
+            "wecom.accounts.<account>.pairing_mode",
+        ],
+        env_pointer_paths: &[],
+        default_env_var: None,
+    };
 const WECOM_WEBSOCKET_URL_REQUIREMENT: ChannelCatalogOperationRequirement =
     ChannelCatalogOperationRequirement {
         id: "websocket_url",
@@ -1151,6 +1198,7 @@ const WECOM_SERVE_REQUIREMENTS: &[ChannelCatalogOperationRequirement] = &[
     WECOM_SECRET_REQUIREMENT,
     WECOM_ALLOWED_CONVERSATION_IDS_REQUIREMENT,
     WECOM_ALLOWED_SENDER_IDS_REQUIREMENT,
+    WECOM_PAIRING_MODE_REQUIREMENT,
     WECOM_WEBSOCKET_URL_REQUIREMENT,
     WECOM_PING_INTERVAL_REQUIREMENT,
 ];
@@ -2597,6 +2645,7 @@ fn extend_telegram_channel_access_policies(
         );
         let mut summary = access_policy.summary();
         summary.mention_required = resolved.require_mention;
+        summary.pairing_required = resolved.pairing_mode.requires_participant_approval();
         policies.push(ChannelConfiguredAccountAccessPolicy {
             channel_id: "telegram",
             configured_account_id: resolved.configured_account_id,
@@ -2623,7 +2672,8 @@ fn extend_feishu_channel_access_policies(
             resolved.allowed_sender_ids.as_slice(),
             true,
         );
-        let summary = access_policy.summary();
+        let mut summary = access_policy.summary();
+        summary.pairing_required = resolved.pairing_mode.requires_participant_approval();
         policies.push(ChannelConfiguredAccountAccessPolicy {
             channel_id: "feishu",
             configured_account_id: resolved.configured_account_id,
@@ -2652,6 +2702,7 @@ fn extend_matrix_channel_access_policies(
         );
         let mut summary = access_policy.summary();
         summary.mention_required = resolved.require_mention;
+        summary.pairing_required = resolved.pairing_mode.requires_participant_approval();
         policies.push(ChannelConfiguredAccountAccessPolicy {
             channel_id: "matrix",
             configured_account_id: resolved.configured_account_id,
@@ -2678,7 +2729,8 @@ fn extend_wecom_channel_access_policies(
             resolved.allowed_sender_ids.as_slice(),
             false,
         );
-        let summary = access_policy.summary();
+        let mut summary = access_policy.summary();
+        summary.pairing_required = resolved.pairing_mode.requires_participant_approval();
         policies.push(ChannelConfiguredAccountAccessPolicy {
             channel_id: "wecom",
             configured_account_id: resolved.configured_account_id,
@@ -2800,6 +2852,9 @@ fn build_telegram_snapshot_for_account(
     if !has_allowlist {
         serve_issues.push("allowed_chat_ids is empty".to_owned());
     }
+    if resolved.pairing_mode.requires_participant_approval() && !cfg!(feature = "memory-sqlite") {
+        serve_issues.push("pairing_mode requires feature `memory-sqlite`".to_owned());
+    }
 
     let send_operation = if !compiled {
         unsupported_operation(
@@ -2877,6 +2932,7 @@ fn build_telegram_snapshot_for_account(
         notes.push(format!("allowed_sender_ids={allowed_sender_ids}"));
     }
     notes.push(format!("require_mention={}", resolved.require_mention));
+    notes.push(format!("pairing_mode={}", resolved.pairing_mode.as_str()));
     if !resolved.acp.bootstrap_mcp_servers.is_empty() {
         notes.push(format!(
             "acp_bootstrap_mcp_servers={}",
@@ -5119,6 +5175,9 @@ fn build_feishu_snapshot_for_account(
     if !has_allowlist {
         serve_issues.push("allowed_chat_ids is empty".to_owned());
     }
+    if resolved.pairing_mode.requires_participant_approval() && !cfg!(feature = "memory-sqlite") {
+        serve_issues.push("pairing_mode requires feature `memory-sqlite`".to_owned());
+    }
     if resolved.mode == FeishuChannelServeMode::Webhook {
         if resolved.verification_token().is_none() {
             serve_issues.push("verification_token is missing".to_owned());
@@ -5195,6 +5254,7 @@ fn build_feishu_snapshot_for_account(
             allowed_sender_ids.join(",")
         ));
     }
+    notes.push(format!("pairing_mode={}", resolved.pairing_mode.as_str()));
     if resolved.mode == FeishuChannelServeMode::Webhook {
         notes.push(format!("webhook_bind={}", resolved.webhook_bind));
         notes.push(format!("webhook_path={}", resolved.webhook_path));
@@ -5274,6 +5334,9 @@ fn build_matrix_snapshot_for_account(
     if resolved.require_mention && !has_user_id {
         serve_issues.push("user_id is missing while require_mention is enabled".to_owned());
     }
+    if resolved.pairing_mode.requires_participant_approval() && !cfg!(feature = "memory-sqlite") {
+        serve_issues.push("pairing_mode requires feature `memory-sqlite`".to_owned());
+    }
 
     let send_operation = if !compiled {
         unsupported_operation(
@@ -5343,6 +5406,7 @@ fn build_matrix_snapshot_for_account(
         ));
     }
     notes.push(format!("require_mention={}", resolved.require_mention));
+    notes.push(format!("pairing_mode={}", resolved.pairing_mode.as_str()));
     if let Some(user_id) = resolved.user_id.as_deref() {
         notes.push(format!("user_id={user_id}"));
     }
@@ -5417,6 +5481,9 @@ fn build_wecom_snapshot_for_account(
     if !has_allowlist {
         serve_issues.push("allowed_conversation_ids is empty".to_owned());
     }
+    if resolved.pairing_mode.requires_participant_approval() && !cfg!(feature = "memory-sqlite") {
+        serve_issues.push("pairing_mode requires feature `memory-sqlite`".to_owned());
+    }
 
     let send_operation = if !compiled {
         unsupported_operation(
@@ -5489,6 +5556,7 @@ fn build_wecom_snapshot_for_account(
             allowed_sender_ids.join(",")
         ));
     }
+    notes.push(format!("pairing_mode={}", resolved.pairing_mode.as_str()));
     if !resolved.acp.bootstrap_mcp_servers.is_empty() {
         notes.push(format!(
             "acp_bootstrap_mcp_servers={}",
@@ -7342,7 +7410,8 @@ mod tests {
                 "bot_token",
                 "allowed_chat_ids",
                 "allowed_sender_ids",
-                "require_mention"
+                "require_mention",
+                "pairing_mode",
             ]
         );
         assert_eq!(
@@ -7378,16 +7447,17 @@ mod tests {
                 "mode",
                 "allowed_chat_ids",
                 "allowed_sender_ids",
+                "pairing_mode",
                 "verification_token",
                 "encrypt_key",
             ]
         );
         assert_eq!(
-            feishu.operations[1].requirements[6].default_env_var,
+            feishu.operations[1].requirements[7].default_env_var,
             Some("FEISHU_VERIFICATION_TOKEN")
         );
         assert_eq!(
-            feishu.operations[1].requirements[7].default_env_var,
+            feishu.operations[1].requirements[8].default_env_var,
             Some("FEISHU_ENCRYPT_KEY")
         );
         assert_eq!(
@@ -7403,6 +7473,7 @@ mod tests {
                 "allowed_room_ids",
                 "allowed_sender_ids",
                 "require_mention",
+                "pairing_mode",
                 "user_id",
             ]
         );

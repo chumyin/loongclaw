@@ -306,6 +306,78 @@ impl fmt::Debug for ControlPlanePairingResolveResponse {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ControlPlaneChannelPairingRequestSummary {
+    pub pairing_request_id: String,
+    pub channel_id: String,
+    pub configured_account_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+    pub conversation_id: String,
+    pub participant_id: String,
+    pub route_session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sender_principal_key: Option<String>,
+    pub pairing_code: String,
+    pub status: ControlPlanePairingStatus,
+    pub requested_at_ms: u64,
+    pub expires_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approved_binding_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ControlPlaneChannelPairingListResponse {
+    pub matched_count: usize,
+    pub returned_count: usize,
+    pub requests: Vec<ControlPlaneChannelPairingRequestSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ControlPlaneChannelPairingResolveRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pairing_request_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pairing_code: Option<String>,
+    pub approve: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ControlPlaneChannelPairingResolveResponse {
+    pub request: ControlPlaneChannelPairingRequestSummary,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ControlPlaneChannelPairingRevokeRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pairing_request_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pairing_code: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ControlPlaneChannelPairingRevokeResponse {
+    pub request: ControlPlaneChannelPairingRequestSummary,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ControlPlaneChannelPairingClearPendingRequest {
+    pub channel_id: String,
+    pub configured_account_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub participant_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ControlPlaneChannelPairingClearPendingResponse {
+    pub cleared_count: usize,
+    pub cleared_request_ids: Vec<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ControlPlaneConnectErrorCode {
