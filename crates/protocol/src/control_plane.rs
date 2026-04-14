@@ -318,8 +318,10 @@ pub struct ControlPlaneChannelPairingRequestSummary {
     pub route_session_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sender_principal_key: Option<String>,
+    pub pairing_code: String,
     pub status: ControlPlanePairingStatus,
     pub requested_at_ms: u64,
+    pub expires_at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved_at_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -335,7 +337,10 @@ pub struct ControlPlaneChannelPairingListResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ControlPlaneChannelPairingResolveRequest {
-    pub pairing_request_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pairing_request_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pairing_code: Option<String>,
     pub approve: bool,
 }
 

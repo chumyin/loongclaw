@@ -791,8 +791,10 @@ fn map_channel_pairing_request(
         participant_id: request.participant_id,
         route_session_id: request.route_session_id,
         sender_principal_key: request.sender_principal_key,
+        pairing_code: request.pairing_code,
         status: map_channel_pairing_status(request.status),
         requested_at_ms: request.requested_at_ms as u64,
+        expires_at_ms: request.expires_at_ms as u64,
         resolved_at_ms: request.resolved_at_ms.map(|value| value as u64),
         approved_binding_id: request.approved_binding_id,
     }
@@ -2098,22 +2100,53 @@ async fn channel_pairing_resolve(
             "channel-pairing/resolve requires control-plane-serve --config <path>".to_owned(),
         );
     };
-    match mvp::channel::pairing::resolve_channel_pairing_request(
-        memory_config,
-        request.pairing_request_id.as_str(),
-        request.approve,
-        None,
-    ) {
+    let pairing_request_id = request
+        .pairing_request_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let pairing_code = request
+        .pairing_code
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let resolve_result = match (pairing_request_id, pairing_code) {
+        (Some(pairing_request_id), None) => mvp::channel::pairing::resolve_channel_pairing_request(
+            memory_config,
+            pairing_request_id,
+            request.approve,
+            None,
+        ),
+        (None, Some(pairing_code)) => {
+            mvp::channel::pairing::resolve_channel_pairing_request_by_code(
+                memory_config,
+                pairing_code,
+                request.approve,
+                None,
+            )
+        }
+        (Some(_), Some(_)) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "channel-pairing/resolve requires either pairing_request_id or pairing_code, not both"
+                    .to_owned(),
+            );
+        }
+        (None, None) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "channel-pairing/resolve requires pairing_request_id or pairing_code".to_owned(),
+            );
+        }
+    };
+    match resolve_result {
         Ok(Some(record)) => Json(ControlPlaneChannelPairingResolveResponse {
             request: map_channel_pairing_request(record),
         })
         .into_response(),
         Ok(None) => error_response(
             StatusCode::NOT_FOUND,
-            format!(
-                "channel pairing request `{}` not found",
-                request.pairing_request_id.trim()
-            ),
+            "channel pairing request not found".to_owned(),
         ),
         Err(error) => error_response(StatusCode::BAD_REQUEST, error),
     }
@@ -4306,7 +4339,8 @@ mod tests {
                     .header("content-type", "application/json")
                     .body(Body::from(
                         serde_json::to_vec(&ControlPlaneChannelPairingResolveRequest {
-                            pairing_request_id: pairing_request_id.clone(),
+                            pairing_request_id: Some(pairing_request_id.clone()),
+                            pairing_code: None,
                             approve: true,
                         })
                         .expect("encode channel pairing resolve request"),
@@ -4323,6 +4357,70 @@ mod tests {
             serde_json::from_slice(&body).expect("channel pairing resolve json");
         assert_eq!(resolved.request.status, ControlPlanePairingStatus::Approved);
         assert!(resolved.request.approved_binding_id.is_some());
+
+        let decision = mvp::channel::pairing::evaluate_channel_pairing(&memory_config, &subject)
+            .expect("re-evaluate approved channel pairing");
+        assert!(matches!(
+            decision,
+            mvp::channel::pairing::ChannelPairingDecision::Authorized
+        ));
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[tokio::test]
+    async fn channel_pairing_resolve_accepts_pairing_code_lookup() {
+        let memory_config = isolated_memory_config("channel-pairing-code-lookup");
+        let subject = mvp::channel::pairing::ChannelPairingSubject::new(
+            "feishu",
+            "work",
+            Some("feishu_cli_a1b2c3".to_owned()),
+            "oc_demo",
+            "ou_sender_2",
+            "feishu:feishu_cli_a1b2c3:oc_demo:ou_sender_2",
+            Some("feishu_cli_a1b2c3:ou_sender_2".to_owned()),
+        )
+        .expect("build channel pairing subject");
+        let pending = mvp::channel::pairing::evaluate_channel_pairing(&memory_config, &subject)
+            .expect("create pending channel pairing request");
+        let pairing_code = match pending {
+            mvp::channel::pairing::ChannelPairingDecision::PairingRequired { request, .. } => {
+                request.pairing_code
+            }
+            other @ mvp::channel::pairing::ChannelPairingDecision::Authorized
+            | other @ mvp::channel::pairing::ChannelPairingDecision::Rejected { .. } => {
+                panic!("expected pending channel pairing request, got {other:?}")
+            }
+        };
+
+        let manager = Arc::new(mvp::control_plane::ControlPlaneManager::new());
+        manager.set_runtime_ready(true);
+        let router = build_control_plane_router_with_memory_config(manager, memory_config.clone());
+        let operator_token = connect_token(
+            &router,
+            std::collections::BTreeSet::from([ControlPlaneScope::OperatorPairing]),
+        )
+        .await;
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/channel-pairing/resolve")
+                    .method("POST")
+                    .header("authorization", format!("Bearer {operator_token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&ControlPlaneChannelPairingResolveRequest {
+                            pairing_request_id: None,
+                            pairing_code: Some(pairing_code),
+                            approve: true,
+                        })
+                        .expect("encode channel pairing resolve-by-code request"),
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("channel pairing resolve-by-code response");
+        assert_eq!(response.status(), StatusCode::OK);
 
         let decision = mvp::channel::pairing::evaluate_channel_pairing(&memory_config, &subject)
             .expect("re-evaluate approved channel pairing");

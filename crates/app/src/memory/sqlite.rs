@@ -2070,8 +2070,10 @@ fn ensure_channel_pairing_tables(conn: &Connection) -> Result<(), String> {
           participant_id TEXT NOT NULL,
           route_session_id TEXT NOT NULL,
           sender_principal_key TEXT NULL,
+          pairing_code TEXT NOT NULL DEFAULT '',
           status TEXT NOT NULL,
           requested_at_ms INTEGER NOT NULL,
+          expires_at_ms INTEGER NOT NULL DEFAULT 0,
           resolved_at_ms INTEGER NULL,
           approved_binding_id TEXT NULL,
           last_error TEXT NULL
@@ -2090,6 +2092,37 @@ fn ensure_channel_pairing_tables(conn: &Connection) -> Result<(), String> {
           approved_by_session_id TEXT NULL,
           UNIQUE(channel_id, configured_account_id, conversation_id, participant_id)
         );
+        ",
+    )
+    .map_err(|error| format!("ensure channel pairing storage failed: {error}"))?;
+
+    let channel_pairing_request_columns = sqlite_table_columns(conn, "channel_pairing_requests")?;
+    let has_pairing_code = channel_pairing_request_columns
+        .iter()
+        .any(|column| column == "pairing_code");
+    if !has_pairing_code {
+        conn.execute_batch(
+            "
+            ALTER TABLE channel_pairing_requests
+              ADD COLUMN pairing_code TEXT NOT NULL DEFAULT '';
+            ",
+        )
+        .map_err(|error| format!("add channel pairing pairing_code column failed: {error}"))?;
+    }
+    let has_expires_at_ms = channel_pairing_request_columns
+        .iter()
+        .any(|column| column == "expires_at_ms");
+    if !has_expires_at_ms {
+        conn.execute_batch(
+            "
+            ALTER TABLE channel_pairing_requests
+              ADD COLUMN expires_at_ms INTEGER NOT NULL DEFAULT 0;
+            ",
+        )
+        .map_err(|error| format!("add channel pairing expires_at_ms column failed: {error}"))?;
+    }
+    conn.execute_batch(
+        "
         CREATE INDEX IF NOT EXISTS idx_channel_pairing_requests_status_requested_at
           ON channel_pairing_requests(status, requested_at_ms DESC, pairing_request_id);
         CREATE INDEX IF NOT EXISTS idx_channel_pairing_requests_subject
@@ -2100,6 +2133,8 @@ fn ensure_channel_pairing_tables(conn: &Connection) -> Result<(), String> {
             participant_id,
             requested_at_ms DESC
           );
+        CREATE INDEX IF NOT EXISTS idx_channel_pairing_requests_code
+          ON channel_pairing_requests(pairing_code, requested_at_ms DESC);
         CREATE INDEX IF NOT EXISTS idx_channel_pairing_bindings_subject
           ON channel_pairing_bindings(
             channel_id,
@@ -2109,7 +2144,7 @@ fn ensure_channel_pairing_tables(conn: &Connection) -> Result<(), String> {
           );
         ",
     )
-    .map_err(|error| format!("ensure channel pairing storage failed: {error}"))?;
+    .map_err(|error| format!("ensure channel pairing indexes failed: {error}"))?;
 
     Ok(())
 }

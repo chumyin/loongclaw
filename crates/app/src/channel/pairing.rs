@@ -15,6 +15,10 @@ use crate::session::repository::NewChannelPairingRequestRecord;
 #[cfg(feature = "memory-sqlite")]
 use crate::session::repository::SessionRepository;
 
+const CHANNEL_PAIRING_CODE_ALPHABET: &[u8; 32] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+const CHANNEL_PAIRING_CODE_LENGTH: usize = 8;
+const CHANNEL_PAIRING_CODE_TTL_MS: i64 = 60 * 60 * 1000;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChannelPairingState {
@@ -90,6 +94,10 @@ pub struct ChannelPairingResolution {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pairing_request_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pairing_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pairing_code_expires_at_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub binding_id: Option<String>,
 }
 
@@ -129,18 +137,7 @@ pub fn evaluate_channel_pairing(
         subject.participant_id.as_str(),
     )?;
     let Some(latest_request) = latest_request else {
-        let request_id = next_channel_pairing_request_id();
-        let record = NewChannelPairingRequestRecord {
-            pairing_request_id: request_id,
-            channel_id: subject.channel_id.clone(),
-            configured_account_id: subject.configured_account_id.clone(),
-            account_id: subject.account_id.clone(),
-            conversation_id: subject.conversation_id.clone(),
-            participant_id: subject.participant_id.clone(),
-            route_session_id: subject.route_session_id.clone(),
-            sender_principal_key: subject.sender_principal_key.clone(),
-        };
-        let request = repo.ensure_channel_pairing_request(record)?;
+        let request = create_channel_pairing_request(&repo, subject)?;
         return Ok(ChannelPairingDecision::PairingRequired {
             request: Box::new(request),
             created: true,
@@ -149,10 +146,25 @@ pub fn evaluate_channel_pairing(
 
     match latest_request.status {
         ChannelPairingRequestStatus::Approved => Ok(ChannelPairingDecision::Authorized),
-        ChannelPairingRequestStatus::Pending => Ok(ChannelPairingDecision::PairingRequired {
-            request: Box::new(latest_request),
-            created: false,
-        }),
+        ChannelPairingRequestStatus::Pending => {
+            if request_is_expired(&latest_request) {
+                let _ = repo.set_channel_pairing_request_resolution(
+                    latest_request.pairing_request_id.as_str(),
+                    ChannelPairingRequestStatus::Rejected,
+                    None,
+                    Some("expired".to_owned()),
+                )?;
+                let request = create_channel_pairing_request(&repo, subject)?;
+                return Ok(ChannelPairingDecision::PairingRequired {
+                    request: Box::new(request),
+                    created: true,
+                });
+            }
+            Ok(ChannelPairingDecision::PairingRequired {
+                request: Box::new(latest_request),
+                created: false,
+            })
+        }
         ChannelPairingRequestStatus::Rejected => Ok(ChannelPairingDecision::Rejected {
             request: Box::new(latest_request),
         }),
@@ -181,6 +193,15 @@ pub fn resolve_channel_pairing_request(
     let Some(request) = request else {
         return Ok(None);
     };
+    if request_is_expired(&request) {
+        let expired = repo.set_channel_pairing_request_resolution(
+            request.pairing_request_id.as_str(),
+            ChannelPairingRequestStatus::Rejected,
+            None,
+            Some("expired".to_owned()),
+        )?;
+        return Ok(expired);
+    }
 
     if approve {
         let existing_binding = repo.load_channel_pairing_binding(
@@ -231,6 +252,26 @@ pub fn resolve_channel_pairing_request(
 }
 
 #[cfg(feature = "memory-sqlite")]
+pub fn resolve_channel_pairing_request_by_code(
+    memory_config: &MemoryRuntimeConfig,
+    pairing_code: &str,
+    approve: bool,
+    approved_by_session_id: Option<String>,
+) -> Result<Option<ChannelPairingRequestRecord>, String> {
+    let repo = SessionRepository::new(memory_config)?;
+    let request = repo.load_latest_channel_pairing_request_by_code(pairing_code)?;
+    let Some(request) = request else {
+        return Ok(None);
+    };
+    resolve_channel_pairing_request(
+        memory_config,
+        request.pairing_request_id.as_str(),
+        approve,
+        approved_by_session_id,
+    )
+}
+
+#[cfg(feature = "memory-sqlite")]
 pub fn describe_channel_pairing_resolution(
     memory_config: &MemoryRuntimeConfig,
     mode: ChannelPairingMode,
@@ -243,6 +284,8 @@ pub fn describe_channel_pairing_resolution(
             state: ChannelPairingState::Disabled,
             static_sender_gate_present,
             pairing_request_id: None,
+            pairing_code: None,
+            pairing_code_expires_at_ms: None,
             binding_id: None,
         });
     }
@@ -252,6 +295,8 @@ pub fn describe_channel_pairing_resolution(
             state: ChannelPairingState::NotApplicable,
             static_sender_gate_present,
             pairing_request_id: None,
+            pairing_code: None,
+            pairing_code_expires_at_ms: None,
             binding_id: None,
         });
     }
@@ -261,6 +306,8 @@ pub fn describe_channel_pairing_resolution(
             state: ChannelPairingState::NotApplicable,
             static_sender_gate_present,
             pairing_request_id: None,
+            pairing_code: None,
+            pairing_code_expires_at_ms: None,
             binding_id: None,
         });
     };
@@ -278,6 +325,8 @@ pub fn describe_channel_pairing_resolution(
             state: ChannelPairingState::Approved,
             static_sender_gate_present,
             pairing_request_id: binding.pairing_request_id,
+            pairing_code: None,
+            pairing_code_expires_at_ms: None,
             binding_id: Some(binding.binding_id),
         });
     }
@@ -294,6 +343,8 @@ pub fn describe_channel_pairing_resolution(
             state: ChannelPairingState::Required,
             static_sender_gate_present,
             pairing_request_id: None,
+            pairing_code: None,
+            pairing_code_expires_at_ms: None,
             binding_id: None,
         });
     };
@@ -309,6 +360,8 @@ pub fn describe_channel_pairing_resolution(
         state,
         static_sender_gate_present,
         pairing_request_id: Some(request.pairing_request_id),
+        pairing_code: Some(request.pairing_code),
+        pairing_code_expires_at_ms: Some(request.expires_at_ms),
         binding_id: request.approved_binding_id,
     })
 }
@@ -319,13 +372,15 @@ pub fn render_channel_pairing_reply(decision: &ChannelPairingDecision) -> String
         ChannelPairingDecision::Authorized => String::new(),
         ChannelPairingDecision::PairingRequired { request, created } => {
             let request_id = request.pairing_request_id.as_str();
+            let pairing_code = format_pairing_code_for_display(request.pairing_code.as_str());
+            let expires_in_minutes = expires_in_minutes(request.expires_at_ms);
             let created_note = if *created {
                 " A new approval request has been created."
             } else {
                 " The existing approval request is still pending."
             };
             format!(
-                "This conversation requires operator pairing approval before I can respond. request_id={request_id}.{created_note}"
+                "This conversation requires operator pairing approval before I can respond. Share pairing_code={pairing_code} with the operator. It expires in about {expires_in_minutes} minutes. request_id={request_id}.{created_note}"
             )
         }
         ChannelPairingDecision::Rejected { request } => {
@@ -335,6 +390,34 @@ pub fn render_channel_pairing_reply(decision: &ChannelPairingDecision) -> String
             )
         }
     }
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn create_channel_pairing_request(
+    repo: &SessionRepository,
+    subject: &ChannelPairingSubject,
+) -> Result<ChannelPairingRequestRecord, String> {
+    let request_id = next_channel_pairing_request_id();
+    let pairing_code = next_channel_pairing_code();
+    let expires_at_ms = unix_time_ms_now() + CHANNEL_PAIRING_CODE_TTL_MS;
+    let record = NewChannelPairingRequestRecord {
+        pairing_request_id: request_id,
+        channel_id: subject.channel_id.clone(),
+        configured_account_id: subject.configured_account_id.clone(),
+        account_id: subject.account_id.clone(),
+        conversation_id: subject.conversation_id.clone(),
+        participant_id: subject.participant_id.clone(),
+        route_session_id: subject.route_session_id.clone(),
+        sender_principal_key: subject.sender_principal_key.clone(),
+        pairing_code,
+        expires_at_ms,
+    };
+    repo.ensure_channel_pairing_request(record)
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn request_is_expired(request: &ChannelPairingRequestRecord) -> bool {
+    unix_time_ms_now() >= request.expires_at_ms
 }
 
 fn normalize_optional_field(value: Option<String>) -> Option<String> {
@@ -349,6 +432,39 @@ fn normalize_required_field(value: String, field: &str) -> Result<String, String
         return Err(format!("channel pairing {field} is empty"));
     }
     Ok(trimmed.to_owned())
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn next_channel_pairing_code() -> String {
+    let mut random_bits = rand::random::<u64>();
+    let mut code = String::with_capacity(CHANNEL_PAIRING_CODE_LENGTH);
+    for _ in 0..CHANNEL_PAIRING_CODE_LENGTH {
+        let index = (random_bits & 0x1f) as usize;
+        let symbol = CHANNEL_PAIRING_CODE_ALPHABET
+            .get(index)
+            .copied()
+            .unwrap_or(b'A') as char;
+        code.push(symbol);
+        random_bits >>= 5;
+    }
+    code
+}
+
+fn format_pairing_code_for_display(code: &str) -> String {
+    let trimmed = code.trim();
+    if trimmed.len() != CHANNEL_PAIRING_CODE_LENGTH {
+        return trimmed.to_owned();
+    }
+    let first = &trimmed[0..4];
+    let second = &trimmed[4..8];
+    format!("{first}-{second}")
+}
+
+fn expires_in_minutes(expires_at_ms: i64) -> i64 {
+    let now_ms = unix_time_ms_now();
+    let remaining_ms = expires_at_ms.saturating_sub(now_ms);
+    let remaining_minutes = remaining_ms / 60_000;
+    remaining_minutes.max(1)
 }
 
 #[cfg(feature = "memory-sqlite")]
@@ -475,6 +591,35 @@ mod tests {
     }
 
     #[test]
+    fn channel_pairing_can_resolve_pending_request_by_pairing_code() {
+        let (root, runtime) = pairing_test_memory("channel-pairing-code");
+        let subject = subject();
+
+        let pending = evaluate_channel_pairing(&runtime, &subject).expect("create pending request");
+        let pairing_code = match pending {
+            ChannelPairingDecision::PairingRequired { request, .. } => request.pairing_code,
+            other @ ChannelPairingDecision::Authorized
+            | other @ ChannelPairingDecision::Rejected { .. } => {
+                panic!("expected pending request, got {other:?}")
+            }
+        };
+
+        let approved = resolve_channel_pairing_request_by_code(
+            &runtime,
+            pairing_code.as_str(),
+            true,
+            Some("root-session".to_owned()),
+        )
+        .expect("approve pairing by code")
+        .expect("persisted approval");
+        assert_eq!(approved.status, ChannelPairingRequestStatus::Approved);
+
+        let decision = evaluate_channel_pairing(&runtime, &subject).expect("re-evaluate approval");
+        assert!(matches!(decision, ChannelPairingDecision::Authorized));
+        cleanup_pairing_test_memory(&root);
+    }
+
+    #[test]
     fn channel_pairing_rejection_blocks_without_creating_new_pending_request() {
         let (root, runtime) = pairing_test_memory("channel-pairing-reject");
         let subject = subject();
@@ -564,6 +709,20 @@ mod tests {
         .expect("describe approved pairing");
         assert_eq!(approved_resolution.state, ChannelPairingState::Approved);
         assert!(approved_resolution.binding_id.is_some());
+        cleanup_pairing_test_memory(&root);
+    }
+
+    #[test]
+    fn channel_pairing_reply_surfaces_formatted_pairing_code() {
+        let (root, runtime) = pairing_test_memory("channel-pairing-reply");
+        let subject = subject();
+        let decision = evaluate_channel_pairing(&runtime, &subject).expect("create request");
+
+        let reply = render_channel_pairing_reply(&decision);
+
+        assert!(reply.contains("pairing_code="));
+        assert!(reply.contains("request_id="));
+        assert!(reply.contains("-"));
         cleanup_pairing_test_memory(&root);
     }
 }

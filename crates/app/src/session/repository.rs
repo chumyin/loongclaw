@@ -348,8 +348,10 @@ pub struct ChannelPairingRequestRecord {
     pub participant_id: String,
     pub route_session_id: String,
     pub sender_principal_key: Option<String>,
+    pub pairing_code: String,
     pub status: ChannelPairingRequestStatus,
     pub requested_at_ms: i64,
+    pub expires_at_ms: i64,
     pub resolved_at_ms: Option<i64>,
     pub approved_binding_id: Option<String>,
     pub last_error: Option<String>,
@@ -365,6 +367,8 @@ pub struct NewChannelPairingRequestRecord {
     pub participant_id: String,
     pub route_session_id: String,
     pub sender_principal_key: Option<String>,
+    pub pairing_code: String,
+    pub expires_at_ms: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2413,7 +2417,9 @@ impl SessionRepository {
         let route_session_id =
             normalize_required_text(&record.route_session_id, "route_session_id")?;
         let sender_principal_key = normalize_optional_text(record.sender_principal_key);
+        let pairing_code = normalize_pairing_code(&record.pairing_code)?;
         let requested_at_ms = unix_time_ms_now();
+        let expires_at_ms = record.expires_at_ms;
         let conn = self.open_connection()?;
 
         match conn.execute(
@@ -2426,12 +2432,14 @@ impl SessionRepository {
                 participant_id,
                 route_session_id,
                 sender_principal_key,
+                pairing_code,
                 status,
                 requested_at_ms,
+                expires_at_ms,
                 resolved_at_ms,
                 approved_binding_id,
                 last_error
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL, NULL, NULL)",
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, NULL, NULL, NULL)",
             params![
                 &pairing_request_id,
                 channel_id,
@@ -2441,8 +2449,10 @@ impl SessionRepository {
                 participant_id,
                 route_session_id,
                 sender_principal_key,
+                pairing_code,
                 ChannelPairingRequestStatus::Pending.as_str(),
                 requested_at_ms,
+                expires_at_ms,
             ],
         ) {
             Ok(_) => {}
@@ -2485,8 +2495,10 @@ impl SessionRepository {
                     participant_id,
                     route_session_id,
                     sender_principal_key,
+                    pairing_code,
                     status,
                     requested_at_ms,
+                    expires_at_ms,
                     resolved_at_ms,
                     approved_binding_id,
                     last_error
@@ -2503,11 +2515,13 @@ impl SessionRepository {
                         participant_id: row.get(5)?,
                         route_session_id: row.get(6)?,
                         sender_principal_key: row.get(7)?,
-                        status: row.get(8)?,
-                        requested_at_ms: row.get(9)?,
-                        resolved_at_ms: row.get(10)?,
-                        approved_binding_id: row.get(11)?,
-                        last_error: row.get(12)?,
+                        pairing_code: row.get(8)?,
+                        status: row.get(9)?,
+                        requested_at_ms: row.get(10)?,
+                        expires_at_ms: row.get(11)?,
+                        resolved_at_ms: row.get(12)?,
+                        approved_binding_id: row.get(13)?,
+                        last_error: row.get(14)?,
                     })
                 },
             )
@@ -2542,8 +2556,10 @@ impl SessionRepository {
                     participant_id,
                     route_session_id,
                     sender_principal_key,
+                    pairing_code,
                     status,
                     requested_at_ms,
+                    expires_at_ms,
                     resolved_at_ms,
                     approved_binding_id,
                     last_error
@@ -2570,16 +2586,76 @@ impl SessionRepository {
                         participant_id: row.get(5)?,
                         route_session_id: row.get(6)?,
                         sender_principal_key: row.get(7)?,
-                        status: row.get(8)?,
-                        requested_at_ms: row.get(9)?,
-                        resolved_at_ms: row.get(10)?,
-                        approved_binding_id: row.get(11)?,
-                        last_error: row.get(12)?,
+                        pairing_code: row.get(8)?,
+                        status: row.get(9)?,
+                        requested_at_ms: row.get(10)?,
+                        expires_at_ms: row.get(11)?,
+                        resolved_at_ms: row.get(12)?,
+                        approved_binding_id: row.get(13)?,
+                        last_error: row.get(14)?,
                     })
                 },
             )
             .optional()
             .map_err(|error| format!("load latest channel pairing request row failed: {error}"))?;
+
+        raw.map(ChannelPairingRequestRecord::try_from_raw)
+            .transpose()
+    }
+
+    pub fn load_latest_channel_pairing_request_by_code(
+        &self,
+        pairing_code: &str,
+    ) -> Result<Option<ChannelPairingRequestRecord>, String> {
+        let pairing_code = normalize_pairing_code(pairing_code)?;
+        let conn = self.open_connection()?;
+        let raw = conn
+            .query_row(
+                "SELECT
+                    pairing_request_id,
+                    channel_id,
+                    configured_account_id,
+                    account_id,
+                    conversation_id,
+                    participant_id,
+                    route_session_id,
+                    sender_principal_key,
+                    pairing_code,
+                    status,
+                    requested_at_ms,
+                    expires_at_ms,
+                    resolved_at_ms,
+                    approved_binding_id,
+                    last_error
+                 FROM channel_pairing_requests
+                 WHERE pairing_code = ?1
+                 ORDER BY requested_at_ms DESC, pairing_request_id ASC
+                 LIMIT 1",
+                params![pairing_code],
+                |row| {
+                    Ok(RawChannelPairingRequestRecord {
+                        pairing_request_id: row.get(0)?,
+                        channel_id: row.get(1)?,
+                        configured_account_id: row.get(2)?,
+                        account_id: row.get(3)?,
+                        conversation_id: row.get(4)?,
+                        participant_id: row.get(5)?,
+                        route_session_id: row.get(6)?,
+                        sender_principal_key: row.get(7)?,
+                        pairing_code: row.get(8)?,
+                        status: row.get(9)?,
+                        requested_at_ms: row.get(10)?,
+                        expires_at_ms: row.get(11)?,
+                        resolved_at_ms: row.get(12)?,
+                        approved_binding_id: row.get(13)?,
+                        last_error: row.get(14)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|error| {
+                format!("load latest channel pairing request by code failed: {error}")
+            })?;
 
         raw.map(ChannelPairingRequestRecord::try_from_raw)
             .transpose()
@@ -2607,8 +2683,10 @@ impl SessionRepository {
                             participant_id,
                             route_session_id,
                             sender_principal_key,
+                            pairing_code,
                             status,
                             requested_at_ms,
+                            expires_at_ms,
                             resolved_at_ms,
                             approved_binding_id,
                             last_error
@@ -2631,11 +2709,13 @@ impl SessionRepository {
                             participant_id: row.get(5)?,
                             route_session_id: row.get(6)?,
                             sender_principal_key: row.get(7)?,
-                            status: row.get(8)?,
-                            requested_at_ms: row.get(9)?,
-                            resolved_at_ms: row.get(10)?,
-                            approved_binding_id: row.get(11)?,
-                            last_error: row.get(12)?,
+                            pairing_code: row.get(8)?,
+                            status: row.get(9)?,
+                            requested_at_ms: row.get(10)?,
+                            expires_at_ms: row.get(11)?,
+                            resolved_at_ms: row.get(12)?,
+                            approved_binding_id: row.get(13)?,
+                            last_error: row.get(14)?,
                         })
                     })
                     .map_err(|error| {
@@ -2662,8 +2742,10 @@ impl SessionRepository {
                             participant_id,
                             route_session_id,
                             sender_principal_key,
+                            pairing_code,
                             status,
                             requested_at_ms,
+                            expires_at_ms,
                             resolved_at_ms,
                             approved_binding_id,
                             last_error
@@ -2685,11 +2767,13 @@ impl SessionRepository {
                             participant_id: row.get(5)?,
                             route_session_id: row.get(6)?,
                             sender_principal_key: row.get(7)?,
-                            status: row.get(8)?,
-                            requested_at_ms: row.get(9)?,
-                            resolved_at_ms: row.get(10)?,
-                            approved_binding_id: row.get(11)?,
-                            last_error: row.get(12)?,
+                            pairing_code: row.get(8)?,
+                            status: row.get(9)?,
+                            requested_at_ms: row.get(10)?,
+                            expires_at_ms: row.get(11)?,
+                            resolved_at_ms: row.get(12)?,
+                            approved_binding_id: row.get(13)?,
+                            last_error: row.get(14)?,
                         })
                     })
                     .map_err(|error| {
@@ -4131,8 +4215,10 @@ struct RawChannelPairingRequestRecord {
     participant_id: String,
     route_session_id: String,
     sender_principal_key: Option<String>,
+    pairing_code: String,
     status: String,
     requested_at_ms: i64,
+    expires_at_ms: i64,
     resolved_at_ms: Option<i64>,
     approved_binding_id: Option<String>,
     last_error: Option<String>,
@@ -4382,8 +4468,10 @@ impl ChannelPairingRequestRecord {
             participant_id: raw.participant_id,
             route_session_id: raw.route_session_id,
             sender_principal_key: raw.sender_principal_key,
+            pairing_code: raw.pairing_code,
             status: ChannelPairingRequestStatus::from_db(&raw.status)?,
             requested_at_ms: raw.requested_at_ms,
+            expires_at_ms: raw.expires_at_ms,
             resolved_at_ms: raw.resolved_at_ms,
             approved_binding_id: raw.approved_binding_id,
             last_error: raw.last_error,
@@ -4428,6 +4516,21 @@ fn decode_string_set_json(encoded: &str) -> Result<BTreeSet<String>, String> {
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty())
         .collect::<BTreeSet<_>>())
+}
+
+fn normalize_pairing_code(value: &str) -> Result<String, String> {
+    let trimmed = normalize_required_text(value, "pairing_code")?;
+    let mut normalized = String::new();
+    for character in trimmed.chars() {
+        if character == '-' || character.is_ascii_whitespace() {
+            continue;
+        }
+        normalized.push(character.to_ascii_uppercase());
+    }
+    if normalized.is_empty() {
+        return Err("session repository requires pairing_code".to_owned());
+    }
+    Ok(normalized)
 }
 
 fn normalize_required_text(value: &str, field_name: &str) -> Result<String, String> {

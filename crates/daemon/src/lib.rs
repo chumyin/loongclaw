@@ -871,7 +871,9 @@ pub enum Commands {
         #[arg(long)]
         config: Option<String>,
         #[arg(long)]
-        pairing_request_id: String,
+        pairing_request_id: Option<String>,
+        #[arg(long)]
+        pairing_code: Option<String>,
         #[arg(long, default_value_t = false, conflicts_with = "reject")]
         approve: bool,
         #[arg(long, default_value_t = false, conflicts_with = "approve")]

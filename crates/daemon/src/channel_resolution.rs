@@ -309,13 +309,21 @@ pub fn render_channel_resolution_text(resolution: &ChannelResolveOutput) -> Stri
             }
             if let Some(pairing_resolution) = pairing_resolution {
                 lines.push(format!(
-                    "pairing_mode={} pairing_state={} pairing_request_id={} pairing_binding_id={}",
+                    "pairing_mode={} pairing_state={} pairing_request_id={} pairing_code={} pairing_code_expires_at_ms={} pairing_binding_id={}",
                     pairing_resolution.mode.as_str(),
                     pairing_resolution.state.as_str(),
                     pairing_resolution
                         .pairing_request_id
                         .as_deref()
                         .unwrap_or("-"),
+                    pairing_resolution
+                        .pairing_code
+                        .as_deref()
+                        .unwrap_or("-"),
+                    pairing_resolution
+                        .pairing_code_expires_at_ms
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "-".to_owned()),
                     pairing_resolution.binding_id.as_deref().unwrap_or("-"),
                 ));
             }
@@ -648,5 +656,6 @@ mod tests {
 
         assert!(rendered.contains("pairing_mode=participant_approval"));
         assert!(rendered.contains("pairing_state=pending"));
+        assert!(rendered.contains("pairing_code="));
     }
 }

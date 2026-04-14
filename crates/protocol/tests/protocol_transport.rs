@@ -604,8 +604,10 @@ fn control_plane_channel_pairing_resolve_response_roundtrips_through_json() {
             participant_id: "ou_sender_1".to_owned(),
             route_session_id: "feishu:feishu_cli_a1b2c3:oc_demo:ou_sender_1".to_owned(),
             sender_principal_key: Some("feishu_cli_a1b2c3:ou_sender_1".to_owned()),
+            pairing_code: "ABCD2345".to_owned(),
             status: ControlPlanePairingStatus::Approved,
             requested_at_ms: 10,
+            expires_at_ms: 3_610,
             resolved_at_ms: Some(20),
             approved_binding_id: Some("cpb-1".to_owned()),
         },
@@ -615,6 +617,20 @@ fn control_plane_channel_pairing_resolve_response_roundtrips_through_json() {
     let decoded: ControlPlaneChannelPairingResolveResponse =
         serde_json::from_str(&encoded).expect("response should deserialize");
     assert_eq!(decoded, response);
+}
+
+#[test]
+fn control_plane_channel_pairing_resolve_request_roundtrips_with_pairing_code() {
+    let request = ControlPlaneChannelPairingResolveRequest {
+        pairing_request_id: None,
+        pairing_code: Some("ABCD2345".to_owned()),
+        approve: true,
+    };
+
+    let encoded = serde_json::to_string(&request).expect("request should serialize");
+    let decoded: ControlPlaneChannelPairingResolveRequest =
+        serde_json::from_str(&encoded).expect("request should deserialize");
+    assert_eq!(decoded, request);
 }
 
 #[test]

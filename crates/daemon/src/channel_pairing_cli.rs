@@ -67,8 +67,10 @@ pub fn run_list_channel_pairings_cli(
         println!("requests:");
         for request in requests {
             println!(
-                "- pairing_request_id={} channel_id={} configured_account_id={} account_id={} conversation_id={} participant_id={} route_session_id={} status={} requested_at_ms={} resolved_at_ms={} approved_binding_id={} sender_principal_key={}",
+                "- pairing_request_id={} pairing_code={} expires_at_ms={} channel_id={} configured_account_id={} account_id={} conversation_id={} participant_id={} route_session_id={} status={} requested_at_ms={} resolved_at_ms={} approved_binding_id={} sender_principal_key={}",
                 request.pairing_request_id,
+                request.pairing_code,
+                request.expires_at_ms,
                 request.channel_id,
                 request.configured_account_id,
                 request.account_id.as_deref().unwrap_or("(none)"),
@@ -91,13 +93,20 @@ pub fn run_list_channel_pairings_cli(
 
 pub fn run_resolve_channel_pairing_cli(
     config_path: Option<&str>,
-    pairing_request_id: &str,
+    pairing_request_id: Option<&str>,
+    pairing_code: Option<&str>,
     approve: bool,
     as_json: bool,
 ) -> CliResult<()> {
     #[cfg(not(feature = "memory-sqlite"))]
     {
-        let _ = (config_path, pairing_request_id, approve, as_json);
+        let _ = (
+            config_path,
+            pairing_request_id,
+            pairing_code,
+            approve,
+            as_json,
+        );
         Err("channel pairing persistence requires feature `memory-sqlite`".to_owned())
     }
 
@@ -106,16 +115,44 @@ pub fn run_resolve_channel_pairing_cli(
         let (resolved_path, config) = mvp::config::load(config_path)?;
         let memory_config =
             mvp::memory::runtime_config::MemoryRuntimeConfig::from_memory_config(&config.memory);
-        let updated = mvp::channel::pairing::resolve_channel_pairing_request(
-            &memory_config,
-            pairing_request_id,
-            approve,
-            None,
-        )?;
+        let pairing_request_id = pairing_request_id
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let pairing_code = pairing_code
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let updated = match (pairing_request_id, pairing_code) {
+            (Some(pairing_request_id), None) => {
+                mvp::channel::pairing::resolve_channel_pairing_request(
+                    &memory_config,
+                    pairing_request_id,
+                    approve,
+                    None,
+                )?
+            }
+            (None, Some(pairing_code)) => {
+                mvp::channel::pairing::resolve_channel_pairing_request_by_code(
+                    &memory_config,
+                    pairing_code,
+                    approve,
+                    None,
+                )?
+            }
+            (Some(_), Some(_)) => {
+                return Err(
+                    "channel pairing resolve accepts either pairing_request_id or pairing_code"
+                        .to_owned(),
+                );
+            }
+            (None, None) => {
+                return Err(
+                    "channel pairing resolve requires pairing_request_id or pairing_code"
+                        .to_owned(),
+                );
+            }
+        };
         let Some(updated) = updated else {
-            return Err(format!(
-                "channel pairing request `{pairing_request_id}` not found"
-            ));
+            return Err("channel pairing request not found".to_owned());
         };
 
         if as_json {
@@ -131,9 +168,11 @@ pub fn run_resolve_channel_pairing_cli(
         }
 
         println!(
-            "config={} pairing_request_id={} status={} conversation_id={} participant_id={} approved_binding_id={}",
+            "config={} pairing_request_id={} pairing_code={} expires_at_ms={} status={} conversation_id={} participant_id={} approved_binding_id={}",
             resolved_path.display(),
             updated.pairing_request_id,
+            updated.pairing_code,
+            updated.expires_at_ms,
             updated.status.as_str(),
             updated.conversation_id,
             updated.participant_id,

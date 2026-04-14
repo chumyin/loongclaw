@@ -463,6 +463,7 @@ async fn main() {
         Commands::ChannelPairingResolve {
             config,
             pairing_request_id,
+            pairing_code,
             approve,
             reject,
             json,
@@ -472,7 +473,8 @@ async fn main() {
             } else {
                 run_resolve_channel_pairing_cli(
                     config.as_deref(),
-                    pairing_request_id.as_str(),
+                    pairing_request_id.as_deref(),
+                    pairing_code.as_deref(),
                     approve,
                     json,
                 )

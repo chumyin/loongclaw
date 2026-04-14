@@ -102,11 +102,14 @@ without scraping the list view.
 For the shipped participant-aware runtime-backed surfaces, optional
 `pairing_mode = "participant_approval"` adds a dynamic approval layer inside
 the existing conversation allowlist boundary. The first inbound turn from an
-unapproved participant creates a persisted pairing request instead of reaching
-the runtime. Operators can inspect and resolve those requests with:
+unapproved participant creates a persisted pairing request with a short pairing
+code instead of reaching the runtime. The user-facing reply includes that code,
+and operators can inspect or resolve the request by request id or by pairing
+code with:
 
 - `loong list-channel-pairings`
 - `loong channel-pairing-resolve --pairing-request-id <id> --approve`
+- `loong channel-pairing-resolve --pairing-code <code> --approve`
 - `loong channel-pairing-resolve --pairing-request-id <id> --reject`
 
 | Surface | Status | Transport | Required config | Operator commands |
