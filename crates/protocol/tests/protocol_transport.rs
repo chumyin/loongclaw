@@ -370,6 +370,35 @@ fn channel_pairing_resolve_requires_control_pairing_capability() {
 }
 
 #[test]
+fn channel_pairing_history_requires_control_pairing_capability() {
+    let router = ProtocolRouter::default();
+    let resolved = router
+        .resolve("channel-pairing/history")
+        .expect("channel-pairing/history should resolve");
+    assert_eq!(
+        resolved.policy.required_capability.as_deref(),
+        Some("control_pairing")
+    );
+
+    let error = router
+        .authorize(
+            &resolved,
+            &RouteAuthorizationRequest {
+                authenticated: true,
+                capabilities: BTreeSet::from(["control.read".to_owned()]),
+            },
+        )
+        .expect_err("channel-pairing/history should require control.pairing");
+    assert!(matches!(
+        error,
+        RouteAuthorizationError::MissingCapability {
+            method,
+            required_capability
+        } if method == "channel-pairing/history" && required_capability == "control_pairing"
+    ));
+}
+
+#[test]
 fn channel_pairing_revoke_requires_control_pairing_capability() {
     let router = ProtocolRouter::default();
     let resolved = router
@@ -432,6 +461,13 @@ fn channel_pairing_revoke_route_method_roundtrips() {
     let route = ProtocolRoute::from_method("channel-pairing/revoke");
     assert_eq!(route, ProtocolRoute::ChannelPairingRevoke);
     assert_eq!(route.method(), "channel-pairing/revoke");
+}
+
+#[test]
+fn channel_pairing_history_route_method_roundtrips() {
+    let route = ProtocolRoute::from_method("channel-pairing/history");
+    assert_eq!(route, ProtocolRoute::ChannelPairingHistory);
+    assert_eq!(route.method(), "channel-pairing/history");
 }
 
 #[test]
@@ -682,6 +718,7 @@ fn control_plane_channel_pairing_resolve_response_roundtrips_through_json() {
             expires_at_ms: 3_610,
             resolved_at_ms: Some(20),
             approved_binding_id: Some("cpb-1".to_owned()),
+            last_error: None,
         },
     };
 
@@ -732,6 +769,52 @@ fn control_plane_channel_pairing_clear_pending_response_roundtrips_through_json(
 }
 
 #[test]
+fn control_plane_channel_pairing_history_response_roundtrips_through_json() {
+    let response = ControlPlaneChannelPairingHistoryResponse {
+        returned_count: 2,
+        events: vec![
+            ControlPlaneChannelPairingEventSummary {
+                event_id: "cpe-cpr-1-requested".to_owned(),
+                pairing_request_id: Some("cpr-1".to_owned()),
+                binding_id: None,
+                channel_id: "telegram".to_owned(),
+                configured_account_id: "ops".to_owned(),
+                account_id: Some("ops-bot".to_owned()),
+                conversation_id: "123".to_owned(),
+                participant_id: "7".to_owned(),
+                route_session_id: "telegram:ops-bot:123:p=7".to_owned(),
+                sender_principal_key: Some("telegram:user:7".to_owned()),
+                event_kind: ControlPlaneChannelPairingEventKind::Requested,
+                actor_session_id: None,
+                detail: None,
+                event_at_ms: 10,
+            },
+            ControlPlaneChannelPairingEventSummary {
+                event_id: "cpe-cpr-1-approved".to_owned(),
+                pairing_request_id: Some("cpr-1".to_owned()),
+                binding_id: Some("cpb-1".to_owned()),
+                channel_id: "telegram".to_owned(),
+                configured_account_id: "ops".to_owned(),
+                account_id: Some("ops-bot".to_owned()),
+                conversation_id: "123".to_owned(),
+                participant_id: "7".to_owned(),
+                route_session_id: "telegram:ops-bot:123:p=7".to_owned(),
+                sender_principal_key: Some("telegram:user:7".to_owned()),
+                event_kind: ControlPlaneChannelPairingEventKind::Approved,
+                actor_session_id: Some("root-session".to_owned()),
+                detail: None,
+                event_at_ms: 20,
+            },
+        ],
+    };
+
+    let encoded = serde_json::to_string(&response).expect("response should serialize");
+    let decoded: ControlPlaneChannelPairingHistoryResponse =
+        serde_json::from_str(&encoded).expect("response should deserialize");
+    assert_eq!(decoded, response);
+}
+
+#[test]
 fn control_plane_channel_pairing_revoke_response_roundtrips_through_json() {
     let response = ControlPlaneChannelPairingRevokeResponse {
         request: ControlPlaneChannelPairingRequestSummary {
@@ -750,6 +833,7 @@ fn control_plane_channel_pairing_revoke_response_roundtrips_through_json() {
             expires_at_ms: 3_610,
             resolved_at_ms: Some(20),
             approved_binding_id: None,
+            last_error: Some("revoked_by_operator".to_owned()),
         },
     };
 

@@ -171,8 +171,8 @@ pub(crate) use channel_bridge_render::{
     render_line_safe_optional_text_value, render_line_safe_text_value, render_line_safe_text_values,
 };
 pub use channel_pairing_cli::{
-    run_clear_pending_channel_pairings_cli, run_list_channel_pairings_cli,
-    run_resolve_channel_pairing_cli, run_revoke_channel_pairing_cli,
+    run_channel_pairing_history_cli, run_clear_pending_channel_pairings_cli,
+    run_list_channel_pairings_cli, run_resolve_channel_pairing_cli, run_revoke_channel_pairing_cli,
 };
 pub use gateway::read_models::{ChannelsCliJsonPayload, ChannelsCliJsonSchema};
 pub use loongclaw_spec::programmatic::{
@@ -869,6 +869,29 @@ pub enum Commands {
         #[arg(long, default_value_t = false)]
         json: bool,
     },
+    /// Show immutable channel-side participant pairing lifecycle history
+    ChannelPairingHistory {
+        #[arg(long)]
+        config: Option<String>,
+        #[arg(long)]
+        pairing_request_id: Option<String>,
+        #[arg(long)]
+        channel_id: Option<String>,
+        #[arg(long)]
+        configured_account_id: Option<String>,
+        #[arg(long)]
+        conversation_id: Option<String>,
+        #[arg(long)]
+        participant_id: Option<String>,
+        #[arg(long)]
+        event_kind: Option<String>,
+        #[arg(long)]
+        actor_session_id: Option<String>,
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
     /// Approve or reject one channel-side participant pairing request
     ChannelPairingResolve {
         #[arg(long)]
@@ -971,7 +994,7 @@ pub enum Commands {
     },
     #[command(
         about = "Run the loopback-only internal control-plane skeleton",
-        long_about = "Run the internal control-plane skeleton.\n\nBy default this control-plane listener binds 127.0.0.1 only. You may provide `--bind <host:port>` to override the listener address, but non-loopback binds require `--config` plus `control_plane.allow_remote=true` and a configured `control_plane.shared_token`. Baseline endpoints are `/readyz`, `/healthz`, `/control/challenge`, `/control/connect`, `/control/subscribe`, `/control/snapshot`, and `/control/events`. When `--config` is provided, repository-backed `/session/list`, `/session/read`, `/approval/list`, `/pairing/list`, `/pairing/resolve`, `/channel-pairing/list`, `/channel-pairing/resolve`, `/channel-pairing/revoke`, `/channel-pairing/clear-pending`, `/acp/session/list`, and `/acp/session/read` views become available for the selected session root."
+        long_about = "Run the internal control-plane skeleton.\n\nBy default this control-plane listener binds 127.0.0.1 only. You may provide `--bind <host:port>` to override the listener address, but non-loopback binds require `--config` plus `control_plane.allow_remote=true` and a configured `control_plane.shared_token`. Baseline endpoints are `/readyz`, `/healthz`, `/control/challenge`, `/control/connect`, `/control/subscribe`, `/control/snapshot`, and `/control/events`. When `--config` is provided, repository-backed `/session/list`, `/session/read`, `/approval/list`, `/pairing/list`, `/pairing/resolve`, `/channel-pairing/list`, `/channel-pairing/history`, `/channel-pairing/resolve`, `/channel-pairing/revoke`, `/channel-pairing/clear-pending`, `/acp/session/list`, and `/acp/session/read` views become available for the selected session root."
     )]
     ControlPlaneServe {
         #[arg(long)]

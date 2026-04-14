@@ -7,11 +7,19 @@ use crate::memory::runtime_config::MemoryRuntimeConfig;
 #[cfg(feature = "memory-sqlite")]
 use crate::session::repository::ChannelPairingCodeResolutionStateRecord;
 #[cfg(feature = "memory-sqlite")]
+use crate::session::repository::ChannelPairingEventFilter;
+#[cfg(feature = "memory-sqlite")]
+use crate::session::repository::ChannelPairingEventKind;
+#[cfg(feature = "memory-sqlite")]
+use crate::session::repository::ChannelPairingEventRecord;
+#[cfg(feature = "memory-sqlite")]
 use crate::session::repository::ChannelPairingRequestRecord;
 #[cfg(feature = "memory-sqlite")]
 use crate::session::repository::ChannelPairingRequestStatus;
 #[cfg(feature = "memory-sqlite")]
 use crate::session::repository::NewChannelPairingBindingRecord;
+#[cfg(feature = "memory-sqlite")]
+use crate::session::repository::NewChannelPairingEventRecord;
 #[cfg(feature = "memory-sqlite")]
 use crate::session::repository::NewChannelPairingRequestRecord;
 #[cfg(feature = "memory-sqlite")]
@@ -156,6 +164,48 @@ impl ChannelPairingPendingScope {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct ChannelPairingHistoryQuery {
+    pub pairing_request_id: Option<String>,
+    pub channel_id: Option<String>,
+    pub configured_account_id: Option<String>,
+    pub conversation_id: Option<String>,
+    pub participant_id: Option<String>,
+    pub event_kind: Option<ChannelPairingEventKind>,
+    pub actor_session_id: Option<String>,
+}
+
+impl ChannelPairingHistoryQuery {
+    pub fn new(
+        pairing_request_id: Option<String>,
+        channel_id: Option<String>,
+        configured_account_id: Option<String>,
+        conversation_id: Option<String>,
+        participant_id: Option<String>,
+        event_kind: Option<String>,
+        actor_session_id: Option<String>,
+    ) -> Result<Self, String> {
+        let pairing_request_id = normalize_optional_field(pairing_request_id);
+        let channel_id = normalize_optional_field(channel_id);
+        let configured_account_id = normalize_optional_field(configured_account_id);
+        let conversation_id = normalize_optional_field(conversation_id);
+        let participant_id = normalize_optional_field(participant_id);
+        let event_kind = event_kind
+            .map(|value| ChannelPairingEventKind::parse(value.trim()))
+            .transpose()?;
+        let actor_session_id = normalize_optional_field(actor_session_id);
+        Ok(Self {
+            pairing_request_id,
+            channel_id,
+            configured_account_id,
+            conversation_id,
+            participant_id,
+            event_kind,
+            actor_session_id,
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ChannelPairingResolution {
     pub mode: ChannelPairingMode,
@@ -236,12 +286,22 @@ pub fn evaluate_channel_pairing(
         ChannelPairingRequestStatus::Approved => Ok(ChannelPairingDecision::Authorized),
         ChannelPairingRequestStatus::Pending => {
             if request_is_expired(&latest_request) {
-                let _ = repo.set_channel_pairing_request_resolution(
+                let expired_request = repo.set_channel_pairing_request_resolution(
                     latest_request.pairing_request_id.as_str(),
                     ChannelPairingRequestStatus::Rejected,
                     None,
                     Some("expired".to_owned()),
                 )?;
+                if let Some(expired_request) = expired_request.as_ref() {
+                    append_channel_pairing_event_for_request(
+                        &repo,
+                        expired_request,
+                        ChannelPairingEventKind::Expired,
+                        None,
+                        None,
+                        None,
+                    )?;
+                }
                 let pending_count = repo.count_pending_channel_pairing_requests_for_account(
                     subject.channel_id.as_str(),
                     subject.configured_account_id.as_str(),
@@ -289,9 +349,29 @@ pub fn list_channel_pairing_requests(
 }
 
 #[cfg(feature = "memory-sqlite")]
+pub fn list_channel_pairing_history(
+    memory_config: &MemoryRuntimeConfig,
+    query: &ChannelPairingHistoryQuery,
+    limit: usize,
+) -> Result<Vec<ChannelPairingEventRecord>, String> {
+    let repo = SessionRepository::new(memory_config)?;
+    let filter = ChannelPairingEventFilter {
+        pairing_request_id: query.pairing_request_id.clone(),
+        channel_id: query.channel_id.clone(),
+        configured_account_id: query.configured_account_id.clone(),
+        conversation_id: query.conversation_id.clone(),
+        participant_id: query.participant_id.clone(),
+        event_kind: query.event_kind,
+        actor_session_id: query.actor_session_id.clone(),
+    };
+    repo.list_channel_pairing_events(&filter, limit)
+}
+
+#[cfg(feature = "memory-sqlite")]
 pub fn revoke_channel_pairing(
     memory_config: &MemoryRuntimeConfig,
     selection: &ChannelPairingRequestSelection,
+    actor_session_id: Option<String>,
 ) -> Result<Option<ChannelPairingRequestRecord>, String> {
     let repo = SessionRepository::new(memory_config)?;
     let request = load_request_by_selection(&repo, selection)?;
@@ -315,18 +395,30 @@ pub fn revoke_channel_pairing(
         request.conversation_id.as_str(),
         request.participant_id.as_str(),
     )?;
-    repo.set_channel_pairing_request_resolution(
+    let updated_request = repo.set_channel_pairing_request_resolution(
         request.pairing_request_id.as_str(),
         ChannelPairingRequestStatus::Rejected,
         None,
         Some("revoked_by_operator".to_owned()),
-    )
+    )?;
+    if let Some(updated_request) = updated_request.as_ref() {
+        append_channel_pairing_event_for_request(
+            &repo,
+            updated_request,
+            ChannelPairingEventKind::Revoked,
+            None,
+            actor_session_id,
+            None,
+        )?;
+    }
+    Ok(updated_request)
 }
 
 #[cfg(feature = "memory-sqlite")]
 pub fn clear_pending_channel_pairings(
     memory_config: &MemoryRuntimeConfig,
     scope: &ChannelPairingPendingScope,
+    actor_session_id: Option<String>,
 ) -> Result<Vec<String>, String> {
     let repo = SessionRepository::new(memory_config)?;
     let pending_requests = repo.list_pending_channel_pairing_requests_in_scope(
@@ -337,9 +429,17 @@ pub fn clear_pending_channel_pairings(
     )?;
     let mut cleared_request_ids = Vec::new();
     for pending_request in pending_requests {
-        let pairing_request_id = pending_request.pairing_request_id;
+        let pairing_request_id = pending_request.pairing_request_id.clone();
         let deleted = repo.delete_channel_pairing_request(pairing_request_id.as_str())?;
         if deleted {
+            append_channel_pairing_event_for_request(
+                &repo,
+                &pending_request,
+                ChannelPairingEventKind::PendingCleared,
+                None,
+                actor_session_id.clone(),
+                None,
+            )?;
             cleared_request_ids.push(pairing_request_id);
         }
     }
@@ -365,6 +465,16 @@ pub fn resolve_channel_pairing_request(
             None,
             Some("expired".to_owned()),
         )?;
+        if let Some(expired) = expired.as_ref() {
+            append_channel_pairing_event_for_request(
+                &repo,
+                expired,
+                ChannelPairingEventKind::Expired,
+                None,
+                approved_by_session_id,
+                None,
+            )?;
+        }
         return Ok(expired);
     }
 
@@ -391,15 +501,26 @@ pub fn resolve_channel_pairing_request(
             sender_principal_key: request.sender_principal_key.clone(),
             approved_at_ms,
             pairing_request_id: Some(request.pairing_request_id.clone()),
-            approved_by_session_id,
+            approved_by_session_id: approved_by_session_id.clone(),
         };
         let binding = repo.upsert_channel_pairing_binding(new_binding)?;
-        return repo.set_channel_pairing_request_resolution(
+        let updated_request = repo.set_channel_pairing_request_resolution(
             request.pairing_request_id.as_str(),
             ChannelPairingRequestStatus::Approved,
-            Some(binding.binding_id),
+            Some(binding.binding_id.clone()),
             None,
-        );
+        )?;
+        if let Some(updated_request) = updated_request.as_ref() {
+            append_channel_pairing_event_for_request(
+                &repo,
+                updated_request,
+                ChannelPairingEventKind::Approved,
+                Some(binding.binding_id),
+                approved_by_session_id,
+                None,
+            )?;
+        }
+        return Ok(updated_request);
     }
 
     let _ = repo.delete_channel_pairing_binding(
@@ -408,12 +529,23 @@ pub fn resolve_channel_pairing_request(
         request.conversation_id.as_str(),
         request.participant_id.as_str(),
     )?;
-    repo.set_channel_pairing_request_resolution(
+    let updated_request = repo.set_channel_pairing_request_resolution(
         request.pairing_request_id.as_str(),
         ChannelPairingRequestStatus::Rejected,
         None,
         None,
-    )
+    )?;
+    if let Some(updated_request) = updated_request.as_ref() {
+        append_channel_pairing_event_for_request(
+            &repo,
+            updated_request,
+            ChannelPairingEventKind::Rejected,
+            None,
+            approved_by_session_id,
+            None,
+        )?;
+    }
+    Ok(updated_request)
 }
 
 #[cfg(feature = "memory-sqlite")]
@@ -648,7 +780,55 @@ fn create_channel_pairing_request(
         pairing_code,
         expires_at_ms,
     };
-    repo.ensure_channel_pairing_request(record)
+    let request = repo.ensure_channel_pairing_request(record)?;
+    append_channel_pairing_event_for_request(
+        repo,
+        &request,
+        ChannelPairingEventKind::Requested,
+        None,
+        None,
+        None,
+    )?;
+    Ok(request)
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn append_channel_pairing_event_for_request(
+    repo: &SessionRepository,
+    request: &ChannelPairingRequestRecord,
+    event_kind: ChannelPairingEventKind,
+    binding_id: Option<String>,
+    actor_session_id: Option<String>,
+    detail: Option<String>,
+) -> Result<ChannelPairingEventRecord, String> {
+    let event_id = channel_pairing_event_id(request.pairing_request_id.as_str(), event_kind);
+    let record = NewChannelPairingEventRecord {
+        event_id,
+        pairing_request_id: Some(request.pairing_request_id.clone()),
+        binding_id,
+        channel_id: request.channel_id.clone(),
+        configured_account_id: request.configured_account_id.clone(),
+        account_id: request.account_id.clone(),
+        conversation_id: request.conversation_id.clone(),
+        participant_id: request.participant_id.clone(),
+        route_session_id: request.route_session_id.clone(),
+        sender_principal_key: request.sender_principal_key.clone(),
+        event_kind,
+        actor_session_id,
+        detail,
+        event_at_ms: unix_time_ms_now(),
+    };
+    repo.append_channel_pairing_event(record)
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn channel_pairing_event_id(
+    pairing_request_id: &str,
+    event_kind: ChannelPairingEventKind,
+) -> String {
+    let normalized_request_id = pairing_request_id.trim();
+    let event_kind = event_kind.as_str();
+    format!("cpe-{normalized_request_id}-{event_kind}")
 }
 
 #[cfg(feature = "memory-sqlite")]
@@ -1189,6 +1369,130 @@ mod tests {
         .expect_err("fifth wrong code should trigger lockout");
         assert!(locked.contains("temporarily locked"));
 
+        cleanup_pairing_test_memory(&root);
+    }
+
+    #[test]
+    fn channel_pairing_history_preserves_request_approval_and_revoke_events() {
+        let (root, runtime) = pairing_test_memory("channel-pairing-history-revoke");
+        let subject = subject();
+        let pending = evaluate_channel_pairing(&runtime, &subject).expect("create pending request");
+        let pairing_request_id = match pending {
+            ChannelPairingDecision::PairingRequired { request, .. } => request.pairing_request_id,
+            other @ ChannelPairingDecision::Authorized
+            | other @ ChannelPairingDecision::PendingLimitReached { .. }
+            | other @ ChannelPairingDecision::Cooldown { .. }
+            | other @ ChannelPairingDecision::Rejected { .. } => {
+                panic!("expected pending request, got {other:?}")
+            }
+        };
+
+        let _ = resolve_channel_pairing_request(
+            &runtime,
+            pairing_request_id.as_str(),
+            true,
+            Some("root-session".to_owned()),
+        )
+        .expect("approve request")
+        .expect("approved request");
+        let selection = ChannelPairingRequestSelection::new(Some(pairing_request_id.clone()), None)
+            .expect("build request selection");
+        let _ = revoke_channel_pairing(&runtime, &selection, Some("root-session".to_owned()))
+            .expect("revoke pairing")
+            .expect("revoked request");
+
+        let history_query = ChannelPairingHistoryQuery::new(
+            Some(pairing_request_id),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("build history query");
+        let history =
+            list_channel_pairing_history(&runtime, &history_query, 10).expect("list history");
+
+        let event_kinds = history
+            .iter()
+            .map(|event| event.event_kind.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(event_kinds, vec!["revoked", "approved", "requested"]);
+        assert_eq!(history[0].actor_session_id.as_deref(), Some("root-session"));
+        assert!(
+            history[1]
+                .binding_id
+                .as_deref()
+                .is_some_and(|binding_id| binding_id.starts_with("cpb-"))
+        );
+
+        let approved_only_query = ChannelPairingHistoryQuery::new(
+            None,
+            Some("feishu".to_owned()),
+            Some("work".to_owned()),
+            Some("oc_demo".to_owned()),
+            Some("ou_sender_1".to_owned()),
+            Some("approved".to_owned()),
+            Some("root-session".to_owned()),
+        )
+        .expect("build approved-only query");
+        let approved_only = list_channel_pairing_history(&runtime, &approved_only_query, 10)
+            .expect("list approved-only history");
+        assert_eq!(approved_only.len(), 1);
+        assert_eq!(approved_only[0].event_kind.as_str(), "approved");
+
+        cleanup_pairing_test_memory(&root);
+    }
+
+    #[test]
+    fn channel_pairing_history_keeps_cleared_pending_subject_after_request_deletion() {
+        let (root, runtime) = pairing_test_memory("channel-pairing-history-clear");
+        let subject = subject();
+        let pending = evaluate_channel_pairing(&runtime, &subject).expect("create pending request");
+        let pairing_request_id = match pending {
+            ChannelPairingDecision::PairingRequired { request, .. } => request.pairing_request_id,
+            other @ ChannelPairingDecision::Authorized
+            | other @ ChannelPairingDecision::PendingLimitReached { .. }
+            | other @ ChannelPairingDecision::Cooldown { .. }
+            | other @ ChannelPairingDecision::Rejected { .. } => {
+                panic!("expected pending request, got {other:?}")
+            }
+        };
+        let scope = ChannelPairingPendingScope::new(
+            "feishu",
+            "work",
+            Some("oc_demo".to_owned()),
+            Some("ou_sender_1".to_owned()),
+        )
+        .expect("build pending scope");
+
+        let cleared =
+            clear_pending_channel_pairings(&runtime, &scope, Some("root-session".to_owned()))
+                .expect("clear pending");
+        assert_eq!(cleared, vec![pairing_request_id.clone()]);
+
+        let history_query = ChannelPairingHistoryQuery::new(
+            Some(pairing_request_id),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("build history query");
+        let history =
+            list_channel_pairing_history(&runtime, &history_query, 10).expect("list history");
+
+        let event_kinds = history
+            .iter()
+            .map(|event| event.event_kind.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(event_kinds, vec!["pending_cleared", "requested"]);
+        assert_eq!(history[0].actor_session_id.as_deref(), Some("root-session"));
+        assert_eq!(history[0].conversation_id, "oc_demo");
+        assert_eq!(history[0].participant_id, "ou_sender_1");
         cleanup_pairing_test_memory(&root);
     }
 }

@@ -409,6 +409,88 @@ pub struct ChannelPairingCodeResolutionStateRecord {
     pub updated_at_ms: i64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ChannelPairingEventKind {
+    Requested,
+    Approved,
+    Rejected,
+    Revoked,
+    Expired,
+    PendingCleared,
+}
+
+impl ChannelPairingEventKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Requested => "requested",
+            Self::Approved => "approved",
+            Self::Rejected => "rejected",
+            Self::Revoked => "revoked",
+            Self::Expired => "expired",
+            Self::PendingCleared => "pending_cleared",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "requested" => Ok(Self::Requested),
+            "approved" => Ok(Self::Approved),
+            "rejected" => Ok(Self::Rejected),
+            "revoked" => Ok(Self::Revoked),
+            "expired" => Ok(Self::Expired),
+            "pending_cleared" => Ok(Self::PendingCleared),
+            _ => Err(format!("unknown channel pairing event kind `{value}`")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChannelPairingEventRecord {
+    pub event_id: String,
+    pub pairing_request_id: Option<String>,
+    pub binding_id: Option<String>,
+    pub channel_id: String,
+    pub configured_account_id: String,
+    pub account_id: Option<String>,
+    pub conversation_id: String,
+    pub participant_id: String,
+    pub route_session_id: String,
+    pub sender_principal_key: Option<String>,
+    pub event_kind: ChannelPairingEventKind,
+    pub actor_session_id: Option<String>,
+    pub detail: Option<String>,
+    pub event_at_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewChannelPairingEventRecord {
+    pub event_id: String,
+    pub pairing_request_id: Option<String>,
+    pub binding_id: Option<String>,
+    pub channel_id: String,
+    pub configured_account_id: String,
+    pub account_id: Option<String>,
+    pub conversation_id: String,
+    pub participant_id: String,
+    pub route_session_id: String,
+    pub sender_principal_key: Option<String>,
+    pub event_kind: ChannelPairingEventKind,
+    pub actor_session_id: Option<String>,
+    pub detail: Option<String>,
+    pub event_at_ms: i64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ChannelPairingEventFilter {
+    pub pairing_request_id: Option<String>,
+    pub channel_id: Option<String>,
+    pub configured_account_id: Option<String>,
+    pub conversation_id: Option<String>,
+    pub participant_id: Option<String>,
+    pub event_kind: Option<ChannelPairingEventKind>,
+    pub actor_session_id: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionToolConsentRecord {
     pub scope_session_id: String,
@@ -2762,6 +2844,204 @@ impl SessionRepository {
             })
     }
 
+    pub fn append_channel_pairing_event(
+        &self,
+        record: NewChannelPairingEventRecord,
+    ) -> Result<ChannelPairingEventRecord, String> {
+        let event_id = normalize_required_text(&record.event_id, "event_id")?;
+        let pairing_request_id = normalize_optional_text(record.pairing_request_id);
+        let binding_id = normalize_optional_text(record.binding_id);
+        let channel_id = normalize_required_text(&record.channel_id, "channel_id")?;
+        let configured_account_id =
+            normalize_required_text(&record.configured_account_id, "configured_account_id")?;
+        let account_id = normalize_optional_text(record.account_id);
+        let conversation_id = normalize_required_text(&record.conversation_id, "conversation_id")?;
+        let participant_id = normalize_required_text(&record.participant_id, "participant_id")?;
+        let route_session_id =
+            normalize_required_text(&record.route_session_id, "route_session_id")?;
+        let sender_principal_key = normalize_optional_text(record.sender_principal_key);
+        let actor_session_id = normalize_optional_text(record.actor_session_id);
+        let detail = normalize_optional_text(record.detail);
+        let conn = self.open_connection()?;
+
+        conn.execute(
+            "INSERT OR IGNORE INTO channel_pairing_events(
+                event_id,
+                pairing_request_id,
+                binding_id,
+                channel_id,
+                configured_account_id,
+                account_id,
+                conversation_id,
+                participant_id,
+                route_session_id,
+                sender_principal_key,
+                event_kind,
+                actor_session_id,
+                detail,
+                event_at_ms
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            params![
+                event_id,
+                pairing_request_id,
+                binding_id,
+                channel_id,
+                configured_account_id,
+                account_id,
+                conversation_id,
+                participant_id,
+                route_session_id,
+                sender_principal_key,
+                record.event_kind.as_str(),
+                actor_session_id,
+                detail,
+                record.event_at_ms,
+            ],
+        )
+        .map_err(|error| format!("append channel pairing event failed: {error}"))?;
+
+        self.load_channel_pairing_event(event_id.as_str())?
+            .ok_or_else(|| "channel pairing event disappeared after insert".to_owned())
+    }
+
+    pub fn load_channel_pairing_event(
+        &self,
+        event_id: &str,
+    ) -> Result<Option<ChannelPairingEventRecord>, String> {
+        let event_id = normalize_required_text(event_id, "event_id")?;
+        let conn = self.open_connection()?;
+        let raw = conn
+            .query_row(
+                "SELECT
+                    event_id,
+                    pairing_request_id,
+                    binding_id,
+                    channel_id,
+                    configured_account_id,
+                    account_id,
+                    conversation_id,
+                    participant_id,
+                    route_session_id,
+                    sender_principal_key,
+                    event_kind,
+                    actor_session_id,
+                    detail,
+                    event_at_ms
+                 FROM channel_pairing_events
+                 WHERE event_id = ?1",
+                params![event_id],
+                |row| {
+                    Ok(RawChannelPairingEventRecord {
+                        event_id: row.get(0)?,
+                        pairing_request_id: row.get(1)?,
+                        binding_id: row.get(2)?,
+                        channel_id: row.get(3)?,
+                        configured_account_id: row.get(4)?,
+                        account_id: row.get(5)?,
+                        conversation_id: row.get(6)?,
+                        participant_id: row.get(7)?,
+                        route_session_id: row.get(8)?,
+                        sender_principal_key: row.get(9)?,
+                        event_kind: row.get(10)?,
+                        actor_session_id: row.get(11)?,
+                        detail: row.get(12)?,
+                        event_at_ms: row.get(13)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|error| format!("load channel pairing event failed: {error}"))?;
+
+        raw.map(ChannelPairingEventRecord::try_from_raw).transpose()
+    }
+
+    pub fn list_channel_pairing_events(
+        &self,
+        filter: &ChannelPairingEventFilter,
+        limit: usize,
+    ) -> Result<Vec<ChannelPairingEventRecord>, String> {
+        let limit = limit.max(1);
+        let pairing_request_id = normalize_optional_text(filter.pairing_request_id.clone());
+        let channel_id = normalize_optional_text(filter.channel_id.clone());
+        let configured_account_id = normalize_optional_text(filter.configured_account_id.clone());
+        let conversation_id = normalize_optional_text(filter.conversation_id.clone());
+        let participant_id = normalize_optional_text(filter.participant_id.clone());
+        let event_kind = filter.event_kind.map(ChannelPairingEventKind::as_str);
+        let actor_session_id = normalize_optional_text(filter.actor_session_id.clone());
+        let conn = self.open_connection()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT
+                    event_id,
+                    pairing_request_id,
+                    binding_id,
+                    channel_id,
+                    configured_account_id,
+                    account_id,
+                    conversation_id,
+                    participant_id,
+                    route_session_id,
+                    sender_principal_key,
+                    event_kind,
+                    actor_session_id,
+                    detail,
+                    event_at_ms
+                 FROM channel_pairing_events
+                 WHERE (?1 IS NULL OR pairing_request_id = ?1)
+                   AND (?2 IS NULL OR channel_id = ?2)
+                   AND (?3 IS NULL OR configured_account_id = ?3)
+                   AND (?4 IS NULL OR conversation_id = ?4)
+                   AND (?5 IS NULL OR participant_id = ?5)
+                   AND (?6 IS NULL OR event_kind = ?6)
+                   AND (?7 IS NULL OR actor_session_id = ?7)
+                 ORDER BY event_at_ms DESC, event_id ASC
+                 LIMIT ?8",
+            )
+            .map_err(|error| format!("prepare channel pairing event list query failed: {error}"))?;
+
+        let rows = stmt
+            .query_map(
+                params![
+                    pairing_request_id,
+                    channel_id,
+                    configured_account_id,
+                    conversation_id,
+                    participant_id,
+                    event_kind,
+                    actor_session_id,
+                    limit as i64,
+                ],
+                |row| {
+                    Ok(RawChannelPairingEventRecord {
+                        event_id: row.get(0)?,
+                        pairing_request_id: row.get(1)?,
+                        binding_id: row.get(2)?,
+                        channel_id: row.get(3)?,
+                        configured_account_id: row.get(4)?,
+                        account_id: row.get(5)?,
+                        conversation_id: row.get(6)?,
+                        participant_id: row.get(7)?,
+                        route_session_id: row.get(8)?,
+                        sender_principal_key: row.get(9)?,
+                        event_kind: row.get(10)?,
+                        actor_session_id: row.get(11)?,
+                        detail: row.get(12)?,
+                        event_at_ms: row.get(13)?,
+                    })
+                },
+            )
+            .map_err(|error| format!("query channel pairing event list failed: {error}"))?;
+
+        let mut events = Vec::new();
+        for raw in rows {
+            let raw =
+                raw.map_err(|error| format!("decode channel pairing event row failed: {error}"))?;
+            let event = ChannelPairingEventRecord::try_from_raw(raw)?;
+            events.push(event);
+        }
+        Ok(events)
+    }
+
     pub fn list_channel_pairing_requests(
         &self,
         status: Option<ChannelPairingRequestStatus>,
@@ -4454,6 +4734,24 @@ struct RawChannelPairingCodeResolutionStateRecord {
 }
 
 #[derive(Debug)]
+struct RawChannelPairingEventRecord {
+    event_id: String,
+    pairing_request_id: Option<String>,
+    binding_id: Option<String>,
+    channel_id: String,
+    configured_account_id: String,
+    account_id: Option<String>,
+    conversation_id: String,
+    participant_id: String,
+    route_session_id: String,
+    sender_principal_key: Option<String>,
+    event_kind: String,
+    actor_session_id: Option<String>,
+    detail: Option<String>,
+    event_at_ms: i64,
+}
+
+#[derive(Debug)]
 struct RawSessionToolConsentRecord {
     scope_session_id: String,
     mode: String,
@@ -4719,6 +5017,27 @@ impl ChannelPairingCodeResolutionStateRecord {
             lockout_until_ms: raw.lockout_until_ms,
             updated_at_ms: raw.updated_at_ms,
         }
+    }
+}
+
+impl ChannelPairingEventRecord {
+    fn try_from_raw(raw: RawChannelPairingEventRecord) -> Result<Self, String> {
+        Ok(Self {
+            event_id: raw.event_id,
+            pairing_request_id: raw.pairing_request_id,
+            binding_id: raw.binding_id,
+            channel_id: raw.channel_id,
+            configured_account_id: raw.configured_account_id,
+            account_id: raw.account_id,
+            conversation_id: raw.conversation_id,
+            participant_id: raw.participant_id,
+            route_session_id: raw.route_session_id,
+            sender_principal_key: raw.sender_principal_key,
+            event_kind: ChannelPairingEventKind::parse(&raw.event_kind)?,
+            actor_session_id: raw.actor_session_id,
+            detail: raw.detail,
+            event_at_ms: raw.event_at_ms,
+        })
     }
 }
 

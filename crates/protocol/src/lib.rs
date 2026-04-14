@@ -24,16 +24,17 @@ pub use control_plane::{
     ControlPlaneApprovalDecision, ControlPlaneApprovalListResponse,
     ControlPlaneApprovalRequestStatus, ControlPlaneApprovalSummary, ControlPlaneAuthClaims,
     ControlPlaneChallengeResponse, ControlPlaneChannelPairingClearPendingRequest,
-    ControlPlaneChannelPairingClearPendingResponse, ControlPlaneChannelPairingListResponse,
-    ControlPlaneChannelPairingRequestSummary, ControlPlaneChannelPairingResolveRequest,
-    ControlPlaneChannelPairingResolveResponse, ControlPlaneChannelPairingRevokeRequest,
-    ControlPlaneChannelPairingRevokeResponse, ControlPlaneClientIdentity,
-    ControlPlaneConnectErrorCode, ControlPlaneConnectErrorResponse, ControlPlaneConnectRequest,
-    ControlPlaneConnectResponse, ControlPlaneDeviceIdentity, ControlPlaneEventEnvelope,
-    ControlPlaneEventName, ControlPlanePairingListResponse, ControlPlanePairingRequestSummary,
-    ControlPlanePairingResolveRequest, ControlPlanePairingResolveResponse,
-    ControlPlanePairingStatus, ControlPlanePolicy, ControlPlanePrincipal,
-    ControlPlaneRecentEventsResponse, ControlPlaneRole, ControlPlaneScope,
+    ControlPlaneChannelPairingClearPendingResponse, ControlPlaneChannelPairingEventKind,
+    ControlPlaneChannelPairingEventSummary, ControlPlaneChannelPairingHistoryResponse,
+    ControlPlaneChannelPairingListResponse, ControlPlaneChannelPairingRequestSummary,
+    ControlPlaneChannelPairingResolveRequest, ControlPlaneChannelPairingResolveResponse,
+    ControlPlaneChannelPairingRevokeRequest, ControlPlaneChannelPairingRevokeResponse,
+    ControlPlaneClientIdentity, ControlPlaneConnectErrorCode, ControlPlaneConnectErrorResponse,
+    ControlPlaneConnectRequest, ControlPlaneConnectResponse, ControlPlaneDeviceIdentity,
+    ControlPlaneEventEnvelope, ControlPlaneEventName, ControlPlanePairingListResponse,
+    ControlPlanePairingRequestSummary, ControlPlanePairingResolveRequest,
+    ControlPlanePairingResolveResponse, ControlPlanePairingStatus, ControlPlanePolicy,
+    ControlPlanePrincipal, ControlPlaneRecentEventsResponse, ControlPlaneRole, ControlPlaneScope,
     ControlPlaneSessionEvent, ControlPlaneSessionKind, ControlPlaneSessionListResponse,
     ControlPlaneSessionObservation, ControlPlaneSessionReadResponse, ControlPlaneSessionState,
     ControlPlaneSessionSummary, ControlPlaneSessionTerminalOutcome, ControlPlaneSnapshot,
@@ -92,6 +93,7 @@ pub enum ProtocolRoute {
     PairingList,
     PairingResolve,
     ChannelPairingList,
+    ChannelPairingHistory,
     ChannelPairingResolve,
     ChannelPairingRevoke,
     ChannelPairingClearPending,
@@ -122,6 +124,7 @@ impl ProtocolRoute {
             "pairing/list" => Self::PairingList,
             "pairing/resolve" => Self::PairingResolve,
             "channel-pairing/list" => Self::ChannelPairingList,
+            "channel-pairing/history" => Self::ChannelPairingHistory,
             "channel-pairing/resolve" => Self::ChannelPairingResolve,
             "channel-pairing/revoke" => Self::ChannelPairingRevoke,
             "channel-pairing/clear-pending" => Self::ChannelPairingClearPending,
@@ -152,6 +155,7 @@ impl ProtocolRoute {
             Self::PairingList => "pairing/list",
             Self::PairingResolve => "pairing/resolve",
             Self::ChannelPairingList => "channel-pairing/list",
+            Self::ChannelPairingHistory => "channel-pairing/history",
             Self::ChannelPairingResolve => "channel-pairing/resolve",
             Self::ChannelPairingRevoke => "channel-pairing/revoke",
             Self::ChannelPairingClearPending => "channel-pairing/clear-pending",
@@ -183,6 +187,7 @@ impl ProtocolRoute {
                 | Self::PairingList
                 | Self::PairingResolve
                 | Self::ChannelPairingList
+                | Self::ChannelPairingHistory
                 | Self::ChannelPairingResolve
                 | Self::ChannelPairingRevoke
                 | Self::ChannelPairingClearPending
@@ -310,6 +315,7 @@ impl ProtocolRouter {
             ProtocolRoute::PairingList
             | ProtocolRoute::PairingResolve
             | ProtocolRoute::ChannelPairingList
+            | ProtocolRoute::ChannelPairingHistory
             | ProtocolRoute::ChannelPairingResolve
             | ProtocolRoute::ChannelPairingRevoke
             | ProtocolRoute::ChannelPairingClearPending => Ok(ResolvedRoute {
