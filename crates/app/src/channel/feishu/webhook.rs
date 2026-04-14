@@ -2190,116 +2190,116 @@ mod tests {
         feishu_server.abort();
     }
 
-    #[tokio::test]
-    async fn feishu_webhook_inbound_reply_stays_successful_when_runtime_end_write_fails() {
-        let provider_requests = Arc::new(Mutex::new(Vec::<MockRequest>::new()));
-        let feishu_requests = Arc::new(Mutex::new(Vec::<MockRequest>::new()));
-        let (provider_base_url, provider_server) = spawn_mock_provider_delayed_success_server(
-            provider_requests.clone(),
-            std::time::Duration::from_millis(50),
-        )
-        .await;
-        let (feishu_base_url, feishu_server) =
-            spawn_mock_feishu_api_server(feishu_requests.clone(), "om_reply_runtime_end").await;
+    #[test]
+    fn feishu_webhook_inbound_reply_stays_successful_when_runtime_end_write_fails() {
+        run_webhook_test_on_large_stack("feishu-webhook-runtime-end-failure", || async {
+            let provider_requests = Arc::new(Mutex::new(Vec::<MockRequest>::new()));
+            let feishu_requests = Arc::new(Mutex::new(Vec::<MockRequest>::new()));
+            let (provider_base_url, provider_server) = spawn_mock_provider_delayed_success_server(
+                provider_requests.clone(),
+                std::time::Duration::from_millis(50),
+            )
+            .await;
+            let (feishu_base_url, feishu_server) =
+                spawn_mock_feishu_api_server(feishu_requests.clone(), "om_reply_runtime_end").await;
 
-        let config = test_webhook_config(&provider_base_url, &feishu_base_url);
-        let resolved = config
-            .feishu
-            .resolve_account(None)
-            .expect("resolve feishu account");
-        let mut adapter = FeishuAdapter::new(&resolved).expect("build feishu adapter");
-        adapter
-            .refresh_tenant_token()
-            .await
-            .expect("refresh tenant token before webhook test");
-        let kernel_ctx = bootstrap_test_kernel_context(
-            "feishu-webhook-runtime-end-failure",
-            DEFAULT_TOKEN_TTL_S,
-        )
-        .expect("bootstrap kernel context");
-        let runtime_dir = temp_webhook_test_dir("runtime-end-failure");
-        std::fs::create_dir_all(&runtime_dir).expect("create runtime dir");
-        let runtime = Arc::new(
-            start_channel_operation_runtime_tracker_for_test(
-                &runtime_dir,
-                ChannelPlatform::Feishu,
-                "serve",
-                resolved.account.id.as_str(),
-                resolved.account.label.as_str(),
-                424242,
+            let config = test_webhook_config(&provider_base_url, &feishu_base_url);
+            let resolved = config
+                .feishu
+                .resolve_account(None)
+                .expect("resolve feishu account");
+            let mut adapter = FeishuAdapter::new(&resolved).expect("build feishu adapter");
+            adapter
+                .refresh_tenant_token()
+                .await
+                .expect("refresh tenant token before webhook test");
+            let kernel_ctx = bootstrap_test_kernel_context(
+                "feishu-webhook-runtime-end-failure",
+                DEFAULT_TOKEN_TTL_S,
+            )
+            .expect("bootstrap kernel context");
+            let runtime_dir = temp_webhook_test_dir("runtime-end-failure");
+            std::fs::create_dir_all(&runtime_dir).expect("create runtime dir");
+            let runtime = Arc::new(
+                start_channel_operation_runtime_tracker_for_test(
+                    &runtime_dir,
+                    ChannelPlatform::Feishu,
+                    "serve",
+                    resolved.account.id.as_str(),
+                    resolved.account.label.as_str(),
+                    424242,
+                )
+                .await
+                .expect("start test runtime tracker"),
+            );
+            let state = FeishuWebhookState::new(config, &resolved, adapter, kernel_ctx, runtime);
+
+            let runtime_dir_for_delete = runtime_dir.clone();
+            let runtime_delete = tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                std::fs::remove_dir_all(&runtime_dir_for_delete).expect("remove runtime dir");
+                std::fs::write(&runtime_dir_for_delete, "blocked")
+                    .expect("replace runtime dir with file");
+            });
+
+            let payload = json!({
+                "token": "verify-token",
+                "header": {
+                    "event_id": "evt_runtime_end_failure",
+                    "event_type": "im.message.receive_v1"
+                },
+                "event": {
+                    "sender": {
+                        "sender_type": "user",
+                        "sender_id": {
+                            "open_id": "ou_sender_runtime_end"
+                        }
+                    },
+                    "message": {
+                        "chat_id": "oc_demo",
+                        "message_id": "om_runtime_end_1",
+                        "message_type": "text",
+                        "content": "{\"text\":\"runtime end failure should stay acknowledged\"}"
+                    }
+                }
+            });
+            let raw_body = serde_json::to_string(&payload).expect("serialize payload");
+            let headers = signed_headers(&raw_body, "encrypt-key");
+            let response = handle_feishu_webhook_payload(
+                state,
+                &headers,
+                raw_body.as_str(),
+                serde_json::from_str(raw_body.as_str()).expect("payload value"),
             )
             .await
-            .expect("start test runtime tracker"),
-        );
-        let state = FeishuWebhookState::new(config, &resolved, adapter, kernel_ctx, runtime);
+            .expect("reply should stay successful even if runtime end bookkeeping fails");
 
-        let runtime_dir_for_delete = runtime_dir.clone();
-        let runtime_delete = tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            std::fs::remove_dir_all(&runtime_dir_for_delete).expect("remove runtime dir");
-            std::fs::write(&runtime_dir_for_delete, "blocked")
-                .expect("replace runtime dir with file");
-        });
+            runtime_delete.await.expect("join runtime file deletion");
 
-        let payload = json!({
-            "token": "verify-token",
-            "header": {
-                "event_id": "evt_runtime_end_failure",
-                "event_type": "im.message.receive_v1"
-            },
-            "event": {
-                "sender": {
-                    "sender_type": "user",
-                    "sender_id": {
-                        "open_id": "ou_sender_runtime_end"
-                    }
-                },
-                "message": {
-                    "chat_id": "oc_demo",
-                    "message_id": "om_runtime_end_1",
-                    "message_type": "text",
-                    "content": "{\"text\":\"runtime end failure should stay acknowledged\"}"
-                }
-            }
-        });
-        let raw_body = serde_json::to_string(&payload).expect("serialize payload");
-        let headers = signed_headers(&raw_body, "encrypt-key");
-        let response = handle_feishu_webhook_payload(
-            state,
-            &headers,
-            raw_body.as_str(),
-            serde_json::from_str(raw_body.as_str()).expect("payload value"),
-        )
-        .await
-        .expect("reply should stay successful even if runtime end bookkeeping fails");
+            assert_eq!(response.body(), &json!({"code": 0, "msg": "ok"}));
 
-        runtime_delete.await.expect("join runtime file deletion");
+            let provider_requests = provider_requests.lock().await.clone();
+            assert_eq!(provider_requests.len(), 1);
 
-        assert_eq!(response.body(), &json!({"code": 0, "msg": "ok"}));
-
-        let provider_requests = provider_requests.lock().await.clone();
-        assert_eq!(provider_requests.len(), 1);
-
-        let feishu_requests = wait_for_request_count(&feishu_requests, 3).await;
-        assert_eq!(feishu_requests.len(), 3);
-        assert!(
-            feishu_requests
-                .iter()
-                .any(|request| request.path == "/open-apis/im/v1/messages/om_runtime_end_1/reply"),
-            "reply should still be sent when runtime end bookkeeping fails"
-        );
-        assert!(
-            feishu_requests
-                .iter()
-                .any(|request| request.path
+            let feishu_requests = wait_for_request_count(&feishu_requests, 3).await;
+            assert_eq!(feishu_requests.len(), 3);
+            assert!(
+                feishu_requests
+                    .iter()
+                    .any(|request| request.path
+                        == "/open-apis/im/v1/messages/om_runtime_end_1/reply"),
+                "reply should still be sent when runtime end bookkeeping fails"
+            );
+            assert!(
+                feishu_requests.iter().any(|request| request.path
                     == "/open-apis/im/v1/messages/om_runtime_end_1/reactions"),
-            "ack reaction should still be attempted when runtime end bookkeeping fails"
-        );
+                "ack reaction should still be attempted when runtime end bookkeeping fails"
+            );
 
-        provider_server.abort();
-        feishu_server.abort();
+            provider_server.abort();
+            feishu_server.abort();
+        });
     }
-
     #[test]
     fn feishu_webhook_card_callback_reaches_provider_and_returns_safe_noop_body() {
         run_webhook_test_on_large_stack("feishu-webhook-card-callback", || async {
