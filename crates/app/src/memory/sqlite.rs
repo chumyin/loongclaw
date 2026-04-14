@@ -2098,6 +2098,22 @@ fn ensure_channel_pairing_tables(conn: &Connection) -> Result<(), String> {
           lockout_until_ms INTEGER NULL,
           updated_at_ms INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS channel_pairing_events(
+          event_id TEXT PRIMARY KEY,
+          pairing_request_id TEXT NULL,
+          binding_id TEXT NULL,
+          channel_id TEXT NOT NULL,
+          configured_account_id TEXT NOT NULL,
+          account_id TEXT NULL,
+          conversation_id TEXT NOT NULL,
+          participant_id TEXT NOT NULL,
+          route_session_id TEXT NOT NULL,
+          sender_principal_key TEXT NULL,
+          event_kind TEXT NOT NULL,
+          actor_session_id TEXT NULL,
+          detail TEXT NULL,
+          event_at_ms INTEGER NOT NULL
+        );
         ",
     )
     .map_err(|error| format!("ensure channel pairing storage failed: {error}"))?;
@@ -2147,6 +2163,17 @@ fn ensure_channel_pairing_tables(conn: &Connection) -> Result<(), String> {
             configured_account_id,
             conversation_id,
             participant_id
+          );
+        CREATE INDEX IF NOT EXISTS idx_channel_pairing_events_request
+          ON channel_pairing_events(pairing_request_id, event_at_ms DESC, event_id);
+        CREATE INDEX IF NOT EXISTS idx_channel_pairing_events_subject
+          ON channel_pairing_events(
+            channel_id,
+            configured_account_id,
+            conversation_id,
+            participant_id,
+            event_at_ms DESC,
+            event_id
           );
         ",
     )

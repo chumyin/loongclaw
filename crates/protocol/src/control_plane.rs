@@ -326,6 +326,8 @@ pub struct ControlPlaneChannelPairingRequestSummary {
     pub resolved_at_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approved_binding_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -376,6 +378,47 @@ pub struct ControlPlaneChannelPairingClearPendingRequest {
 pub struct ControlPlaneChannelPairingClearPendingResponse {
     pub cleared_count: usize,
     pub cleared_request_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ControlPlaneChannelPairingEventKind {
+    Requested,
+    Approved,
+    Rejected,
+    Revoked,
+    Expired,
+    PendingCleared,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ControlPlaneChannelPairingEventSummary {
+    pub event_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pairing_request_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binding_id: Option<String>,
+    pub channel_id: String,
+    pub configured_account_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+    pub conversation_id: String,
+    pub participant_id: String,
+    pub route_session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sender_principal_key: Option<String>,
+    pub event_kind: ControlPlaneChannelPairingEventKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    pub event_at_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ControlPlaneChannelPairingHistoryResponse {
+    pub returned_count: usize,
+    pub events: Vec<ControlPlaneChannelPairingEventSummary>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

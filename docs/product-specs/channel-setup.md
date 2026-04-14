@@ -115,6 +115,7 @@ and operators can inspect or resolve the request by request id or by pairing
 code with:
 
 - `loong list-channel-pairings`
+- `loong channel-pairing-history --pairing-request-id <id>`
 - `loong channel-pairing-resolve --pairing-request-id <id> --approve`
 - `loong channel-pairing-resolve --pairing-code <code> --approve`
 - `loong channel-pairing-resolve --pairing-request-id <id> --reject`
@@ -131,6 +132,9 @@ Current guardrails for this first pairing-code slice:
 - repeated invalid code approvals eventually trigger a temporary operator-side
   lockout on code resolution
 - static sender allowlists still bypass dynamic pairing when present
+- an append-only pairing history ledger preserves `requested`, `approved`,
+  `rejected`, `revoked`, `expired`, and `pending_cleared` lifecycle events even
+  after the mutable request/binding rows have changed or been removed
 
 | Surface | Status | Transport | Required config | Operator commands |
 | --- | --- | --- | --- | --- |

@@ -26,21 +26,22 @@ use loongclaw_protocol::{
     ControlPlaneApprovalDecision, ControlPlaneApprovalListResponse,
     ControlPlaneApprovalRequestStatus, ControlPlaneApprovalSummary, ControlPlaneChallengeResponse,
     ControlPlaneChannelPairingClearPendingRequest, ControlPlaneChannelPairingClearPendingResponse,
-    ControlPlaneChannelPairingListResponse, ControlPlaneChannelPairingRequestSummary,
-    ControlPlaneChannelPairingResolveRequest, ControlPlaneChannelPairingResolveResponse,
-    ControlPlaneChannelPairingRevokeRequest, ControlPlaneChannelPairingRevokeResponse,
-    ControlPlaneConnectErrorCode, ControlPlaneConnectErrorResponse, ControlPlaneConnectRequest,
-    ControlPlaneConnectResponse, ControlPlaneEventEnvelope, ControlPlaneEventName,
-    ControlPlanePairingListResponse, ControlPlanePairingRequestSummary,
-    ControlPlanePairingResolveRequest, ControlPlanePairingResolveResponse,
-    ControlPlanePairingStatus, ControlPlanePolicy, ControlPlanePrincipal,
-    ControlPlaneRecentEventsResponse, ControlPlaneScope, ControlPlaneSessionEvent,
-    ControlPlaneSessionKind, ControlPlaneSessionListResponse, ControlPlaneSessionObservation,
-    ControlPlaneSessionReadResponse, ControlPlaneSessionState, ControlPlaneSessionSummary,
-    ControlPlaneSessionTerminalOutcome, ControlPlaneSnapshot, ControlPlaneSnapshotResponse,
-    ControlPlaneStateVersion, ControlPlaneTurnEventEnvelope, ControlPlaneTurnResultResponse,
-    ControlPlaneTurnStatus, ControlPlaneTurnSubmitRequest, ControlPlaneTurnSubmitResponse,
-    ControlPlaneTurnSummary, ProtocolRouter,
+    ControlPlaneChannelPairingEventKind, ControlPlaneChannelPairingEventSummary,
+    ControlPlaneChannelPairingHistoryResponse, ControlPlaneChannelPairingListResponse,
+    ControlPlaneChannelPairingRequestSummary, ControlPlaneChannelPairingResolveRequest,
+    ControlPlaneChannelPairingResolveResponse, ControlPlaneChannelPairingRevokeRequest,
+    ControlPlaneChannelPairingRevokeResponse, ControlPlaneConnectErrorCode,
+    ControlPlaneConnectErrorResponse, ControlPlaneConnectRequest, ControlPlaneConnectResponse,
+    ControlPlaneEventEnvelope, ControlPlaneEventName, ControlPlanePairingListResponse,
+    ControlPlanePairingRequestSummary, ControlPlanePairingResolveRequest,
+    ControlPlanePairingResolveResponse, ControlPlanePairingStatus, ControlPlanePolicy,
+    ControlPlanePrincipal, ControlPlaneRecentEventsResponse, ControlPlaneScope,
+    ControlPlaneSessionEvent, ControlPlaneSessionKind, ControlPlaneSessionListResponse,
+    ControlPlaneSessionObservation, ControlPlaneSessionReadResponse, ControlPlaneSessionState,
+    ControlPlaneSessionSummary, ControlPlaneSessionTerminalOutcome, ControlPlaneSnapshot,
+    ControlPlaneSnapshotResponse, ControlPlaneStateVersion, ControlPlaneTurnEventEnvelope,
+    ControlPlaneTurnResultResponse, ControlPlaneTurnStatus, ControlPlaneTurnSubmitRequest,
+    ControlPlaneTurnSubmitResponse, ControlPlaneTurnSummary, ProtocolRouter,
 };
 use serde::Deserialize;
 
@@ -174,6 +175,26 @@ struct AcpSessionReadQuery {
 struct PairingListQuery {
     #[serde(default)]
     status: Option<String>,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChannelPairingHistoryQuery {
+    #[serde(default)]
+    pairing_request_id: Option<String>,
+    #[serde(default)]
+    channel_id: Option<String>,
+    #[serde(default)]
+    configured_account_id: Option<String>,
+    #[serde(default)]
+    conversation_id: Option<String>,
+    #[serde(default)]
+    participant_id: Option<String>,
+    #[serde(default)]
+    event_kind: Option<String>,
+    #[serde(default)]
+    actor_session_id: Option<String>,
     #[serde(default)]
     limit: Option<usize>,
 }
@@ -799,6 +820,55 @@ fn map_channel_pairing_request(
         expires_at_ms: request.expires_at_ms as u64,
         resolved_at_ms: request.resolved_at_ms.map(|value| value as u64),
         approved_binding_id: request.approved_binding_id,
+        last_error: request.last_error,
+    }
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn map_channel_pairing_event_kind(
+    event_kind: mvp::session::repository::ChannelPairingEventKind,
+) -> ControlPlaneChannelPairingEventKind {
+    match event_kind {
+        mvp::session::repository::ChannelPairingEventKind::Requested => {
+            ControlPlaneChannelPairingEventKind::Requested
+        }
+        mvp::session::repository::ChannelPairingEventKind::Approved => {
+            ControlPlaneChannelPairingEventKind::Approved
+        }
+        mvp::session::repository::ChannelPairingEventKind::Rejected => {
+            ControlPlaneChannelPairingEventKind::Rejected
+        }
+        mvp::session::repository::ChannelPairingEventKind::Revoked => {
+            ControlPlaneChannelPairingEventKind::Revoked
+        }
+        mvp::session::repository::ChannelPairingEventKind::Expired => {
+            ControlPlaneChannelPairingEventKind::Expired
+        }
+        mvp::session::repository::ChannelPairingEventKind::PendingCleared => {
+            ControlPlaneChannelPairingEventKind::PendingCleared
+        }
+    }
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn map_channel_pairing_event(
+    event: mvp::session::repository::ChannelPairingEventRecord,
+) -> ControlPlaneChannelPairingEventSummary {
+    ControlPlaneChannelPairingEventSummary {
+        event_id: event.event_id,
+        pairing_request_id: event.pairing_request_id,
+        binding_id: event.binding_id,
+        channel_id: event.channel_id,
+        configured_account_id: event.configured_account_id,
+        account_id: event.account_id,
+        conversation_id: event.conversation_id,
+        participant_id: event.participant_id,
+        route_session_id: event.route_session_id,
+        sender_principal_key: event.sender_principal_key,
+        event_kind: map_channel_pairing_event_kind(event.event_kind),
+        actor_session_id: event.actor_session_id,
+        detail: event.detail,
+        event_at_ms: event.event_at_ms as u64,
     }
 }
 
@@ -2086,16 +2156,57 @@ async fn channel_pairing_list(
 }
 
 #[cfg(feature = "memory-sqlite")]
+async fn channel_pairing_history(
+    headers: HeaderMap,
+    State(state): State<ControlPlaneHttpState>,
+    Query(query): Query<ChannelPairingHistoryQuery>,
+) -> Response {
+    let _lease = match authorize_control_plane_request(&state, "channel-pairing/history", &headers)
+    {
+        Ok(lease) => lease,
+        Err(response) => return *response,
+    };
+    let Some(memory_config) = state.memory_config.as_ref() else {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "channel-pairing/history requires control-plane-serve --config <path>".to_owned(),
+        );
+    };
+    let limit = query.limit.unwrap_or(CONTROL_PLANE_DEFAULT_LIST_LIMIT);
+    let history_query = mvp::channel::pairing::ChannelPairingHistoryQuery::new(
+        query.pairing_request_id,
+        query.channel_id,
+        query.configured_account_id,
+        query.conversation_id,
+        query.participant_id,
+        query.event_kind,
+        query.actor_session_id,
+    );
+    let history_query = match history_query {
+        Ok(history_query) => history_query,
+        Err(error) => return error_response(StatusCode::BAD_REQUEST, error),
+    };
+    match mvp::channel::pairing::list_channel_pairing_history(memory_config, &history_query, limit)
+    {
+        Ok(events) => Json(ControlPlaneChannelPairingHistoryResponse {
+            returned_count: events.len(),
+            events: events.into_iter().map(map_channel_pairing_event).collect(),
+        })
+        .into_response(),
+        Err(error) => error_response(StatusCode::BAD_REQUEST, error),
+    }
+}
+
+#[cfg(feature = "memory-sqlite")]
 async fn channel_pairing_resolve(
     headers: HeaderMap,
     State(state): State<ControlPlaneHttpState>,
     Json(request): Json<ControlPlaneChannelPairingResolveRequest>,
 ) -> Response {
-    if let Err(response) =
-        authorize_control_plane_request(&state, "channel-pairing/resolve", &headers)
-    {
-        return *response;
-    }
+    let lease = match authorize_control_plane_request(&state, "channel-pairing/resolve", &headers) {
+        Ok(lease) => lease,
+        Err(response) => return *response,
+    };
     let Some(memory_config) = state.memory_config.as_ref() else {
         return error_response(
             StatusCode::BAD_REQUEST,
@@ -2113,18 +2224,22 @@ async fn channel_pairing_resolve(
         .map(str::trim)
         .filter(|value| !value.is_empty());
     let resolve_result = match (pairing_request_id, pairing_code) {
-        (Some(pairing_request_id), None) => mvp::channel::pairing::resolve_channel_pairing_request(
-            memory_config,
-            pairing_request_id,
-            request.approve,
-            None,
-        ),
+        (Some(pairing_request_id), None) => {
+            let actor_session_id = Some(lease.principal.connection_id);
+            mvp::channel::pairing::resolve_channel_pairing_request(
+                memory_config,
+                pairing_request_id,
+                request.approve,
+                actor_session_id,
+            )
+        }
         (None, Some(pairing_code)) => {
+            let actor_session_id = Some(lease.principal.connection_id);
             mvp::channel::pairing::resolve_channel_pairing_request_by_code(
                 memory_config,
                 pairing_code,
                 request.approve,
-                None,
+                actor_session_id,
             )
         }
         (Some(_), Some(_)) => {
@@ -2160,11 +2275,11 @@ async fn channel_pairing_revoke(
     State(state): State<ControlPlaneHttpState>,
     Json(request): Json<ControlPlaneChannelPairingRevokeRequest>,
 ) -> Response {
-    if let Err(response) =
-        authorize_control_plane_request(&state, "channel-pairing/revoke", &headers)
-    {
-        return *response;
-    }
+    let lease = match authorize_control_plane_request(&state, "channel-pairing/revoke", &headers) {
+        Ok(lease) => lease,
+        Err(response) => return *response,
+    };
+    let actor_session_id = Some(lease.principal.connection_id);
     let Some(memory_config) = state.memory_config.as_ref() else {
         return error_response(
             StatusCode::BAD_REQUEST,
@@ -2179,7 +2294,8 @@ async fn channel_pairing_revoke(
         Ok(selection) => selection,
         Err(error) => return error_response(StatusCode::BAD_REQUEST, error),
     };
-    match mvp::channel::pairing::revoke_channel_pairing(memory_config, &selection) {
+    match mvp::channel::pairing::revoke_channel_pairing(memory_config, &selection, actor_session_id)
+    {
         Ok(Some(record)) => Json(ControlPlaneChannelPairingRevokeResponse {
             request: map_channel_pairing_request(record),
         })
@@ -2198,11 +2314,12 @@ async fn channel_pairing_clear_pending(
     State(state): State<ControlPlaneHttpState>,
     Json(request): Json<ControlPlaneChannelPairingClearPendingRequest>,
 ) -> Response {
-    if let Err(response) =
-        authorize_control_plane_request(&state, "channel-pairing/clear-pending", &headers)
-    {
-        return *response;
-    }
+    let lease =
+        match authorize_control_plane_request(&state, "channel-pairing/clear-pending", &headers) {
+            Ok(lease) => lease,
+            Err(response) => return *response,
+        };
+    let actor_session_id = Some(lease.principal.connection_id);
     let Some(memory_config) = state.memory_config.as_ref() else {
         return error_response(
             StatusCode::BAD_REQUEST,
@@ -2219,7 +2336,11 @@ async fn channel_pairing_clear_pending(
         Ok(scope) => scope,
         Err(error) => return error_response(StatusCode::BAD_REQUEST, error),
     };
-    match mvp::channel::pairing::clear_pending_channel_pairings(memory_config, &scope) {
+    match mvp::channel::pairing::clear_pending_channel_pairings(
+        memory_config,
+        &scope,
+        actor_session_id,
+    ) {
         Ok(cleared_request_ids) => Json(ControlPlaneChannelPairingClearPendingResponse {
             cleared_count: cleared_request_ids.len(),
             cleared_request_ids,
@@ -2578,6 +2699,7 @@ fn build_control_plane_router_with_runtime(
         .route("/pairing/list", get(pairing_list))
         .route("/pairing/resolve", post(pairing_resolve))
         .route("/channel-pairing/list", get(channel_pairing_list))
+        .route("/channel-pairing/history", get(channel_pairing_history))
         .route("/channel-pairing/resolve", post(channel_pairing_resolve))
         .route("/channel-pairing/revoke", post(channel_pairing_revoke))
         .route(
@@ -4518,6 +4640,100 @@ mod tests {
             decision,
             mvp::channel::pairing::ChannelPairingDecision::Authorized
         ));
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[tokio::test]
+    async fn channel_pairing_history_surfaces_append_only_events_after_resolution() {
+        let memory_config = isolated_memory_config("channel-pairing-history");
+        let subject = mvp::channel::pairing::ChannelPairingSubject::new(
+            "telegram",
+            "ops",
+            Some("ops-bot".to_owned()),
+            "123",
+            "7",
+            "telegram:ops-bot:123:p=7",
+            Some("telegram:user:7".to_owned()),
+        )
+        .expect("build channel pairing subject");
+        let pending = mvp::channel::pairing::evaluate_channel_pairing(&memory_config, &subject)
+            .expect("create pending request");
+        let pairing_request_id = match pending {
+            mvp::channel::pairing::ChannelPairingDecision::PairingRequired { request, .. } => {
+                request.pairing_request_id
+            }
+            other @ mvp::channel::pairing::ChannelPairingDecision::Authorized
+            | other @ mvp::channel::pairing::ChannelPairingDecision::PendingLimitReached {
+                ..
+            }
+            | other @ mvp::channel::pairing::ChannelPairingDecision::Cooldown { .. }
+            | other @ mvp::channel::pairing::ChannelPairingDecision::Rejected { .. } => {
+                panic!("expected pending channel pairing request, got {other:?}")
+            }
+        };
+
+        let manager = Arc::new(mvp::control_plane::ControlPlaneManager::new());
+        manager.set_runtime_ready(true);
+        let router = build_control_plane_router_with_memory_config(manager, memory_config.clone());
+        let operator_token = connect_token(
+            &router,
+            std::collections::BTreeSet::from([ControlPlaneScope::OperatorPairing]),
+        )
+        .await;
+
+        let resolve_response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/channel-pairing/resolve")
+                    .method("POST")
+                    .header("authorization", format!("Bearer {operator_token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&ControlPlaneChannelPairingResolveRequest {
+                            pairing_request_id: Some(pairing_request_id.clone()),
+                            pairing_code: None,
+                            approve: true,
+                        })
+                        .expect("encode channel pairing resolve request"),
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("channel pairing resolve response");
+        assert_eq!(resolve_response.status(), StatusCode::OK);
+
+        let history_response = router
+            .oneshot(bearer_request(
+                "GET",
+                format!("/channel-pairing/history?pairing_request_id={pairing_request_id}")
+                    .as_str(),
+                &operator_token,
+            ))
+            .await
+            .expect("channel pairing history response");
+        assert_eq!(history_response.status(), StatusCode::OK);
+        let body = to_bytes(history_response.into_body(), usize::MAX)
+            .await
+            .expect("body bytes");
+        let history: ControlPlaneChannelPairingHistoryResponse =
+            serde_json::from_slice(&body).expect("channel pairing history json");
+
+        assert_eq!(history.returned_count, 2);
+        assert_eq!(
+            history.events[0].event_kind,
+            ControlPlaneChannelPairingEventKind::Approved
+        );
+        assert_eq!(
+            history.events[1].event_kind,
+            ControlPlaneChannelPairingEventKind::Requested
+        );
+        assert!(
+            history.events[0]
+                .actor_session_id
+                .as_deref()
+                .is_some_and(|actor_session_id| actor_session_id.starts_with("cp-"))
+        );
     }
 
     #[cfg(feature = "memory-sqlite")]
