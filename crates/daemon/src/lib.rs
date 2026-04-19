@@ -1650,7 +1650,14 @@ fn default_onboard_command() -> Commands {
 
 pub fn resolve_default_entry_command() -> Commands {
     if resolved_default_entry_config_path().is_file() {
-        Commands::Welcome
+        Commands::Chat {
+            config: None,
+            session: None,
+            acp: false,
+            acp_event_stream: false,
+            acp_bootstrap_mcp_server: Vec::new(),
+            acp_cwd: None,
+        }
     } else {
         default_onboard_command()
     }
@@ -1818,7 +1825,7 @@ mod first_run_entry_tests {
         .expect("write default config");
 
         assert!(
-            matches!(resolve_default_entry_command(), Commands::Welcome),
+            matches!(resolve_default_entry_command(), Commands::Chat { .. }),
             "present config should route to welcome"
         );
     }
@@ -1839,7 +1846,7 @@ mod first_run_entry_tests {
         env.set("LOONGCLAW_CONFIG_PATH", &config_path);
 
         assert!(
-            matches!(resolve_default_entry_command(), Commands::Welcome),
+            matches!(resolve_default_entry_command(), Commands::Chat { .. }),
             "env override config should route to welcome"
         );
     }

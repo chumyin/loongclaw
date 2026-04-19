@@ -133,6 +133,13 @@ pub(super) fn build_cli_chat_live_surface_observer(
     let render_sink: CliChatLiveSurfaceSink = Arc::new(|lines| {
         print_rendered_cli_chat_lines(&lines);
     });
+    build_cli_chat_live_surface_observer_with_sink(render_width, render_sink)
+}
+
+pub(super) fn build_cli_chat_live_surface_observer_with_sink(
+    render_width: usize,
+    render_sink: CliChatLiveSurfaceSink,
+) -> ConversationTurnObserverHandle {
     let observer = CliChatLiveSurfaceObserver::new(render_width, render_sink);
     Arc::new(observer)
 }

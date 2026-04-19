@@ -23,7 +23,7 @@ mod control_plane;
 mod latest_session_selector_tests;
 mod live_runtime;
 mod operator_surfaces;
-mod session_surface;
+mod pi_surface;
 
 use self::cli_input::ConcurrentCliInputReader;
 use self::live_runtime::*;
@@ -252,6 +252,7 @@ fn format_onboard_command_hint(config_path: Option<&str>, resolved_config_path: 
     command
 }
 
+#[derive(Clone)]
 pub(crate) struct CliTurnRuntime {
     pub(crate) resolved_path: PathBuf,
     pub(crate) config: LoongClawConfig,
@@ -286,8 +287,8 @@ pub async fn run_cli_chat(
     options: &CliChatOptions,
 ) -> CliResult<()> {
     ensure_cli_channel_enabled_for_entrypoint(config_path)?;
-    if session_surface::interactive_terminal_surface_supported() {
-        return session_surface::run_cli_chat_surface(config_path, session_hint, options).await;
+    if pi_surface::interactive_terminal_surface_supported() {
+        return pi_surface::run_cli_chat_surface(config_path, session_hint, options).await;
     }
 
     run_cli_chat_repl(config_path, session_hint, options).await
@@ -423,8 +424,8 @@ pub async fn run_cli_ask(
 
 pub fn run_concurrent_cli_host(options: &ConcurrentCliHostOptions) -> CliResult<()> {
     reject_disabled_cli_channel(&options.config)?;
-    if session_surface::interactive_terminal_surface_supported() {
-        return session_surface::run_concurrent_cli_host_surface(options);
+    if pi_surface::interactive_terminal_surface_supported() {
+        return pi_surface::run_concurrent_cli_host_surface(options);
     }
 
     run_concurrent_cli_host_repl(options)
