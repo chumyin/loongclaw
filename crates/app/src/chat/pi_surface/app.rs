@@ -42,6 +42,7 @@ pub struct App {
     pub pending_task: Option<JoinHandle<CliResult<String>>>,
     pub cwd: String,
     pub model: String,
+    pub i18n: I18nService,
 }
 
 impl App {
@@ -50,10 +51,11 @@ impl App {
         options: &CliChatOptions,
         render_width: usize,
     ) -> CliResult<Self> {
+        let language = resolve_default_language();
         let mut app = Self {
             message_list: MessageList::new(),
             composer: Composer::new(),
-            command_palette: CommandPalette::new(),
+            command_palette: CommandPalette::new(language),
             focus: Focus::Composer,
             pending_turn: false,
             turn_start: None,
@@ -61,10 +63,11 @@ impl App {
             pending_task: None,
             cwd: format_cwd(runtime),
             model: runtime.config.provider.model.clone(),
+            i18n: I18nService::new(language),
         };
 
         let (version, tutorial, sections) =
-            build_pi_startup_content(runtime, options, render_width);
+            build_pi_startup_content(runtime, options, render_width, &app.i18n);
         app.message_list
             .add_startup_header(version, tutorial, sections);
 
@@ -73,9 +76,9 @@ impl App {
 
     pub fn render(&mut self, f: &mut Frame) {
         let size = f.area();
-        let live_lines = self.pending_live_lines();
+        let live_lines = pending_live_lines(&self.live_lines);
         let pending_height = if self.pending_turn {
-            2 + u16::try_from(live_lines.len()).unwrap_or(u16::MAX)
+            (live_lines.len() as u16 + 2).clamp(2, 8)
         } else {
             0
         };
@@ -94,16 +97,10 @@ impl App {
             }
             + 1
             + 1;
-        let available_transcript_height = size.height.saturating_sub(fixed_height).max(1);
-        let transcript_height = self
-            .message_list
-            .rendered_line_count(size.width)
-            .min(available_transcript_height as usize) as u16;
-
         let main_layout = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(transcript_height),
+                Constraint::Min(1),
                 Constraint::Length(pending_height),
                 Constraint::Length(1),
                 Constraint::Length(self.composer.height()),
@@ -119,23 +116,35 @@ impl App {
 
         if self.pending_turn {
             let start = self.turn_start.unwrap_or_else(std::time::Instant::now);
-            let mut pending_lines = vec![
-                Line::from(""),
-                Line::from(vec![
+            let mut pending_lines = vec![Line::from(vec![
+                Span::raw(" "),
+                Span::styled(
+                    format!("{} ", focus_ring_frame(start)),
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("{} · ", self.i18n.text(PiCopy::ThinkingTitle)),
+                    Style::default().fg(PI_CYAN).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(get_spinner_verb(start), Style::default().fg(PI_GRAY)),
+            ])];
+            if !live_lines.is_empty() {
+                pending_lines.push(Line::from(vec![
                     Span::raw(" "),
                     Span::styled(
-                        format!("{} ", focus_ring_frame(start)),
-                        Style::default()
-                            .fg(Color::White)
-                            .add_modifier(Modifier::BOLD),
+                        self.i18n.text(PiCopy::ThinkingLive),
+                        Style::default().fg(PI_DIM_GRAY),
                     ),
-                    Span::styled(
-                        format!("{}...", get_spinner_verb(start)),
-                        Style::default().fg(PI_GRAY),
-                    ),
-                ]),
-            ];
-            pending_lines.extend(live_lines.into_iter().map(Line::from));
+                ]));
+                pending_lines.extend(live_lines.iter().map(|line| {
+                    Line::from(vec![
+                        Span::raw(" "),
+                        Span::styled(line.clone(), Style::default().fg(PI_ACCENT)),
+                    ])
+                }));
+            }
             f.render_widget(Paragraph::new(pending_lines), main_layout[1]);
         }
 
@@ -239,8 +248,10 @@ pub async fn run_app<B: Backend>(
                         let mut pending_command = None;
                         match app.focus {
                             Focus::Composer => {
-                                if key.code == KeyCode::Char('/') && app.composer.is_empty() {
-                                    app.command_palette.show("/");
+                                if matches!(key.code, KeyCode::Char('/') | KeyCode::Char(':'))
+                                    && app.composer.is_empty()
+                                {
+                                    app.command_palette.show(":");
                                     app.focus = Focus::CommandPalette;
                                 } else if key.code == KeyCode::Tab {
                                     app.focus = Focus::MessageList;
@@ -251,8 +262,10 @@ pub async fn run_app<B: Backend>(
                                 }
                             }
                             Focus::MessageList => {
-                                if key.code == KeyCode::Char('/') && app.composer.is_empty() {
-                                    app.command_palette.show("/");
+                                if matches!(key.code, KeyCode::Char('/') | KeyCode::Char(':'))
+                                    && app.composer.is_empty()
+                                {
+                                    app.command_palette.show(":");
                                     app.focus = Focus::CommandPalette;
                                 } else {
                                     app.message_list.handle_key(key);
@@ -294,8 +307,10 @@ pub async fn run_app<B: Backend>(
                                 if !app.composer.is_empty() {
                                     app.composer.clear();
                                 }
-                            } else if key.code == KeyCode::Char('/') && app.composer.is_empty() {
-                                app.command_palette.show("/");
+                            } else if matches!(key.code, KeyCode::Char('/') | KeyCode::Char(':'))
+                                && app.composer.is_empty()
+                            {
+                                app.command_palette.show(":");
                                 app.focus = Focus::CommandPalette;
                             } else if key.code == KeyCode::Tab {
                                 app.focus = Focus::MessageList;
@@ -333,7 +348,7 @@ pub async fn run_app<B: Backend>(
                             break;
                         }
 
-                        if msg.starts_with('/') {
+                        if msg.starts_with('/') || msg.starts_with(':') {
                             app.command_palette.show(&msg);
                             app.focus = Focus::CommandPalette;
                             continue;
