@@ -72,7 +72,12 @@ impl App {
 
     pub fn render(&mut self, f: &mut Frame) {
         let size = f.area();
-        let pending_height = if self.pending_turn { 2 } else { 0 };
+        let pending_lines = if self.pending_turn {
+            build_pending_lines(self.turn_start, &self.live_lines, size.width)
+        } else {
+            Vec::new()
+        };
+        let pending_height = pending_lines.len() as u16;
         let palette_height = if matches!(self.focus, Focus::CommandPalette) {
             self.command_palette.desired_height() as u16
         } else {
@@ -112,23 +117,6 @@ impl App {
         self.message_list.render(f, main_layout[0]);
 
         if self.pending_turn {
-            let start = self.turn_start.unwrap_or_else(std::time::Instant::now);
-            let pending_lines = vec![
-                Line::from(""),
-                Line::from(vec![
-                    Span::raw(" "),
-                    Span::styled(
-                        format!("{} ", focus_ring_frame(start)),
-                        Style::default()
-                            .fg(Color::White)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        format!("{}...", get_spinner_verb(start)),
-                        Style::default().fg(PI_GRAY),
-                    ),
-                ]),
-            ];
             f.render_widget(Paragraph::new(pending_lines), main_layout[1]);
         }
 
@@ -1078,6 +1066,54 @@ fn clear_live_lines(live_lines: &Arc<StdMutex<Vec<String>>>) {
     if let Ok(mut state) = live_lines.lock() {
         state.clear();
     }
+}
+
+fn build_pending_lines(
+    turn_start: Option<std::time::Instant>,
+    live_lines: &Arc<StdMutex<Vec<String>>>,
+    width: u16,
+) -> Vec<Line<'static>> {
+    let start = turn_start.unwrap_or_else(std::time::Instant::now);
+    let mut pending_lines = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::raw(" "),
+            Span::styled(
+                format!("{} ", focus_ring_frame(start)),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("{}...", get_spinner_verb(start)),
+                Style::default().fg(PI_GRAY),
+            ),
+        ]),
+    ];
+
+    let snapshot = live_lines
+        .lock()
+        .map(|state| state.clone())
+        .unwrap_or_default();
+    if snapshot.is_empty() {
+        return pending_lines;
+    }
+
+    let wrap_width = width.saturating_sub(2).max(1) as usize;
+    for preview_line in snapshot
+        .iter()
+        .filter(|line| !line.trim().is_empty())
+        .take(3)
+    {
+        for wrapped in crate::presentation::render_wrapped_display_line(preview_line, wrap_width) {
+            pending_lines.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(wrapped, Style::default().fg(PI_DIM_GRAY)),
+            ]));
+        }
+    }
+
+    pending_lines
 }
 
 fn format_cwd(runtime: &CliTurnRuntime) -> String {
