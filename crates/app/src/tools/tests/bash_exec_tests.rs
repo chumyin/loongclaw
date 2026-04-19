@@ -1,5 +1,13 @@
 use super::*;
 
+fn execute_tool_core_for_subprocess_test(
+    request: ToolCoreRequest,
+    config: &runtime_config::ToolRuntimeConfig,
+) -> Result<ToolCoreOutcome, String> {
+    let _guard = crate::test_support::acquire_subprocess_test_guard();
+    execute_tool_core_with_config(request, config)
+}
+
 #[cfg(feature = "tool-shell")]
 #[test]
 fn runtime_tool_view_hides_bash_exec_when_runtime_is_unavailable() {
@@ -245,7 +253,7 @@ fn bash_exec_reports_failed_status_for_non_zero_exit() {
     config.shell_default_mode = shell_policy_ext::ShellPolicyDefault::Allow;
     config.bash_exec = ready_bash_exec_runtime_policy();
 
-    let outcome = execute_tool_core_with_config(
+    let outcome = execute_tool_core_for_subprocess_test(
         ToolCoreRequest {
             tool_name: "bash.exec".to_owned(),
             payload: json!({"command": "printf 'hello'; exit 7"}),
@@ -332,7 +340,7 @@ fn bash_exec_falls_back_to_file_root_when_current_dir_is_unavailable() {
     let cwd_guard = ScopedCurrentDir::new(&deleted_cwd);
     fs::remove_dir_all(&deleted_cwd).expect("remove deleted cwd");
 
-    let outcome = execute_tool_core_with_config(
+    let outcome = execute_tool_core_for_subprocess_test(
         ToolCoreRequest {
             tool_name: "bash.exec".to_owned(),
             payload: json!({"command": "printf fallback-from-file-root"}),
@@ -372,7 +380,7 @@ fn bash_exec_defaults_cwd_to_configured_file_root() {
     config.shell_default_mode = shell_policy_ext::ShellPolicyDefault::Allow;
     config.bash_exec = ready_bash_exec_runtime_policy();
 
-    let outcome = execute_tool_core_with_config(
+    let outcome = execute_tool_core_for_subprocess_test(
         ToolCoreRequest {
             tool_name: "bash.exec".to_owned(),
             payload: json!({
@@ -629,7 +637,7 @@ fn bash_exec_allows_parse_unreliable_command_when_shell_default_mode_is_allow() 
 #[test]
 fn bash_exec_keeps_shell_exec_unchanged() {
     let config = test_tool_runtime_config(std::env::temp_dir());
-    let outcome = execute_tool_core_with_config(
+    let outcome = execute_tool_core_for_subprocess_test(
         ToolCoreRequest {
             tool_name: "shell.exec".to_owned(),
             payload: json!({"command": "echo", "args": ["hi"]}),
@@ -657,7 +665,7 @@ fn bash_exec_honors_cwd() {
     config.shell_default_mode = shell_policy_ext::ShellPolicyDefault::Allow;
     config.bash_exec = ready_bash_exec_runtime_policy();
 
-    let outcome = execute_tool_core_with_config(
+    let outcome = execute_tool_core_for_subprocess_test(
         ToolCoreRequest {
             tool_name: "bash.exec".to_owned(),
             payload: json!({
@@ -695,7 +703,7 @@ fn bash_exec_rejects_cwd_that_escapes_configured_file_root() {
     config.shell_default_mode = shell_policy_ext::ShellPolicyDefault::Allow;
     config.bash_exec = ready_bash_exec_runtime_policy();
 
-    let error = execute_tool_core_with_config(
+    let error = execute_tool_core_for_subprocess_test(
         ToolCoreRequest {
             tool_name: "bash.exec".to_owned(),
             payload: json!({
@@ -753,7 +761,7 @@ fn tool_invoke_dispatches_bash_exec_with_trusted_internal_context() {
     config.shell_default_mode = shell_policy_ext::ShellPolicyDefault::Allow;
     config.bash_exec = ready_bash_exec_runtime_policy();
 
-    let search = execute_tool_core_with_config(
+    let search = execute_tool_core_for_subprocess_test(
         ToolCoreRequest {
             tool_name: "tool.search".to_owned(),
             payload: json!({"query": "bash command cwd timeout"}),
@@ -769,22 +777,25 @@ fn tool_invoke_dispatches_bash_exec_with_trusted_internal_context() {
         .find(|entry| entry["tool_id"] == "bash.exec")
         .expect("bash.exec search result");
 
-    let outcome = execute_tool_core_with_test_context(
-        ToolCoreRequest {
-            tool_name: "tool.invoke".to_owned(),
-            payload: json!({
-                "tool_id": "bash.exec",
-                "lease": result["lease"].clone(),
-                "arguments": {
-                    "command": "printf 'invoke-bash'"
-                },
-                "_loong": {
-                    LOONG_INTERNAL_RUNTIME_NARROWING_KEY: {}
-                }
-            }),
-        },
-        &config,
-    )
+    let outcome = {
+        let _guard = crate::test_support::acquire_subprocess_test_guard();
+        execute_tool_core_with_test_context(
+            ToolCoreRequest {
+                tool_name: "tool.invoke".to_owned(),
+                payload: json!({
+                    "tool_id": "bash.exec",
+                    "lease": result["lease"].clone(),
+                    "arguments": {
+                        "command": "printf 'invoke-bash'"
+                    },
+                    "_loong": {
+                        LOONG_INTERNAL_RUNTIME_NARROWING_KEY: {}
+                    }
+                }),
+            },
+            &config,
+        )
+    }
     .expect("tool.invoke should execute bash.exec with trusted internal context");
 
     assert_eq!(outcome.status, "ok");

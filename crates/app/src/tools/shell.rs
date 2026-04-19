@@ -159,7 +159,7 @@ async fn run_shell_command_with_timeout(
 #[cfg(all(test, feature = "tool-shell", unix))]
 mod tests {
     use super::*;
-    use crate::test_support::unique_temp_dir;
+    use crate::test_support::{acquire_subprocess_test_guard, unique_temp_dir};
     use crate::tools::runtime_config::ToolRuntimeConfig;
     use crate::tools::runtime_events::{
         ToolRuntimeEvent, ToolRuntimeEventSink, ToolRuntimeStream, with_tool_runtime_event_sink,
@@ -197,6 +197,14 @@ mod tests {
         }
     }
 
+    fn execute_shell_tool_for_test(
+        request: ToolCoreRequest,
+        config: &ToolRuntimeConfig,
+    ) -> Result<ToolCoreOutcome, String> {
+        let _guard = acquire_subprocess_test_guard();
+        execute_shell_tool_with_config(request, config)
+    }
+
     #[test]
     fn shell_exec_defaults_cwd_to_configured_file_root() {
         let root = unique_temp_dir("loong-shell-default-cwd");
@@ -210,7 +218,7 @@ mod tests {
         };
 
         let outcome =
-            execute_shell_tool_with_config(request, &config).expect("shell.exec should succeed");
+            execute_shell_tool_for_test(request, &config).expect("shell.exec should succeed");
 
         assert_eq!(outcome.status, "ok");
         assert_eq!(outcome.payload["cwd"], root.display().to_string());
@@ -311,7 +319,7 @@ mod tests {
             .expect("current-thread runtime");
 
         let outcome = runtime.block_on(with_tool_runtime_event_sink(runtime_sink, async {
-            execute_shell_tool_with_config(request, &config)
+            execute_shell_tool_for_test(request, &config)
         }));
         let outcome = outcome.expect("shell.exec should succeed under runtime sink");
         let events = lock_runtime_events(&sink);
@@ -366,7 +374,7 @@ mod tests {
             .expect("current-thread runtime");
 
         let outcome = runtime.block_on(with_tool_runtime_event_sink(runtime_sink, async {
-            execute_shell_tool_with_config(request, &config)
+            execute_shell_tool_for_test(request, &config)
         }));
         let outcome = outcome.expect("shell.exec should succeed");
         let events = lock_runtime_events(&sink);
@@ -411,7 +419,7 @@ mod tests {
             .expect("current-thread runtime");
 
         let error = runtime.block_on(with_tool_runtime_event_sink(runtime_sink, async {
-            execute_shell_tool_with_config(request, &config)
+            execute_shell_tool_for_test(request, &config)
         }));
         let error = error.expect_err("shell.exec should time out");
         let events = lock_runtime_events(&sink);

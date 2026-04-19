@@ -1349,7 +1349,6 @@ mod tests {
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use std::ops::{Deref, DerefMut};
     use std::path::{Path, PathBuf};
-    use std::sync::{MutexGuard, OnceLock};
 
     struct ToolTestRuntimeConfig {
         config: runtime_config::ToolRuntimeConfig,
@@ -1406,35 +1405,7 @@ mod tests {
         }
     }
 
-    struct ScopedCurrentDir {
-        original: PathBuf,
-        _lock: MutexGuard<'static, ()>,
-    }
-
-    fn current_dir_test_lock() -> &'static std::sync::Mutex<()> {
-        static CURRENT_DIR_TEST_LOCK: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
-        CURRENT_DIR_TEST_LOCK.get_or_init(|| std::sync::Mutex::new(()))
-    }
-
-    impl ScopedCurrentDir {
-        fn new(path: &Path) -> Self {
-            let lock = current_dir_test_lock()
-                .lock()
-                .expect("lock current dir test");
-            let original = std::env::current_dir().expect("read current dir");
-            std::env::set_current_dir(path).expect("set current dir");
-            Self {
-                original,
-                _lock: lock,
-            }
-        }
-    }
-
-    impl Drop for ScopedCurrentDir {
-        fn drop(&mut self) {
-            std::env::set_current_dir(&self.original).expect("restore current dir");
-        }
-    }
+    use crate::test_support::ScopedCurrentDir;
 
     #[cfg(all(feature = "tool-shell", unix))]
     fn configured_test_bash_runtime_with_rules(
@@ -3233,6 +3204,7 @@ mod tests {
     #[cfg(feature = "tool-browser")]
     #[test]
     fn browser_companion_protocol_times_out_stalled_command() {
+        let _subprocess_guard = crate::test_support::acquire_subprocess_test_guard();
         let root = unique_tool_temp_dir("loong-browser-companion-timeout");
         std::fs::create_dir_all(&root).expect("create fixture root");
         let script_path =
