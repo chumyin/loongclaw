@@ -54,27 +54,27 @@ impl Composer {
         let prefix_width = 3usize;
         let available_width = area.width.saturating_sub(prefix_width as u16).max(1) as usize;
         let mut row = 0usize;
-        let mut content_col = 0usize;
+        let mut line_col = 0usize;
 
         for grapheme in self.input[..self.cursor].graphemes(true) {
             if grapheme == "\n" {
                 row += 1;
-                content_col = 0;
+                line_col = 0;
                 continue;
             }
 
-            let grapheme_width = display_width(grapheme);
-            if col + grapheme_width > available_width {
+            let ch_width = display_width(ch);
+            if line_col + ch_width > available_width {
                 row += 1;
-                content_col = 0;
+                line_col = 0;
             }
-            col += grapheme_width;
+            line_col += ch_width;
         }
 
         let col = if row == 0 {
-            prefix_width + content_col
+            prefix_width + line_col
         } else {
-            content_col
+            line_col
         };
 
         (
@@ -169,9 +169,14 @@ impl Composer {
 mod tests {
     use super::Composer;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::layout::Rect;
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn key_with_modifiers(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
+        KeyEvent::new(code, modifiers)
     }
 
     #[test]
@@ -187,20 +192,67 @@ mod tests {
     }
 
     #[test]
-    fn home_and_end_stay_on_current_line() {
+    fn cursor_position_respects_prefix_before_wrapping() {
         let mut composer = Composer::new();
-        for ch in "alpha\nbeta".chars() {
+        assert!(composer.handle_key(key(KeyCode::Char('a'))).is_none());
+        assert!(composer.handle_key(key(KeyCode::Char('b'))).is_none());
+
+        assert_eq!(composer.cursor_position(Rect::new(0, 0, 6, 3)), (5, 0));
+
+        assert!(composer.handle_key(key(KeyCode::Char('c'))).is_none());
+        assert_eq!(composer.cursor_position(Rect::new(0, 0, 6, 3)), (5, 0));
+
+        assert!(composer.handle_key(key(KeyCode::Char('d'))).is_none());
+
+        assert_eq!(composer.cursor_position(Rect::new(0, 0, 6, 3)), (1, 1));
+    }
+
+    #[test]
+    fn word_motion_and_delete_shortcuts_keep_cursor_on_valid_boundaries() {
+        let mut composer = Composer::new();
+        for ch in "foo 你好 bar".chars() {
             assert!(composer.handle_key(key(KeyCode::Char(ch))).is_none());
         }
-        composer.handle_key(key(KeyCode::Left));
-        composer.handle_key(key(KeyCode::Left));
-        composer.handle_key(key(KeyCode::Home));
-        assert!(composer.handle_key(key(KeyCode::Char('X'))).is_none());
-        composer.handle_key(key(KeyCode::End));
-        assert!(composer.handle_key(key(KeyCode::Char('Y'))).is_none());
 
-        let submitted = composer.handle_key(key(KeyCode::Enter));
-        assert_eq!(submitted.as_deref(), Some("alpha\nXbetYa"));
+        assert!(
+            composer
+                .handle_key(key_with_modifiers(
+                    KeyCode::Char('a'),
+                    KeyModifiers::CONTROL
+                ))
+                .is_none()
+        );
+        assert!(
+            composer
+                .handle_key(key_with_modifiers(KeyCode::Char('f'), KeyModifiers::ALT))
+                .is_none()
+        );
+        assert!(
+            composer
+                .handle_key(key_with_modifiers(KeyCode::Char('d'), KeyModifiers::ALT))
+                .is_none()
+        );
+        assert!(
+            composer
+                .handle_key(key_with_modifiers(
+                    KeyCode::Char('e'),
+                    KeyModifiers::CONTROL
+                ))
+                .is_none()
+        );
+        assert!(
+            composer
+                .handle_key(key_with_modifiers(
+                    KeyCode::Char('w'),
+                    KeyModifiers::CONTROL
+                ))
+                .is_none()
+        );
+
+        assert_eq!(
+            composer.handle_key(key(KeyCode::Enter)).as_deref(),
+            Some("foo ")
+        );
     }
 }
 
