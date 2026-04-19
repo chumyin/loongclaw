@@ -87,16 +87,6 @@ impl App {
         } else {
             0
         };
-        let fixed_height = pending_height
-            + 1
-            + self.composer.height()
-            + if palette_height > 0 {
-                1 + palette_height
-            } else {
-                0
-            }
-            + 1
-            + 1;
         let main_layout = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -1178,6 +1168,7 @@ fn build_pi_startup_content(
     runtime: &CliTurnRuntime,
     options: &CliChatOptions,
     _render_width: usize,
+    i18n: &I18nService,
 ) -> (String, String, Vec<(String, Vec<String>)>) {
     let version = crate::presentation::BuildVersionInfo::current().render_version_line();
     let mcp_servers = if runtime.effective_bootstrap_mcp_servers.is_empty() {
@@ -1192,21 +1183,15 @@ fn build_pi_startup_content(
         vec![skills.join(", ")]
     };
 
-    let tutorial = STARTUP_TUTORIAL.to_owned();
+    let tutorial = i18n.text(PiCopy::Tutorial).to_owned();
     let mut sections = vec![
-        ("MCP".to_owned(), mcp_servers),
-        ("Skills".to_owned(), skills),
-        (COMMAND_DECK_SECTION_TITLE.to_owned(), command_deck_lines()),
-        (CONTROL_PLANE_SECTION_TITLE.to_owned(), control_plane_lines()),
-        (
-            STREAMING_SECTION_TITLE.to_owned(),
-            vec![STREAMING_HINT.to_owned()],
-        ),
+        (i18n.text(PiCopy::StartupSectionMcp).to_owned(), mcp_servers),
+        (i18n.text(PiCopy::StartupSectionSkills).to_owned(), skills),
     ];
 
     if options.acp_event_stream || runtime.explicit_acp_request {
         sections.push((
-            "ACP".to_owned(),
+            i18n.text(PiCopy::StartupSectionAcp).to_owned(),
             vec![format!(
                 "requested={} · event_stream={}",
                 runtime.explicit_acp_request, options.acp_event_stream
@@ -1235,4 +1220,11 @@ fn detect_repo_skills() -> Vec<String> {
         .collect::<Vec<_>>();
     names.sort();
     names
+}
+
+fn pending_live_lines(live_lines: &Arc<StdMutex<Vec<String>>>) -> Vec<String> {
+    live_lines
+        .lock()
+        .map(|state| state.iter().take(5).cloned().collect())
+        .unwrap_or_default()
 }

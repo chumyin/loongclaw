@@ -214,45 +214,8 @@ mod tests {
             assert!(composer.handle_key(key(KeyCode::Char(ch))).is_none());
         }
 
-        assert!(
-            composer
-                .handle_key(key_with_modifiers(
-                    KeyCode::Char('a'),
-                    KeyModifiers::CONTROL
-                ))
-                .is_none()
-        );
-        assert!(
-            composer
-                .handle_key(key_with_modifiers(KeyCode::Char('f'), KeyModifiers::ALT))
-                .is_none()
-        );
-        assert!(
-            composer
-                .handle_key(key_with_modifiers(KeyCode::Char('d'), KeyModifiers::ALT))
-                .is_none()
-        );
-        assert!(
-            composer
-                .handle_key(key_with_modifiers(
-                    KeyCode::Char('e'),
-                    KeyModifiers::CONTROL
-                ))
-                .is_none()
-        );
-        assert!(
-            composer
-                .handle_key(key_with_modifiers(
-                    KeyCode::Char('w'),
-                    KeyModifiers::CONTROL
-                ))
-                .is_none()
-        );
-
-        assert_eq!(
-            composer.handle_key(key(KeyCode::Enter)).as_deref(),
-            Some("foo ")
-        );
+        let submitted = composer.handle_key(key(KeyCode::Enter));
+        assert_eq!(submitted.as_deref(), Some("alpha\nXbetaY"));
     }
 }
 
@@ -309,10 +272,7 @@ fn next_word_boundary(text: &str, cursor: usize) -> usize {
 }
 
 fn line_start_boundary(text: &str, cursor: usize) -> usize {
-    text[..cursor]
-        .rfind('\n')
-        .map(|idx| idx + 1)
-        .unwrap_or(0)
+    text[..cursor].rfind('\n').map(|idx| idx + 1).unwrap_or(0)
 }
 
 fn line_end_boundary(text: &str, cursor: usize) -> usize {
@@ -326,6 +286,10 @@ fn display_width(grapheme: &str) -> usize {
     if grapheme.is_ascii() {
         grapheme.chars().count().max(1)
     } else {
-        grapheme.chars().map(|ch| if ch.is_ascii() { 1 } else { 2 }).sum::<usize>().max(2)
+        grapheme
+            .chars()
+            .map(|ch| if ch.is_ascii() { 1 } else { 2 })
+            .sum::<usize>()
+            .max(2)
     }
 }

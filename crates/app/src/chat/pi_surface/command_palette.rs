@@ -121,10 +121,7 @@ impl CommandPalette {
     }
 
     pub fn show(&mut self, query: &str) {
-        self.query = query
-            .trim()
-            .trim_start_matches(['/', ':'])
-            .to_string();
+        self.query = query.trim().trim_start_matches(['/', ':']).to_string();
         self.state.select(Some(0));
     }
 
