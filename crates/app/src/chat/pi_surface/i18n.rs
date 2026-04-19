@@ -70,6 +70,23 @@ impl I18nService {
     }
 }
 
+pub fn resolve_default_language() -> Language {
+    let locale = std::env::var("LC_ALL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| std::env::var("LANG").ok())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    if locale.contains("zh_tw") || locale.contains("zh-hant") || locale.contains("zh_hk") {
+        Language::ZhTw
+    } else if locale.contains("zh") {
+        Language::ZhCn
+    } else {
+        Language::En
+    }
+}
+
 fn en_text(key: PiCopy) -> &'static str {
     match key {
         PiCopy::ThinkingTitle => "thinking",
