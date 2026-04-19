@@ -20,10 +20,7 @@ use crate::tui_surface::{TuiKeyValueSpec, TuiMessageSpec, TuiSectionSpec};
 
 use super::command_palette::{CommandAction, CommandPalette};
 use super::composer::Composer;
-use super::i18n::{
-    COMMAND_DECK_SECTION_TITLE, CONTROL_PLANE_SECTION_TITLE, STARTUP_TUTORIAL,
-    STREAMING_HINT, STREAMING_SECTION_TITLE, command_deck_lines, control_plane_lines,
-};
+use super::i18n::{I18nService, PiCopy, resolve_default_language};
 use super::message_list::MessageList;
 use super::utils::*;
 

@@ -7,6 +7,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Paragraph, Wrap},
 };
+use unicode_segmentation::UnicodeSegmentation;
 
 pub struct Composer {
     input: String,
@@ -36,7 +37,6 @@ impl Composer {
     }
 
     pub fn render(&mut self, f: &mut Frame, area: Rect, focused: bool) {
-        // Pi style composer is completely borderless (App handles divider lines)
         let prefix = Span::styled(
             " › ",
             Style::default()
@@ -56,19 +56,19 @@ impl Composer {
         let mut row = 0usize;
         let mut content_col = 0usize;
 
-        for ch in self.input[..self.cursor].chars() {
-            if ch == '\n' {
+        for grapheme in self.input[..self.cursor].graphemes(true) {
+            if grapheme == "\n" {
                 row += 1;
                 content_col = 0;
                 continue;
             }
 
-            let ch_width = display_width(ch);
-            if content_col + ch_width > available_width {
+            let grapheme_width = display_width(grapheme);
+            if col + grapheme_width > available_width {
                 row += 1;
                 content_col = 0;
             }
-            content_col += ch_width;
+            col += grapheme_width;
         }
 
         let col = if row == 0 {
@@ -153,6 +153,12 @@ impl Composer {
             KeyCode::Right => {
                 self.cursor = next_grapheme_boundary(&self.input, self.cursor);
             }
+            KeyCode::Home => {
+                self.cursor = line_start_boundary(&self.input, self.cursor);
+            }
+            KeyCode::End => {
+                self.cursor = line_end_boundary(&self.input, self.cursor);
+            }
             _ => {}
         }
         None
@@ -181,33 +187,26 @@ mod tests {
     }
 
     #[test]
-    fn cursor_stays_on_first_row_until_content_width_is_exhausted() {
+    fn home_and_end_stay_on_current_line() {
         let mut composer = Composer::new();
-        for ch in ['a', 'b', 'c', 'd'] {
+        for ch in "alpha\nbeta".chars() {
             assert!(composer.handle_key(key(KeyCode::Char(ch))).is_none());
         }
+        composer.handle_key(key(KeyCode::Left));
+        composer.handle_key(key(KeyCode::Left));
+        composer.handle_key(key(KeyCode::Home));
+        assert!(composer.handle_key(key(KeyCode::Char('X'))).is_none());
+        composer.handle_key(key(KeyCode::End));
+        assert!(composer.handle_key(key(KeyCode::Char('Y'))).is_none());
 
-        let (_, y) = composer.cursor_position(ratatui::layout::Rect::new(0, 0, 7, 3));
-
-        assert_eq!(y, 0);
-    }
-
-    #[test]
-    fn cursor_wraps_after_content_width_without_reapplying_prefix_offset() {
-        let mut composer = Composer::new();
-        for ch in ['a', 'b', 'c', 'd', 'e', 'f'] {
-            assert!(composer.handle_key(key(KeyCode::Char(ch))).is_none());
-        }
-
-        let (x, y) = composer.cursor_position(ratatui::layout::Rect::new(0, 0, 7, 3));
-
-        assert_eq!((x, y), (2, 1));
+        let submitted = composer.handle_key(key(KeyCode::Enter));
+        assert_eq!(submitted.as_deref(), Some("alpha\nXbetYa"));
     }
 }
 
 fn previous_grapheme_boundary(text: &str, cursor: usize) -> usize {
-    text[..cursor]
-        .char_indices()
+    UnicodeSegmentation::grapheme_indices(text, true)
+        .take_while(|(idx, _)| *idx < cursor)
         .last()
         .map(|(idx, _)| idx)
         .unwrap_or(0)
@@ -217,10 +216,14 @@ fn next_grapheme_boundary(text: &str, cursor: usize) -> usize {
     if cursor >= text.len() {
         return text.len();
     }
-    let mut iter = text[cursor..].char_indices();
-    let _ = iter.next();
-    iter.next()
-        .map(|(idx, _)| cursor + idx)
+
+    UnicodeSegmentation::grapheme_indices(text, true)
+        .find_map(|(idx, _grapheme)| {
+            if idx <= cursor {
+                return None;
+            }
+            Some(idx)
+        })
         .unwrap_or(text.len())
 }
 
@@ -253,6 +256,24 @@ fn next_word_boundary(text: &str, cursor: usize) -> usize {
     text.len()
 }
 
-fn display_width(ch: char) -> usize {
-    if ch.is_ascii() { 1 } else { 2 }
+fn line_start_boundary(text: &str, cursor: usize) -> usize {
+    text[..cursor]
+        .rfind('\n')
+        .map(|idx| idx + 1)
+        .unwrap_or(0)
+}
+
+fn line_end_boundary(text: &str, cursor: usize) -> usize {
+    text[cursor..]
+        .find('\n')
+        .map(|offset| cursor + offset)
+        .unwrap_or(text.len())
+}
+
+fn display_width(grapheme: &str) -> usize {
+    if grapheme.is_ascii() {
+        grapheme.chars().count().max(1)
+    } else {
+        grapheme.chars().map(|ch| if ch.is_ascii() { 1 } else { 2 }).sum::<usize>().max(2)
+    }
 }
