@@ -20,6 +20,10 @@ use crate::tui_surface::{TuiKeyValueSpec, TuiMessageSpec, TuiSectionSpec};
 
 use super::command_palette::{CommandAction, CommandPalette};
 use super::composer::Composer;
+use super::i18n::{
+    COMMAND_DECK_SECTION_TITLE, CONTROL_PLANE_SECTION_TITLE, STARTUP_TUTORIAL,
+    STREAMING_HINT, STREAMING_SECTION_TITLE, command_deck_lines, control_plane_lines,
+};
 use super::message_list::MessageList;
 use super::utils::*;
 
@@ -72,12 +76,12 @@ impl App {
 
     pub fn render(&mut self, f: &mut Frame) {
         let size = f.area();
-        let pending_lines = if self.pending_turn {
-            build_pending_lines(self.turn_start, &self.live_lines, size.width)
+        let live_lines = self.pending_live_lines();
+        let pending_height = if self.pending_turn {
+            2 + u16::try_from(live_lines.len()).unwrap_or(u16::MAX)
         } else {
-            Vec::new()
+            0
         };
-        let pending_height = pending_lines.len() as u16;
         let palette_height = if matches!(self.focus, Focus::CommandPalette) {
             self.command_palette.desired_height() as u16
         } else {
@@ -117,6 +121,24 @@ impl App {
         self.message_list.render(f, main_layout[0]);
 
         if self.pending_turn {
+            let start = self.turn_start.unwrap_or_else(std::time::Instant::now);
+            let mut pending_lines = vec![
+                Line::from(""),
+                Line::from(vec![
+                    Span::raw(" "),
+                    Span::styled(
+                        format!("{} ", focus_ring_frame(start)),
+                        Style::default()
+                            .fg(Color::White)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!("{}...", get_spinner_verb(start)),
+                        Style::default().fg(PI_GRAY),
+                    ),
+                ]),
+            ];
+            pending_lines.extend(live_lines.into_iter().map(Line::from));
             f.render_widget(Paragraph::new(pending_lines), main_layout[1]);
         }
 
@@ -161,6 +183,20 @@ impl App {
             Span::styled(&self.model, Style::default().fg(PI_GRAY)),
         ]);
         f.render_widget(Paragraph::new(footer_line), main_layout[7]);
+    }
+}
+
+impl App {
+    fn pending_live_lines(&self) -> Vec<String> {
+        const MAX_PENDING_LIVE_LINES: usize = 10;
+
+        match self.live_lines.lock() {
+            Ok(lines) => {
+                let keep_from = lines.len().saturating_sub(MAX_PENDING_LIVE_LINES);
+                lines[keep_from..].to_vec()
+            }
+            Err(_) => Vec::new(),
+        }
     }
 }
 
@@ -1144,10 +1180,16 @@ fn build_pi_startup_content(
         vec![skills.join(", ")]
     };
 
-    let tutorial = "escape interrupt · / commands · ctrl+o compaction".to_owned();
+    let tutorial = STARTUP_TUTORIAL.to_owned();
     let mut sections = vec![
         ("MCP".to_owned(), mcp_servers),
         ("Skills".to_owned(), skills),
+        (COMMAND_DECK_SECTION_TITLE.to_owned(), command_deck_lines()),
+        (CONTROL_PLANE_SECTION_TITLE.to_owned(), control_plane_lines()),
+        (
+            STREAMING_SECTION_TITLE.to_owned(),
+            vec![STREAMING_HINT.to_owned()],
+        ),
     ];
 
     if options.acp_event_stream || runtime.explicit_acp_request {

@@ -22,11 +22,13 @@ public docs landing path.
 | --- | --- | --- |
 | a contributor-facing map of where design, docs, QA, systems, or community help is most useful | [`contribution-areas.md`](contribution-areas.md) | this is the public contributor-direction reference |
 | the maintainer-owned GitHub branch model, labels, intake wiring, and automation baseline | [`github-collaboration.md`](github-collaboration.md) | this is repository support material used by automation and maintainer workflow |
+| the current interactive Pi-surface TUI expectations, control-plane shortcuts, or where to edit that surface safely | [`pi-surface-tui.md`](pi-surface-tui.md) | this is the operator-surface reference for the terminal chat UX |
 
 ## What Belongs Here
 
 - `contribution-areas.md` is normal contributor-facing reference material.
 - `github-collaboration.md` remains repository-native support material.
+- `pi-surface-tui.md` captures operator-surface behavior and edit touchpoints.
 - maintainer workflow references may stay in the repository when automation
   depends on them, without becoming part of the primary public docs path.
 

@@ -1,73 +1,76 @@
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Language {
-    #[default]
-    En,
-    ZhCn,
-    ZhTw,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PiCopy {
-    ThinkingTitle,
-    ThinkingLive,
-    Tutorial,
-    StartupSectionMcp,
-    StartupSectionSkills,
-    StartupSectionAcp,
-    CommandDeckLabelHelp,
-    CommandDeckDescHelp,
-    CommandDeckLabelStatus,
-    CommandDeckDescStatus,
-    CommandDeckLabelHistory,
-    CommandDeckDescHistory,
-    CommandDeckLabelCompact,
-    CommandDeckDescCompact,
-    CommandDeckLabelSessions,
-    CommandDeckDescSessions,
-    CommandDeckLabelWorkers,
-    CommandDeckDescWorkers,
-    CommandDeckLabelReview,
-    CommandDeckDescReview,
-    CommandDeckLabelMission,
-    CommandDeckDescMission,
-    CommandDeckLabelFastLane,
-    CommandDeckDescFastLane,
-    CommandDeckLabelSafeLane,
-    CommandDeckDescSafeLane,
-    CommandDeckLabelCheckpoint,
-    CommandDeckDescCheckpoint,
-    CommandDeckLabelRepair,
-    CommandDeckDescRepair,
-    CommandDeckLabelExit,
-    CommandDeckDescExit,
-    CommandDeckEmpty,
+pub struct SurfaceCommandCopy {
+    pub command: &'static str,
+    pub description: &'static str,
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct I18nService {
-    current_lang: Language,
+pub const SURFACE_COMMANDS: &[SurfaceCommandCopy] = &[
+    SurfaceCommandCopy {
+        command: "/help",
+        description: "Show keyboard shortcuts and control-surface commands",
+    },
+    SurfaceCommandCopy {
+        command: "/status",
+        description: "Inspect runtime posture and continuity settings",
+    },
+    SurfaceCommandCopy {
+        command: "/history",
+        description: "Show the current transcript window",
+    },
+    SurfaceCommandCopy {
+        command: "/compact",
+        description: "Create a manual continuity checkpoint",
+    },
+    SurfaceCommandCopy {
+        command: "/sessions",
+        description: "Inspect visible sessions rooted at the current scope",
+    },
+    SurfaceCommandCopy {
+        command: "/workers",
+        description: "Inspect visible delegate worker sessions",
+    },
+    SurfaceCommandCopy {
+        command: "/review",
+        description: "Inspect the latest approval and review queue",
+    },
+    SurfaceCommandCopy {
+        command: "/mission",
+        description: "Inspect mission-control lane counts and phase state",
+    },
+    SurfaceCommandCopy {
+        command: "/exit",
+        description: "Leave interactive chat",
+    },
+];
+
+pub const STARTUP_TUTORIAL: &str = "escape interrupt · / command deck · ctrl+o compaction";
+pub const COMMAND_DECK_SECTION_TITLE: &str = "Command deck";
+pub const CONTROL_PLANE_SECTION_TITLE: &str = "Control plane";
+pub const STREAMING_SECTION_TITLE: &str = "Streaming";
+pub const STREAMING_HINT: &str =
+    "Pending turns show draft preview and tool activity inline before the final reply lands.";
+
+pub fn command_copy(command: &str) -> Option<SurfaceCommandCopy> {
+    SURFACE_COMMANDS
+        .iter()
+        .copied()
+        .find(|item| item.command == command)
 }
 
-impl I18nService {
-    pub fn new(lang: Language) -> Self {
-        Self { current_lang: lang }
-    }
+pub fn command_deck_lines() -> Vec<String> {
+    ["/help", "/status", "/history", "/compact"]
+        .into_iter()
+        .filter_map(command_copy)
+        .map(|item| format!("{} · {}", item.command, item.description))
+        .collect()
+}
 
-    pub fn current_lang(&self) -> Language {
-        self.current_lang
-    }
-
-    pub fn set_lang(&mut self, lang: Language) {
-        self.current_lang = lang;
-    }
-
-    pub fn text(&self, key: PiCopy) -> &'static str {
-        match self.current_lang {
-            Language::En => en_text(key),
-            Language::ZhCn => zh_cn_text(key),
-            Language::ZhTw => zh_tw_text(key),
-        }
-    }
+pub fn control_plane_lines() -> Vec<String> {
+    ["/sessions", "/workers", "/review", "/mission"]
+        .into_iter()
+        .filter_map(command_copy)
+        .map(|item| format!("{} · {}", item.command, item.description))
+        .collect()
 }
 
 pub fn resolve_default_language() -> Language {

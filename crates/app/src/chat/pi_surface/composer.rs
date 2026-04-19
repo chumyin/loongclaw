@@ -54,22 +54,28 @@ impl Composer {
         let prefix_width = 3usize;
         let available_width = area.width.saturating_sub(prefix_width as u16).max(1) as usize;
         let mut row = 0usize;
-        let mut col = prefix_width;
+        let mut content_col = 0usize;
 
         for ch in self.input[..self.cursor].chars() {
             if ch == '\n' {
                 row += 1;
-                col = 0;
+                content_col = 0;
                 continue;
             }
 
             let ch_width = display_width(ch);
-            if col + ch_width > available_width {
+            if content_col + ch_width > available_width {
                 row += 1;
-                col = 0;
+                content_col = 0;
             }
-            col += ch_width;
+            content_col += ch_width;
         }
+
+        let col = if row == 0 {
+            prefix_width + content_col
+        } else {
+            content_col
+        };
 
         (
             area.x + col.min(area.width.saturating_sub(1) as usize) as u16,
@@ -172,6 +178,30 @@ mod tests {
         let submitted = composer.handle_key(key(KeyCode::Enter));
 
         assert_eq!(submitted.as_deref(), Some("你好"));
+    }
+
+    #[test]
+    fn cursor_stays_on_first_row_until_content_width_is_exhausted() {
+        let mut composer = Composer::new();
+        for ch in ['a', 'b', 'c', 'd'] {
+            assert!(composer.handle_key(key(KeyCode::Char(ch))).is_none());
+        }
+
+        let (_, y) = composer.cursor_position(ratatui::layout::Rect::new(0, 0, 7, 3));
+
+        assert_eq!(y, 0);
+    }
+
+    #[test]
+    fn cursor_wraps_after_content_width_without_reapplying_prefix_offset() {
+        let mut composer = Composer::new();
+        for ch in ['a', 'b', 'c', 'd', 'e', 'f'] {
+            assert!(composer.handle_key(key(KeyCode::Char(ch))).is_none());
+        }
+
+        let (x, y) = composer.cursor_position(ratatui::layout::Rect::new(0, 0, 7, 3));
+
+        assert_eq!((x, y), (2, 1));
     }
 }
 

@@ -1,4 +1,5 @@
 use crate::chat::pi_surface::utils::*;
+use crate::chat::pi_surface::i18n::SURFACE_COMMANDS;
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,
@@ -24,53 +25,16 @@ impl CommandPalette {
     pub fn new() -> Self {
         Self {
             query: String::new(),
-            commands: vec![
-                (
-                    "/help",
-                    "Show keyboard shortcuts and control-surface commands",
-                    CommandAction::RunCommand("/help"),
-                ),
-                (
-                    "/status",
-                    "Inspect runtime posture and continuity settings",
-                    CommandAction::RunCommand("/status"),
-                ),
-                (
-                    "/history",
-                    "Show the current transcript window",
-                    CommandAction::RunCommand("/history"),
-                ),
-                (
-                    "/compact",
-                    "Create a manual continuity checkpoint",
-                    CommandAction::RunCommand("/compact"),
-                ),
-                (
-                    "/sessions",
-                    "Inspect visible sessions rooted at the current scope",
-                    CommandAction::RunCommand("/sessions"),
-                ),
-                (
-                    "/workers",
-                    "Inspect visible delegate worker sessions",
-                    CommandAction::RunCommand("/workers"),
-                ),
-                (
-                    "/review",
-                    "Inspect the latest approval and review queue",
-                    CommandAction::RunCommand("/review"),
-                ),
-                (
-                    "/mission",
-                    "Inspect mission-control lane counts and phase state",
-                    CommandAction::RunCommand("/mission"),
-                ),
-                (
-                    "/exit",
-                    "Leave interactive chat",
-                    CommandAction::RunCommand("/exit"),
-                ),
-            ],
+            commands: SURFACE_COMMANDS
+                .iter()
+                .map(|item| {
+                    (
+                        item.command,
+                        item.description,
+                        CommandAction::RunCommand(item.command),
+                    )
+                })
+                .collect(),
             state: ListState::default(),
         }
     }
