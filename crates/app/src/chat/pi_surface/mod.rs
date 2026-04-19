@@ -9,7 +9,6 @@ pub mod utils;
 
 use crate::CliResult;
 use crate::chat::{CliChatOptions, ConcurrentCliHostOptions, initialize_cli_turn_runtime};
-use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use crossterm::terminal;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
@@ -28,25 +27,20 @@ pub(super) async fn run_cli_chat_surface(
 
     terminal::enable_raw_mode().map_err(|e| format!("failed to enable raw mode: {}", e))?;
     let mut stdout = io::stdout();
-    crossterm::execute!(
-        stdout,
-        crossterm::terminal::EnterAlternateScreen,
-        EnableMouseCapture
-    )
-    .map_err(|e| format!("failed to enter alternate screen: {}", e))?;
+    crossterm::execute!(stdout, crossterm::terminal::EnterAlternateScreen)
+        .map_err(|e| format!("failed to enter alternate screen: {}", e))?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal =
         Terminal::new(backend).map_err(|e| format!("failed to create terminal: {}", e))?;
     terminal
-        .hide_cursor()
-        .map_err(|e| format!("failed to hide cursor: {}", e))?;
+        .show_cursor()
+        .map_err(|e| format!("failed to show cursor: {}", e))?;
 
     let res = app::run_app(&mut terminal, runtime, options.clone()).await;
 
     terminal::disable_raw_mode().map_err(|e| format!("failed to disable raw mode: {}", e))?;
     crossterm::execute!(
         terminal.backend_mut(),
-        DisableMouseCapture,
         crossterm::terminal::LeaveAlternateScreen
     )
     .map_err(|e| format!("failed to leave alternate screen: {}", e))?;

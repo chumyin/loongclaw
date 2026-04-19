@@ -187,16 +187,7 @@ impl MessageList {
                             text_lines.push(padding);
 
                             for line in md_lines {
-                                let mut full_line = line.clone();
-                                full_line.spans.insert(0, Span::raw("  "));
-                                let mut colored_spans =
-                                    vec![Span::styled(" ", Style::default().bg(PI_USER_MSG_BG))];
-                                for span in full_line.spans {
-                                    let mut s = span.clone();
-                                    s.style = s.style.bg(PI_USER_MSG_BG);
-                                    colored_spans.push(s);
-                                }
-                                text_lines.push(Line::from(colored_spans));
+                                text_lines.push(user_block_line(line));
                             }
                         } else {
                             let wrapped_lines = wrap_assistant_markdown_lines(md_lines, width);
@@ -239,6 +230,10 @@ impl MessageList {
             text_lines.push(Line::from(""));
         }
         text_lines
+    }
+
+    pub fn rendered_line_count(&self, width: u16) -> usize {
+        self.get_rendered_lines(width).len()
     }
 
     pub fn render(&mut self, f: &mut Frame, area: Rect) {
@@ -289,6 +284,10 @@ impl MessageList {
             KeyCode::Down | KeyCode::Char('j') => {
                 self.scroll_offset = self.scroll_offset.saturating_sub(1)
             }
+            KeyCode::PageUp => self.scroll_offset = self.scroll_offset.saturating_add(12),
+            KeyCode::PageDown => self.scroll_offset = self.scroll_offset.saturating_sub(12),
+            KeyCode::Home => self.scroll_offset = u16::MAX,
+            KeyCode::End => self.scroll_offset = 0,
             _ => {}
         }
     }
@@ -362,6 +361,19 @@ fn assistant_line_style(line: &str) -> Style {
     } else {
         Style::default().fg(ratatui::style::Color::White)
     }
+}
+
+fn user_block_line(mut line: Line<'static>) -> Line<'static> {
+    if line.spans.is_empty() {
+        line.spans
+            .push(Span::styled("", Style::default().bg(PI_USER_MSG_BG)));
+        return line;
+    }
+
+    for span in &mut line.spans {
+        span.style = span.style.bg(PI_USER_MSG_BG);
+    }
+    line
 }
 
 fn build_assistant_contents(text: &str) -> Vec<MessageContent> {

@@ -44,19 +44,37 @@ impl Composer {
                 .add_modifier(Modifier::BOLD),
         );
 
-        let mut display_text = self.input.clone();
-        if focused {
-            if self.cursor >= display_text.len() {
-                display_text.push('█'); // Solid block cursor like Pi
-            } else {
-                display_text.insert(self.cursor, '█');
-            }
-        }
-
-        let p = Paragraph::new(Line::from(vec![prefix, Span::raw(display_text)]))
+        let p = Paragraph::new(Line::from(vec![prefix, Span::raw(self.input.clone())]))
             .wrap(Wrap { trim: false });
 
         f.render_widget(p, area);
+    }
+
+    pub fn cursor_position(&self, area: Rect) -> (u16, u16) {
+        let prefix_width = 3usize;
+        let available_width = area.width.saturating_sub(prefix_width as u16).max(1) as usize;
+        let mut row = 0usize;
+        let mut col = prefix_width;
+
+        for ch in self.input[..self.cursor].chars() {
+            if ch == '\n' {
+                row += 1;
+                col = 0;
+                continue;
+            }
+
+            let ch_width = display_width(ch);
+            if col + ch_width > available_width {
+                row += 1;
+                col = 0;
+            }
+            col += ch_width;
+        }
+
+        (
+            area.x + col.min(area.width.saturating_sub(1) as usize) as u16,
+            area.y + row.min(area.height.saturating_sub(1) as usize) as u16,
+        )
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<String> {
@@ -203,4 +221,8 @@ fn next_word_boundary(text: &str, cursor: usize) -> usize {
         }
     }
     text.len()
+}
+
+fn display_width(ch: char) -> usize {
+    if ch.is_ascii() { 1 } else { 2 }
 }

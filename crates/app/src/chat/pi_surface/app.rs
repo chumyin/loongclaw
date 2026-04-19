@@ -72,17 +72,32 @@ impl App {
 
     pub fn render(&mut self, f: &mut Frame) {
         let size = f.area();
-        let pending_height = if self.pending_turn { 1 } else { 0 };
+        let pending_height = if self.pending_turn { 2 } else { 0 };
         let palette_height = if matches!(self.focus, Focus::CommandPalette) {
             self.command_palette.desired_height() as u16
         } else {
             0
         };
+        let fixed_height = pending_height
+            + 1
+            + self.composer.height()
+            + if palette_height > 0 {
+                1 + palette_height
+            } else {
+                0
+            }
+            + 1
+            + 1;
+        let available_transcript_height = size.height.saturating_sub(fixed_height).max(1);
+        let transcript_height = self
+            .message_list
+            .rendered_line_count(size.width)
+            .min(available_transcript_height as usize) as u16;
 
         let main_layout = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Min(0),
+                Constraint::Length(transcript_height),
                 Constraint::Length(pending_height),
                 Constraint::Length(1),
                 Constraint::Length(self.composer.height()),
@@ -90,6 +105,7 @@ impl App {
                 Constraint::Length(palette_height),
                 Constraint::Length(1),
                 Constraint::Length(1),
+                Constraint::Min(0),
             ])
             .split(size);
 
@@ -97,27 +113,26 @@ impl App {
 
         if self.pending_turn {
             let start = self.turn_start.unwrap_or_else(std::time::Instant::now);
-            let pending_line = Line::from(vec![
-                Span::raw(" "),
-                Span::styled(
-                    format!("{} ", focus_ring_frame(start)),
-                    Style::default()
-                        .fg(Color::White)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("{}...", get_spinner_verb(start)),
-                    Style::default().fg(PI_GRAY),
-                ),
-            ]);
-            f.render_widget(Paragraph::new(pending_line), main_layout[1]);
+            let pending_lines = vec![
+                Line::from(""),
+                Line::from(vec![
+                    Span::raw(" "),
+                    Span::styled(
+                        format!("{} ", focus_ring_frame(start)),
+                        Style::default()
+                            .fg(Color::White)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!("{}...", get_spinner_verb(start)),
+                        Style::default().fg(PI_GRAY),
+                    ),
+                ]),
+            ];
+            f.render_widget(Paragraph::new(pending_lines), main_layout[1]);
         }
 
-        let line_color = if self.pending_turn {
-            PI_COTTON_CANDY
-        } else {
-            PI_DARK_GRAY
-        };
+        let line_color = PI_COTTON_CANDY;
         f.render_widget(
             Block::default()
                 .borders(Borders::TOP)
@@ -127,6 +142,10 @@ impl App {
 
         self.composer
             .render(f, main_layout[3], matches!(self.focus, Focus::Composer));
+        if matches!(self.focus, Focus::Composer) {
+            let (x, y) = self.composer.cursor_position(main_layout[3]);
+            f.set_cursor_position((x, y));
+        }
 
         if palette_height > 0 {
             f.render_widget(
@@ -196,9 +215,13 @@ pub async fn run_app<B: Backend>(
                     }
 
                     if app.pending_turn {
+                        let mut pending_command = None;
                         match app.focus {
                             Focus::Composer => {
-                                if key.code == KeyCode::Tab {
+                                if key.code == KeyCode::Char('/') && app.composer.is_empty() {
+                                    app.command_palette.show("/");
+                                    app.focus = Focus::CommandPalette;
+                                } else if key.code == KeyCode::Tab {
                                     app.focus = Focus::MessageList;
                                 } else if !(key.code == KeyCode::Enter
                                     && !key.modifiers.contains(KeyModifiers::SHIFT))
@@ -207,12 +230,36 @@ pub async fn run_app<B: Backend>(
                                 }
                             }
                             Focus::MessageList => {
-                                app.message_list.handle_key(key);
+                                if key.code == KeyCode::Char('/') && app.composer.is_empty() {
+                                    app.command_palette.show("/");
+                                    app.focus = Focus::CommandPalette;
+                                } else {
+                                    app.message_list.handle_key(key);
+                                }
                                 if key.code == KeyCode::Esc || key.code == KeyCode::Enter {
                                     app.focus = Focus::Composer;
                                 }
                             }
-                            Focus::CommandPalette => {}
+                            Focus::CommandPalette => {
+                                if let Some(action) = app.command_palette.handle_key(key) {
+                                    match action {
+                                        CommandAction::RunCommand(command) => {
+                                            pending_command = Some(command.to_owned());
+                                            app.focus = Focus::Composer;
+                                        }
+                                        CommandAction::Close => {
+                                            app.focus = Focus::Composer;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if let Some(command) = pending_command {
+                            if command == "/exit" {
+                                break;
+                            }
+                            run_surface_command(terminal, &mut app, &runtime, &options, &command)
+                                .await?;
                         }
                         continue;
                     }

@@ -89,12 +89,32 @@ impl CommandPalette {
         f.render_widget(Clear, area);
 
         let filtered = self.filtered_commands();
+        if filtered.is_empty() {
+            let items = vec![
+                ListItem::new(Line::from(vec![Span::styled(
+                    "  no matching commands",
+                    Style::default().fg(PI_DIM_GRAY),
+                )])),
+                ListItem::new(Line::from(vec![Span::styled(
+                    "(0/0)",
+                    Style::default().fg(PI_DIM_GRAY),
+                )])),
+            ];
+            let list = List::new(items).highlight_style(Style::default());
+            f.render_stateful_widget(list, area, &mut self.state);
+            return;
+        }
+
         let selected = self
             .state
             .selected()
             .unwrap_or(0)
             .min(filtered.len().saturating_sub(1));
         self.state.select(Some(selected));
+        let max_visible = area.height.saturating_sub(1) as usize;
+        let start = selected.saturating_sub(max_visible.saturating_sub(1));
+        let end = (start + max_visible).min(filtered.len());
+        let visible = &filtered[start..end];
 
         let label_width = filtered
             .iter()
@@ -103,40 +123,47 @@ impl CommandPalette {
             .unwrap_or(0)
             .clamp(8, 18);
 
-        let result_items = filtered.iter().enumerate().map(|(index, (cmd, desc, _))| {
-            let label = cmd.trim_start_matches('/');
-            let is_selected = index == selected;
-            let prefix = if is_selected { "→ " } else { "  " };
-            let gap = " ".repeat(label_width.saturating_sub(label.chars().count()) + 2);
-            let max_desc = area
-                .width
-                .saturating_sub((prefix.len() + label_width + 2) as u16)
-                as usize;
-            let desc = truncate(desc, max_desc);
+        let result_items = visible
+            .iter()
+            .enumerate()
+            .map(|(visible_index, (cmd, desc, _))| {
+                let index = start + visible_index;
+                let label = cmd.trim_start_matches('/');
+                let is_selected = index == selected;
+                let prefix = if is_selected { "→ " } else { "  " };
+                let gap = " ".repeat(label_width.saturating_sub(label.chars().count()) + 2);
+                let max_desc = area
+                    .width
+                    .saturating_sub((prefix.len() + label_width + 2) as u16)
+                    as usize;
+                let desc = truncate(desc, max_desc);
 
-            ListItem::new(Line::from(vec![
-                Span::styled(
-                    prefix,
-                    Style::default().fg(if is_selected { PI_CYAN } else { PI_DIM_GRAY }),
-                ),
-                Span::styled(
-                    label.to_owned(),
-                    Style::default()
-                        .fg(if is_selected {
-                            PI_CYAN
-                        } else {
-                            ratatui::style::Color::White
-                        })
-                        .add_modifier(if is_selected {
-                            Modifier::BOLD
-                        } else {
-                            Modifier::empty()
-                        }),
-                ),
-                Span::raw(gap),
-                Span::styled(desc, Style::default().fg(PI_GRAY)),
-            ]))
-        });
+                ListItem::new(Line::from(vec![
+                    Span::styled(
+                        prefix,
+                        Style::default().fg(if is_selected { PI_CYAN } else { PI_DIM_GRAY }),
+                    ),
+                    Span::styled(
+                        label.to_owned(),
+                        Style::default()
+                            .fg(if is_selected {
+                                PI_CYAN
+                            } else {
+                                ratatui::style::Color::White
+                            })
+                            .add_modifier(if is_selected {
+                                Modifier::BOLD
+                            } else {
+                                Modifier::empty()
+                            }),
+                    ),
+                    Span::raw(gap),
+                    Span::styled(
+                        desc,
+                        Style::default().fg(if is_selected { PI_ACCENT } else { PI_GRAY }),
+                    ),
+                ]))
+            });
 
         let count_line = ListItem::new(Line::from(vec![Span::styled(
             format!("({}/{})", selected + 1, filtered.len().max(1)),
