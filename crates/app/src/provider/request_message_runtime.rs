@@ -362,6 +362,21 @@ fn render_deferred_tool_text_workflow_section() -> String {
     ];
     let invoke_call_example = invoke_call_example_lines.join("\n");
 
+    let skill_inspect_example_lines = [
+        "{",
+        "  \"name\": \"tool_invoke\",",
+        "  \"arguments\": {",
+        "    \"tool_id\": \"skills\",",
+        "    \"lease\": \"<lease from tool_search>\",",
+        "    \"arguments\": {",
+        "      \"operation\": \"inspect\",",
+        "      \"skill_id\": \"<skill id from skills results>\"",
+        "    }",
+        "  }",
+        "}",
+    ];
+    let skill_inspect_example = skill_inspect_example_lines.join("\n");
+
     let lines = [
         "## Tool Access".to_owned(),
         "Structured provider tool schemas are disabled for this profile.".to_owned(),
@@ -376,10 +391,13 @@ fn render_deferred_tool_text_workflow_section() -> String {
         "In raw JSON tool calls, use the provider tool names `tool_search` and `tool_invoke`.".to_owned(),
         "tool_invoke leases are short-lived; after any invalid_tool_lease response, refresh with tool_search before retrying.".to_owned(),
         "If you already know the tool id, refresh directly with exact_tool_id to fetch a fresh lease card.".to_owned(),
+        "Skill ids are not tool ids. Do not pass them as exact_tool_id and do not call them directly as tool names; use the grouped `skills` surface and put the target `skill_id` inside payload.arguments.".to_owned(),
         "Hidden-tool discovery example:".to_owned(),
         discovery_call_example,
         "Hidden-tool invocation example:".to_owned(),
         invoke_call_example,
+        "Skill inspection example:".to_owned(),
+        skill_inspect_example,
     ];
 
     lines.join("\n")
@@ -1152,6 +1170,8 @@ mod tests {
         assert!(system_content.contains("\"name\": \"tool_invoke\""));
         assert!(system_content.contains("invalid_tool_lease"));
         assert!(system_content.contains("exact_tool_id"));
+        assert!(system_content.contains("<skill id from skills results>"));
+        assert!(system_content.contains("Skill ids are not tool ids"));
     }
 
     #[test]

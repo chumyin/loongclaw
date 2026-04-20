@@ -54,14 +54,14 @@ impl ByteBudget {
 
 fn byte_budget_retry_hint(surface_name: &str) -> &'static str {
     if surface_name.contains("browser") {
-        return "; retry with a smaller `max_bytes` or a more focused browser extract";
+        return "; retry with a larger `max_bytes` if you need more page content, or use a more focused browser extract";
     }
 
     if surface_name.contains("web") {
-        return "; retry with a smaller `max_bytes` or a narrower web request";
+        return "; retry with a larger `max_bytes` if you need more response content, or use a narrower web request";
     }
 
-    "; retry with a smaller `max_bytes` or a narrower read"
+    "; retry with a larger `max_bytes` if you need more content, or use a narrower read"
 }
 
 #[cfg(test)]
@@ -76,6 +76,7 @@ mod tests {
             .expect_err("content length over limit should fail");
 
         assert!(error.contains("max_bytes limit"));
+        assert!(error.contains("larger `max_bytes`"));
         assert!(error.contains("narrower web request"));
     }
 
@@ -87,6 +88,7 @@ mod tests {
             .expect_err("stream overrun should fail");
 
         assert!(error.contains("max_bytes limit"));
+        assert!(error.contains("larger `max_bytes`"));
         assert!(error.contains("focused browser extract"));
     }
 }

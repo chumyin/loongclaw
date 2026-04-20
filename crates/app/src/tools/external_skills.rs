@@ -221,6 +221,11 @@ struct SkillCandidateDiscovery {
     blocked_candidates: Vec<BlockedSkillCandidate>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct SkillIdHint {
+    pub(super) skill_id: String,
+}
+
 #[derive(Debug, Clone, Default)]
 struct SkillDiscoveryInventory {
     skills: Vec<DiscoveredSkillEntry>,
@@ -1206,6 +1211,32 @@ fn execute_external_skills_list_for_audience(
         SkillAudience::Operator => json!(super::bundled_skills::bundled_skill_packs()),
         SkillAudience::Model => json!([]),
     };
+    let next_steps = match audience {
+        SkillAudience::Operator => Value::Array(Vec::new()),
+        SkillAudience::Model => json!([
+            "To inspect one listed skill, route through the grouped `skills` surface with `operation=inspect` and the chosen `skill_id`.",
+            "To run one listed skill, route through the grouped `skills` surface with `operation=run` and the chosen `skill_id`.",
+        ]),
+    };
+    let recipes = match audience {
+        SkillAudience::Operator => Value::Object(Map::new()),
+        SkillAudience::Model => json!({
+            "inspect": {
+                "tool_id": "skills",
+                "arguments": {
+                    "operation": "inspect",
+                    "skill_id": "<skill id from skills results>"
+                }
+            },
+            "run": {
+                "tool_id": "skills",
+                "arguments": {
+                    "operation": "run",
+                    "skill_id": "<skill id from skills results>"
+                }
+            }
+        }),
+    };
     Ok(ToolCoreOutcome {
         status: "ok".to_owned(),
         payload: json!({
@@ -1214,6 +1245,8 @@ fn execute_external_skills_list_for_audience(
             "skills": serialize_skill_entries_for_audience(filtered.skills, audience),
             "shadowed_skills": serialize_skill_entries_for_audience(filtered.shadowed_skills, audience),
             "bundled_packs": bundled_packs,
+            "next_steps": next_steps,
+            "recipes": recipes,
         }),
     })
 }
@@ -3865,6 +3898,38 @@ fn discover_skill_inventory(
     Ok(inventory)
 }
 
+pub(super) fn resolve_skill_id_hint(
+    config: &super::runtime_config::ToolRuntimeConfig,
+    raw_skill_id: &str,
+) -> Option<SkillIdHint> {
+    let normalized_skill_id = normalize_skill_id(raw_skill_id).ok()?;
+
+    if let Ok(inventory) = discover_skill_inventory(config) {
+        let known_from_inventory = inventory
+            .skills
+            .iter()
+            .any(|entry| entry.skill_id == normalized_skill_id)
+            || inventory
+                .shadowed_skills
+                .iter()
+                .any(|entry| entry.skill_id == normalized_skill_id)
+            || inventory
+                .blocked_skill_errors
+                .contains_key(&normalized_skill_id);
+        if known_from_inventory {
+            return Some(SkillIdHint {
+                skill_id: normalized_skill_id,
+            });
+        }
+    }
+
+    super::bundled_skills::bundled_external_skill(normalized_skill_id.as_str()).map(|skill| {
+        SkillIdHint {
+            skill_id: skill.skill_id.to_owned(),
+        }
+    })
+}
+
 fn metadata_payload_from_skill(skill: &DiscoveredSkillEntry) -> Value {
     json!({
         "model_visibility": skill.model_visibility,
@@ -5540,6 +5605,29 @@ mod tests {
                         skill["skill_id"] == "demo-skill" && skill["scope"] == "managed"
                     }),
                 "managed install should appear in resolved skills list"
+            );
+            assert!(
+                list_outcome.payload["next_steps"]
+                    .as_array()
+                    .expect("next_steps should be an array")
+                    .iter()
+                    .any(|step| step
+                        .as_str()
+                        .is_some_and(|step| step.contains("operation=inspect"))),
+                "model list payload should include inspect guidance: {}",
+                list_outcome.payload
+            );
+            assert_eq!(
+                list_outcome.payload["recipes"]["inspect"]["tool_id"],
+                "skills"
+            );
+            assert_eq!(
+                list_outcome.payload["recipes"]["inspect"]["arguments"]["operation"],
+                "inspect"
+            );
+            assert_eq!(
+                list_outcome.payload["recipes"]["run"]["arguments"]["operation"],
+                "run"
             );
 
             let invoke_outcome = crate::tools::execute_tool_core_with_config(

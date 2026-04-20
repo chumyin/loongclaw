@@ -154,6 +154,7 @@ pub(super) fn execute_tool_search_tool_with_config(
             .collect::<Result<Vec<_>, _>>()?
     };
     let diagnostics = tool_search_diagnostics_json(
+        config,
         requested_exact_tool_id.as_deref(),
         exact_match_found,
         query.as_deref(),
@@ -218,6 +219,7 @@ fn tool_search_result_entry_json(
 }
 
 fn tool_search_diagnostics_json(
+    config: &runtime_config::ToolRuntimeConfig,
     requested_exact_tool_id: Option<&str>,
     exact_match_found: bool,
     query: Option<&str>,
@@ -228,10 +230,19 @@ fn tool_search_diagnostics_json(
             return Value::Null;
         }
 
-        return json!({
+        let mut diagnostics = json!({
             "reason": "exact_tool_id_not_visible",
             "requested_tool_id": requested_exact_tool_id,
         });
+        if let Some(skill_hint) = exact_id_skill_hint_json(config, requested_exact_tool_id)
+            && let Some(diagnostics_object) = diagnostics.as_object_mut()
+        {
+            for (key, value) in skill_hint {
+                diagnostics_object.insert(key, value);
+            }
+        }
+
+        return diagnostics;
     }
 
     if let Some(reason) = diagnostics_reason {
@@ -244,6 +255,27 @@ fn tool_search_diagnostics_json(
     }
 
     Value::Null
+}
+
+fn exact_id_skill_hint_json(
+    config: &runtime_config::ToolRuntimeConfig,
+    requested_exact_tool_id: &str,
+) -> Option<serde_json::Map<String, Value>> {
+    let skill_hint =
+        super::external_skills::resolve_skill_id_hint(config, requested_exact_tool_id)?;
+
+    Some(serde_json::Map::from_iter([
+        ("suggested_surface".to_owned(), json!("skills")),
+        ("suggested_operation".to_owned(), json!("inspect")),
+        ("suggested_skill_id".to_owned(), json!(skill_hint.skill_id)),
+        (
+            "hint".to_owned(),
+            json!(format!(
+                "`{}` is a skill id, not a tool id. Search or invoke the grouped `skills` surface instead.",
+                skill_hint.skill_id
+            )),
+        ),
+    ]))
 }
 
 fn tool_search_query_from_payload(

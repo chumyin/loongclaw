@@ -169,6 +169,7 @@ const AGENT_GUIDELINES: &[&str] = &[
 const SKILLS_GUIDELINES: &[&str] = &[
     "Use skills when the task is about discovering, installing, or running external skills.",
     "Keep capability-expansion work under skills instead of mixing it with normal repo editing or runtime control.",
+    "Skill ids are not tool ids; discover the `skills` surface first, then route through its `operation` and `skill_id` arguments.",
 ];
 const CHANNEL_GUIDELINES: &[&str] = &[
     "Keep channel-specific work on the channel lane instead of folding it into core runtime surfaces.",
@@ -378,13 +379,13 @@ const AGENT_SURFACE: ToolSurfaceDescriptor = ToolSurfaceDescriptor {
 const SKILLS_SURFACE: ToolSurfaceDescriptor = ToolSurfaceDescriptor {
     id: "skills",
     prompt_snippet: "search, inspect, install, run, or manage external skills.",
-    prompt_guidance: "Use this when the task is about capability expansion.",
+    prompt_guidance: "Use this when the task is about capability expansion. Skill ids are not tool ids; call `skills` with `operation=list|search|inspect|run` and pass `skill_id` when targeting one specific skill.",
     prompt_guidelines: SKILLS_GUIDELINES,
     direct_tool_name: None,
     covered_tool_names: &[],
     direct_metadata: None,
     hidden_search_summary: Some(
-        "Search, inspect, install, fetch, run, remove, or manage external skills through one hidden capability tool.",
+        "Search, inspect, install, fetch, run, remove, or manage external skills through one hidden capability tool. Skill ids stay under this grouped `skills` surface instead of becoming direct tool ids.",
     ),
     hidden_search_argument_hint: Some(
         "operation?:string,query?:string,skill_id?:string,reference?:string,url?:string,path?:string,limit?:integer",

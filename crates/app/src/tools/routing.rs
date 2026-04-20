@@ -887,7 +887,7 @@ fn unavailable_runtime_hint(routed_tool_name: &str, runtime_view: &ToolView) -> 
     }
 
     if runtime_view.contains("browser.open") || runtime_view.contains("browser.extract") {
-        return "; read-only browser inspection is still available";
+        return "; read-only browser inspection is still available through `browser.open` and `browser.extract`";
     }
 
     "; browser interaction is unavailable in this runtime"
@@ -957,9 +957,10 @@ mod tests {
 
         assert!(error.contains("managed browser actions"));
         assert!(error.contains("read-only browser inspection"));
+        assert!(error.contains("browser.open"));
+        assert!(error.contains("browser.extract"));
         assert!(
-            unavailable_runtime_hint(managed_browser_route, &runtime_view)
-                .contains("read-only browser inspection")
+            unavailable_runtime_hint(managed_browser_route, &runtime_view).contains("browser.open")
         );
     }
 

@@ -125,7 +125,7 @@ fn expected_tool_request_error_classifies_validation_failures() {
         "tool_surface_unavailable: `browser` cannot route to `managed browser actions` in this runtime; read-only browser inspection is still available"
     ));
     assert!(super::is_expected_tool_request_error(
-        "web.fetch response exceeded max_bytes limit (120000 bytes); retry with a smaller `max_bytes` or a narrower web request"
+        "web.fetch response exceeded max_bytes limit (120000 bytes); retry with a larger `max_bytes` if you need more response content, or use a narrower web request"
     ));
 }
 
@@ -2758,6 +2758,47 @@ fn tool_invoke_rejects_tampered_or_missing_leases() {
 
     assert!(error.contains("invalid_tool_lease"), "error: {error}");
     std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn tool_search_exact_installed_skill_id_emits_skills_surface_guidance() {
+    let root = unique_temp_dir("loongclaw-tool-search-installed-skill-guidance");
+    std::fs::create_dir_all(&root).expect("create fixture root");
+
+    let home = unique_temp_dir("loongclaw-tool-search-installed-skill-home");
+    std::fs::create_dir_all(home.join(".agents/skills/demo-skill")).expect("create skill root");
+    std::fs::write(
+        home.join(".agents/skills/demo-skill/SKILL.md"),
+        "# Demo Skill\n\nUse this skill for browser-heavy inspection.\n",
+    )
+    .expect("write demo skill");
+
+    let mut env = ScopedEnv::new();
+    env.set("HOME", &home);
+
+    let config = test_tool_runtime_config(root.clone());
+    let outcome = execute_tool_core_with_test_context(
+        ToolCoreRequest {
+            tool_name: "tool.search".to_owned(),
+            payload: json!({
+                "exact_tool_id": "demo-skill",
+                "query": "browser-heavy inspection skill"
+            }),
+        },
+        &config,
+    )
+    .expect("tool search should succeed");
+
+    let diagnostics = &outcome.payload["diagnostics"];
+
+    assert_eq!(diagnostics["reason"], "exact_tool_id_not_visible");
+    assert_eq!(diagnostics["requested_tool_id"], "demo-skill");
+    assert_eq!(diagnostics["suggested_surface"], "skills");
+    assert_eq!(diagnostics["suggested_operation"], "inspect");
+    assert_eq!(diagnostics["suggested_skill_id"], "demo-skill");
+
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::remove_dir_all(&home).ok();
 }
 
 #[cfg(feature = "tool-file")]

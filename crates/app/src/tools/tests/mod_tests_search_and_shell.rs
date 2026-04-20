@@ -935,3 +935,39 @@ fn tool_search_exact_tool_id_not_visible_preserves_raw_request_and_diagnostics_w
 
     std::fs::remove_dir_all(&root).ok();
 }
+
+#[cfg(all(feature = "tool-file", feature = "tool-shell"))]
+#[test]
+fn tool_search_exact_bundled_skill_id_emits_skills_surface_guidance() {
+    let root = unique_tool_temp_dir("loong-tool-search-skill-id-guidance");
+    std::fs::create_dir_all(&root).expect("create fixture root");
+
+    let config = test_tool_runtime_config(root.clone());
+    let outcome = execute_tool_core_with_test_context(
+        ToolCoreRequest {
+            tool_name: "tool.search".to_owned(),
+            payload: json!({
+                "exact_tool_id": "agent-browser",
+                "query": "skills browser automation"
+            }),
+        },
+        &config,
+    )
+    .expect("tool search should succeed");
+
+    let diagnostics = &outcome.payload["diagnostics"];
+
+    assert_eq!(diagnostics["reason"], "exact_tool_id_not_visible");
+    assert_eq!(diagnostics["requested_tool_id"], "agent-browser");
+    assert_eq!(diagnostics["suggested_surface"], "skills");
+    assert_eq!(diagnostics["suggested_operation"], "inspect");
+    assert_eq!(diagnostics["suggested_skill_id"], "agent-browser");
+    assert!(
+        diagnostics["hint"]
+            .as_str()
+            .is_some_and(|hint| hint.contains("skill id") && hint.contains("skills")),
+        "diagnostics should explain that skill ids live behind the skills surface: {diagnostics:?}"
+    );
+
+    std::fs::remove_dir_all(&root).ok();
+}
