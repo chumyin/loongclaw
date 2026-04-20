@@ -72,7 +72,7 @@ fn resolve_default_entry_command_routes_to_welcome_when_default_config_exists() 
 
 #[test]
 fn resolve_default_entry_command_ignores_loongclaw_config_path_without_compat_shim() {
-    let mut env = ScopedEnv::new();
+    let (mut env, _home) = isolated_home("loongclaw-default-entry-legacy-config-env");
     let config_path = unique_temp_dir("loongclaw-default-entry-env").join("custom-config.toml");
     if let Some(parent) = config_path.parent() {
         fs::create_dir_all(parent).expect("create config parent");
@@ -114,7 +114,7 @@ fn resolve_default_entry_command_honors_loong_config_path_override() {
 
 #[test]
 fn resolve_default_entry_command_routes_to_onboard_when_config_path_is_a_directory() {
-    let mut env = ScopedEnv::new();
+    let (mut env, _home) = isolated_home("loongclaw-default-entry-config-dir");
     let config_dir = unique_temp_dir("loongclaw-default-entry-dir");
     fs::create_dir_all(&config_dir).expect("create config directory");
     env.set("LOONGCLAW_CONFIG_PATH", &config_dir);
@@ -146,7 +146,7 @@ fn redacted_command_name_omits_sensitive_command_payloads() {
 
 #[test]
 fn run_welcome_cli_rejects_missing_config_file() {
-    let mut env = ScopedEnv::new();
+    let (mut env, _home) = isolated_home("loongclaw-welcome-missing");
     let config_path = unique_temp_dir("loongclaw-welcome-missing").join("missing-config.toml");
     env.set("LOONGCLAW_CONFIG_PATH", &config_path);
 
@@ -164,7 +164,7 @@ fn run_welcome_cli_rejects_missing_config_file() {
 
 #[test]
 fn run_welcome_cli_rejects_directory_config_path() {
-    let mut env = ScopedEnv::new();
+    let (mut env, _home) = isolated_home("loongclaw-welcome-dir");
     let config_dir = unique_temp_dir("loongclaw-welcome-dir");
     fs::create_dir_all(&config_dir).expect("create config directory");
     env.set("LOONGCLAW_CONFIG_PATH", &config_dir);
