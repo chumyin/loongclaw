@@ -158,6 +158,10 @@ impl MessageList {
         self.ensure_render_cache(width).clone()
     }
 
+    pub fn rendered_line_count(&mut self, width: u16) -> usize {
+        self.ensure_render_cache(width).len()
+    }
+
     fn ensure_render_cache(&mut self, width: u16) -> &Vec<Line<'static>> {
         let needs_rebuild = self
             .render_cache
