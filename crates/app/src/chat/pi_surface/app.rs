@@ -1530,8 +1530,12 @@ fn pending_render_signature(app: &App) -> Option<u64> {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     focus_ring_frame(start).hash(&mut hasher);
     get_spinner_verb_with_seed(start, app.spinner_seed).hash(&mut hasher);
-    app.pending_steers.iter().for_each(|message| message.hash(&mut hasher));
-    app.pending_queue.iter().for_each(|message| message.hash(&mut hasher));
+    app.pending_steers
+        .iter()
+        .for_each(|message| message.hash(&mut hasher));
+    app.pending_queue
+        .iter()
+        .for_each(|message| message.hash(&mut hasher));
     for line in pending_live_lines(&app.live_lines, pending_signature_preview_budget(app)) {
         line.hash(&mut hasher);
     }
@@ -1680,8 +1684,12 @@ fn append_pending_input_preview_lines(
         "queued follow-up",
         pending_queue.iter(),
         content_width,
-        Style::default().fg(PI_GRAY).add_modifier(Modifier::DIM | Modifier::BOLD),
-        Style::default().fg(PI_GRAY).add_modifier(Modifier::DIM | Modifier::ITALIC),
+        Style::default()
+            .fg(PI_GRAY)
+            .add_modifier(Modifier::DIM | Modifier::BOLD),
+        Style::default()
+            .fg(PI_GRAY)
+            .add_modifier(Modifier::DIM | Modifier::ITALIC),
     );
 }
 
@@ -1707,7 +1715,11 @@ fn push_pending_input_section<'a>(
             crate::presentation::render_wrapped_display_line(message.as_str(), content_width);
         let wrapped_count = wrapped_lines.len();
         for (line_index, wrapped) in wrapped_lines.into_iter().take(3).enumerate() {
-            let prefix = if line_index == 0 { "    ↳ " } else { "      " };
+            let prefix = if line_index == 0 {
+                "    ↳ "
+            } else {
+                "      "
+            };
             lines.push(Line::from(vec![
                 Span::raw(prefix),
                 Span::styled(wrapped, message_style),
@@ -2294,7 +2306,8 @@ mod tests {
             Some(std::time::Instant::now()),
             &["visible reply".to_owned()],
             1,
-            0,
+            &std::collections::VecDeque::new(),
+            &std::collections::VecDeque::new(),
             40,
         );
 
@@ -2718,6 +2731,47 @@ mod tests {
     }
 
     #[test]
+    fn pending_preview_shows_queued_steer_and_follow_up_above_composer() {
+        let backend = TestBackend::new(72, 20);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = blank_app();
+        app.pending_turn = true;
+        app.turn_start = Some(std::time::Instant::now());
+        app.pending_steers
+            .push_back("nudge the current answer toward the root cause".to_owned());
+        app.pending_queue
+            .push_back("after that, summarize the diff".to_owned());
+
+        terminal.draw(|f| app.render(f)).expect("draw");
+        let lines = buffer_lines(&terminal);
+        let steer_header_row = lines
+            .iter()
+            .position(|line| line.contains("steer queued for next reply"))
+            .expect("steer preview header");
+        let steer_row = lines
+            .iter()
+            .position(|line| line.contains("nudge the current answer"))
+            .expect("steer preview");
+        let queued_header_row = lines
+            .iter()
+            .position(|line| line.contains("queued follow-up"))
+            .expect("queued preview header");
+        let queued_row = lines
+            .iter()
+            .position(|line| line.contains("after that, summarize"))
+            .expect("queued preview");
+        let composer_row = lines
+            .iter()
+            .position(|line| line.contains("›"))
+            .expect("composer row");
+
+        assert!(steer_header_row < steer_row);
+        assert!(steer_row < queued_header_row);
+        assert!(queued_header_row < queued_row);
+        assert!(queued_row < composer_row);
+    }
+
+    #[test]
     fn pending_signature_ignores_hidden_tail_lines() {
         let mut app = blank_app();
         app.pending_turn = true;
@@ -2748,6 +2802,21 @@ mod tests {
         let after = super::pending_render_signature(&app);
 
         assert_eq!(before, after);
+    }
+
+    #[test]
+    fn pending_signature_changes_when_follow_up_preview_changes() {
+        let mut app = blank_app();
+        app.pending_turn = true;
+        app.turn_start = Some(std::time::Instant::now());
+        app.pending_steers.push_back("first steer".to_owned());
+        let before = super::pending_render_signature(&app);
+        app.pending_steers.clear();
+        app.pending_queue
+            .push_back("first queued follow-up".to_owned());
+        let after = super::pending_render_signature(&app);
+
+        assert_ne!(before, after);
     }
 
     #[test]
