@@ -321,7 +321,7 @@ mod tests {
                     Capability::InvokeTool,
                     Capability::MemoryRead,
                 ]),
-                payload: json!({"repo":"loongclaw-ai/loongclaw"}),
+                payload: json!({"repo":"eastreams/loong"}),
             },
         )
         .await

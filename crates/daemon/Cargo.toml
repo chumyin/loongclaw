@@ -9,6 +9,7 @@ description = "Primary CLI crate for LoongClaw vertical AI agents"
 repository.workspace = true
 homepage.workspace = true
 readme = "../../README.md"
+autobins = false
 
 [lib]
 name = "loongclaw_daemon"
@@ -93,11 +94,11 @@ wait-timeout = "0.2"
 
 [[bin]]
 name = "loong"
-path = "src/main.rs"
+path = "src/bin/loong.rs"
 
 [[bin]]
 name = "loongclaw"
-path = "src/main.rs"
+path = "src/bin/loongclaw.rs"
 
 [dev-dependencies]
 loongclaw-spec = { version = "0.1.0-alpha.3", path = "../spec", features = ["test-hooks"] }

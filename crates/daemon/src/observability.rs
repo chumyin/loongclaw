@@ -65,11 +65,17 @@ pub fn debug_variant_name(value: &impl Debug) -> String {
 }
 
 pub fn init_tracing() {
+    init_tracing_with_directive_override(None);
+}
+
+pub fn init_tracing_with_directive_override(directive_override: Option<&str>) {
     let log_format = LogFormat::parse(std::env::var("LOONGCLAW_LOG_FORMAT").ok().as_deref());
-    let directive = resolved_log_directive(
-        std::env::var("LOONGCLAW_LOG").ok().as_deref(),
-        std::env::var("RUST_LOG").ok().as_deref(),
-    );
+    let directive = directive_override.map(str::to_owned).unwrap_or_else(|| {
+        resolved_log_directive(
+            std::env::var("LOONGCLAW_LOG").ok().as_deref(),
+            std::env::var("RUST_LOG").ok().as_deref(),
+        )
+    });
     let env_filter = build_env_filter(directive.as_str());
     let use_ansi = log_format != LogFormat::Json && io::stderr().is_terminal();
     let base = tracing_subscriber::fmt()

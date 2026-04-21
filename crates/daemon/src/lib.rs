@@ -38,7 +38,7 @@ pub use self::channel_send_target_kind::{
 };
 pub use self::cli_json::build_runtime_snapshot_cli_json_payload;
 pub use self::delegate_child_cli::run_detached_delegate_child_cli;
-pub use self::env_compat::make_env_compatible;
+pub use self::env_compat::{make_env_compatible, make_env_compatible_with_warnings};
 pub use self::mcp_cli::{
     build_mcp_server_detail_cli_json_payload, build_mcp_servers_cli_json_payload,
     run_list_mcp_servers_cli, run_show_mcp_server_cli,
@@ -168,7 +168,9 @@ pub use gateway::read_models::{ChannelsCliJsonPayload, ChannelsCliJsonSchema};
 pub use loongclaw_spec::programmatic::{
     acquire_programmatic_circuit_slot, record_programmatic_circuit_outcome,
 };
-pub use observability::{debug_variant_name, init_tracing, summarize_error};
+pub use observability::{
+    debug_variant_name, init_tracing, init_tracing_with_directive_override, summarize_error,
+};
 pub use runtime_snapshot_render::render_runtime_snapshot_text;
 pub(crate) use runtime_snapshot_render::{
     runtime_snapshot_acp_json, runtime_snapshot_context_engine_json,
@@ -205,7 +207,7 @@ pub use trajectory_cli::{
 #[doc(hidden)]
 pub mod test_support;
 
-pub const PUBLIC_GITHUB_REPO: &str = "loongclaw-ai/loongclaw";
+pub const PUBLIC_GITHUB_REPO: &str = "eastreams/loong";
 pub const CLI_COMMAND_NAME: &str = mvp::config::CLI_COMMAND_NAME;
 pub const LEGACY_CLI_COMMAND_NAME: &str = mvp::config::LEGACY_CLI_COMMAND_NAME;
 

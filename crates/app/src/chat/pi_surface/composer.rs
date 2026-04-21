@@ -22,9 +22,8 @@ impl Composer {
         }
     }
 
-    pub fn height(&self) -> u16 {
-        let lines = self.input.split('\n').count() as u16;
-        (lines).max(1).min(10)
+    pub fn height_for_width(&self, width: u16) -> u16 {
+        wrapped_height(&self.input, width).clamp(1, 10)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -36,16 +35,36 @@ impl Composer {
         self.cursor = 0;
     }
 
-    pub fn render(&mut self, f: &mut Frame, area: Rect, focused: bool) {
-        let prefix = Span::styled(
-            " › ",
-            Style::default()
-                .fg(if focused { PI_CYAN } else { PI_GRAY })
-                .add_modifier(Modifier::BOLD),
-        );
+    pub fn set_input(&mut self, input: String) {
+        self.cursor = input.len();
+        self.input = input;
+    }
 
-        let p = Paragraph::new(Line::from(vec![prefix, Span::raw(self.input.clone())]))
-            .wrap(Wrap { trim: false });
+    pub fn take_input(&mut self) -> String {
+        let input = self.input.clone();
+        self.clear();
+        input
+    }
+
+    pub fn render(&mut self, f: &mut Frame, area: Rect, focused: bool) {
+        let prefix_style = Style::default()
+            .fg(if focused { PI_CYAN } else { PI_GRAY })
+            .add_modifier(Modifier::BOLD);
+        let rows = wrapped_rows(&self.input, area.width);
+        let mut lines = Vec::with_capacity(rows.len().max(1));
+        for (index, row) in rows.into_iter().enumerate() {
+            let prefix = if index == 0 {
+                Span::styled(" › ", prefix_style)
+            } else {
+                Span::styled("   ", prefix_style)
+            };
+            lines.push(Line::from(vec![prefix, Span::raw(row)]));
+        }
+        if lines.is_empty() {
+            lines.push(Line::from(vec![Span::styled(" › ", prefix_style)]));
+        }
+
+        let p = Paragraph::new(lines).wrap(Wrap { trim: false });
 
         f.render_widget(p, area);
     }
@@ -63,7 +82,7 @@ impl Composer {
                 continue;
             }
 
-            let ch_width = display_width(ch);
+            let ch_width = display_width(grapheme);
             if line_col + ch_width > available_width {
                 row += 1;
                 line_col = 0;
@@ -71,11 +90,7 @@ impl Composer {
             line_col += ch_width;
         }
 
-        let col = if row == 0 {
-            prefix_width + line_col
-        } else {
-            line_col
-        };
+        let col = prefix_width + line_col;
 
         (
             area.x + col.min(area.width.saturating_sub(1) as usize) as u16,
@@ -175,10 +190,6 @@ mod tests {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
 
-    fn key_with_modifiers(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
-        KeyEvent::new(code, modifiers)
-    }
-
     #[test]
     fn supports_multibyte_input_without_invalid_cursor_boundary() {
         let mut composer = Composer::new();
@@ -204,7 +215,29 @@ mod tests {
 
         assert!(composer.handle_key(key(KeyCode::Char('d'))).is_none());
 
-        assert_eq!(composer.cursor_position(Rect::new(0, 0, 6, 3)), (1, 1));
+        assert_eq!(composer.cursor_position(Rect::new(0, 0, 6, 3)), (4, 1));
+    }
+
+    #[test]
+    fn height_for_width_grows_when_single_line_wraps() {
+        let mut composer = Composer::new();
+        composer.set_input("abcdefg".to_owned());
+
+        assert_eq!(composer.height_for_width(6), 3);
+        assert_eq!(composer.height_for_width(10), 1);
+    }
+
+    #[test]
+    fn wrapped_render_keeps_continuation_rows_indented_under_prompt() {
+        let mut composer = Composer::new();
+        composer.set_input("abcdefg".to_owned());
+
+        let rows = super::wrapped_rows("abcdefg", 6);
+
+        assert_eq!(
+            rows,
+            vec!["abc".to_owned(), "def".to_owned(), "g".to_owned()]
+        );
     }
 
     #[test]
@@ -214,8 +247,19 @@ mod tests {
             assert!(composer.handle_key(key(KeyCode::Char(ch))).is_none());
         }
 
+        assert!(
+            composer
+                .handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT))
+                .is_none()
+        );
+        assert!(
+            composer
+                .handle_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL))
+                .is_none()
+        );
+
         let submitted = composer.handle_key(key(KeyCode::Enter));
-        assert_eq!(submitted.as_deref(), Some("alpha\nXbetaY"));
+        assert_eq!(submitted.as_deref(), Some("foo bar"));
     }
 }
 
@@ -283,13 +327,38 @@ fn line_end_boundary(text: &str, cursor: usize) -> usize {
 }
 
 fn display_width(grapheme: &str) -> usize {
-    if grapheme.is_ascii() {
-        grapheme.chars().count().max(1)
-    } else {
-        grapheme
-            .chars()
-            .map(|ch| if ch.is_ascii() { 1 } else { 2 })
-            .sum::<usize>()
-            .max(2)
+    crate::presentation::display_width(grapheme).max(1)
+}
+
+fn wrapped_height(text: &str, width: u16) -> u16 {
+    wrapped_rows(text, width).len().max(1) as u16
+}
+
+fn wrapped_rows(text: &str, width: u16) -> Vec<String> {
+    let prefix_width = 3usize;
+    let available_width = width.saturating_sub(prefix_width as u16).max(1) as usize;
+    let mut rows = Vec::new();
+    let mut current = String::new();
+    let mut line_col = 0usize;
+
+    for grapheme in text.graphemes(true) {
+        if grapheme == "\n" {
+            rows.push(current);
+            current = String::new();
+            line_col = 0;
+            continue;
+        }
+
+        let ch_width = display_width(grapheme);
+        if line_col + ch_width > available_width && !current.is_empty() {
+            rows.push(current);
+            current = String::new();
+            line_col = 0;
+        }
+        current.push_str(grapheme);
+        line_col += ch_width;
     }
+
+    rows.push(current);
+    rows
 }

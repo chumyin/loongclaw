@@ -3,14 +3,17 @@ use crate::chat::pi_surface::diff_viewer::render_diff_to_lines;
 use crate::chat::pi_surface::markdown;
 use crate::conversation::is_compacted_summary_content;
 use crate::tui_surface::TuiSectionSpec;
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     Frame,
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Paragraph, Wrap},
+    widgets::Paragraph,
 };
+use serde_json::Value;
+
+const PROVIDER_ERROR_REPLY_PREFIX: &str = "[provider_error] ";
 
 pub enum MessageContent {
     RenderedLines(Vec<String>),
@@ -27,6 +30,11 @@ pub enum MessageContent {
         title: String,
         lines: Vec<String>,
         status: ToolStatus,
+    },
+    Error {
+        title: String,
+        summary: String,
+        details: Vec<String>,
     },
     Compaction {
         turn_count: usize,
@@ -55,6 +63,20 @@ pub struct Message {
 pub struct MessageList {
     pub messages: Vec<Message>,
     pub scroll_offset: u16,
+    page_step: u16,
+    mouse_step: u16,
+    last_render_height: u16,
+    last_scroll_start: usize,
+    follow_tail: bool,
+    snap_scroll_on_next_render: bool,
+    render_revision: u64,
+    render_cache: Option<RenderCache>,
+}
+
+struct RenderCache {
+    width: u16,
+    revision: u64,
+    lines: Vec<Line<'static>>,
 }
 
 impl MessageList {
@@ -62,6 +84,14 @@ impl MessageList {
         Self {
             messages: Vec::new(),
             scroll_offset: 0,
+            page_step: 12,
+            mouse_step: 3,
+            last_render_height: 0,
+            last_scroll_start: 0,
+            follow_tail: true,
+            snap_scroll_on_next_render: true,
+            render_revision: 0,
+            render_cache: None,
         }
     }
 
@@ -71,6 +101,29 @@ impl MessageList {
             contents: vec![MessageContent::Markdown(msg)],
         });
         self.scroll_offset = 0;
+        self.invalidate_render_cache();
+    }
+
+    pub fn add_steer_message(&mut self, msg: String) {
+        self.messages.push(Message {
+            role: "Steer".to_string(),
+            contents: vec![MessageContent::Markdown(msg)],
+        });
+        self.scroll_offset = 0;
+        self.invalidate_render_cache();
+    }
+
+    pub fn remove_latest_steer_message(&mut self) -> bool {
+        if let Some(index) = self
+            .messages
+            .iter()
+            .rposition(|message| message.role == "Steer")
+        {
+            self.messages.remove(index);
+            self.invalidate_render_cache();
+            return true;
+        }
+        false
     }
 
     pub fn add_assistant_message(&mut self, msg: String) {
@@ -80,6 +133,7 @@ impl MessageList {
             contents,
         });
         self.scroll_offset = 0;
+        self.invalidate_render_cache();
     }
 
     pub fn add_rendered_lines(&mut self, lines: Vec<String>) {
@@ -88,6 +142,7 @@ impl MessageList {
             contents: vec![MessageContent::RenderedLines(lines)],
         });
         self.scroll_offset = 0;
+        self.invalidate_render_cache();
     }
 
     pub fn add_startup_header(
@@ -105,6 +160,7 @@ impl MessageList {
             }],
         });
         self.scroll_offset = 0;
+        self.invalidate_render_cache();
     }
 
     pub fn toggle_latest_compaction(&mut self) -> bool {
@@ -112,6 +168,7 @@ impl MessageList {
             for content in message.contents.iter_mut().rev() {
                 if let MessageContent::Compaction { expanded, .. } = content {
                     *expanded = !*expanded;
+                    self.invalidate_render_cache();
                     return true;
                 }
             }
@@ -119,20 +176,60 @@ impl MessageList {
         false
     }
 
-    pub fn get_rendered_lines(&self, width: u16) -> Vec<Line<'static>> {
+    pub fn get_rendered_lines(&mut self, width: u16) -> Vec<Line<'static>> {
+        self.ensure_render_cache(width).clone()
+    }
+
+    fn ensure_render_cache(&mut self, width: u16) -> &Vec<Line<'static>> {
+        let needs_rebuild = self
+            .render_cache
+            .as_ref()
+            .is_none_or(|cache| cache.width != width || cache.revision != self.render_revision);
+        if needs_rebuild {
+            let lines = self.compute_rendered_lines(width);
+            self.render_cache = Some(RenderCache {
+                width,
+                revision: self.render_revision,
+                lines,
+            });
+        }
+        &self
+            .render_cache
+            .as_ref()
+            .expect("render cache should be populated")
+            .lines
+    }
+
+    fn compute_rendered_lines(&self, width: u16) -> Vec<Line<'static>> {
         let mut text_lines = Vec::new();
-        text_lines.push(Line::from(""));
+        let mut previous_colored_block = false;
 
         for msg in &self.messages {
             for content in &msg.contents {
+                let current_colored_block =
+                    content_renders_colored_block(msg.role.as_str(), content);
+                if previous_colored_block
+                    && current_colored_block
+                    && text_lines.last().is_none_or(|line| {
+                        !(is_visual_blank_line(line) && dominant_block_bg(line).is_none())
+                    })
+                {
+                    text_lines.push(Line::from(""));
+                }
                 match content {
                     MessageContent::RenderedLines(lines) => {
                         for line in lines {
-                            for wrapped in crate::presentation::render_wrapped_display_line(
-                                line,
-                                width as usize,
-                            ) {
-                                text_lines.push(Line::from(wrapped));
+                            if let Some(normalized) = normalize_rendered_system_line(line) {
+                                if normalized.trim().is_empty() {
+                                    text_lines.push(Line::from(""));
+                                    continue;
+                                }
+                                for wrapped in crate::presentation::render_wrapped_display_line(
+                                    normalized.as_str(),
+                                    width as usize,
+                                ) {
+                                    text_lines.push(Line::from(wrapped));
+                                }
                             }
                         }
                     }
@@ -141,20 +238,16 @@ impl MessageList {
                         tutorial,
                         sections,
                     } => {
-                        text_lines.push(Line::from(vec![
-                            Span::styled(
-                                "loong ",
-                                Style::default().fg(PI_ACCENT).add_modifier(Modifier::BOLD),
-                            ),
-                            Span::styled(
-                                format!("v{}", version),
-                                Style::default().fg(PI_GRAY).add_modifier(Modifier::DIM),
-                            ),
-                        ]));
-                        text_lines.push(Line::from(vec![Span::styled(
-                            tutorial.to_string(),
-                            Style::default().fg(PI_DIM_GRAY),
-                        )]));
+                        text_lines.extend(render_startup_version_lines(version, width));
+                        for wrapped in crate::presentation::render_wrapped_display_line(
+                            tutorial,
+                            width as usize,
+                        ) {
+                            text_lines.push(Line::from(vec![Span::styled(
+                                wrapped,
+                                Style::default().fg(PI_DIM_GRAY),
+                            )]));
+                        }
                         text_lines.push(Line::from(""));
 
                         for (title, values) in sections {
@@ -163,22 +256,36 @@ impl MessageList {
                                 Style::default().fg(PI_HEADING),
                             )]));
                             for value in values {
-                                text_lines.push(Line::from(vec![
-                                    Span::raw("  "),
-                                    Span::styled(
-                                        value.clone(),
+                                for wrapped in crate::presentation::render_wrapped_display_line(
+                                    format!("  {value}").as_str(),
+                                    width as usize,
+                                ) {
+                                    text_lines.push(Line::from(vec![Span::styled(
+                                        wrapped,
                                         Style::default().fg(PI_GRAY).add_modifier(Modifier::DIM),
-                                    ),
-                                ]));
+                                    )]));
+                                }
                             }
                             text_lines.push(Line::from(""));
                         }
                     }
                     MessageContent::Markdown(md) => {
                         let is_user = msg.role == "You";
+                        let is_steer = msg.role == "Steer";
                         let md_lines = markdown::render_markdown_to_lines(md);
 
-                        if is_user {
+                        if is_user || is_steer {
+                            if is_steer {
+                                text_lines.push(Line::from(vec![
+                                    Span::raw("  "),
+                                    Span::styled(
+                                        "steer",
+                                        Style::default()
+                                            .fg(PI_CYAN)
+                                            .add_modifier(Modifier::DIM | Modifier::BOLD),
+                                    ),
+                                ]));
+                            }
                             let mut padding =
                                 Line::from(vec![Span::raw(" ".repeat(width as usize))]);
                             for span in &mut padding.spans {
@@ -186,13 +293,19 @@ impl MessageList {
                             }
                             text_lines.push(padding);
 
-                            for line in md_lines {
+                            for line in render_user_markdown_lines(md_lines, width) {
                                 text_lines.push(user_block_line(line));
                             }
+                            let mut padding =
+                                Line::from(vec![Span::raw(" ".repeat(width as usize))]);
+                            for span in &mut padding.spans {
+                                span.style = span.style.bg(PI_USER_MSG_BG);
+                            }
+                            text_lines.push(padding);
                         } else {
                             let wrapped_lines = wrap_assistant_markdown_lines(md_lines, width);
-                            text_lines.extend(wrapped_lines);
                             text_lines.push(Line::from(""));
+                            text_lines.extend(wrapped_lines);
                             text_lines.push(Line::from(""));
                         }
                     }
@@ -213,6 +326,13 @@ impl MessageList {
                     } => {
                         text_lines.extend(render_tool_block_lines(title, lines, *status, width));
                     }
+                    MessageContent::Error {
+                        title,
+                        summary,
+                        details,
+                    } => {
+                        text_lines.extend(render_error_block_lines(title, summary, details, width));
+                    }
                     MessageContent::Compaction {
                         turn_count,
                         summary,
@@ -226,14 +346,27 @@ impl MessageList {
                         ));
                     }
                 }
+                previous_colored_block = current_colored_block;
             }
-            text_lines.push(Line::from(""));
         }
         text_lines
     }
 
-    pub fn rendered_line_count(&self, width: u16) -> usize {
-        self.get_rendered_lines(width).len()
+    fn invalidate_render_cache(&mut self) {
+        self.render_revision = self.render_revision.saturating_add(1);
+        self.render_cache = None;
+        if self.follow_tail {
+            self.snap_scroll_on_next_render = true;
+        }
+    }
+
+    pub fn trailing_colored_block(&mut self, width: u16) -> bool {
+        self.ensure_render_cache(width)
+            .iter()
+            .rev()
+            .find(|line| !is_visual_blank_line(line) || dominant_block_bg(line).is_some())
+            .and_then(dominant_block_bg)
+            .is_some()
     }
 
     pub fn render(&mut self, f: &mut Frame, area: Rect) {
@@ -241,6 +374,8 @@ impl MessageList {
             return;
         }
 
+        self.page_step = page_step_for_height(area.height);
+        self.mouse_step = mouse_step_for_height(area.height);
         let mut text_lines = self.get_rendered_lines(area.width);
 
         for line in &mut text_lines {
@@ -261,22 +396,44 @@ impl MessageList {
             };
             if let Some(c) = bg {
                 pad_and_bg(line, area.width, c);
+            } else {
+                pad_plain(line, area.width);
             }
         }
 
         let total_lines = text_lines.len();
-        let scroll_val = total_lines
-            .saturating_sub(area.height as usize)
-            .saturating_sub(self.scroll_offset as usize) as u16;
+        if total_lines == 0 {
+            self.last_render_height = area.height;
+            self.last_scroll_start = 0;
+            self.scroll_offset = 0;
+            self.follow_tail = true;
+            self.snap_scroll_on_next_render = false;
+            f.render_widget(Paragraph::new(Text::from(text_lines)), area);
+            return;
+        }
+        let max_scroll_start = total_lines.saturating_sub(area.height as usize);
+        let raw_scroll_val = max_scroll_start.saturating_sub(self.scroll_offset as usize);
+        let mut scroll_start = if !self.snap_scroll_on_next_render && !self.follow_tail {
+            self.last_scroll_start.min(max_scroll_start)
+        } else if self.snap_scroll_on_next_render {
+            adjust_scroll_start_for_message_boundary(&text_lines, raw_scroll_val)
+        } else {
+            raw_scroll_val
+        };
+        scroll_start = scroll_start.min(max_scroll_start);
+        self.last_scroll_start = scroll_start;
+        self.last_render_height = area.height;
+        self.follow_tail = scroll_start == max_scroll_start;
+        self.scroll_offset = max_scroll_start.saturating_sub(scroll_start) as u16;
+        self.snap_scroll_on_next_render = false;
 
-        let paragraph = Paragraph::new(Text::from(text_lines))
-            .wrap(Wrap { trim: false })
-            .scroll((scroll_val, 0));
+        let paragraph = Paragraph::new(Text::from(text_lines)).scroll((scroll_start as u16, 0));
 
         f.render_widget(paragraph, area);
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) {
+        self.snap_scroll_on_next_render = true;
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => {
                 self.scroll_offset = self.scroll_offset.saturating_add(1)
@@ -284,25 +441,40 @@ impl MessageList {
             KeyCode::Down | KeyCode::Char('j') => {
                 self.scroll_offset = self.scroll_offset.saturating_sub(1)
             }
-            KeyCode::PageUp => self.scroll_offset = self.scroll_offset.saturating_add(12),
-            KeyCode::PageDown => self.scroll_offset = self.scroll_offset.saturating_sub(12),
+            KeyCode::PageUp | KeyCode::Char(' ') if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.scroll_offset = self.scroll_offset.saturating_add(self.page_step)
+            }
+            KeyCode::PageDown | KeyCode::Char(' ') => {
+                self.scroll_offset = self.scroll_offset.saturating_sub(self.page_step)
+            }
             KeyCode::Home => self.scroll_offset = u16::MAX,
             KeyCode::End => self.scroll_offset = 0,
             _ => {}
         }
+        self.follow_tail = self.scroll_offset == 0;
     }
 
     pub fn handle_mouse(&mut self, mouse: crossterm::event::MouseEvent) {
+        self.snap_scroll_on_next_render = true;
         match mouse.kind {
             crossterm::event::MouseEventKind::ScrollUp => {
-                self.scroll_offset = self.scroll_offset.saturating_add(3)
+                self.scroll_offset = self.scroll_offset.saturating_add(self.mouse_step)
             }
             crossterm::event::MouseEventKind::ScrollDown => {
-                self.scroll_offset = self.scroll_offset.saturating_sub(1)
+                self.scroll_offset = self.scroll_offset.saturating_sub(self.mouse_step)
             }
             _ => {}
         }
+        self.follow_tail = self.scroll_offset == 0;
     }
+}
+
+fn page_step_for_height(height: u16) -> u16 {
+    height.saturating_sub(2).max(1)
+}
+
+fn mouse_step_for_height(height: u16) -> u16 {
+    page_step_for_height(height).saturating_add(3) / 4
 }
 
 fn pad_and_bg(line: &mut Line, width: u16, bg: Color) {
@@ -316,9 +488,182 @@ fn pad_and_bg(line: &mut Line, width: u16, bg: Color) {
     }
 }
 
+fn pad_plain(line: &mut Line, width: u16) {
+    let line_len: usize = line.spans.iter().map(|s| s.width()).sum();
+    let pad_len = (width as usize).saturating_sub(line_len);
+    if pad_len > 0 {
+        line.spans.push(Span::raw(" ".repeat(pad_len)));
+    }
+}
+
+fn adjust_scroll_start_for_message_boundary(lines: &[Line<'static>], start: usize) -> usize {
+    let adjusted_for_block = adjust_scroll_start_for_block_boundary(lines, start);
+    if adjusted_for_block == start && dominant_block_bg(&lines[start]).is_none() {
+        return start;
+    }
+    let start = adjusted_for_block;
+    if start == 0 || start >= lines.len() || is_visual_blank_line(&lines[start]) {
+        return start;
+    }
+
+    let lookback = start.saturating_sub(4);
+    for index in (lookback..start).rev() {
+        if is_visual_blank_line(&lines[index]) {
+            return index + 1;
+        }
+    }
+    start
+}
+
+fn adjust_scroll_start_for_block_boundary(lines: &[Line<'static>], start: usize) -> usize {
+    if start == 0 || start >= lines.len() {
+        return start;
+    }
+    if lines[start].spans.is_empty() {
+        return start;
+    }
+    let Some(bg) = dominant_block_bg(&lines[start]) else {
+        return start;
+    };
+    let mut adjusted = start;
+    while adjusted > 0 && dominant_block_bg(&lines[adjusted - 1]) == Some(bg) {
+        adjusted -= 1;
+    }
+    if is_visual_blank_line(&lines[adjusted]) {
+        let mut candidate = adjusted + 1;
+        while candidate < lines.len() && dominant_block_bg(&lines[candidate]) == Some(bg) {
+            if !is_visual_blank_line(&lines[candidate]) {
+                return candidate;
+            }
+            candidate += 1;
+        }
+    }
+    adjusted
+}
+
+fn is_visual_blank_line(line: &Line<'static>) -> bool {
+    line.spans
+        .iter()
+        .all(|span| span.content.as_ref().trim().is_empty())
+}
+
+fn dominant_block_bg(line: &Line<'static>) -> Option<Color> {
+    if line
+        .spans
+        .iter()
+        .any(|span| span.style.bg == Some(PI_USER_MSG_BG))
+    {
+        return Some(PI_USER_MSG_BG);
+    }
+    if line
+        .spans
+        .iter()
+        .any(|span| span.style.bg == Some(PI_TOOL_BG))
+    {
+        return Some(PI_TOOL_BG);
+    }
+    if line
+        .spans
+        .iter()
+        .any(|span| span.style.bg == Some(PI_ERROR_BG))
+    {
+        return Some(PI_ERROR_BG);
+    }
+    if line
+        .spans
+        .iter()
+        .any(|span| span.style.bg == Some(PI_COMPACTION_BG))
+    {
+        return Some(PI_COMPACTION_BG);
+    }
+    None
+}
+
+fn normalize_rendered_system_line(line: &str) -> Option<String> {
+    let trimmed = line.trim_end();
+
+    if trimmed.starts_with("╭─ ") {
+        return Some(trimmed.trim_start_matches("╭─ ").to_owned());
+    }
+    if trimmed == "╰─" {
+        return None;
+    }
+    if trimmed == "│" {
+        return Some(String::new());
+    }
+    if let Some(rest) = trimmed.strip_prefix("│ ") {
+        return Some(rest.to_owned());
+    }
+    if let Some(rest) = trimmed.strip_prefix("│") {
+        return Some(rest.trim_start().to_owned());
+    }
+
+    Some(trimmed.to_owned())
+}
+
+fn content_renders_colored_block(role: &str, content: &MessageContent) -> bool {
+    match content {
+        MessageContent::Markdown(_) => matches!(role, "You" | "Steer"),
+        MessageContent::Diff { .. }
+        | MessageContent::ToolCall { .. }
+        | MessageContent::Error { .. }
+        | MessageContent::Compaction { .. } => true,
+        MessageContent::RenderedLines(_)
+        | MessageContent::Image { .. }
+        | MessageContent::StartupHeader { .. } => false,
+    }
+}
+
+fn render_startup_version_lines(version: &str, width: u16) -> Vec<Line<'static>> {
+    crate::presentation::render_wrapped_text_line("", &format!("loong {version}"), width as usize)
+        .into_iter()
+        .map(|wrapped| {
+            if let Some(rest) = wrapped.strip_prefix("loong ") {
+                Line::from(vec![
+                    Span::styled(
+                        "loong",
+                        Style::default().fg(PI_ACCENT).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(" "),
+                    Span::styled(
+                        rest.to_owned(),
+                        Style::default().fg(PI_GRAY).add_modifier(Modifier::DIM),
+                    ),
+                ])
+            } else {
+                Line::from(vec![Span::styled(
+                    wrapped,
+                    Style::default().fg(PI_GRAY).add_modifier(Modifier::DIM),
+                )])
+            }
+        })
+        .collect()
+}
+
 fn wrap_assistant_markdown_lines(lines: Vec<Line<'static>>, width: u16) -> Vec<Line<'static>> {
+    let lines = normalize_blank_lines(lines);
     let content_width = width.saturating_sub(2) as usize;
     let mut rendered = Vec::new();
+    let mut paragraph_buffer = String::new();
+
+    let flush_paragraph =
+        |rendered: &mut Vec<Line<'static>>, paragraph_buffer: &mut String, content_width: usize| {
+            if paragraph_buffer.trim().is_empty() {
+                paragraph_buffer.clear();
+                return;
+            }
+            let style = assistant_line_style(paragraph_buffer);
+            for wrapped in crate::presentation::render_wrapped_display_line(
+                paragraph_buffer.as_str(),
+                content_width,
+            ) {
+                rendered.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(wrapped, style),
+                ]));
+            }
+            paragraph_buffer.clear();
+        };
 
     for line in lines {
         let plain = line
@@ -327,22 +672,127 @@ fn wrap_assistant_markdown_lines(lines: Vec<Line<'static>>, width: u16) -> Vec<L
             .map(|span| span.content.as_ref())
             .collect::<String>();
         if plain.trim().is_empty() {
+            flush_paragraph(&mut rendered, &mut paragraph_buffer, content_width);
             rendered.push(Line::from(""));
             continue;
         }
 
+        if is_reflowable_assistant_line(&plain) {
+            if !paragraph_buffer.is_empty() {
+                paragraph_buffer.push_str(paragraph_joiner(&paragraph_buffer, &plain));
+            }
+            paragraph_buffer.push_str(plain.trim());
+            continue;
+        }
+
+        flush_paragraph(&mut rendered, &mut paragraph_buffer, content_width);
         let style = assistant_line_style(&plain);
         for wrapped in
             crate::presentation::render_wrapped_display_line(plain.as_str(), content_width)
         {
             rendered.push(Line::from(vec![
-                Span::raw(" "),
+                Span::raw("  "),
                 Span::styled(wrapped, style),
             ]));
         }
     }
 
+    flush_paragraph(&mut rendered, &mut paragraph_buffer, content_width);
+
     rendered
+}
+
+fn normalize_blank_lines(mut lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
+    while lines.first().is_some_and(is_visual_blank_line) {
+        lines.remove(0);
+    }
+    while lines.last().is_some_and(is_visual_blank_line) {
+        lines.pop();
+    }
+
+    let mut normalized = Vec::new();
+    let mut last_was_blank = false;
+    for line in lines {
+        let is_blank = is_visual_blank_line(&line);
+        if is_blank && last_was_blank {
+            continue;
+        }
+        last_was_blank = is_blank;
+        normalized.push(line);
+    }
+    normalized
+}
+
+fn render_user_markdown_lines(lines: Vec<Line<'static>>, width: u16) -> Vec<Line<'static>> {
+    let mut plain_lines = lines
+        .into_iter()
+        .map(|line| {
+            line.spans
+                .into_iter()
+                .map(|span| span.content.into_owned())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>();
+
+    while plain_lines
+        .first()
+        .is_some_and(|line| line.trim().is_empty())
+    {
+        plain_lines.remove(0);
+    }
+    while plain_lines
+        .last()
+        .is_some_and(|line| line.trim().is_empty())
+    {
+        plain_lines.pop();
+    }
+
+    let content_width = width.saturating_sub(2) as usize;
+    let mut rendered = Vec::new();
+    for line in plain_lines {
+        if line.trim().is_empty() {
+            rendered.push(Line::from(vec![Span::raw("")]));
+            continue;
+        }
+        for wrapped in
+            crate::presentation::render_wrapped_display_line(line.as_str(), content_width)
+        {
+            rendered.push(Line::from(vec![Span::styled(
+                wrapped,
+                Style::default().fg(ratatui::style::Color::White),
+            )]));
+        }
+    }
+    rendered
+}
+
+fn is_reflowable_assistant_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    !trimmed.is_empty()
+        && !trimmed.starts_with('#')
+        && !trimmed.starts_with("```")
+        && !trimmed.starts_with("┃")
+        && !trimmed.starts_with('>')
+        && !trimmed.starts_with("- ")
+        && !trimmed.starts_with("* ")
+        && !trimmed.starts_with("• ")
+        && !trimmed.starts_with("[image]")
+}
+
+fn paragraph_joiner(current: &str, next: &str) -> &'static str {
+    if contains_cjk(current) || contains_cjk(next) {
+        ""
+    } else {
+        " "
+    }
+}
+
+fn contains_cjk(text: &str) -> bool {
+    text.chars().any(|ch| {
+        ('\u{4E00}'..='\u{9FFF}').contains(&ch)
+            || ('\u{3040}'..='\u{30FF}').contains(&ch)
+            || ('\u{AC00}'..='\u{D7AF}').contains(&ch)
+    })
 }
 
 fn assistant_line_style(line: &str) -> Style {
@@ -364,6 +814,7 @@ fn assistant_line_style(line: &str) -> Style {
 }
 
 fn user_block_line(mut line: Line<'static>) -> Line<'static> {
+    line.spans.insert(0, Span::raw("  "));
     if line.spans.is_empty() {
         line.spans
             .push(Span::styled("", Style::default().bg(PI_USER_MSG_BG)));
@@ -377,6 +828,10 @@ fn user_block_line(mut line: Line<'static>) -> Line<'static> {
 }
 
 fn build_assistant_contents(text: &str) -> Vec<MessageContent> {
+    if let Some(body) = text.trim().strip_prefix(PROVIDER_ERROR_REPLY_PREFIX) {
+        return vec![parse_provider_error_content(body)];
+    }
+
     if is_compacted_summary_content(text) {
         return vec![parse_compaction_content(text)];
     }
@@ -427,6 +882,318 @@ fn build_assistant_contents(text: &str) -> Vec<MessageContent> {
     }
 
     contents
+}
+
+fn parse_provider_error_content(body: &str) -> MessageContent {
+    let segments = body
+        .split(" | ")
+        .map(str::trim)
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+
+    let mut summary = segments
+        .first()
+        .copied()
+        .unwrap_or("provider request failed")
+        .to_owned();
+    let mut details = Vec::new();
+
+    if let Some((trimmed_summary, inline_details)) = extract_summary_details(&summary) {
+        summary = trimmed_summary;
+        details.extend(inline_details);
+    }
+
+    for segment in segments.iter().skip(1) {
+        append_provider_error_segment(segment, &mut details);
+    }
+    summary = compact_provider_error_summary(&summary);
+    details = compact_provider_error_details(details);
+
+    MessageContent::Error {
+        title: "provider error".to_owned(),
+        summary,
+        details,
+    }
+}
+
+fn compact_provider_error_summary(summary: &str) -> String {
+    let Some(rest) = summary.strip_prefix("provider returned status ") else {
+        return summary.to_owned();
+    };
+    let Some((status, rest)) = rest.split_once(" for model `") else {
+        return summary.to_owned();
+    };
+    let Some((model, rest)) = rest.split_once("` on attempt ") else {
+        return summary.to_owned();
+    };
+    let attempt = rest.trim();
+    if attempt.is_empty() {
+        return summary.to_owned();
+    }
+
+    format!("{status} · {model} · {attempt}")
+}
+
+fn extract_summary_details(summary: &str) -> Option<(String, Vec<String>)> {
+    let mut trimmed_summary = summary.trim().to_owned();
+    let mut details = Vec::new();
+
+    if let Some(start) = trimmed_summary.find(" (last_reason=") {
+        if trimmed_summary.ends_with(')') {
+            let reason =
+                trimmed_summary[start + " (last_reason=".len()..trimmed_summary.len() - 1].trim();
+            if !reason.is_empty() {
+                details.push(format!("last_reason: {reason}"));
+            }
+            trimmed_summary = trimmed_summary[..start].trim().to_owned();
+        }
+    }
+
+    if let Some((prefix, json_value, suffix, separator)) =
+        extract_inline_json_payload(&trimmed_summary)
+    {
+        let key = if separator == '=' {
+            Some("response")
+        } else {
+            None
+        };
+        append_json_detail_lines(key, &json_value, &mut details);
+        if !suffix.trim().is_empty() {
+            details.push(suffix.trim().to_owned());
+        }
+        trimmed_summary = prefix.trim().trim_end_matches(':').trim().to_owned();
+    }
+
+    if details.is_empty() {
+        None
+    } else {
+        Some((trimmed_summary, details))
+    }
+}
+
+fn append_provider_error_segment(segment: &str, details: &mut Vec<String>) {
+    if let Some((key, value)) = segment.split_once('=') {
+        if let Ok(json_value) = serde_json::from_str::<Value>(value) {
+            append_json_value_lines(key.trim(), &json_value, details);
+        } else {
+            details.push(format!("{}: {}", key.trim(), value.trim()));
+        }
+    } else if let Some((prefix, json_value, suffix, separator)) =
+        extract_inline_json_payload(segment)
+    {
+        let key = if separator == '=' {
+            prefix.trim().trim_end_matches('=').trim()
+        } else {
+            "response"
+        };
+        append_json_detail_lines(Some(key), &json_value, details);
+        if !suffix.trim().is_empty() {
+            details.push(suffix.trim().to_owned());
+        }
+    } else {
+        details.push(segment.to_owned());
+    }
+}
+
+fn extract_inline_json_payload(segment: &str) -> Option<(String, String, String, char)> {
+    let bytes = segment.as_bytes();
+    let mut start = None;
+    let mut separator = ':';
+
+    for (idx, ch) in segment.char_indices() {
+        if (ch == '{' || ch == '[') && idx > 0 {
+            let mut separator_index = idx.saturating_sub(1);
+            while separator_index > 0 && bytes.get(separator_index).copied() == Some(b' ') {
+                separator_index -= 1;
+            }
+            let sep = bytes.get(separator_index).copied().map(char::from);
+            if matches!(sep, Some(':') | Some('=')) {
+                start = Some(idx);
+                separator = sep.unwrap_or(':');
+                break;
+            }
+        }
+    }
+
+    let start = start?;
+    let opening = segment[start..].chars().next()?;
+    let closing = match opening {
+        '{' => '}',
+        '[' => ']',
+        _ => return None,
+    };
+
+    let mut depth = 0usize;
+    let mut end = None;
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for (offset, ch) in segment[start..].char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+
+        if ch == '"' {
+            in_string = true;
+            continue;
+        }
+        if ch == opening {
+            depth += 1;
+        } else if ch == closing {
+            depth = depth.saturating_sub(1);
+            if depth == 0 {
+                end = Some(start + offset + ch.len_utf8());
+                break;
+            }
+        }
+    }
+
+    let end = end?;
+    Some((
+        segment[..start].to_owned(),
+        segment[start..end].to_owned(),
+        segment[end..].to_owned(),
+        separator,
+    ))
+}
+
+fn append_json_detail_lines(key: Option<&str>, json_text: &str, details: &mut Vec<String>) {
+    if let Ok(value) = serde_json::from_str::<Value>(json_text) {
+        if let (None, Value::Object(map)) = (key, &value) {
+            for (entry_key, entry_value) in map {
+                append_json_value_lines(entry_key, entry_value, details);
+            }
+        } else {
+            append_json_value_lines(key.unwrap_or("response"), &value, details);
+        }
+    } else {
+        let label = key.unwrap_or("response");
+        details.push(format!("{label}: {json_text}"));
+    }
+}
+
+fn append_json_value_lines(prefix: &str, value: &Value, details: &mut Vec<String>) {
+    if prefix == "provider_failover" {
+        if let Some(object) = value.as_object() {
+            if let (Some(attempt), Some(max_attempts)) = (
+                object.get("attempt").and_then(Value::as_u64),
+                object.get("max_attempts").and_then(Value::as_u64),
+            ) {
+                details.push(format!(
+                    "provider_failover.attempt: {attempt}/{max_attempts}"
+                ));
+            }
+            if let Some(reason) = object.get("reason").and_then(Value::as_str) {
+                details.push(format!("provider_failover.reason: {reason}"));
+            }
+            if let Some(stage) = object.get("stage").and_then(Value::as_str) {
+                details.push(format!("provider_failover.stage: {stage}"));
+            }
+            if let Some(model) = object.get("model").and_then(Value::as_str) {
+                details.push(format!("provider_failover.model: {model}"));
+            }
+            if let Some(status_code) = object.get("status_code").and_then(Value::as_u64) {
+                details.push(format!("provider_failover.status_code: {status_code}"));
+            }
+            for (key, value) in object {
+                if matches!(
+                    key.as_str(),
+                    "attempt" | "max_attempts" | "reason" | "stage" | "model" | "status_code"
+                ) {
+                    continue;
+                }
+                append_json_value_lines(&format!("{prefix}.{key}"), value, details);
+            }
+            return;
+        }
+    }
+
+    match value {
+        Value::Object(map) => {
+            for (key, value) in map {
+                append_json_value_lines(&format!("{prefix}.{key}"), value, details);
+            }
+        }
+        Value::Array(items) => {
+            for (index, item) in items.iter().enumerate() {
+                append_json_value_lines(&format!("{prefix}[{index}]"), item, details);
+            }
+        }
+        Value::String(text) => details.push(format!("{prefix}: {text}")),
+        _ => details.push(format!("{prefix}: {value}")),
+    }
+}
+
+fn compact_provider_error_details(details: Vec<String>) -> Vec<String> {
+    let mut code = None;
+    let mut message = None;
+    let mut last_reason = None;
+    let mut failover_reason = None;
+    let mut failover_stage = None;
+    let mut failover_attempt = None;
+    let mut failover_status = None;
+    let mut passthrough = Vec::new();
+
+    for detail in details {
+        if let Some(value) = detail.strip_prefix("code: ") {
+            code = Some(value.to_owned());
+        } else if let Some(value) = detail.strip_prefix("message: ") {
+            message = Some(value.to_owned());
+        } else if let Some(value) = detail.strip_prefix("last_reason: ") {
+            last_reason = Some(value.to_owned());
+        } else if let Some(value) = detail.strip_prefix("provider_failover.reason: ") {
+            failover_reason = Some(value.to_owned());
+        } else if let Some(value) = detail.strip_prefix("provider_failover.stage: ") {
+            failover_stage = Some(value.to_owned());
+        } else if let Some(value) = detail.strip_prefix("provider_failover.attempt: ") {
+            failover_attempt = Some(value.to_owned());
+        } else if detail.starts_with("provider_failover.model: ") {
+        } else if let Some(value) = detail.strip_prefix("provider_failover.status_code: ") {
+            failover_status = Some(value.to_owned());
+        } else {
+            passthrough.push(detail);
+        }
+    }
+
+    let mut compacted = Vec::new();
+
+    let mut response_parts = Vec::new();
+    if let Some(code) = code {
+        response_parts.push(code);
+    }
+    if let Some(message) = message {
+        response_parts.push(message);
+    }
+    if !response_parts.is_empty() {
+        compacted.push(response_parts.join(" · "));
+    }
+
+    let mut failover_parts = Vec::new();
+    if let Some(reason) = failover_reason.or(last_reason) {
+        failover_parts.push(reason);
+    }
+    if let Some(stage) = failover_stage {
+        failover_parts.push(stage);
+    }
+    if let Some(attempt) = failover_attempt {
+        failover_parts.push(attempt);
+    }
+    if let Some(status) = failover_status {
+        failover_parts.push(status);
+    }
+    if !failover_parts.is_empty() {
+        compacted.push(failover_parts.join(" · "));
+    }
+
+    compacted.extend(passthrough);
+    compacted
 }
 
 fn parse_compaction_content(text: &str) -> MessageContent {
@@ -657,6 +1424,78 @@ fn render_tool_block_lines(
     rendered
 }
 
+fn render_error_block_lines(
+    title: &str,
+    summary: &str,
+    details: &[String],
+    width: u16,
+) -> Vec<Line<'static>> {
+    let mut rendered = Vec::new();
+    let title_label = format!("[{title}]");
+    let inline_width = 1
+        + crate::presentation::display_width(&title_label)
+        + 1
+        + crate::presentation::display_width(summary);
+    if inline_width <= width as usize {
+        rendered.push(styled_background_line(
+            vec![
+                Span::raw(" "),
+                Span::styled(
+                    title_label,
+                    Style::default().fg(PI_RED).add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" "),
+                Span::styled(
+                    summary.to_owned(),
+                    Style::default().fg(ratatui::style::Color::White),
+                ),
+            ],
+            width,
+            PI_ERROR_BG,
+        ));
+    } else {
+        rendered.push(styled_background_line(
+            vec![
+                Span::raw(" "),
+                Span::styled(
+                    title_label,
+                    Style::default().fg(PI_RED).add_modifier(Modifier::BOLD),
+                ),
+            ],
+            width,
+            PI_ERROR_BG,
+        ));
+
+        for wrapped in crate::presentation::render_wrapped_display_line(
+            format!("  {summary}").as_str(),
+            width as usize,
+        ) {
+            rendered.push(styled_background_line(
+                vec![Span::styled(
+                    wrapped,
+                    Style::default().fg(ratatui::style::Color::White),
+                )],
+                width,
+                PI_ERROR_BG,
+            ));
+        }
+    }
+    for detail in details {
+        for wrapped in crate::presentation::render_wrapped_display_line(
+            format!("  {detail}").as_str(),
+            width as usize,
+        ) {
+            rendered.push(styled_background_line(
+                vec![Span::styled(wrapped, Style::default().fg(PI_GRAY))],
+                width,
+                PI_ERROR_BG,
+            ));
+        }
+    }
+
+    rendered
+}
+
 fn render_compaction_block_lines(
     turn_count: usize,
     summary: &str,
@@ -791,7 +1630,13 @@ fn styled_background_line(spans: Vec<Span<'static>>, width: u16, bg: Color) -> L
 
 #[cfg(test)]
 mod tests {
-    use super::{MessageContent, MessageList, ToolStatus, build_assistant_contents};
+    use super::{
+        MessageContent, MessageList, ToolStatus, adjust_scroll_start_for_message_boundary,
+        build_assistant_contents, dominant_block_bg,
+    };
+    use crate::chat::pi_surface::utils::{PI_ERROR_BG, PI_USER_MSG_BG};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
+    use ratatui::{Terminal, backend::TestBackend};
 
     #[test]
     fn assistant_reply_promotes_diff_fences_to_diff_content() {
@@ -817,6 +1662,113 @@ mod tests {
                     && *status == ToolStatus::Success
                     && !lines.is_empty()
         ));
+    }
+
+    #[test]
+    fn provider_error_promotes_to_structured_error_block() {
+        let contents = build_assistant_contents(
+            "[provider_error] provider returned status 401 for model `gpt-5.4` on attempt 1/3: {\"code\":\"INVALID_API_KEY\",\"message\":\"Invalid API key\"} | provider_failover={\"reason\":\"auth_rejected\",\"stage\":\"status_failure\",\"model\":\"gpt-5.4\",\"attempt\":1,\"max_attempts\":3,\"status_code\":401}",
+        );
+
+        assert!(matches!(
+            contents.first(),
+            Some(MessageContent::Error { title, summary, details })
+                if title == "provider error"
+                    && summary == "401 · gpt-5.4 · 1/3"
+                    && details.iter().any(|line| {
+                        line.contains("INVALID_API_KEY") && line.contains("Invalid API key")
+                    })
+                    && details.iter().any(|line| line.contains("auth_rejected"))
+        ));
+    }
+
+    #[test]
+    fn provider_error_rendering_wraps_long_jsonish_details() {
+        let mut list = MessageList::new();
+        list.add_assistant_message(
+            "[provider_error] provider returned status 401 for model `gpt-5.4` on attempt 1/3: {\"code\":\"INVALID_API_KEY\",\"message\":\"Invalid API key\"} | provider_failover={\"reason\":\"auth_rejected\",\"stage\":\"status_failure\",\"model\":\"gpt-5.4\",\"attempt\":1,\"max_attempts\":3,\"status_code\":401}".to_owned(),
+        );
+
+        let rendered = list
+            .get_rendered_lines(36)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        assert!(
+            rendered
+                .iter()
+                .all(|line| crate::presentation::display_width(line) <= 36)
+        );
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line.contains("[provider error]"))
+        );
+        assert!(rendered.iter().any(|line| line.contains("INVALID_API_KEY")));
+        assert!(rendered.iter().any(|line| line.contains("auth_rejected")));
+        assert!(
+            !rendered
+                .iter()
+                .any(|line| line.contains("provider_failover."))
+        );
+    }
+
+    #[test]
+    fn provider_error_renders_title_and_summary_inline_when_width_allows() {
+        let mut list = MessageList::new();
+        list.add_assistant_message(
+            "[provider_error] status 401 · gpt-5.4 · attempt 1/3: {\"code\":\"INVALID_API_KEY\",\"message\":\"Invalid API key\"}".to_owned(),
+        );
+
+        let rendered = list
+            .get_rendered_lines(80)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        assert!(rendered.iter().any(|line| {
+            line.contains("[provider error]") && line.contains("gpt-5.4") && line.contains("1/3")
+        }));
+    }
+
+    #[test]
+    fn inserts_blank_spacer_between_adjacent_colored_blocks() {
+        let mut list = MessageList::new();
+        list.add_user_message("hi".to_owned());
+        list.add_assistant_message(
+            "[provider_error] provider returned status 401 for model `gpt-5.4` on attempt 1/3: {\"code\":\"INVALID_API_KEY\",\"message\":\"Invalid API key\"}".to_owned(),
+        );
+
+        let rendered = list.get_rendered_lines(40);
+        let last_user_block_row = rendered
+            .iter()
+            .rposition(|line| dominant_block_bg(line) == Some(PI_USER_MSG_BG))
+            .expect("user block row");
+        let first_error_block_row = rendered
+            .iter()
+            .position(|line| dominant_block_bg(line) == Some(PI_ERROR_BG))
+            .expect("error block row");
+
+        assert!(first_error_block_row > last_user_block_row);
+        assert!(
+            rendered[last_user_block_row + 1..first_error_block_row]
+                .iter()
+                .any(|line| line
+                    .spans
+                    .iter()
+                    .all(|span| span.style.bg.is_none() && span.content.trim().is_empty()))
+        );
     }
 
     #[test]
@@ -865,5 +1817,507 @@ mod tests {
             Some(MessageContent::Image { alt, url })
                 if alt == "plan" && url == "https://example.com/plan.png"
         ));
+    }
+
+    #[test]
+    fn steer_messages_render_with_steer_label() {
+        let mut list = MessageList::new();
+        list.add_steer_message("nudge this answer".to_owned());
+
+        let rendered = list.get_rendered_lines(40);
+        let flattened = rendered
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(flattened.contains("steer"));
+        assert!(flattened.contains("nudge this answer"));
+    }
+
+    #[test]
+    fn remove_latest_steer_message_only_removes_steer_tail() {
+        let mut list = MessageList::new();
+        list.add_user_message("first".to_owned());
+        list.add_steer_message("queued-1".to_owned());
+        list.add_steer_message("queued-2".to_owned());
+
+        assert!(list.remove_latest_steer_message());
+        let roles = list
+            .messages
+            .iter()
+            .map(|message| message.role.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(roles, vec!["You", "Steer"]);
+    }
+
+    #[test]
+    fn user_message_renders_single_bottom_padding_line() {
+        let mut list = MessageList::new();
+        list.add_user_message("你好".to_owned());
+
+        let rendered = list
+            .get_rendered_lines(20)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        let non_empty = rendered
+            .iter()
+            .filter(|line| !line.trim().is_empty())
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(non_empty, vec!["  你好"]);
+    }
+
+    #[test]
+    fn mouse_scroll_is_symmetric() {
+        let mut list = MessageList::new();
+        list.scroll_offset = 10;
+        list.mouse_step = 3;
+
+        list.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(list.scroll_offset, 7);
+
+        list.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(list.scroll_offset, 10);
+    }
+
+    #[test]
+    fn key_scroll_uses_same_direction_model() {
+        let mut list = MessageList::new();
+        list.scroll_offset = 5;
+        list.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(list.scroll_offset, 4);
+        list.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(list.scroll_offset, 5);
+    }
+
+    #[test]
+    fn space_scroll_matches_page_keys() {
+        let mut list = MessageList::new();
+        list.scroll_offset = 20;
+
+        list.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        assert_eq!(list.scroll_offset, 8);
+
+        list.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::SHIFT));
+        assert_eq!(list.scroll_offset, 20);
+    }
+
+    #[test]
+    fn page_step_uses_viewport_height_minus_overlap() {
+        assert_eq!(super::page_step_for_height(1), 1);
+        assert_eq!(super::page_step_for_height(2), 1);
+        assert_eq!(super::page_step_for_height(8), 6);
+        assert_eq!(super::page_step_for_height(20), 18);
+    }
+
+    #[test]
+    fn mouse_step_tracks_viewport_height_fraction() {
+        assert_eq!(super::mouse_step_for_height(1), 1);
+        assert_eq!(super::mouse_step_for_height(8), 2);
+        assert_eq!(super::mouse_step_for_height(20), 5);
+    }
+
+    #[test]
+    fn render_updates_page_scroll_step_from_viewport_height() {
+        let backend = TestBackend::new(40, 8);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut list = MessageList::new();
+        for idx in 0..8 {
+            list.add_assistant_message(format!("line-{idx}"));
+        }
+        list.scroll_offset = 20;
+
+        terminal.draw(|f| list.render(f, f.area())).expect("draw");
+        let before = list.scroll_offset;
+        list.handle_key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE));
+
+        assert_eq!(list.scroll_offset, before.saturating_sub(6));
+    }
+
+    #[test]
+    fn render_updates_mouse_scroll_step_from_viewport_height() {
+        let backend = TestBackend::new(40, 8);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut list = MessageList::new();
+        for idx in 0..8 {
+            list.add_assistant_message(format!("line-{idx}"));
+        }
+        list.scroll_offset = 10;
+
+        terminal.draw(|f| list.render(f, f.area())).expect("draw");
+        list.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        });
+
+        assert_eq!(list.scroll_offset, 8);
+    }
+
+    #[test]
+    fn resize_preserves_top_visible_line_when_scrolled_up() {
+        let backend = TestBackend::new(40, 8);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut list = MessageList::new();
+        for idx in 0..20 {
+            list.add_assistant_message(format!("line-{idx}"));
+        }
+        list.scroll_offset = 10;
+
+        terminal.draw(|f| list.render(f, f.area())).expect("draw");
+        let before = terminal.backend().buffer().clone();
+        let before_area = before.area;
+        let before_top_line = (0..before_area.width)
+            .map(|x| before[(x, 0)].symbol())
+            .collect::<String>();
+
+        terminal.backend_mut().resize(40, 10);
+        terminal.draw(|f| list.render(f, f.area())).expect("draw");
+        let after = terminal.backend().buffer().clone();
+        let after_area = after.area;
+        let after_top_line = (0..after_area.width)
+            .map(|x| after[(x, 0)].symbol())
+            .collect::<String>();
+
+        assert_eq!(before_top_line.trim_end(), after_top_line.trim_end());
+    }
+
+    #[test]
+    fn new_messages_do_not_teleport_transcript_when_scrolled_up() {
+        let backend = TestBackend::new(40, 8);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut list = MessageList::new();
+        for idx in 0..20 {
+            list.add_assistant_message(format!("line-{idx}"));
+        }
+        list.scroll_offset = 10;
+
+        terminal.draw(|f| list.render(f, f.area())).expect("draw");
+        let before = terminal.backend().buffer().clone();
+        let before_area = before.area;
+        let before_top_line = (0..before_area.width)
+            .map(|x| before[(x, 0)].symbol())
+            .collect::<String>();
+
+        list.add_assistant_message("new-tail-line".to_owned());
+        terminal.draw(|f| list.render(f, f.area())).expect("draw");
+        let after = terminal.backend().buffer().clone();
+        let after_area = after.area;
+        let after_top_line = (0..after_area.width)
+            .map(|x| after[(x, 0)].symbol())
+            .collect::<String>();
+
+        assert_eq!(before_top_line.trim_end(), after_top_line.trim_end());
+    }
+
+    #[test]
+    fn toggling_compaction_does_not_teleport_transcript_when_scrolled_up() {
+        let backend = TestBackend::new(40, 8);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut list = MessageList::new();
+        for idx in 0..10 {
+            list.add_assistant_message(format!("line-{idx}"));
+        }
+        list.add_assistant_message(
+            "[session_local_recall_compacted_window]\nThis compacted checkpoint is session-local recall only.\nCompacted 2 earlier turns\nUser context:\n- ask"
+                .to_owned(),
+        );
+        list.scroll_offset = 6;
+
+        terminal.draw(|f| list.render(f, f.area())).expect("draw");
+        let before = terminal.backend().buffer().clone();
+        let before_area = before.area;
+        let before_top_line = (0..before_area.width)
+            .map(|x| before[(x, 0)].symbol())
+            .collect::<String>();
+
+        assert!(list.toggle_latest_compaction());
+        terminal.draw(|f| list.render(f, f.area())).expect("draw");
+        let after = terminal.backend().buffer().clone();
+        let after_area = after.area;
+        let after_top_line = (0..after_area.width)
+            .map(|x| after[(x, 0)].symbol())
+            .collect::<String>();
+
+        assert_eq!(before_top_line.trim_end(), after_top_line.trim_end());
+    }
+
+    #[test]
+    fn new_messages_keep_bottom_anchor_when_following_tail() {
+        let backend = TestBackend::new(40, 8);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut list = MessageList::new();
+        for idx in 0..20 {
+            list.add_assistant_message(format!("line-{idx}"));
+        }
+
+        terminal.draw(|f| list.render(f, f.area())).expect("draw");
+        list.add_assistant_message("new-tail-line".to_owned());
+        terminal.draw(|f| list.render(f, f.area())).expect("draw");
+        let after = terminal.backend().buffer().clone();
+        let after_area = after.area;
+        let flattened = (0..after_area.height)
+            .map(|y| {
+                (0..after_area.width)
+                    .map(|x| after[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(flattened.contains("new-tail-line"));
+        assert_eq!(list.scroll_offset, 0);
+    }
+
+    #[test]
+    fn resize_preserves_bottom_anchor_when_following_tail() {
+        let backend = TestBackend::new(40, 8);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut list = MessageList::new();
+        for idx in 0..20 {
+            list.add_assistant_message(format!("line-{idx}"));
+        }
+
+        terminal.draw(|f| list.render(f, f.area())).expect("draw");
+        terminal.backend_mut().resize(40, 10);
+        terminal.draw(|f| list.render(f, f.area())).expect("draw");
+        let after = terminal.backend().buffer().clone();
+        let after_area = after.area;
+        let flattened = (0..after_area.height)
+            .map(|y| {
+                (0..after_area.width)
+                    .map(|x| after[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(flattened.contains("line-19"));
+        assert_eq!(list.scroll_offset, 0);
+    }
+
+    #[test]
+    fn assistant_message_keeps_single_trailing_blank_line() {
+        let mut list = MessageList::new();
+        list.add_assistant_message("Hello.".to_owned());
+        list.add_user_message("next".to_owned());
+
+        let rendered = list
+            .get_rendered_lines(20)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        let hello_index = rendered
+            .iter()
+            .position(|line| line.contains("Hello."))
+            .expect("assistant line");
+        let next_index = rendered
+            .iter()
+            .position(|line| line.contains("next"))
+            .expect("next user line");
+
+        assert_eq!(next_index.saturating_sub(hello_index), 3);
+    }
+
+    #[test]
+    fn transcript_does_not_start_with_a_forced_blank_row() {
+        let mut list = MessageList::new();
+        list.add_startup_header("0.1.0".to_owned(), "help".to_owned(), Vec::new());
+
+        let rendered = list
+            .get_rendered_lines(24)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        assert!(rendered.first().is_some_and(|line| line.contains("loong")));
+    }
+
+    #[test]
+    fn startup_header_wraps_long_section_values_to_viewport_width() {
+        let mut list = MessageList::new();
+        list.add_startup_header(
+            "0.1.0".to_owned(),
+            "help".to_owned(),
+            vec![(
+                "Skills".to_owned(),
+                vec![
+                    "agent-browser, anthropic-office, browser-companion-preview, design-md"
+                        .to_owned(),
+                ],
+            )],
+        );
+
+        let rendered = list
+            .get_rendered_lines(28)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        assert!(
+            rendered
+                .iter()
+                .all(|line| crate::presentation::display_width(line) <= 28)
+        );
+        assert!(rendered.iter().any(|line| line.contains("agent-browser")));
+        assert!(rendered.iter().any(|line| line.contains("design-md")));
+    }
+
+    #[test]
+    fn startup_header_wraps_version_and_tutorial_to_viewport_width() {
+        let mut list = MessageList::new();
+        list.add_startup_header(
+            "0.1.0-alpha.3 · feat/ui-ux-droid-parity-final-20260414 · 4fd18d6".to_owned(),
+            "escape interrupt · : deck · / commands · ctrl+o compaction".to_owned(),
+            Vec::new(),
+        );
+
+        let rendered = list
+            .get_rendered_lines(24)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        assert!(
+            rendered
+                .iter()
+                .all(|line| crate::presentation::display_width(line) <= 24)
+        );
+        assert!(rendered.iter().any(|line| line.contains("loong ")));
+        assert!(rendered.iter().any(|line| line.contains("compaction")));
+    }
+
+    #[test]
+    fn startup_header_version_line_does_not_duplicate_v_prefix() {
+        let mut list = MessageList::new();
+        list.add_startup_header("v0.1.0-alpha.3".to_owned(), "help".to_owned(), Vec::new());
+
+        let rendered = list
+            .get_rendered_lines(40)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(rendered.contains("loong v0.1.0-alpha.3"));
+        assert!(!rendered.contains("loong vv0.1.0-alpha.3"));
+    }
+
+    #[test]
+    fn startup_header_current_build_version_line_does_not_duplicate_v_prefix() {
+        let version = crate::presentation::BuildVersionInfo::current().render_version_line();
+        let mut list = MessageList::new();
+        list.add_startup_header(version.clone(), "help".to_owned(), Vec::new());
+
+        let rendered = list
+            .get_rendered_lines(80)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(rendered.contains(format!("loong {version}").as_str()));
+        assert!(!rendered.contains(format!("loong v{version}").as_str()));
+    }
+
+    #[test]
+    fn assistant_messages_trim_renderer_blank_edges_and_keep_two_space_indent() {
+        let mut list = MessageList::new();
+        list.add_assistant_message("Hello.".to_owned());
+
+        let rendered = list
+            .get_rendered_lines(20)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        let hello_index = rendered
+            .iter()
+            .position(|line| line.contains("Hello."))
+            .expect("assistant line");
+        assert!(rendered[hello_index].starts_with("  Hello."));
+        assert!(
+            rendered
+                .get(hello_index + 1)
+                .is_some_and(|line| line.trim().is_empty())
+        );
+    }
+
+    #[test]
+    fn scroll_start_snaps_to_user_block_boundary() {
+        let mut list = MessageList::new();
+        list.add_startup_header("0.1.0".to_owned(), "help".to_owned(), Vec::new());
+        list.add_user_message("hello world".to_owned());
+        list.add_assistant_message("reply".to_owned());
+
+        let rendered = list.get_rendered_lines(24);
+        let first_user_bg = rendered
+            .iter()
+            .position(|line| dominant_block_bg(line).is_some())
+            .expect("user block should be present");
+        let inside_user_block = first_user_bg + 1;
+
+        let snapped = adjust_scroll_start_for_message_boundary(&rendered, inside_user_block);
+        assert_eq!(snapped, first_user_bg + 1);
     }
 }

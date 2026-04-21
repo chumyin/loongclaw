@@ -1,11 +1,6 @@
 use ratatui::{
-    Frame,
-    layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{
-        Block, Borders, List, ListItem, ListState, Scrollbar, ScrollbarOrientation, ScrollbarState,
-    },
 };
 use similar::{ChangeTag, TextDiff};
 
@@ -100,52 +95,4 @@ fn prefixed_line(indent: &str, prefix: &str, spans: Vec<Span<'static>>) -> Line<
     }
     line_spans.extend(spans);
     Line::from(line_spans)
-}
-
-pub struct DiffViewer {
-    lines: Vec<Line<'static>>,
-    state: ListState,
-}
-
-impl DiffViewer {
-    pub fn new(original: &str, modified: &str) -> Self {
-        let diff = TextDiff::from_lines(original, modified)
-            .iter_all_changes()
-            .map(|change| {
-                let prefix = match change.tag() {
-                    ChangeTag::Delete => "-",
-                    ChangeTag::Insert => "+",
-                    ChangeTag::Equal => " ",
-                };
-                format!("{prefix}{}", change.value())
-            })
-            .collect::<Vec<_>>()
-            .join("");
-        let lines = render_diff_to_lines(&diff);
-
-        Self {
-            lines,
-            state: ListState::default(),
-        }
-    }
-
-    pub fn render(&mut self, f: &mut Frame, area: Rect) {
-        let items: Vec<ListItem> = self
-            .lines
-            .iter()
-            .map(|l| ListItem::new(l.clone()))
-            .collect();
-
-        let list = List::new(items)
-            .block(Block::default().borders(Borders::NONE)) // Remove borders and title
-            .highlight_style(Style::default().bg(Color::Rgb(50, 50, 80)));
-
-        let scrollbar = Scrollbar::default().orientation(ScrollbarOrientation::VerticalRight);
-
-        let mut scrollbar_state =
-            ScrollbarState::new(self.lines.len()).position(self.state.offset());
-
-        f.render_stateful_widget(list, area, &mut self.state);
-        f.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
-    }
 }

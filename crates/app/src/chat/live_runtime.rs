@@ -1,20 +1,25 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::*;
 
-const CLI_CHAT_LIVE_PREVIEW_MIN_EMIT_CHARS: usize = 80;
-const CLI_CHAT_LIVE_PREVIEW_MAX_EMIT_CHARS: usize = 240;
-const CLI_CHAT_LIVE_PREVIEW_MIN_BUFFER_CHARS: usize = 320;
+const CLI_CHAT_LIVE_PREVIEW_MIN_EMIT_CHARS: usize = 24;
+const CLI_CHAT_LIVE_PREVIEW_MAX_EMIT_CHARS: usize = 120;
 const CLI_CHAT_LIVE_PREVIEW_MAX_BUFFER_CHARS: usize = 4096;
-const CLI_CHAT_LIVE_TOOL_ARGS_MIN_BUFFER_CHARS: usize = 160;
 const CLI_CHAT_LIVE_TOOL_ARGS_MAX_BUFFER_CHARS: usize = 1024;
-const CLI_CHAT_LIVE_OUTPUT_MIN_BUFFER_CHARS: usize = 192;
 const CLI_CHAT_LIVE_OUTPUT_MAX_BUFFER_CHARS: usize = 1536;
 const CLI_CHAT_LIVE_OUTPUT_RENDER_MAX_LINES: usize = 4;
 const CLI_CHAT_LIVE_DIFF_PREVIEW_MAX_LINES: usize = 6;
 pub(super) type CliChatLiveSurfaceSink = Arc<dyn Fn(Vec<String>) + Send + Sync>;
+pub(super) type CliChatLiveSurfaceRerender = Arc<dyn Fn() + Send + Sync>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CliChatLiveSurfaceRenderMode {
+    Card,
+    Compact,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct CliChatLiveOutputView {
@@ -122,8 +127,9 @@ pub(super) struct CliChatLiveSurfaceState {
 }
 
 pub(super) struct CliChatLiveSurfaceObserver {
-    render_width: usize,
+    render_width: Arc<AtomicUsize>,
     render_sink: CliChatLiveSurfaceSink,
+    render_mode: CliChatLiveSurfaceRenderMode,
     state: StdMutex<CliChatLiveSurfaceState>,
 }
 
@@ -140,16 +146,120 @@ pub(super) fn build_cli_chat_live_surface_observer_with_sink(
     render_width: usize,
     render_sink: CliChatLiveSurfaceSink,
 ) -> ConversationTurnObserverHandle {
-    let observer = CliChatLiveSurfaceObserver::new(render_width, render_sink);
+    build_cli_chat_live_surface_observer_with_dynamic_width_sink(
+        Arc::new(AtomicUsize::new(render_width.max(1))),
+        render_sink,
+    )
+}
+
+pub(super) fn build_cli_chat_live_surface_observer_with_dynamic_width_sink(
+    render_width: Arc<AtomicUsize>,
+    render_sink: CliChatLiveSurfaceSink,
+) -> ConversationTurnObserverHandle {
+    let observer = CliChatLiveSurfaceObserver::new_with_mode(
+        render_width,
+        render_sink,
+        CliChatLiveSurfaceRenderMode::Card,
+    );
     Arc::new(observer)
 }
 
+#[allow(dead_code)]
+pub(super) fn build_cli_chat_live_compact_observer_with_sink(
+    render_width: usize,
+    render_sink: CliChatLiveSurfaceSink,
+) -> ConversationTurnObserverHandle {
+    build_cli_chat_live_compact_observer_with_dynamic_width_sink(
+        Arc::new(AtomicUsize::new(render_width.max(1))),
+        render_sink,
+    )
+}
+
+pub(super) fn build_cli_chat_live_compact_observer_with_dynamic_width_sink(
+    render_width: Arc<AtomicUsize>,
+    render_sink: CliChatLiveSurfaceSink,
+) -> ConversationTurnObserverHandle {
+    let observer = CliChatLiveSurfaceObserver::new_with_mode(
+        render_width,
+        render_sink,
+        CliChatLiveSurfaceRenderMode::Compact,
+    );
+    Arc::new(observer)
+}
+
+pub(super) fn build_cli_chat_live_compact_observer_controller(
+    render_width: Arc<AtomicUsize>,
+    render_sink: CliChatLiveSurfaceSink,
+) -> (ConversationTurnObserverHandle, CliChatLiveSurfaceRerender) {
+    let observer = Arc::new(CliChatLiveSurfaceObserver::new_with_mode(
+        render_width,
+        render_sink,
+        CliChatLiveSurfaceRenderMode::Compact,
+    ));
+    let rerender_observer = Arc::clone(&observer);
+    let rerender: CliChatLiveSurfaceRerender = Arc::new(move || {
+        rerender_observer.rerender_current_lines();
+    });
+    (observer as ConversationTurnObserverHandle, rerender)
+}
+
 impl CliChatLiveSurfaceObserver {
+    #[cfg(test)]
+    #[allow(dead_code)]
     pub(super) fn new(render_width: usize, render_sink: CliChatLiveSurfaceSink) -> Self {
+        Self::new_with_mode(
+            Arc::new(AtomicUsize::new(render_width.max(1))),
+            render_sink,
+            CliChatLiveSurfaceRenderMode::Card,
+        )
+    }
+
+    fn new_with_mode(
+        render_width: Arc<AtomicUsize>,
+        render_sink: CliChatLiveSurfaceSink,
+        render_mode: CliChatLiveSurfaceRenderMode,
+    ) -> Self {
         Self {
             render_width,
             render_sink,
+            render_mode,
             state: StdMutex::new(CliChatLiveSurfaceState::default()),
+        }
+    }
+
+    fn render_width(&self) -> usize {
+        self.render_width.load(Ordering::Relaxed).max(1)
+    }
+
+    fn rerender_current_lines(&self) {
+        let lines_to_render = {
+            let mut state = self.lock_state();
+            if state.latest_phase_event.is_none() {
+                None
+            } else {
+                build_cli_chat_live_surface_snapshot(&mut state).map(|snapshot| {
+                    let lines = match self.render_mode {
+                        CliChatLiveSurfaceRenderMode::Card => {
+                            render_cli_chat_live_surface_lines_with_width(
+                                &snapshot,
+                                self.render_width(),
+                            )
+                        }
+                        CliChatLiveSurfaceRenderMode::Compact => {
+                            render_cli_chat_live_compact_lines_with_width(
+                                &snapshot,
+                                self.render_width(),
+                            )
+                        }
+                    };
+                    state.last_emitted_snapshot = Some(snapshot);
+                    lines
+                })
+            }
+        };
+
+        if let Some(lines) = lines_to_render {
+            (self.render_sink)(lines);
         }
     }
 
@@ -183,7 +293,8 @@ impl CliChatLiveSurfaceObserver {
     fn record_tool_event(&self, event: ConversationTurnToolEvent) {
         let lines_to_render = {
             let mut state = self.lock_state();
-            apply_cli_chat_live_tool_event(&mut state, &event, self.render_width);
+            let render_width = self.render_width();
+            apply_cli_chat_live_tool_event(&mut state, &event, render_width);
             let current_phase = match state.latest_phase_event.as_ref() {
                 Some(phase_event) => phase_event.phase,
                 None => return,
@@ -203,7 +314,8 @@ impl CliChatLiveSurfaceObserver {
     fn record_runtime_event(&self, event: ConversationTurnRuntimeEvent) {
         let lines_to_render = {
             let mut state = self.lock_state();
-            apply_cli_chat_live_runtime_event(&mut state, &event, self.render_width);
+            let render_width = self.render_width();
+            apply_cli_chat_live_runtime_event(&mut state, &event, render_width);
             let current_phase = match state.latest_phase_event.as_ref() {
                 Some(phase_event) => phase_event.phase,
                 None => return,
@@ -223,6 +335,7 @@ impl CliChatLiveSurfaceObserver {
     fn record_streaming_token_event(&self, event: crate::acp::StreamingTokenEvent) {
         let lines_to_render = {
             let mut state = self.lock_state();
+            let render_width = self.render_width();
             let current_phase = match state.latest_phase_event.as_ref() {
                 Some(phase_event) => phase_event.phase,
                 None => return,
@@ -234,7 +347,7 @@ impl CliChatLiveSurfaceObserver {
             let mut should_render = false;
 
             if let Some(text_delta) = text_delta {
-                let preview_char_limit = cli_chat_live_preview_char_limit(self.render_width);
+                let preview_char_limit = cli_chat_live_preview_char_limit(render_width);
                 append_cli_chat_live_buffer(
                     &mut state.draft_preview,
                     text_delta.as_str(),
@@ -244,7 +357,7 @@ impl CliChatLiveSurfaceObserver {
                 state.total_text_chars_seen =
                     state.total_text_chars_seen.saturating_add(delta_chars);
 
-                if should_emit_cli_chat_live_preview(&state, self.render_width)
+                if should_emit_cli_chat_live_preview(&state, render_width)
                     && phase_supports_cli_chat_live_preview(current_phase)
                 {
                     should_render = true;
@@ -257,12 +370,7 @@ impl CliChatLiveSurfaceObserver {
             };
 
             if let Some((tool_call_delta, index)) = tool_call_update {
-                update_cli_chat_live_tool_state(
-                    &mut state,
-                    index,
-                    &tool_call_delta,
-                    self.render_width,
-                );
+                update_cli_chat_live_tool_state(&mut state, index, &tool_call_delta, render_width);
 
                 let render_tool_activity_now = event.event_type == "tool_call_start"
                     && current_phase == ConversationTurnPhase::RunningTools;
@@ -292,7 +400,14 @@ impl CliChatLiveSurfaceObserver {
             return None;
         }
 
-        let lines = render_cli_chat_live_surface_lines_with_width(&snapshot, self.render_width);
+        let lines = match self.render_mode {
+            CliChatLiveSurfaceRenderMode::Card => {
+                render_cli_chat_live_surface_lines_with_width(&snapshot, self.render_width())
+            }
+            CliChatLiveSurfaceRenderMode::Compact => {
+                render_cli_chat_live_compact_lines_with_width(&snapshot, self.render_width())
+            }
+        };
         state.last_preview_emit_chars_seen = state.total_text_chars_seen;
         state.last_emitted_snapshot = Some(snapshot);
         Some(lines)
@@ -384,19 +499,13 @@ fn cli_chat_live_preview_emit_stride(render_width: usize) -> usize {
 }
 
 pub(super) fn cli_chat_live_preview_char_limit(render_width: usize) -> usize {
-    let expanded_width = render_width.saturating_mul(16);
-    expanded_width.clamp(
-        CLI_CHAT_LIVE_PREVIEW_MIN_BUFFER_CHARS,
-        CLI_CHAT_LIVE_PREVIEW_MAX_BUFFER_CHARS,
-    )
+    let _ = render_width;
+    CLI_CHAT_LIVE_PREVIEW_MAX_BUFFER_CHARS
 }
 
 fn cli_chat_live_tool_args_char_limit(render_width: usize) -> usize {
-    let expanded_width = render_width.saturating_mul(8);
-    expanded_width.clamp(
-        CLI_CHAT_LIVE_TOOL_ARGS_MIN_BUFFER_CHARS,
-        CLI_CHAT_LIVE_TOOL_ARGS_MAX_BUFFER_CHARS,
-    )
+    let _ = render_width;
+    CLI_CHAT_LIVE_TOOL_ARGS_MAX_BUFFER_CHARS
 }
 
 pub(super) fn append_cli_chat_live_buffer(buffer: &mut String, chunk: &str, char_limit: usize) {
@@ -426,9 +535,8 @@ pub(super) fn truncate_cli_chat_live_text(value: &str, char_limit: usize) -> Str
 }
 
 fn cli_chat_live_output_char_limit(render_width: usize) -> usize {
-    let scaled_limit = render_width.saturating_mul(12);
-    let scaled_limit = scaled_limit.max(CLI_CHAT_LIVE_OUTPUT_MIN_BUFFER_CHARS);
-    scaled_limit.min(CLI_CHAT_LIVE_OUTPUT_MAX_BUFFER_CHARS)
+    let _ = render_width;
+    CLI_CHAT_LIVE_OUTPUT_MAX_BUFFER_CHARS
 }
 
 fn cli_chat_live_line_count(value: &str) -> usize {
@@ -807,6 +915,102 @@ pub(super) fn render_cli_chat_live_surface_lines_with_width(
     let body_lines = render_tui_message_body_spec(&message_spec, cli_chat_card_inner_width(width));
     let title = build_cli_chat_live_surface_card_title(snapshot);
     render_cli_chat_card_lines(title.as_str(), &body_lines, width)
+}
+
+pub(super) fn render_cli_chat_live_compact_lines_with_width(
+    snapshot: &CliChatLiveSurfaceSnapshot,
+    width: usize,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    let wrap_width = width.saturating_sub(2).max(1);
+
+    if let Some(preview) = snapshot.draft_preview.as_deref() {
+        let (thinking_preview, visible_preview) = split_live_preview_text(preview);
+
+        if let Some(thinking_preview) = thinking_preview.as_deref() {
+            for raw_line in thinking_preview
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+            {
+                for wrapped in
+                    crate::presentation::render_wrapped_display_line(raw_line, wrap_width)
+                {
+                    lines.push(wrapped);
+                }
+            }
+        }
+
+        if thinking_preview.is_some() && visible_preview.is_some() && !lines.is_empty() {
+            lines.push(String::new());
+        }
+
+        if let Some(visible_preview) = visible_preview.as_deref() {
+            for raw_line in visible_preview
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+            {
+                for wrapped in
+                    crate::presentation::render_wrapped_display_line(raw_line, wrap_width)
+                {
+                    lines.push(wrapped);
+                }
+            }
+        }
+    }
+
+    if !snapshot.tools.is_empty() {
+        if !lines.is_empty() {
+            lines.push(String::new());
+        }
+        for raw_line in format_cli_chat_live_tool_activity_lines(snapshot.tools.as_slice()) {
+            for wrapped in
+                crate::presentation::render_wrapped_display_line(raw_line.as_str(), wrap_width)
+            {
+                lines.push(wrapped);
+            }
+        }
+    }
+
+    lines
+}
+
+fn split_live_preview_text(preview: &str) -> (Option<String>, Option<String>) {
+    let open_tag = "<think>";
+    let close_tag = "</think>";
+    let lower = preview.to_ascii_lowercase();
+    let mut visible = String::new();
+    let mut thinking = String::new();
+    let mut idx = 0usize;
+    let mut in_think = false;
+
+    while idx < preview.len() {
+        let remaining = &lower[idx..];
+        if remaining.starts_with(open_tag) {
+            in_think = true;
+            idx += open_tag.len();
+            continue;
+        }
+        if remaining.starts_with(close_tag) {
+            in_think = false;
+            idx += close_tag.len();
+            continue;
+        }
+
+        let ch = preview[idx..].chars().next().expect("char boundary");
+        if in_think {
+            thinking.push(ch);
+        } else {
+            visible.push(ch);
+        }
+        idx += ch.len_utf8();
+    }
+
+    let thinking = thinking.trim().to_owned();
+    let visible = visible.trim().to_owned();
+    (
+        (!thinking.is_empty()).then_some(thinking),
+        (!visible.is_empty()).then_some(visible),
+    )
 }
 
 fn build_cli_chat_live_surface_message_spec(
@@ -1212,4 +1416,200 @@ fn build_cli_chat_live_tool_section(
         title: Some("tool activity".to_owned()),
         lines,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        CliChatLiveOutputView, CliChatLiveSurfaceSink, CliChatLiveSurfaceSnapshot,
+        CliChatLiveToolSnapshot, build_cli_chat_live_compact_observer_controller,
+        render_cli_chat_live_compact_lines_with_width,
+    };
+    use crate::conversation::{
+        ConversationTurnPhase, ConversationTurnPhaseEvent, ConversationTurnToolState, ExecutionLane,
+    };
+    use std::sync::Arc;
+    use std::sync::Mutex as StdMutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn empty_output() -> CliChatLiveOutputView {
+        CliChatLiveOutputView {
+            text: String::new(),
+            total_bytes: 0,
+            total_lines: 0,
+            truncated: false,
+        }
+    }
+
+    #[test]
+    fn compact_render_shows_preview_without_card_chrome() {
+        let snapshot = CliChatLiveSurfaceSnapshot {
+            phase: ConversationTurnPhase::RequestingProvider,
+            provider_round: Some(1),
+            lane: Some(ExecutionLane::Fast),
+            tool_call_count: 0,
+            message_count: Some(4),
+            estimated_tokens: Some(1200),
+            draft_preview: Some("Hello there\nHow are you?".to_owned()),
+            tools: Vec::new(),
+        };
+
+        let lines = render_cli_chat_live_compact_lines_with_width(&snapshot, 40);
+        let joined = lines.join("\n");
+
+        assert!(joined.contains("Hello there"));
+        assert!(joined.contains("How are you?"));
+        assert!(!joined.contains("╭─"));
+        assert!(!joined.contains("turn pipeline"));
+    }
+
+    #[test]
+    fn compact_render_includes_tool_activity_summary_without_card_chrome() {
+        let snapshot = CliChatLiveSurfaceSnapshot {
+            phase: ConversationTurnPhase::RunningTools,
+            provider_round: Some(1),
+            lane: Some(ExecutionLane::Safe),
+            tool_call_count: 1,
+            message_count: Some(6),
+            estimated_tokens: Some(1800),
+            draft_preview: None,
+            tools: vec![CliChatLiveToolSnapshot {
+                tool_call_id: "call-1".to_owned(),
+                name: Some("read_file".to_owned()),
+                request_summary: Some("Read src/main.rs".to_owned()),
+                args: "{\"path\":\"src/main.rs\"}".to_owned(),
+                status: ConversationTurnToolState::Running,
+                detail: Some("working".to_owned()),
+                stdout: empty_output(),
+                stderr: empty_output(),
+                file_change: None,
+                duration_ms: Some(12),
+                exit_code: None,
+            }],
+        };
+
+        let lines = render_cli_chat_live_compact_lines_with_width(&snapshot, 60);
+        let joined = lines.join("\n");
+
+        assert!(joined.contains("read_file"));
+        assert!(joined.contains("request: Read src/main.rs"));
+        assert!(joined.contains("metrics: 12ms"));
+        assert!(!joined.contains("╭─"));
+        assert!(!joined.contains("tool activity]"));
+    }
+
+    #[test]
+    fn compact_render_splits_think_blocks_into_reasoning_and_visible_reply() {
+        let snapshot = CliChatLiveSurfaceSnapshot {
+            phase: ConversationTurnPhase::RequestingProvider,
+            provider_round: Some(1),
+            lane: Some(ExecutionLane::Fast),
+            tool_call_count: 0,
+            message_count: Some(2),
+            estimated_tokens: Some(512),
+            draft_preview: Some(
+                "<think>quiet reasoning\nsecond line</think>Hello there".to_owned(),
+            ),
+            tools: Vec::new(),
+        };
+
+        let lines = render_cli_chat_live_compact_lines_with_width(&snapshot, 50);
+        let joined = lines.join("\n");
+
+        assert!(joined.contains("quiet reasoning"));
+        assert!(joined.contains("second line"));
+        assert!(joined.contains("Hello there"));
+        assert!(!joined.contains("<think>"));
+        assert!(!joined.contains("</think>"));
+    }
+
+    #[test]
+    fn compact_render_collapses_outer_and_repeated_blank_lines() {
+        let snapshot = CliChatLiveSurfaceSnapshot {
+            phase: ConversationTurnPhase::RequestingProvider,
+            provider_round: Some(1),
+            lane: Some(ExecutionLane::Fast),
+            tool_call_count: 0,
+            message_count: Some(2),
+            estimated_tokens: Some(512),
+            draft_preview: Some(
+                "\n\n<think>reasoning line</think>\n\n\nvisible reply\n\n".to_owned(),
+            ),
+            tools: Vec::new(),
+        };
+
+        let lines = render_cli_chat_live_compact_lines_with_width(&snapshot, 50);
+        assert_eq!(
+            lines,
+            vec![
+                "reasoning line".to_owned(),
+                String::new(),
+                "visible reply".to_owned()
+            ]
+        );
+    }
+
+    #[test]
+    fn compact_observer_rerenders_preview_when_width_changes() {
+        let captured_batches = Arc::new(StdMutex::new(Vec::<Vec<String>>::new()));
+        let render_sink: CliChatLiveSurfaceSink = {
+            let captured_batches = Arc::clone(&captured_batches);
+            Arc::new(move |lines| {
+                let mut batches = captured_batches
+                    .lock()
+                    .expect("captured batches lock should not be poisoned");
+                batches.push(lines);
+            })
+        };
+        let render_width = Arc::new(AtomicUsize::new(32));
+        let (observer, rerender) =
+            build_cli_chat_live_compact_observer_controller(Arc::clone(&render_width), render_sink);
+
+        observer.on_phase(ConversationTurnPhaseEvent::requesting_provider(
+            1,
+            3,
+            Some(96),
+        ));
+        observer.on_streaming_token(crate::acp::StreamingTokenEvent {
+            event_type: "text_delta".to_owned(),
+            delta: crate::acp::TokenDelta {
+                text: Some("alpha beta gamma delta epsilon".to_owned()),
+                tool_call: None,
+            },
+            index: None,
+        });
+
+        render_width.store(12, Ordering::Relaxed);
+        rerender();
+
+        let batches = captured_batches
+            .lock()
+            .expect("captured batches lock should not be poisoned");
+        let last_batch = batches.last().expect("rerender batch");
+        assert!(last_batch.len() > 1);
+        assert!(last_batch.iter().any(|line| line.contains("alpha beta")));
+    }
+
+    #[test]
+    fn preview_emit_stride_is_more_responsive_on_narrow_widths() {
+        assert_eq!(super::cli_chat_live_preview_emit_stride(12), 24);
+        assert_eq!(super::cli_chat_live_preview_emit_stride(20), 40);
+        assert_eq!(super::cli_chat_live_preview_emit_stride(80), 120);
+    }
+
+    #[test]
+    fn preview_buffer_limit_stays_large_even_for_narrow_widths() {
+        assert_eq!(
+            super::cli_chat_live_preview_char_limit(12),
+            super::CLI_CHAT_LIVE_PREVIEW_MAX_BUFFER_CHARS
+        );
+        assert_eq!(
+            super::cli_chat_live_tool_args_char_limit(12),
+            super::CLI_CHAT_LIVE_TOOL_ARGS_MAX_BUFFER_CHARS
+        );
+        assert_eq!(
+            super::cli_chat_live_output_char_limit(12),
+            super::CLI_CHAT_LIVE_OUTPUT_MAX_BUFFER_CHARS
+        );
+    }
 }

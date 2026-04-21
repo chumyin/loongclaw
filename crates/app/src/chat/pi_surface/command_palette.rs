@@ -1,6 +1,5 @@
 use crate::chat::pi_surface::i18n::{I18nService, Language, PiCopy};
 use crate::chat::pi_surface::utils::*;
-use crate::chat::pi_surface::i18n::SURFACE_COMMANDS;
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,
@@ -28,10 +27,14 @@ pub struct CommandPalette {
     query: String,
     commands: Vec<CommandEntry>,
     state: ListState,
+    scroll_offset: usize,
     i18n: I18nService,
 }
 
 impl CommandPalette {
+    const VISIBLE_ROWS: usize = 7;
+    const FOOTER_ROWS: usize = 1;
+
     pub fn new(lang: Language) -> Self {
         Self {
             query: String::new(),
@@ -85,30 +88,6 @@ impl CommandPalette {
                     action: CommandAction::RunCommand("/mission"),
                 },
                 CommandEntry {
-                    command: "/fast_lane_summary",
-                    label: PiCopy::CommandDeckLabelFastLane,
-                    description: PiCopy::CommandDeckDescFastLane,
-                    action: CommandAction::RunCommand("/fast_lane_summary"),
-                },
-                CommandEntry {
-                    command: "/safe_lane_summary",
-                    label: PiCopy::CommandDeckLabelSafeLane,
-                    description: PiCopy::CommandDeckDescSafeLane,
-                    action: CommandAction::RunCommand("/safe_lane_summary"),
-                },
-                CommandEntry {
-                    command: "/turn_checkpoint_summary",
-                    label: PiCopy::CommandDeckLabelCheckpoint,
-                    description: PiCopy::CommandDeckDescCheckpoint,
-                    action: CommandAction::RunCommand("/turn_checkpoint_summary"),
-                },
-                CommandEntry {
-                    command: "/turn_checkpoint_repair",
-                    label: PiCopy::CommandDeckLabelRepair,
-                    description: PiCopy::CommandDeckDescRepair,
-                    action: CommandAction::RunCommand("/turn_checkpoint_repair"),
-                },
-                CommandEntry {
                     command: "/exit",
                     label: PiCopy::CommandDeckLabelExit,
                     description: PiCopy::CommandDeckDescExit,
@@ -116,6 +95,7 @@ impl CommandPalette {
                 },
             ],
             state: ListState::default(),
+            scroll_offset: 0,
             i18n: I18nService::new(lang),
         }
     }
@@ -123,28 +103,30 @@ impl CommandPalette {
     pub fn show(&mut self, query: &str) {
         self.query = query.trim().trim_start_matches(['/', ':']).to_string();
         self.state.select(Some(0));
+        self.scroll_offset = 0;
     }
 
     pub fn desired_height(&self) -> usize {
-        let visible_items = self.filtered_commands().len().clamp(1, 6);
-        visible_items + 2
+        Self::visible_rows_for_total(self.filtered_commands().len()) + Self::FOOTER_ROWS
     }
 
     pub fn render(&mut self, f: &mut Frame, area: Rect) {
         f.render_widget(Clear, area);
 
         let filtered = self.filtered_commands();
+        let visible_rows = Self::visible_rows_for_total(filtered.len());
         if filtered.is_empty() {
-            let items = vec![
-                ListItem::new(Line::from(vec![Span::styled(
-                    format!("  {}", self.i18n.text(PiCopy::CommandDeckEmpty)),
-                    Style::default().fg(PI_DIM_GRAY),
-                )])),
-                ListItem::new(Line::from(vec![Span::styled(
-                    "(0/0)",
-                    Style::default().fg(PI_DIM_GRAY),
-                )])),
-            ];
+            let mut items = vec![ListItem::new(Line::from(vec![Span::styled(
+                format!("  {}", self.i18n.text(PiCopy::CommandDeckEmpty)),
+                Style::default().fg(PI_DIM_GRAY),
+            )]))];
+            while items.len() < visible_rows {
+                items.push(ListItem::new(Line::from("")));
+            }
+            items.push(ListItem::new(Line::from(vec![Span::styled(
+                "(0/0)",
+                Style::default().fg(PI_DIM_GRAY),
+            )])));
             let list = List::new(items).highlight_style(Style::default());
             f.render_stateful_widget(list, area, &mut self.state);
             return;
@@ -156,65 +138,76 @@ impl CommandPalette {
             .unwrap_or(0)
             .min(filtered.len().saturating_sub(1));
         self.state.select(Some(selected));
-        let max_visible = area.height.saturating_sub(1) as usize;
-        let start = selected.saturating_sub(max_visible.saturating_sub(1));
-        let end = (start + max_visible).min(filtered.len());
+        self.sync_scroll(selected, filtered.len());
+        let start = self.scroll_offset.min(filtered.len().saturating_sub(1));
+        let end = (start + visible_rows).min(filtered.len());
         let visible = &filtered[start..end];
 
         let label_width = filtered
             .iter()
-            .map(|entry| self.display_label(entry).chars().count())
+            .map(|entry| crate::presentation::display_width(self.display_label(entry).as_str()))
             .max()
             .unwrap_or(0)
             .clamp(8, 18);
 
-        let result_items = visible.iter().enumerate().map(|(visible_index, entry)| {
-            let index = start + visible_index;
-            let label = self.display_label(entry);
-            let is_selected = index == selected;
-            let prefix = if is_selected { "→ " } else { "  " };
-            let gap = " ".repeat(label_width.saturating_sub(label.chars().count()) + 2);
-            let max_desc = area
-                .width
-                .saturating_sub((prefix.len() + label_width + 2) as u16)
-                as usize;
-            let desc = truncate(self.i18n.text(entry.description), max_desc);
+        let mut items: Vec<ListItem> = visible
+            .iter()
+            .enumerate()
+            .map(|(visible_index, entry)| {
+                let index = start + visible_index;
+                let label = self.display_label(entry);
+                let is_selected = index == selected;
+                let prefix = if is_selected { "→ " } else { "  " };
+                let gap = " ".repeat(
+                    label_width.saturating_sub(crate::presentation::display_width(&label)) + 2,
+                );
+                let max_desc = area.width.saturating_sub(
+                    (crate::presentation::display_width(prefix) + label_width + 2) as u16,
+                ) as usize;
+                let desc = truncate(self.i18n.text(entry.description), max_desc);
 
-            ListItem::new(Line::from(vec![
-                Span::styled(
-                    prefix,
-                    Style::default().fg(if is_selected { PI_CYAN } else { PI_DIM_GRAY }),
-                ),
-                Span::styled(
-                    label,
-                    Style::default()
-                        .fg(if is_selected {
-                            PI_CYAN
-                        } else {
-                            ratatui::style::Color::White
-                        })
-                        .add_modifier(if is_selected {
-                            Modifier::BOLD
-                        } else {
-                            Modifier::empty()
-                        }),
-                ),
-                Span::raw(gap),
-                Span::styled(
-                    desc,
-                    Style::default().fg(if is_selected { PI_ACCENT } else { PI_GRAY }),
-                ),
-            ]))
-        });
+                ListItem::new(Line::from(vec![
+                    Span::styled(
+                        prefix,
+                        Style::default().fg(if is_selected { PI_CYAN } else { PI_DIM_GRAY }),
+                    ),
+                    Span::styled(
+                        label,
+                        Style::default()
+                            .fg(if is_selected {
+                                PI_CYAN
+                            } else {
+                                ratatui::style::Color::White
+                            })
+                            .add_modifier(if is_selected {
+                                Modifier::BOLD
+                            } else {
+                                Modifier::empty()
+                            }),
+                    ),
+                    Span::raw(gap),
+                    Span::styled(
+                        desc,
+                        Style::default().fg(if is_selected { PI_ACCENT } else { PI_GRAY }),
+                    ),
+                ]))
+            })
+            .collect();
+
+        while items.len() < visible_rows {
+            items.push(ListItem::new(Line::from("")));
+        }
 
         let count_line = ListItem::new(Line::from(vec![Span::styled(
             format!("({}/{})", selected + 1, filtered.len().max(1)),
             Style::default().fg(PI_DIM_GRAY),
         )]));
 
-        let items: Vec<ListItem> = result_items.chain(std::iter::once(count_line)).collect();
+        items.push(count_line);
         let list = List::new(items).highlight_style(Style::default());
-        f.render_stateful_widget(list, area, &mut self.state);
+        let mut visible_state = ListState::default();
+        visible_state.select(Some(selected.saturating_sub(start)));
+        f.render_stateful_widget(list, area, &mut visible_state);
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<CommandAction> {
@@ -230,30 +223,81 @@ impl CommandPalette {
                 filtered.get(index).map(|entry| entry.action)
             }
             KeyCode::Up => {
-                let index = self.state.selected().unwrap_or(0).saturating_sub(1);
+                let total = self.filtered_commands().len();
+                if total == 0 {
+                    return None;
+                }
+                let current = self.state.selected().unwrap_or(0).min(total - 1);
+                let index = if current == 0 { total - 1 } else { current - 1 };
                 self.state.select(Some(index));
+                self.sync_scroll(index, total);
                 None
             }
             KeyCode::Down => {
-                let max_index = self.filtered_commands().len().saturating_sub(1);
-                let index = self
-                    .state
-                    .selected()
-                    .unwrap_or(0)
-                    .saturating_add(1)
-                    .min(max_index);
+                let total = self.filtered_commands().len();
+                if total == 0 {
+                    return None;
+                }
+                let current = self.state.selected().unwrap_or(0).min(total - 1);
+                let index = if current + 1 >= total { 0 } else { current + 1 };
                 self.state.select(Some(index));
+                self.sync_scroll(index, total);
+                None
+            }
+            KeyCode::PageUp => {
+                let total = self.filtered_commands().len();
+                if total == 0 {
+                    return None;
+                }
+                let page = Self::visible_rows_for_total(total).max(1);
+                let current = self.state.selected().unwrap_or(0).min(total - 1);
+                let index = current.saturating_sub(page);
+                self.state.select(Some(index));
+                self.sync_scroll(index, total);
+                None
+            }
+            KeyCode::PageDown => {
+                let total = self.filtered_commands().len();
+                if total == 0 {
+                    return None;
+                }
+                let page = Self::visible_rows_for_total(total).max(1);
+                let current = self.state.selected().unwrap_or(0).min(total - 1);
+                let index = (current + page).min(total - 1);
+                self.state.select(Some(index));
+                self.sync_scroll(index, total);
+                None
+            }
+            KeyCode::Home => {
+                let total = self.filtered_commands().len();
+                if total == 0 {
+                    return None;
+                }
+                self.state.select(Some(0));
+                self.sync_scroll(0, total);
+                None
+            }
+            KeyCode::End => {
+                let total = self.filtered_commands().len();
+                if total == 0 {
+                    return None;
+                }
+                let index = total - 1;
+                self.state.select(Some(index));
+                self.sync_scroll(index, total);
                 None
             }
             KeyCode::Backspace => {
                 self.query.pop();
                 self.state.select(Some(0));
+                self.scroll_offset = 0;
                 None
             }
             KeyCode::Char(':') if self.query.is_empty() => None,
             KeyCode::Char(c) => {
                 self.query.push(c);
                 self.state.select(Some(0));
+                self.scroll_offset = 0;
                 None
             }
             _ => None,
@@ -282,20 +326,47 @@ impl CommandPalette {
     fn display_label(&self, entry: &CommandEntry) -> String {
         self.i18n.text(entry.label).to_owned()
     }
+
+    fn sync_scroll(&mut self, selected: usize, total: usize) {
+        let visible_rows = Self::visible_rows_for_total(total);
+        if total <= visible_rows {
+            self.scroll_offset = 0;
+            return;
+        }
+
+        if selected < self.scroll_offset {
+            self.scroll_offset = selected;
+        } else if selected >= self.scroll_offset + visible_rows {
+            self.scroll_offset = selected + 1 - visible_rows;
+        }
+    }
+
+    fn visible_rows_for_total(total: usize) -> usize {
+        total.clamp(1, Self::VISIBLE_ROWS)
+    }
 }
 
 fn truncate(text: &str, max_len: usize) -> String {
     if max_len == 0 {
         return String::new();
     }
-    let count = text.chars().count();
+    let count = crate::presentation::display_width(text);
     if count <= max_len {
         return text.to_owned();
     }
     if max_len == 1 {
         return "…".to_owned();
     }
-    let mut out = text.chars().take(max_len - 1).collect::<String>();
+    let mut out = String::new();
+    let mut used = 0usize;
+    for ch in text.chars() {
+        let width = crate::presentation::char_display_width(ch);
+        if used + width > max_len.saturating_sub(1) {
+            break;
+        }
+        out.push(ch);
+        used += width;
+    }
     out.push('…');
     out
 }
@@ -348,6 +419,98 @@ mod tests {
         match action {
             Some(CommandAction::RunCommand("/help")) => {}
             other => panic!("expected localized /help action, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn desired_height_shrinks_with_filtered_results() {
+        let mut palette = CommandPalette::new(Language::En);
+        palette.show("/mis");
+        assert_eq!(palette.desired_height(), 2);
+
+        palette.show("");
+        assert_eq!(palette.desired_height(), 8);
+    }
+
+    #[test]
+    fn desired_height_for_no_matches_keeps_only_result_and_footer() {
+        let mut palette = CommandPalette::new(Language::En);
+        palette.show("zzz-no-match");
+        assert_eq!(palette.desired_height(), 2);
+    }
+
+    #[test]
+    fn truncate_respects_display_cell_width_for_cjk() {
+        let truncated = super::truncate("帮助命令说明", 5);
+
+        assert!(crate::presentation::display_width(&truncated) <= 5);
+        assert!(truncated.ends_with('…'));
+    }
+
+    #[test]
+    fn page_navigation_moves_by_visible_rows() {
+        let mut palette = CommandPalette::new(Language::En);
+        palette.show("");
+
+        let _ = palette.handle_key(key(KeyCode::PageDown));
+        match palette.handle_key(key(KeyCode::Enter)) {
+            Some(CommandAction::RunCommand("/mission")) => {}
+            other => panic!("expected page-down to land on /mission, got {other:?}"),
+        }
+
+        let _ = palette.handle_key(key(KeyCode::PageUp));
+        match palette.handle_key(key(KeyCode::Enter)) {
+            Some(CommandAction::RunCommand("/help")) => {}
+            other => panic!("expected page-up to return to /help, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn home_and_end_jump_to_extremes() {
+        let mut palette = CommandPalette::new(Language::En);
+        palette.show("");
+
+        let _ = palette.handle_key(key(KeyCode::End));
+        match palette.handle_key(key(KeyCode::Enter)) {
+            Some(CommandAction::RunCommand("/exit")) => {}
+            other => panic!("expected end to land on /exit, got {other:?}"),
+        }
+
+        let _ = palette.handle_key(key(KeyCode::Home));
+        match palette.handle_key(key(KeyCode::Enter)) {
+            Some(CommandAction::RunCommand("/help")) => {}
+            other => panic!("expected home to land on /help, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn arrow_navigation_wraps_at_edges() {
+        let mut palette = CommandPalette::new(Language::En);
+        palette.show("");
+
+        let action = palette.handle_key(key(KeyCode::Up));
+        match action {
+            None => {}
+            other => panic!("unexpected action while wrapping up: {other:?}"),
+        }
+        match palette.handle_key(key(KeyCode::Enter)) {
+            Some(CommandAction::RunCommand("/exit")) => {}
+            other => panic!("expected wrap-up to land on /exit, got {other:?}"),
+        }
+
+        let mut palette = CommandPalette::new(Language::En);
+        palette.show("");
+        for _ in 0..8 {
+            let _ = palette.handle_key(key(KeyCode::Down));
+        }
+        match palette.handle_key(key(KeyCode::Enter)) {
+            Some(CommandAction::RunCommand("/exit")) => {}
+            other => panic!("expected repeated down to reach /exit, got {other:?}"),
+        }
+        let _ = palette.handle_key(key(KeyCode::Down));
+        match palette.handle_key(key(KeyCode::Enter)) {
+            Some(CommandAction::RunCommand("/help")) => {}
+            other => panic!("expected wrap-down to return to /help, got {other:?}"),
         }
     }
 }

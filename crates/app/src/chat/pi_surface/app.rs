@@ -7,6 +7,10 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
 };
+use serde::Deserialize;
+use std::collections::VecDeque;
+use std::hash::{Hash, Hasher};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 use tokio::task::JoinHandle;
@@ -40,6 +44,14 @@ pub struct App {
     pub turn_start: Option<std::time::Instant>,
     pub live_lines: Arc<StdMutex<Vec<String>>>,
     pub pending_task: Option<JoinHandle<CliResult<String>>>,
+    pub pending_steers: VecDeque<String>,
+    pub pending_queue: VecDeque<String>,
+    pub live_render_width: Arc<AtomicUsize>,
+    pub live_rerender: Option<super::super::CliChatLiveSurfaceRerender>,
+    pub spinner_seed: u64,
+    pub last_pending_signature: Option<u64>,
+    pub last_render_width: u16,
+    pub last_render_height: u16,
     pub cwd: String,
     pub model: String,
     pub i18n: I18nService,
@@ -61,6 +73,14 @@ impl App {
             turn_start: None,
             live_lines: Arc::new(StdMutex::new(Vec::new())),
             pending_task: None,
+            pending_steers: VecDeque::new(),
+            pending_queue: VecDeque::new(),
+            live_render_width: Arc::new(AtomicUsize::new(render_width.max(1))),
+            live_rerender: None,
+            spinner_seed: spinner_seed(),
+            last_pending_signature: None,
+            last_render_width: render_width as u16,
+            last_render_height: 0,
             cwd: format_cwd(runtime),
             model: runtime.config.provider.model.clone(),
             i18n: I18nService::new(language),
@@ -76,80 +96,100 @@ impl App {
 
     pub fn render(&mut self, f: &mut Frame) {
         let size = f.area();
-        let live_lines = pending_live_lines(&self.live_lines);
-        let pending_height = if self.pending_turn {
-            (live_lines.len() as u16 + 2).clamp(2, 8)
-        } else {
-            0
-        };
+        self.last_render_width = size.width;
+        self.last_render_height = size.height;
+        let composer_height = self.composer.height_for_width(size.width);
         let palette_height = if matches!(self.focus, Focus::CommandPalette) {
             self.command_palette.desired_height() as u16
         } else {
             0
         };
+        let reserved_without_pending = 1
+            + composer_height
+            + if palette_height > 0 {
+                1 + palette_height
+            } else {
+                0
+            }
+            + 1
+            + 1
+            + 1;
+        let max_pending_height = size.height.saturating_sub(reserved_without_pending).max(3);
+        let max_pending_preview_lines = max_pending_height.saturating_sub(3).max(1) as usize;
+        let live_lines = pending_live_lines(&self.live_lines, max_pending_preview_lines);
+        let pending_lines = if self.pending_turn {
+            let raw_pending_lines = build_pending_lines(
+                self.turn_start,
+                &live_lines,
+                self.spinner_seed,
+                self.pending_steers.len(),
+                size.width,
+            );
+            compact_pending_lines_for_height(raw_pending_lines, max_pending_height)
+        } else {
+            Vec::new()
+        };
+        let pending_height = if self.pending_turn {
+            pending_lines.len() as u16
+        } else {
+            0
+        };
+        let transcript_line_count = self.message_list.rendered_line_count(size.width) as u16;
+        let bottom_band_height = pending_height
+            + 1
+            + composer_height
+            + if palette_height > 0 {
+                1 + palette_height
+            } else {
+                0
+            }
+            + 1
+            + 1;
+        let available_transcript_height = size.height.saturating_sub(bottom_band_height).max(1);
+        let transcript_height = if self.message_list.messages.is_empty() {
+            0
+        } else {
+            transcript_line_count.min(available_transcript_height)
+        };
         let main_layout = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Min(1),
+                Constraint::Length(transcript_height),
+                Constraint::Length(0),
                 Constraint::Length(pending_height),
                 Constraint::Length(1),
-                Constraint::Length(self.composer.height()),
+                Constraint::Length(composer_height),
                 Constraint::Length(if palette_height > 0 { 1 } else { 0 }),
                 Constraint::Length(palette_height),
                 Constraint::Length(1),
                 Constraint::Length(1),
-                Constraint::Min(0),
             ])
             .split(size);
 
         self.message_list.render(f, main_layout[0]);
 
         if self.pending_turn {
-            let start = self.turn_start.unwrap_or_else(std::time::Instant::now);
-            let mut pending_lines = vec![Line::from(vec![
-                Span::raw(" "),
-                Span::styled(
-                    format!("{} ", focus_ring_frame(start)),
-                    Style::default()
-                        .fg(Color::White)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("{} · ", self.i18n.text(PiCopy::ThinkingTitle)),
-                    Style::default().fg(PI_CYAN).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(get_spinner_verb(start), Style::default().fg(PI_GRAY)),
-            ])];
-            if !live_lines.is_empty() {
-                pending_lines.push(Line::from(vec![
-                    Span::raw(" "),
-                    Span::styled(
-                        self.i18n.text(PiCopy::ThinkingLive),
-                        Style::default().fg(PI_DIM_GRAY),
-                    ),
-                ]));
-                pending_lines.extend(live_lines.iter().map(|line| {
-                    Line::from(vec![
-                        Span::raw(" "),
-                        Span::styled(line.clone(), Style::default().fg(PI_ACCENT)),
-                    ])
-                }));
-            }
-            f.render_widget(Paragraph::new(pending_lines), main_layout[1]);
+            f.render_widget(Paragraph::new(pending_lines), main_layout[2]);
         }
 
         let line_color = PI_COTTON_CANDY;
-        f.render_widget(
-            Block::default()
-                .borders(Borders::TOP)
-                .border_style(Style::default().fg(line_color)),
-            main_layout[2],
-        );
+        let composer_separator_is_blank =
+            !self.pending_turn && self.message_list.trailing_colored_block(size.width);
+        if composer_separator_is_blank {
+            f.render_widget(Paragraph::new(""), main_layout[3]);
+        } else {
+            f.render_widget(
+                Block::default()
+                    .borders(Borders::TOP)
+                    .border_style(Style::default().fg(line_color)),
+                main_layout[3],
+            );
+        }
 
         self.composer
-            .render(f, main_layout[3], matches!(self.focus, Focus::Composer));
+            .render(f, main_layout[4], matches!(self.focus, Focus::Composer));
         if matches!(self.focus, Focus::Composer) {
-            let (x, y) = self.composer.cursor_position(main_layout[3]);
+            let (x, y) = self.composer.cursor_position(main_layout[4]);
             f.set_cursor_position((x, y));
         }
 
@@ -158,41 +198,26 @@ impl App {
                 Block::default()
                     .borders(Borders::TOP)
                     .border_style(Style::default().fg(line_color)),
-                main_layout[4],
+                main_layout[5],
             );
-            self.command_palette.render(f, main_layout[5]);
+            self.command_palette.render(f, main_layout[6]);
         }
 
         f.render_widget(
             Block::default()
                 .borders(Borders::TOP)
                 .border_style(Style::default().fg(line_color)),
-            main_layout[6],
+            main_layout[7],
         );
 
-        let spaces = size
-            .width
-            .saturating_sub(self.cwd.len() as u16 + self.model.len() as u16);
-        let footer_line = Line::from(vec![
-            Span::styled(&self.cwd, Style::default().fg(PI_GRAY)),
-            Span::raw(" ".repeat(spaces as usize)),
-            Span::styled(&self.model, Style::default().fg(PI_GRAY)),
-        ]);
-        f.render_widget(Paragraph::new(footer_line), main_layout[7]);
-    }
-}
-
-impl App {
-    fn pending_live_lines(&self) -> Vec<String> {
-        const MAX_PENDING_LIVE_LINES: usize = 10;
-
-        match self.live_lines.lock() {
-            Ok(lines) => {
-                let keep_from = lines.len().saturating_sub(MAX_PENDING_LIVE_LINES);
-                lines[keep_from..].to_vec()
-            }
-            Err(_) => Vec::new(),
-        }
+        let footer_line = if self.pending_turn && !self.composer.is_empty() {
+            build_queue_footer_line(&self.i18n, self.pending_queue.len(), size.width)
+        } else if self.pending_turn && !self.pending_queue.is_empty() {
+            build_restore_footer_line(&self.i18n, self.pending_queue.len(), size.width)
+        } else {
+            build_status_footer_line(&self.cwd, &self.model, size.width)
+        };
+        f.render_widget(Paragraph::new(footer_line), main_layout[8]);
     }
 }
 
@@ -201,20 +226,68 @@ pub async fn run_app<B: Backend>(
     runtime: CliTurnRuntime,
     options: CliChatOptions,
 ) -> CliResult<()> {
-    let render_width = terminal
+    let mut last_known_size = terminal
         .size()
-        .map_err(|e| format!("failed to query terminal size: {e}"))?
-        .width as usize;
+        .map_err(|e| format!("failed to query terminal size: {e}"))?;
+    let render_width = last_known_size.width as usize;
     let mut app = App::new(&runtime, &options, render_width)?;
+    if let Some(lines) = load_startup_release_lines(render_width).await {
+        app.message_list.add_rendered_lines(lines);
+    }
+    let mut dirty = true;
+    let mut last_resize_at: Option<std::time::Instant> = None;
+    let mut last_resize_requires_quiet = false;
+    let mut last_resize_draw_at: Option<std::time::Instant> = None;
 
     loop {
-        maybe_finalize_pending_turn(terminal, &mut app).await?;
+        if maybe_finalize_pending_turn(terminal, &mut app, &runtime).await? {
+            dirty = true;
+        }
 
-        terminal
-            .draw(|f| app.render(f))
-            .map_err(|e| format!("draw error: {}", e))?;
+        if app.pending_turn {
+            let signature = pending_render_signature(&app);
+            if signature != app.last_pending_signature {
+                app.last_pending_signature = signature;
+                dirty = true;
+            }
+        } else {
+            app.last_pending_signature = None;
+        }
 
-        if event::poll(Duration::from_millis(40)).map_err(|e| format!("poll error: {}", e))? {
+        let resize_ready = redraw_throttle_ready(
+            last_resize_requires_quiet,
+            last_resize_draw_at.map(|instant| instant.elapsed()),
+        );
+        if dirty && resize_ready {
+            terminal
+                .draw(|f| app.render(f))
+                .map_err(|e| format!("draw error: {}", e))?;
+            dirty = false;
+            if last_resize_requires_quiet {
+                last_resize_draw_at = Some(std::time::Instant::now());
+                if last_resize_at
+                    .map(|instant| instant.elapsed() >= Duration::from_millis(70))
+                    .unwrap_or(true)
+                {
+                    last_resize_at = None;
+                    last_resize_requires_quiet = false;
+                    last_resize_draw_at = None;
+                }
+            } else {
+                last_resize_at = None;
+                last_resize_draw_at = None;
+            }
+        }
+
+        let poll_timeout = if dirty && last_resize_requires_quiet && !resize_ready {
+            Duration::from_millis(16)
+        } else if app.pending_turn {
+            Duration::from_millis(80)
+        } else {
+            Duration::from_millis(250)
+        };
+
+        if event::poll(poll_timeout).map_err(|e| format!("poll error: {}", e))? {
             let event = event::read().map_err(|e| format!("read error: {}", e))?;
 
             match event {
@@ -236,6 +309,13 @@ pub async fn run_app<B: Backend>(
 
                     if app.pending_turn {
                         let mut pending_command = None;
+                        let mut pending_submission = None;
+                        if key.code == KeyCode::Up
+                            && key.modifiers.contains(KeyModifiers::ALT)
+                            && dequeue_pending_steer(&mut app)
+                        {
+                            continue;
+                        }
                         match app.focus {
                             Focus::Composer => {
                                 if matches!(key.code, KeyCode::Char('/') | KeyCode::Char(':'))
@@ -243,12 +323,18 @@ pub async fn run_app<B: Backend>(
                                 {
                                     app.command_palette.show(":");
                                     app.focus = Focus::CommandPalette;
-                                } else if key.code == KeyCode::Tab {
-                                    app.focus = Focus::MessageList;
-                                } else if !(key.code == KeyCode::Enter
-                                    && !key.modifiers.contains(KeyModifiers::SHIFT))
+                                } else if is_transcript_navigation_key(key)
+                                    && app.composer.is_empty()
                                 {
-                                    let _ = app.composer.handle_key(key);
+                                    app.message_list.handle_key(key);
+                                } else if key.code == KeyCode::Tab {
+                                    if !app.composer.is_empty() {
+                                        queue_pending_message(&mut app);
+                                    } else {
+                                        app.focus = Focus::MessageList;
+                                    }
+                                } else if let Some(msg) = app.composer.handle_key(key) {
+                                    pending_submission = Some(msg);
                                 }
                             }
                             Focus::MessageList => {
@@ -278,6 +364,21 @@ pub async fn run_app<B: Backend>(
                                 }
                             }
                         }
+                        if let Some(msg) = pending_submission {
+                            if msg == "/exit" {
+                                break;
+                            }
+                            if msg.starts_with('/') || msg.starts_with(':') {
+                                let command = if msg.starts_with(':') {
+                                    format!("/{}", msg.trim_start_matches(':'))
+                                } else {
+                                    msg
+                                };
+                                pending_command = Some(command);
+                            } else {
+                                queue_pending_steer(&mut app, msg);
+                            }
+                        }
                         if let Some(command) = pending_command {
                             if command == "/exit" {
                                 break;
@@ -285,6 +386,7 @@ pub async fn run_app<B: Backend>(
                             run_surface_command(terminal, &mut app, &runtime, &options, &command)
                                 .await?;
                         }
+                        dirty = true;
                         continue;
                     }
 
@@ -302,6 +404,8 @@ pub async fn run_app<B: Backend>(
                             {
                                 app.command_palette.show(":");
                                 app.focus = Focus::CommandPalette;
+                            } else if is_transcript_navigation_key(key) && app.composer.is_empty() {
+                                app.message_list.handle_key(key);
                             } else if key.code == KeyCode::Tab {
                                 app.focus = Focus::MessageList;
                             } else if let Some(msg) = app.composer.handle_key(key) {
@@ -353,11 +457,31 @@ pub async fn run_app<B: Backend>(
                         run_surface_command(terminal, &mut app, &runtime, &options, &command)
                             .await?;
                     }
+                    dirty = true;
                 }
                 Event::Mouse(mouse_event) => {
                     app.message_list.handle_mouse(mouse_event);
+                    dirty = true;
                 }
-                Event::Resize(_, _) => {}
+                Event::Resize(_, _) => {
+                    let new_size = terminal
+                        .size()
+                        .map_err(|e| format!("failed to query terminal size: {e}"))?;
+                    let width_changed = last_known_size.width != new_size.width;
+                    last_resize_requires_quiet =
+                        resize_reflow_required(last_known_size.width, new_size.width);
+                    last_resize_at = last_resize_requires_quiet.then(std::time::Instant::now);
+                    last_resize_draw_at = None;
+                    last_known_size = new_size;
+                    app.live_render_width
+                        .store(new_size.width.max(1) as usize, Ordering::Relaxed);
+                    if width_changed {
+                        if let Some(rerender) = app.live_rerender.as_ref() {
+                            rerender();
+                        }
+                    }
+                    dirty = true;
+                }
                 _ => {}
             }
         }
@@ -385,8 +509,23 @@ async fn submit_user_turn<B: Backend>(
     runtime: &CliTurnRuntime,
     input: String,
 ) -> CliResult<()> {
+    start_turn(terminal, app, runtime, input, true).await
+}
+
+async fn start_turn<B: Backend>(
+    terminal: &mut Terminal<B>,
+    app: &mut App,
+    runtime: &CliTurnRuntime,
+    input: String,
+    echo_user_message: bool,
+) -> CliResult<()> {
     let width = current_render_width(terminal)?;
-    app.message_list.add_user_message(input.clone());
+    app.live_render_width.store(width.max(1), Ordering::Relaxed);
+    if echo_user_message {
+        app.message_list.add_user_message(input.clone());
+    }
+    app.spinner_seed = spinner_seed();
+    app.last_pending_signature = None;
     app.pending_turn = true;
     app.turn_start = Some(std::time::Instant::now());
     app.focus = Focus::Composer;
@@ -396,13 +535,236 @@ async fn submit_user_turn<B: Backend>(
         .draw(|f| app.render(f))
         .map_err(|e| format!("draw error: {}", e))?;
 
-    app.pending_task = Some(spawn_pending_turn(
-        runtime.clone(),
-        input,
-        width,
-        app.live_lines.clone(),
-    ));
+    let sink = {
+        let live_lines = Arc::clone(&app.live_lines);
+        Arc::new(move |lines: Vec<String>| {
+            if let Ok(mut state) = live_lines.lock() {
+                *state = lines;
+            }
+        })
+    };
+    let (observer, rerender) = super::super::build_cli_chat_live_compact_observer_controller(
+        Arc::clone(&app.live_render_width),
+        sink,
+    );
+    app.live_rerender = Some(rerender);
+    app.pending_task = Some(spawn_pending_turn(runtime.clone(), input, observer));
     Ok(())
+}
+
+fn queue_pending_steer(app: &mut App, input: String) {
+    if input.trim().is_empty() {
+        return;
+    }
+    app.message_list.add_steer_message(input.clone());
+    app.pending_steers.push_back(input);
+    app.focus = Focus::Composer;
+}
+
+fn queue_pending_message(app: &mut App) {
+    let input = app.composer.take_input();
+    if input.trim().is_empty() {
+        return;
+    }
+    app.pending_queue.push_back(input);
+    app.focus = Focus::Composer;
+}
+
+fn dequeue_pending_steer(app: &mut App) -> bool {
+    if let Some(input) = app.pending_queue.pop_back() {
+        app.composer.set_input(input);
+        app.focus = Focus::Composer;
+        return true;
+    }
+    let Some(input) = app.pending_steers.pop_back() else {
+        return false;
+    };
+    let _ = app.message_list.remove_latest_steer_message();
+    app.composer.set_input(input);
+    app.focus = Focus::Composer;
+    true
+}
+
+fn is_transcript_navigation_key(key: crossterm::event::KeyEvent) -> bool {
+    matches!(
+        key.code,
+        KeyCode::Up
+            | KeyCode::Down
+            | KeyCode::PageUp
+            | KeyCode::PageDown
+            | KeyCode::Home
+            | KeyCode::End
+            | KeyCode::Char('j')
+            | KeyCode::Char('k')
+    ) || (matches!(key.code, KeyCode::Char(' '))
+        && !key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER))
+}
+
+fn display_columns(text: &str) -> usize {
+    crate::presentation::display_width(text)
+}
+
+fn truncate_right_for_width(text: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    if display_columns(text) <= width {
+        return text.to_owned();
+    }
+    if width == 1 {
+        return "…".to_owned();
+    }
+    let mut out = String::new();
+    let mut used = 0usize;
+    for ch in text.chars() {
+        let ch_width = crate::presentation::char_display_width(ch);
+        if used + ch_width > width.saturating_sub(1) {
+            break;
+        }
+        out.push(ch);
+        used += ch_width;
+    }
+    out.push('…');
+    out
+}
+
+fn truncate_middle_for_width(text: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    if display_columns(text) <= width {
+        return text.to_owned();
+    }
+    if width == 1 {
+        return "…".to_owned();
+    }
+
+    let target_prefix_width = width.saturating_sub(1).div_ceil(2);
+    let target_suffix_width = width.saturating_sub(1).saturating_sub(target_prefix_width);
+
+    let mut prefix = String::new();
+    let mut prefix_used = 0usize;
+    for ch in text.chars() {
+        let ch_width = crate::presentation::char_display_width(ch);
+        if prefix_used + ch_width > target_prefix_width {
+            break;
+        }
+        prefix.push(ch);
+        prefix_used += ch_width;
+    }
+
+    let mut suffix_chars = Vec::new();
+    let mut suffix_used = 0usize;
+    for ch in text.chars().rev() {
+        let ch_width = crate::presentation::char_display_width(ch);
+        if suffix_used + ch_width > target_suffix_width {
+            break;
+        }
+        suffix_chars.push(ch);
+        suffix_used += ch_width;
+    }
+    suffix_chars.reverse();
+    let suffix = suffix_chars.into_iter().collect::<String>();
+
+    format!("{prefix}…{suffix}")
+}
+
+fn build_status_footer_line(cwd: &str, model: &str, width: u16) -> Line<'static> {
+    let width = width as usize;
+    if width == 0 {
+        return Line::from(String::new());
+    }
+
+    let mut model_text = model.to_owned();
+    let mut cwd_text = cwd.to_owned();
+    let mut model_width = display_columns(&model_text);
+    let mut cwd_width = display_columns(&cwd_text);
+
+    if model_width >= width {
+        model_text = truncate_right_for_width(&model_text, width.saturating_sub(1).max(1));
+        model_width = display_columns(&model_text);
+    }
+
+    let available_for_cwd = width.saturating_sub(model_width + 1);
+    if cwd_width > available_for_cwd {
+        cwd_text = truncate_middle_for_width(&cwd_text, available_for_cwd);
+        cwd_width = display_columns(&cwd_text);
+    }
+
+    let mut spacer_width = width.saturating_sub(cwd_width + model_width);
+    if !cwd_text.is_empty() && !model_text.is_empty() && spacer_width == 0 {
+        if cwd_width > model_width {
+            cwd_text = truncate_middle_for_width(&cwd_text, cwd_width.saturating_sub(1));
+            cwd_width = display_columns(&cwd_text);
+        } else {
+            model_text = truncate_right_for_width(&model_text, model_width.saturating_sub(1));
+            model_width = display_columns(&model_text);
+        }
+        spacer_width = width.saturating_sub(cwd_width + model_width);
+    }
+
+    Line::from(vec![
+        Span::styled(cwd_text, Style::default().fg(PI_GRAY)),
+        Span::raw(" ".repeat(spacer_width)),
+        Span::styled(model_text, Style::default().fg(PI_GRAY)),
+    ])
+}
+
+fn build_queue_footer_line(i18n: &I18nService, queued: usize, width: u16) -> Line<'static> {
+    let hint = i18n.text(PiCopy::FooterQueueHint).to_owned();
+    let suffix = if queued > 0 {
+        format!(" · queued ×{queued}")
+    } else {
+        String::new()
+    };
+    let max_width = width as usize;
+    let total_width = display_columns(&hint) + display_columns(&suffix);
+    if total_width <= max_width {
+        let mut spans = vec![Span::styled(hint, Style::default().fg(PI_ACCENT))];
+        if !suffix.is_empty() {
+            spans.push(Span::styled(suffix, Style::default().fg(PI_GRAY)));
+        }
+        return Line::from(spans);
+    }
+
+    if display_columns(&hint) >= max_width {
+        return Line::from(vec![Span::styled(
+            truncate_right_for_width(&hint, max_width),
+            Style::default().fg(PI_ACCENT),
+        )]);
+    }
+
+    let remaining = max_width.saturating_sub(display_columns(&hint));
+    Line::from(vec![
+        Span::styled(hint, Style::default().fg(PI_ACCENT)),
+        Span::styled(
+            truncate_right_for_width(&suffix, remaining),
+            Style::default().fg(PI_GRAY),
+        ),
+    ])
+}
+
+fn build_restore_footer_line(i18n: &I18nService, queued: usize, width: u16) -> Line<'static> {
+    let text = format!(
+        "{} {} · queued ×{}",
+        queue_restore_shortcut_label(),
+        i18n.text(PiCopy::FooterRestoreQueued),
+        queued
+    );
+    Line::from(vec![Span::styled(
+        truncate_right_for_width(&text, width as usize),
+        Style::default().fg(PI_GRAY),
+    )])
+}
+
+fn queue_restore_shortcut_label() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "Option + Up"
+    } else {
+        "Alt + Up"
+    }
 }
 
 async fn build_command_lines(
@@ -670,7 +1032,7 @@ async fn build_command_lines(
         }
         _ => Ok(
             super::super::render_cli_chat_command_usage_lines_with_width(
-                "usage: /help | /status | /history | /compact | /fast_lane_summary | /safe_lane_summary | /turn_checkpoint_summary | /turn_checkpoint_repair | /sessions | /workers | /review | /mission | /exit",
+                "usage: /help | /status | /history | /compact | /sessions | /workers | /review | /mission | /exit",
                 width,
             ),
         ),
@@ -1021,12 +1383,13 @@ fn summarize_state_mix<'a>(states: impl Iterator<Item = &'a str>) -> Option<Stri
 async fn maybe_finalize_pending_turn<B: Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
-) -> CliResult<()> {
+    runtime: &CliTurnRuntime,
+) -> CliResult<bool> {
     let Some(handle) = app.pending_task.as_ref() else {
-        return Ok(());
+        return Ok(false);
     };
     if !handle.is_finished() {
-        return Ok(());
+        return Ok(false);
     }
 
     let handle = app
@@ -1039,6 +1402,7 @@ async fn maybe_finalize_pending_turn<B: Backend>(
     let width = current_render_width(terminal)?;
     app.pending_turn = false;
     app.turn_start = None;
+    app.live_rerender = None;
     clear_live_lines(&app.live_lines);
     app.focus = Focus::Composer;
     if super::super::build_cli_chat_approval_screen_spec(&assistant_text).is_some() {
@@ -1048,7 +1412,12 @@ async fn maybe_finalize_pending_turn<B: Backend>(
     } else {
         app.message_list.add_assistant_message(assistant_text);
     }
-    Ok(())
+    if let Some(next_input) = app.pending_steers.pop_front() {
+        start_turn(terminal, app, runtime, next_input, false).await?;
+    } else if let Some(next_input) = app.pending_queue.pop_front() {
+        start_turn(terminal, app, runtime, next_input, true).await?;
+    }
+    Ok(true)
 }
 
 fn current_render_width<B: Backend>(terminal: &Terminal<B>) -> CliResult<usize> {
@@ -1061,17 +1430,9 @@ fn current_render_width<B: Backend>(terminal: &Terminal<B>) -> CliResult<usize> 
 fn spawn_pending_turn(
     runtime: CliTurnRuntime,
     input: String,
-    render_width: usize,
-    live_lines: Arc<StdMutex<Vec<String>>>,
+    observer: crate::conversation::ConversationTurnObserverHandle,
 ) -> JoinHandle<CliResult<String>> {
     tokio::spawn(async move {
-        let sink = Arc::new(move |lines: Vec<String>| {
-            if let Ok(mut state) = live_lines.lock() {
-                *state = lines;
-            }
-        });
-        let observer =
-            super::super::build_cli_chat_live_surface_observer_with_sink(render_width, sink);
         let result = crate::agent_runtime::AgentRuntime::new()
             .run_turn_with_runtime_and_observer(
                 &runtime,
@@ -1106,52 +1467,216 @@ fn clear_live_lines(live_lines: &Arc<StdMutex<Vec<String>>>) {
     }
 }
 
+fn pending_live_lines(live_lines: &Arc<StdMutex<Vec<String>>>, max_lines: usize) -> Vec<String> {
+    let max_lines = max_lines.max(1);
+    live_lines
+        .lock()
+        .map(|state| {
+            let normalize = |mut lines: Vec<String>| {
+                while lines.first().is_some_and(|line| line.trim().is_empty()) {
+                    lines.remove(0);
+                }
+                while lines.last().is_some_and(|line| line.trim().is_empty()) {
+                    lines.pop();
+                }
+
+                let mut normalized = Vec::new();
+                let mut last_was_blank = false;
+                for line in lines {
+                    let is_blank = line.trim().is_empty();
+                    if is_blank && last_was_blank {
+                        continue;
+                    }
+                    last_was_blank = is_blank;
+                    normalized.push(line);
+                }
+                normalized
+            };
+
+            if state.len() <= max_lines {
+                return normalize(state.clone());
+            }
+
+            if let Some(blank_idx) = state.iter().position(|line| line.trim().is_empty()) {
+                let reasoning = state[..blank_idx]
+                    .iter()
+                    .filter(|line| !line.trim().is_empty())
+                    .cloned()
+                    .take((max_lines / 2).max(1))
+                    .collect::<Vec<_>>();
+                let visible = state[blank_idx + 1..]
+                    .iter()
+                    .filter(|line| !line.trim().is_empty())
+                    .cloned()
+                    .take(max_lines.saturating_sub(reasoning.len() + 1))
+                    .collect::<Vec<_>>();
+                if !reasoning.is_empty() && !visible.is_empty() {
+                    let mut lines = reasoning;
+                    lines.push(String::new());
+                    lines.extend(visible);
+                    return normalize(lines);
+                }
+            }
+
+            normalize(state.iter().take(max_lines).cloned().collect())
+        })
+        .unwrap_or_default()
+}
+
+fn pending_render_signature(app: &App) -> Option<u64> {
+    if !app.pending_turn {
+        return None;
+    }
+    let start = app.turn_start?;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    focus_ring_frame(start).hash(&mut hasher);
+    get_spinner_verb_with_seed(start, app.spinner_seed).hash(&mut hasher);
+    app.pending_steers.len().hash(&mut hasher);
+    app.pending_queue.len().hash(&mut hasher);
+    for line in pending_live_lines(&app.live_lines, pending_signature_preview_budget(app)) {
+        line.hash(&mut hasher);
+    }
+    Some(hasher.finish())
+}
+
+fn pending_signature_preview_budget(app: &App) -> usize {
+    if app.last_render_width == 0 || app.last_render_height == 0 {
+        return 6;
+    }
+
+    let composer_height = app.composer.height_for_width(app.last_render_width);
+    let palette_height = if matches!(app.focus, Focus::CommandPalette) {
+        app.command_palette.desired_height() as u16
+    } else {
+        0
+    };
+    let reserved_without_pending = 1
+        + composer_height
+        + if palette_height > 0 {
+            1 + palette_height
+        } else {
+            0
+        }
+        + 1
+        + 1
+        + 1;
+    let max_pending_height = app
+        .last_render_height
+        .saturating_sub(reserved_without_pending)
+        .max(3);
+    max_pending_height.saturating_sub(3).max(1) as usize
+}
+
 fn build_pending_lines(
     turn_start: Option<std::time::Instant>,
-    live_lines: &Arc<StdMutex<Vec<String>>>,
+    live_lines: &[String],
+    spinner_seed: u64,
+    steer_count: usize,
     width: u16,
 ) -> Vec<Line<'static>> {
     let start = turn_start.unwrap_or_else(std::time::Instant::now);
-    let mut pending_lines = vec![
-        Line::from(""),
-        Line::from(vec![
-            Span::raw(" "),
-            Span::styled(
-                format!("{} ", focus_ring_frame(start)),
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!("{}...", get_spinner_verb(start)),
-                Style::default().fg(PI_GRAY),
-            ),
-        ]),
+    let mut spinner_spans = vec![
+        Span::raw(" "),
+        Span::styled(
+            format!("{} ", focus_ring_frame(start)),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("{}...", get_spinner_verb_with_seed(start, spinner_seed)),
+            Style::default().fg(PI_CYAN).add_modifier(Modifier::BOLD),
+        ),
     ];
-
-    let snapshot = live_lines
-        .lock()
-        .map(|state| state.clone())
-        .unwrap_or_default();
-    if snapshot.is_empty() {
-        return pending_lines;
+    if steer_count > 0 {
+        spinner_spans.push(Span::styled(
+            format!(" · steer ×{steer_count}"),
+            Style::default().fg(PI_GRAY),
+        ));
     }
 
-    let wrap_width = width.saturating_sub(2).max(1) as usize;
-    for preview_line in snapshot
+    let content_width = width.saturating_sub(2).max(1) as usize;
+    let mut lines = vec![Line::from(""), Line::from(spinner_spans)];
+    if !live_lines.is_empty() {
+        lines.push(Line::from(""));
+    }
+    let has_visible_reply_after_blank = live_lines
         .iter()
-        .filter(|line| !line.trim().is_empty())
-        .take(3)
-    {
-        for wrapped in crate::presentation::render_wrapped_display_line(preview_line, wrap_width) {
-            pending_lines.push(Line::from(vec![
+        .position(|line| line.trim().is_empty())
+        .is_some_and(|blank_idx| {
+            live_lines
+                .iter()
+                .skip(blank_idx + 1)
+                .any(|line| !line.trim().is_empty())
+        });
+    let mut in_reasoning_block = has_visible_reply_after_blank;
+
+    for line in live_lines {
+        if line.trim().is_empty() {
+            lines.push(Line::from(""));
+            if has_visible_reply_after_blank {
+                in_reasoning_block = false;
+            }
+            continue;
+        }
+
+        let style = if in_reasoning_block {
+            Style::default().fg(PI_GRAY).add_modifier(Modifier::DIM)
+        } else {
+            Style::default().fg(ratatui::style::Color::White)
+        };
+        for wrapped in
+            crate::presentation::render_wrapped_display_line(line.as_str(), content_width)
+        {
+            lines.push(Line::from(vec![
                 Span::raw("  "),
-                Span::styled(wrapped, Style::default().fg(PI_DIM_GRAY)),
+                Span::styled(wrapped, style),
             ]));
         }
     }
+    lines.push(Line::from(""));
+    lines
+}
 
-    pending_lines
+fn compact_pending_lines_for_height(
+    mut lines: Vec<Line<'static>>,
+    max_height: u16,
+) -> Vec<Line<'static>> {
+    let max_height = max_height.max(1) as usize;
+    if lines.len() <= max_height {
+        return lines;
+    }
+
+    let removable_blank_indices = [0usize, lines.len().saturating_sub(1), 2usize];
+    for index in removable_blank_indices {
+        if lines.len() <= max_height {
+            break;
+        }
+        if index < lines.len()
+            && lines[index]
+                .spans
+                .iter()
+                .all(|span| span.content.trim().is_empty())
+        {
+            lines.remove(index);
+        }
+    }
+
+    while lines.len() > max_height {
+        if let Some(index) = lines.iter().enumerate().skip(2).find_map(|(idx, line)| {
+            line.spans
+                .iter()
+                .all(|span| span.content.trim().is_empty())
+                .then_some(idx)
+        }) {
+            lines.remove(index);
+        } else {
+            break;
+        }
+    }
+
+    lines.truncate(max_height);
+    lines
 }
 
 fn format_cwd(runtime: &CliTurnRuntime) -> String {
@@ -1222,9 +1747,1016 @@ fn detect_repo_skills() -> Vec<String> {
     names
 }
 
-fn pending_live_lines(live_lines: &Arc<StdMutex<Vec<String>>>) -> Vec<String> {
-    live_lines
-        .lock()
-        .map(|state| state.iter().take(5).cloned().collect())
-        .unwrap_or_default()
+#[derive(Debug, Deserialize)]
+struct GithubRelease {
+    tag_name: String,
+    published_at: Option<String>,
+    html_url: Option<String>,
+    body: Option<String>,
+}
+
+async fn load_startup_release_lines(width: usize) -> Option<Vec<String>> {
+    let current = format!("v{}", env!("CARGO_PKG_VERSION"));
+    let client = reqwest::Client::builder()
+        .user_agent("loongclaw-pi-surface")
+        .build()
+        .ok()?;
+    let response = tokio::time::timeout(
+        Duration::from_millis(1500),
+        client
+            .get("https://api.github.com/repos/eastreams/loong/releases/latest")
+            .send(),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let release: GithubRelease = response.json().await.ok()?;
+    format_startup_release_lines(&release, &current, width)
+}
+
+fn format_startup_release_lines(
+    release: &GithubRelease,
+    current: &str,
+    width: usize,
+) -> Option<Vec<String>> {
+    if normalize_tag(&release.tag_name) == normalize_tag(current) {
+        return None;
+    }
+
+    let rule = "─".repeat(width.max(12));
+    let mut lines = vec![
+        rule.clone(),
+        " What's New".to_owned(),
+        String::new(),
+        format!(
+            " [{}]{}",
+            release.tag_name,
+            release
+                .published_at
+                .as_deref()
+                .and_then(|value| value.get(..10))
+                .map(|date| format!(" - {date}"))
+                .unwrap_or_default()
+        ),
+        String::new(),
+    ];
+
+    let mut added = 0usize;
+    for line in release.body.as_deref().unwrap_or_default().lines() {
+        let trimmed = line.trim_end();
+        if trimmed.is_empty() {
+            if lines.last().is_some_and(|last| !last.is_empty()) {
+                lines.push(String::new());
+            }
+            continue;
+        }
+        lines.push(trimmed.to_owned());
+        added += 1;
+        if added >= 28 {
+            break;
+        }
+    }
+
+    if let Some(url) = release.html_url.as_deref() {
+        lines.push(String::new());
+        lines.push(format!(" Release: {url}"));
+    }
+    lines.push(rule);
+    Some(lines)
+}
+
+fn normalize_tag(tag: &str) -> String {
+    tag.trim().trim_start_matches('v').to_ascii_lowercase()
+}
+
+fn resize_reflow_required(previous_width: u16, next_width: u16) -> bool {
+    previous_width != next_width
+}
+
+fn redraw_throttle_ready(
+    resize_requires_throttle: bool,
+    since_last_draw: Option<Duration>,
+) -> bool {
+    !resize_requires_throttle
+        || since_last_draw
+            .map(|elapsed| elapsed >= Duration::from_millis(16))
+            .unwrap_or(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{App, Focus};
+    use crate::chat::pi_surface::command_palette::CommandPalette;
+    use crate::chat::pi_surface::composer::Composer;
+    use crate::chat::pi_surface::i18n::{I18nService, Language};
+    use crate::chat::pi_surface::message_list::MessageList;
+    use crate::chat::pi_surface::utils::PI_USER_MSG_BG;
+    use crossterm::event::{KeyCode, KeyModifiers};
+    use ratatui::{Terminal, backend::TestBackend};
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::{Arc, Mutex as StdMutex};
+    use std::time::Duration;
+
+    fn blank_app() -> App {
+        App {
+            message_list: MessageList::new(),
+            composer: Composer::new(),
+            command_palette: CommandPalette::new(Language::En),
+            focus: Focus::Composer,
+            pending_turn: false,
+            turn_start: None,
+            live_lines: Arc::new(StdMutex::new(Vec::new())),
+            pending_task: None,
+            pending_steers: Default::default(),
+            pending_queue: Default::default(),
+            live_render_width: Arc::new(AtomicUsize::new(1)),
+            live_rerender: None,
+            spinner_seed: 1,
+            last_pending_signature: None,
+            last_render_width: 0,
+            last_render_height: 0,
+            cwd: "/tmp/example".to_owned(),
+            model: "gpt-test".to_owned(),
+            i18n: I18nService::new(Language::En),
+        }
+    }
+
+    #[test]
+    fn resize_reflow_only_requires_quiet_window_for_width_changes() {
+        assert!(super::resize_reflow_required(80, 72));
+        assert!(!super::resize_reflow_required(80, 80));
+    }
+
+    #[test]
+    fn redraw_throttle_only_delays_rapid_width_resize_frames() {
+        assert!(super::redraw_throttle_ready(false, None));
+        assert!(super::redraw_throttle_ready(true, None));
+        assert!(!super::redraw_throttle_ready(
+            true,
+            Some(Duration::from_millis(8))
+        ));
+        assert!(super::redraw_throttle_ready(
+            true,
+            Some(Duration::from_millis(16))
+        ));
+    }
+
+    fn sample_release() -> super::GithubRelease {
+        super::GithubRelease {
+            tag_name: "v9.9.9".to_owned(),
+            published_at: Some("2026-04-20T00:00:00Z".to_owned()),
+            html_url: Some("https://github.com/eastreams/loong/releases/tag/v9.9.9".to_owned()),
+            body: Some(
+                "- Added a very long changelog line that should wrap cleanly inside narrow startup surfaces without overflowing the transcript width.".to_owned(),
+            ),
+        }
+    }
+
+    fn buffer_lines(terminal: &Terminal<TestBackend>) -> Vec<String> {
+        let buf = terminal.backend().buffer();
+        let area = buf.area;
+        (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    fn find_row(terminal: &Terminal<TestBackend>, needle: &str) -> Option<u16> {
+        let buf = terminal.backend().buffer();
+        let area = buf.area;
+        for y in 0..area.height {
+            let line = (0..area.width)
+                .map(|x| buf[(x, y)].symbol())
+                .collect::<String>();
+            if line.contains(needle) {
+                return Some(y);
+            }
+        }
+        None
+    }
+
+    fn row_has_background(
+        terminal: &Terminal<TestBackend>,
+        row: u16,
+        bg: ratatui::style::Color,
+    ) -> bool {
+        let buf = terminal.backend().buffer();
+        let area = buf.area;
+        (0..area.width).all(|x| buf[(x, row)].bg == bg)
+    }
+
+    #[test]
+    fn status_footer_truncates_long_cwd_from_the_left() {
+        let line = super::build_status_footer_line(
+            "/Users/chum/.paseo/worktrees/07om2gl0/ui-ux-parity-final-20260414",
+            "gpt-5.4",
+            32,
+        );
+        let rendered = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+
+        assert_eq!(crate::presentation::display_width(&rendered), 32);
+        assert!(rendered.contains("gpt-5.4"));
+        assert!(rendered.contains("…"));
+        assert!(
+            rendered.contains(
+                "ui-ux-parity-final-20260414"
+                    .chars()
+                    .rev()
+                    .take(10)
+                    .collect::<String>()
+                    .chars()
+                    .rev()
+                    .collect::<String>()
+                    .as_str()
+            )
+        );
+        assert!(rendered.contains("/Users"));
+    }
+
+    #[test]
+    fn status_footer_truncates_model_when_width_is_extremely_narrow() {
+        let line =
+            super::build_status_footer_line("/tmp/project", "gpt-5.4-super-long-model-name", 12);
+        let rendered = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+
+        assert_eq!(crate::presentation::display_width(&rendered), 12);
+        assert!(rendered.contains("…"));
+    }
+
+    #[test]
+    fn status_footer_respects_display_width_for_cjk_paths() {
+        let line = super::build_status_footer_line("/tmp/项目/聊天记录", "gpt-5.4", 16);
+        let rendered = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+
+        assert_eq!(crate::presentation::display_width(&rendered), 16);
+        assert!(rendered.contains("gpt-5.4"));
+    }
+
+    #[test]
+    fn middle_truncation_preserves_both_path_ends() {
+        let truncated =
+            super::truncate_middle_for_width("/Users/chum/worktrees/project-name/session", 20);
+
+        assert!(truncated.starts_with("/Users"));
+        assert!(truncated.ends_with("session"));
+        assert_eq!(crate::presentation::display_width(&truncated), 20);
+    }
+
+    #[test]
+    fn startup_release_lines_wrap_to_requested_width() {
+        let release = sample_release();
+        let lines =
+            super::format_startup_release_lines(&release, "v0.1.0", 80).expect("release lines");
+        let mut list = MessageList::new();
+        list.add_rendered_lines(lines);
+
+        let rendered = list
+            .get_rendered_lines(24)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        assert!(
+            rendered
+                .iter()
+                .all(|line| line.is_empty() || crate::presentation::display_width(line) <= 24)
+        );
+        assert!(rendered.iter().any(|line| line.contains("What's New")));
+        assert!(rendered.iter().any(|line| line.contains("Release:")));
+    }
+
+    #[test]
+    fn startup_release_lines_skip_current_version() {
+        let release = sample_release();
+
+        assert!(super::format_startup_release_lines(&release, "v9.9.9", 24).is_none());
+    }
+
+    #[test]
+    fn queue_footer_truncates_to_available_width() {
+        let line = super::build_queue_footer_line(&I18nService::new(Language::En), 12, 14);
+        let rendered = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+
+        assert_eq!(crate::presentation::display_width(&rendered), 14);
+        assert!(rendered.contains("…"));
+    }
+
+    #[test]
+    fn restore_footer_truncates_to_available_width() {
+        let line = super::build_restore_footer_line(&I18nService::new(Language::En), 12, 14);
+        let rendered = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+
+        assert_eq!(crate::presentation::display_width(&rendered), 14);
+        assert!(rendered.contains("…"));
+    }
+
+    #[test]
+    fn footer_stays_bottom_even_when_transcript_is_short() {
+        let backend = TestBackend::new(50, 18);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = blank_app();
+        app.message_list.add_user_message("hi".to_owned());
+        app.message_list.add_assistant_message("hello".to_owned());
+
+        terminal.draw(|f| app.render(f)).expect("draw");
+        let lines = buffer_lines(&terminal);
+        let footer_row = lines
+            .iter()
+            .position(|line| line.contains("/tmp/example"))
+            .expect("footer row");
+
+        assert_eq!(footer_row, lines.len().saturating_sub(1));
+    }
+
+    #[test]
+    fn wrapped_composer_expands_before_footer() {
+        let backend = TestBackend::new(16, 12);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = blank_app();
+        app.composer.set_input("abcdefg".to_owned());
+
+        terminal.draw(|f| app.render(f)).expect("draw");
+        let lines = buffer_lines(&terminal);
+        let footer_row = lines
+            .iter()
+            .position(|line| line.contains("gpt-test"))
+            .expect("footer row");
+        let wrapped_row = lines
+            .iter()
+            .enumerate()
+            .find_map(|(idx, line)| line.contains("defg").then_some(idx))
+            .expect("wrapped composer row");
+
+        assert!(footer_row > wrapped_row);
+    }
+
+    #[test]
+    fn footer_reaches_bottom_when_transcript_fills_available_height() {
+        let backend = TestBackend::new(50, 12);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = blank_app();
+        for idx in 0..8 {
+            app.message_list.add_user_message(format!("msg-{idx}"));
+            app.message_list
+                .add_assistant_message(format!("reply-{idx}"));
+        }
+
+        terminal.draw(|f| app.render(f)).expect("draw");
+        let lines = buffer_lines(&terminal);
+        let footer_row = lines
+            .iter()
+            .position(|line| line.contains("/tmp/example"))
+            .expect("footer row");
+
+        assert_eq!(footer_row, lines.len().saturating_sub(1));
+    }
+
+    #[test]
+    fn pending_band_grows_when_live_lines_exist() {
+        let backend = TestBackend::new(50, 18);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = blank_app();
+        app.message_list.add_user_message("hi".to_owned());
+        app.pending_turn = true;
+        app.turn_start = Some(std::time::Instant::now());
+        if let Ok(mut lines) = app.live_lines.lock() {
+            *lines = vec!["streamed reply line".to_owned()];
+        }
+
+        terminal.draw(|f| app.render(f)).expect("draw");
+        let lines = buffer_lines(&terminal);
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("streamed reply line"))
+        );
+    }
+
+    #[test]
+    fn startup_header_remains_visible_after_first_message() {
+        let backend = TestBackend::new(70, 20);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = blank_app();
+        app.message_list.add_startup_header(
+            "0.1.0".to_owned(),
+            "tutorial".to_owned(),
+            vec![("MCP".to_owned(), vec!["none".to_owned()])],
+        );
+        app.message_list.add_user_message("hi".to_owned());
+        app.message_list.add_assistant_message("hello".to_owned());
+
+        terminal.draw(|f| app.render(f)).expect("draw");
+        let lines = buffer_lines(&terminal).join("\n");
+        assert!(lines.contains("loong"));
+        assert!(lines.contains("[MCP]"));
+        assert!(lines.contains("hi"));
+        assert!(lines.contains("hello"));
+    }
+
+    #[test]
+    fn pending_band_keeps_blank_padding_rows() {
+        let backend = TestBackend::new(50, 18);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = blank_app();
+        app.message_list.add_user_message("hi".to_owned());
+        app.pending_turn = true;
+        app.turn_start = Some(std::time::Instant::now());
+
+        terminal.draw(|f| app.render(f)).expect("draw");
+        let lines = buffer_lines(&terminal);
+        let spinner_row = lines
+            .iter()
+            .position(|line| line.contains("..."))
+            .expect("spinner row");
+        assert!(spinner_row > 0);
+        assert!(lines[spinner_row - 1].trim().is_empty());
+    }
+
+    #[test]
+    fn compact_pending_lines_drops_padding_before_content_on_tiny_height() {
+        let lines = super::build_pending_lines(
+            Some(std::time::Instant::now()),
+            &["visible reply".to_owned()],
+            1,
+            0,
+            40,
+        );
+
+        let compacted = super::compact_pending_lines_for_height(lines, 3);
+        let rendered = compacted
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.into_owned())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(rendered.len(), 3);
+        assert!(rendered.iter().any(|line| line.contains("visible reply")));
+    }
+
+    #[test]
+    fn pending_band_renders_compact_live_preview_without_card_chrome() {
+        let backend = TestBackend::new(60, 18);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = blank_app();
+        app.message_list.add_user_message("hi".to_owned());
+        app.pending_turn = true;
+        app.turn_start = Some(std::time::Instant::now());
+        if let Ok(mut lines) = app.live_lines.lock() {
+            *lines = vec![
+                "first streamed sentence".to_owned(),
+                "second streamed sentence".to_owned(),
+            ];
+        }
+
+        terminal.draw(|f| app.render(f)).expect("draw");
+        let lines = buffer_lines(&terminal).join("\n");
+        assert!(lines.contains("first streamed sentence"));
+        assert!(lines.contains("second streamed sentence"));
+        assert!(!lines.contains("╭─"));
+        assert!(!lines.contains("turn pipeline"));
+    }
+
+    #[test]
+    fn pending_preview_renders_between_transcript_and_composer() {
+        let backend = TestBackend::new(60, 18);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = blank_app();
+        app.message_list.add_user_message("hi".to_owned());
+        app.pending_turn = true;
+        app.turn_start = Some(std::time::Instant::now());
+        if let Ok(mut lines) = app.live_lines.lock() {
+            *lines = vec!["streamed reply line".to_owned()];
+        }
+
+        terminal.draw(|f| app.render(f)).expect("draw");
+        let lines = buffer_lines(&terminal);
+        let user_row = lines
+            .iter()
+            .position(|line| line.contains("hi"))
+            .expect("user row");
+        let preview_row = lines
+            .iter()
+            .position(|line| line.contains("streamed reply line"))
+            .expect("preview row");
+        let composer_row = lines
+            .iter()
+            .position(|line| line.contains("›"))
+            .expect("composer row");
+
+        assert!(preview_row > user_row);
+        assert!(preview_row < composer_row);
+    }
+
+    #[test]
+    fn composer_immediately_follows_pending_preview_band() {
+        let backend = TestBackend::new(60, 18);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = blank_app();
+        app.message_list.add_user_message("hi".to_owned());
+        app.pending_turn = true;
+        app.turn_start = Some(std::time::Instant::now());
+        if let Ok(mut lines) = app.live_lines.lock() {
+            *lines = vec!["streamed reply line".to_owned()];
+        }
+
+        terminal.draw(|f| app.render(f)).expect("draw");
+        let lines = buffer_lines(&terminal);
+        let preview_row = lines
+            .iter()
+            .position(|line| line.contains("streamed reply line"))
+            .expect("preview row");
+        let composer_row = lines
+            .iter()
+            .position(|line| line.contains("›"))
+            .expect("composer row");
+
+        assert_eq!(composer_row, preview_row + 3);
+    }
+
+    #[test]
+    fn pending_preview_shows_reasoning_before_visible_reply() {
+        let backend = TestBackend::new(70, 12);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = blank_app();
+        app.message_list.add_user_message("hi".to_owned());
+        app.pending_turn = true;
+        app.turn_start = Some(std::time::Instant::now());
+        if let Ok(mut lines) = app.live_lines.lock() {
+            *lines = vec!["quiet reasoning".to_owned(), "visible reply".to_owned()];
+        }
+
+        terminal.draw(|f| app.render(f)).expect("draw");
+        let lines = buffer_lines(&terminal);
+        let reasoning_row = lines
+            .iter()
+            .position(|line| line.contains("quiet reasoning"))
+            .expect("reasoning row");
+        let visible_row = lines
+            .iter()
+            .position(|line| line.contains("visible reply"))
+            .expect("visible row");
+
+        assert!(reasoning_row < visible_row);
+    }
+
+    #[test]
+    fn pending_preview_keeps_blank_row_between_spinner_and_live_lines() {
+        let backend = TestBackend::new(70, 20);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = blank_app();
+        app.message_list.add_user_message("hi".to_owned());
+        app.pending_turn = true;
+        app.turn_start = Some(std::time::Instant::now());
+        if let Ok(mut lines) = app.live_lines.lock() {
+            *lines = vec!["visible reply".to_owned()];
+        }
+
+        terminal.draw(|f| app.render(f)).expect("draw");
+        let lines = buffer_lines(&terminal);
+        let spinner_row = lines
+            .iter()
+            .position(|line| line.contains("..."))
+            .expect("spinner row");
+        let preview_row = lines
+            .iter()
+            .position(|line| line.contains("visible reply"))
+            .expect("preview row");
+
+        assert_eq!(preview_row, spinner_row + 2);
+        assert!(lines[spinner_row + 1].trim().is_empty());
+    }
+
+    #[test]
+    fn pending_preview_live_lines_are_indented_like_assistant_output() {
+        let backend = TestBackend::new(70, 20);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = blank_app();
+        app.message_list.add_user_message("hi".to_owned());
+        app.pending_turn = true;
+        app.turn_start = Some(std::time::Instant::now());
+        if let Ok(mut lines) = app.live_lines.lock() {
+            *lines = vec!["visible reply".to_owned()];
+        }
+
+        terminal.draw(|f| app.render(f)).expect("draw");
+        let lines = buffer_lines(&terminal);
+        let preview_row = lines
+            .iter()
+            .position(|line| line.contains("visible reply"))
+            .expect("preview row");
+
+        assert!(lines[preview_row].contains("  visible reply"));
+    }
+    #[test]
+    fn pending_preview_wraps_long_live_lines_on_narrow_width() {
+        let backend = TestBackend::new(28, 20);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = blank_app();
+        app.message_list.add_user_message("hi".to_owned());
+        app.pending_turn = true;
+        app.turn_start = Some(std::time::Instant::now());
+        if let Ok(mut lines) = app.live_lines.lock() {
+            *lines = vec!["visible reply wraps across the pending band".to_owned()];
+        }
+
+        terminal.draw(|f| app.render(f)).expect("draw");
+        let lines = buffer_lines(&terminal);
+        let first_row = lines
+            .iter()
+            .position(|line| line.contains("visible reply"))
+            .expect("first wrapped preview row");
+        let second_row = lines
+            .iter()
+            .skip(first_row + 1)
+            .position(|line| line.contains("pending band"))
+            .map(|offset| first_row + 1 + offset)
+            .expect("second wrapped preview row");
+        let composer_row = lines
+            .iter()
+            .position(|line| line.contains("›"))
+            .expect("composer row");
+
+        assert_eq!(second_row, first_row + 1);
+        assert!(composer_row > second_row);
+    }
+
+    #[test]
+    fn pending_preview_expands_beyond_legacy_cap_when_height_allows() {
+        let backend = TestBackend::new(18, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = blank_app();
+        app.message_list.add_user_message("hi".to_owned());
+        app.pending_turn = true;
+        app.turn_start = Some(std::time::Instant::now());
+        if let Ok(mut lines) = app.live_lines.lock() {
+            *lines =
+                vec![(
+                "a1 a2 a3 a4 a5 a6 a7 a8 a9 a10 a11 a12 a13 a14 a15 a16 a17 a18 a19 a20 omega"
+            )
+                .to_owned()];
+        }
+
+        terminal.draw(|f| app.render(f)).expect("draw");
+        let rendered = buffer_lines(&terminal).join("\n");
+
+        assert!(rendered.contains("omega"));
+    }
+
+    #[test]
+    fn pending_preview_preserves_blank_separator_between_reasoning_and_reply() {
+        let backend = TestBackend::new(70, 18);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = blank_app();
+        app.message_list.add_user_message("hi".to_owned());
+        app.pending_turn = true;
+        app.turn_start = Some(std::time::Instant::now());
+        if let Ok(mut lines) = app.live_lines.lock() {
+            *lines = vec![
+                "quiet reasoning".to_owned(),
+                String::new(),
+                "visible reply".to_owned(),
+            ];
+        }
+
+        terminal.draw(|f| app.render(f)).expect("draw");
+        let lines = buffer_lines(&terminal);
+        let reasoning_row = lines
+            .iter()
+            .position(|line| line.contains("quiet reasoning"))
+            .expect("reasoning row");
+        let visible_row = lines
+            .iter()
+            .position(|line| line.contains("visible reply"))
+            .expect("visible row");
+
+        assert!(visible_row > reasoning_row + 1);
+        assert!(lines[reasoning_row + 1].trim().is_empty());
+    }
+
+    #[test]
+    fn pending_preview_styles_reasoning_dim_before_visible_reply() {
+        let backend = TestBackend::new(70, 18);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = blank_app();
+        app.message_list.add_user_message("hi".to_owned());
+        app.pending_turn = true;
+        app.turn_start = Some(std::time::Instant::now());
+        if let Ok(mut lines) = app.live_lines.lock() {
+            *lines = vec![
+                "quiet reasoning".to_owned(),
+                String::new(),
+                "visible reply".to_owned(),
+            ];
+        }
+
+        terminal.draw(|f| app.render(f)).expect("draw");
+        let buf = terminal.backend().buffer();
+        let reasoning_row = find_row(&terminal, "quiet reasoning").expect("reasoning row");
+        let visible_row = find_row(&terminal, "visible reply").expect("visible row");
+
+        assert_eq!(
+            buf[(2, reasoning_row)].fg,
+            crate::chat::pi_surface::utils::PI_GRAY
+        );
+        assert_eq!(buf[(2, visible_row)].fg, ratatui::style::Color::White);
+    }
+
+    #[test]
+    fn pending_preview_truncation_preserves_reasoning_and_visible_segments() {
+        let backend = TestBackend::new(70, 12);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = blank_app();
+        app.message_list.add_user_message("hi".to_owned());
+        app.pending_turn = true;
+        app.turn_start = Some(std::time::Instant::now());
+        if let Ok(mut lines) = app.live_lines.lock() {
+            *lines = vec![
+                "reason-1".to_owned(),
+                "reason-2".to_owned(),
+                "reason-3".to_owned(),
+                "reason-4".to_owned(),
+                String::new(),
+                "reply-1".to_owned(),
+                "reply-2".to_owned(),
+                "reply-3".to_owned(),
+            ];
+        }
+
+        terminal.draw(|f| app.render(f)).expect("draw");
+        let rendered = buffer_lines(&terminal).join("\n");
+
+        assert!(rendered.contains("reason-1"));
+        assert!(rendered.contains("reason-2"));
+        assert!(!rendered.contains("reason-3"));
+        assert!(!rendered.contains("reason-4"));
+        assert!(rendered.contains("reply-1"));
+        assert!(!rendered.contains("reply-2"));
+    }
+
+    #[test]
+    fn pending_live_lines_trim_outer_blank_lines_and_collapse_repeats() {
+        let lines = Arc::new(StdMutex::new(vec![
+            String::new(),
+            String::new(),
+            "reasoning".to_owned(),
+            String::new(),
+            String::new(),
+            "reply".to_owned(),
+            String::new(),
+            String::new(),
+        ]));
+
+        let normalized = super::pending_live_lines(&lines, 6);
+        assert_eq!(
+            normalized,
+            vec!["reasoning".to_owned(), String::new(), "reply".to_owned(),]
+        );
+    }
+
+    #[test]
+    fn pending_live_lines_expand_with_larger_preview_budget() {
+        let lines = Arc::new(StdMutex::new(vec![
+            "reason-1".to_owned(),
+            "reason-2".to_owned(),
+            "reason-3".to_owned(),
+            String::new(),
+            "reply-1".to_owned(),
+            "reply-2".to_owned(),
+            "reply-3".to_owned(),
+            "reply-4".to_owned(),
+        ]));
+
+        let compact = super::pending_live_lines(&lines, 4);
+        let expanded = super::pending_live_lines(&lines, 7);
+
+        assert!(compact.len() < expanded.len());
+        assert!(expanded.iter().any(|line| line.contains("reply-3")));
+    }
+
+    #[test]
+    fn pending_signature_preview_budget_tracks_last_render_geometry() {
+        let mut app = blank_app();
+        app.last_render_width = 40;
+        app.last_render_height = 20;
+
+        assert!(super::pending_signature_preview_budget(&app) > 1);
+
+        app.last_render_height = 8;
+        assert_eq!(super::pending_signature_preview_budget(&app), 1);
+    }
+
+    #[test]
+    fn transcript_navigation_key_helper_accepts_space_and_vim_scroll_keys() {
+        assert!(super::is_transcript_navigation_key(
+            crossterm::event::KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE,)
+        ));
+        assert!(super::is_transcript_navigation_key(
+            crossterm::event::KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE,)
+        ));
+        assert!(super::is_transcript_navigation_key(
+            crossterm::event::KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE,)
+        ));
+        assert!(super::is_transcript_navigation_key(
+            crossterm::event::KeyEvent::new(KeyCode::Char(' '), KeyModifiers::SHIFT,)
+        ));
+        assert!(!super::is_transcript_navigation_key(
+            crossterm::event::KeyEvent::new(KeyCode::Char(' '), KeyModifiers::ALT,)
+        ));
+    }
+
+    #[test]
+    fn pending_footer_yields_to_queue_hint_when_draft_exists() {
+        let backend = TestBackend::new(60, 18);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = blank_app();
+        app.pending_turn = true;
+        app.turn_start = Some(std::time::Instant::now());
+        app.composer.set_input("queued draft".to_owned());
+
+        terminal.draw(|f| app.render(f)).expect("draw");
+        let lines = buffer_lines(&terminal).join("\n");
+
+        assert!(lines.contains("Tab to queue message"));
+        assert!(!lines.contains("/tmp/example"));
+    }
+
+    #[test]
+    fn pending_footer_shows_restore_hint_when_queue_exists() {
+        let backend = TestBackend::new(60, 18);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = blank_app();
+        app.pending_turn = true;
+        app.turn_start = Some(std::time::Instant::now());
+        app.pending_queue.push_back("queued draft".to_owned());
+
+        terminal.draw(|f| app.render(f)).expect("draw");
+        let lines = buffer_lines(&terminal).join("\n");
+
+        assert!(lines.contains("queued ×1"));
+        assert!(lines.contains("Option + Up") || lines.contains("Alt + Up"));
+        assert!(!lines.contains("/tmp/example"));
+    }
+
+    #[test]
+    fn pending_signature_ignores_hidden_tail_lines() {
+        let mut app = blank_app();
+        app.pending_turn = true;
+        app.turn_start = Some(std::time::Instant::now());
+        if let Ok(mut lines) = app.live_lines.lock() {
+            *lines = vec![
+                "reason-1".to_owned(),
+                "reason-2".to_owned(),
+                "reason-3".to_owned(),
+                String::new(),
+                "reply-1".to_owned(),
+                "reply-2".to_owned(),
+                "hidden-tail".to_owned(),
+            ];
+        }
+        let before = super::pending_render_signature(&app);
+        if let Ok(mut lines) = app.live_lines.lock() {
+            *lines = vec![
+                "reason-1".to_owned(),
+                "reason-2".to_owned(),
+                "reason-3".to_owned(),
+                String::new(),
+                "reply-1".to_owned(),
+                "reply-2".to_owned(),
+                "different-hidden-tail".to_owned(),
+            ];
+        }
+        let after = super::pending_render_signature(&app);
+
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn pending_signature_changes_when_visible_preview_changes() {
+        let mut app = blank_app();
+        app.pending_turn = true;
+        app.turn_start = Some(std::time::Instant::now());
+        if let Ok(mut lines) = app.live_lines.lock() {
+            *lines = vec!["reason-1".to_owned(), String::new(), "reply-1".to_owned()];
+        }
+        let before = super::pending_render_signature(&app);
+        if let Ok(mut lines) = app.live_lines.lock() {
+            *lines = vec!["reason-1".to_owned(), String::new(), "reply-2".to_owned()];
+        }
+        let after = super::pending_render_signature(&app);
+
+        assert_ne!(before, after);
+    }
+
+    #[test]
+    fn startup_overflow_still_keeps_user_block_top_padding_visible() {
+        let backend = TestBackend::new(50, 14);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = blank_app();
+        app.message_list.add_startup_header(
+            "0.1.0".to_owned(),
+            "tutorial".to_owned(),
+            vec![
+                (
+                    "MCP".to_owned(),
+                    vec!["one".to_owned(), "two".to_owned(), "three".to_owned()],
+                ),
+                (
+                    "Skills".to_owned(),
+                    vec![
+                        "alpha".to_owned(),
+                        "beta".to_owned(),
+                        "gamma".to_owned(),
+                        "delta".to_owned(),
+                    ],
+                ),
+            ],
+        );
+        app.message_list.add_user_message("hi".to_owned());
+        app.pending_turn = true;
+        app.turn_start = Some(std::time::Instant::now());
+
+        terminal.draw(|f| app.render(f)).expect("draw");
+        let user_row = find_row(&terminal, "hi").expect("user row");
+        assert!(user_row > 0);
+        assert!(
+            row_has_background(&terminal, user_row - 1, PI_USER_MSG_BG),
+            "expected the row above the visible user text to be the user block top padding"
+        );
+    }
+
+    #[test]
+    fn startup_overflow_with_pending_preview_keeps_user_block_and_preview_visible() {
+        let backend = TestBackend::new(50, 16);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = blank_app();
+        app.message_list.add_startup_header(
+            "0.1.0".to_owned(),
+            "tutorial".to_owned(),
+            vec![
+                (
+                    "MCP".to_owned(),
+                    vec!["one".to_owned(), "two".to_owned(), "three".to_owned()],
+                ),
+                (
+                    "Skills".to_owned(),
+                    vec![
+                        "alpha".to_owned(),
+                        "beta".to_owned(),
+                        "gamma".to_owned(),
+                        "delta".to_owned(),
+                    ],
+                ),
+            ],
+        );
+        app.message_list.add_user_message("hi".to_owned());
+        app.pending_turn = true;
+        app.turn_start = Some(std::time::Instant::now());
+        if let Ok(mut lines) = app.live_lines.lock() {
+            *lines = vec!["pending reply".to_owned()];
+        }
+
+        terminal.draw(|f| app.render(f)).expect("draw");
+        let user_row = find_row(&terminal, "hi").expect("user row");
+        let preview_row = find_row(&terminal, "pending reply").expect("preview row");
+        let composer_row = find_row(&terminal, "›").expect("composer row");
+
+        assert!(row_has_background(&terminal, user_row - 1, PI_USER_MSG_BG));
+        assert!(preview_row > user_row);
+        assert!(preview_row < composer_row);
+    }
 }

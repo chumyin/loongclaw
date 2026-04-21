@@ -1,76 +1,54 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SurfaceCommandCopy {
-    pub command: &'static str,
-    pub description: &'static str,
+pub enum Language {
+    En,
+    ZhCn,
+    ZhTw,
+    Ja,
+    Ru,
 }
 
-pub const SURFACE_COMMANDS: &[SurfaceCommandCopy] = &[
-    SurfaceCommandCopy {
-        command: "/help",
-        description: "Show keyboard shortcuts and control-surface commands",
-    },
-    SurfaceCommandCopy {
-        command: "/status",
-        description: "Inspect runtime posture and continuity settings",
-    },
-    SurfaceCommandCopy {
-        command: "/history",
-        description: "Show the current transcript window",
-    },
-    SurfaceCommandCopy {
-        command: "/compact",
-        description: "Create a manual continuity checkpoint",
-    },
-    SurfaceCommandCopy {
-        command: "/sessions",
-        description: "Inspect visible sessions rooted at the current scope",
-    },
-    SurfaceCommandCopy {
-        command: "/workers",
-        description: "Inspect visible delegate worker sessions",
-    },
-    SurfaceCommandCopy {
-        command: "/review",
-        description: "Inspect the latest approval and review queue",
-    },
-    SurfaceCommandCopy {
-        command: "/mission",
-        description: "Inspect mission-control lane counts and phase state",
-    },
-    SurfaceCommandCopy {
-        command: "/exit",
-        description: "Leave interactive chat",
-    },
-];
-
-pub const STARTUP_TUTORIAL: &str = "escape interrupt · / command deck · ctrl+o compaction";
-pub const COMMAND_DECK_SECTION_TITLE: &str = "Command deck";
-pub const CONTROL_PLANE_SECTION_TITLE: &str = "Control plane";
-pub const STREAMING_SECTION_TITLE: &str = "Streaming";
-pub const STREAMING_HINT: &str =
-    "Pending turns show draft preview and tool activity inline before the final reply lands.";
-
-pub fn command_copy(command: &str) -> Option<SurfaceCommandCopy> {
-    SURFACE_COMMANDS
-        .iter()
-        .copied()
-        .find(|item| item.command == command)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PiCopy {
+    Tutorial,
+    StartupSectionMcp,
+    StartupSectionSkills,
+    StartupSectionAcp,
+    CommandDeckLabelHelp,
+    CommandDeckDescHelp,
+    CommandDeckLabelStatus,
+    CommandDeckDescStatus,
+    CommandDeckLabelHistory,
+    CommandDeckDescHistory,
+    CommandDeckLabelCompact,
+    CommandDeckDescCompact,
+    CommandDeckLabelSessions,
+    CommandDeckDescSessions,
+    CommandDeckLabelWorkers,
+    CommandDeckDescWorkers,
+    CommandDeckLabelReview,
+    CommandDeckDescReview,
+    CommandDeckLabelMission,
+    CommandDeckDescMission,
+    CommandDeckLabelExit,
+    CommandDeckDescExit,
+    CommandDeckEmpty,
+    FooterQueueHint,
+    FooterRestoreQueued,
 }
 
-pub fn command_deck_lines() -> Vec<String> {
-    ["/help", "/status", "/history", "/compact"]
-        .into_iter()
-        .filter_map(command_copy)
-        .map(|item| format!("{} · {}", item.command, item.description))
-        .collect()
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct I18nService {
+    current_lang: Language,
 }
 
-pub fn control_plane_lines() -> Vec<String> {
-    ["/sessions", "/workers", "/review", "/mission"]
-        .into_iter()
-        .filter_map(command_copy)
-        .map(|item| format!("{} · {}", item.command, item.description))
-        .collect()
+impl I18nService {
+    pub fn new(lang: Language) -> Self {
+        Self { current_lang: lang }
+    }
+
+    pub fn text(&self, key: PiCopy) -> &'static str {
+        text_for(self.current_lang, key)
+    }
 }
 
 pub fn resolve_default_language() -> Language {
@@ -83,17 +61,29 @@ pub fn resolve_default_language() -> Language {
 
     if locale.contains("zh_tw") || locale.contains("zh-hant") || locale.contains("zh_hk") {
         Language::ZhTw
-    } else if locale.contains("zh") {
+    } else if locale.contains("zh_cn") || locale.contains("zh-hans") || locale.contains("zh_sg") {
         Language::ZhCn
+    } else if locale.contains("ja") {
+        Language::Ja
+    } else if locale.contains("ru") {
+        Language::Ru
     } else {
         Language::En
     }
 }
 
+fn text_for(lang: Language, key: PiCopy) -> &'static str {
+    match lang {
+        Language::En => en_text(key),
+        Language::ZhCn => zh_cn_text(key),
+        Language::ZhTw => zh_tw_text(key),
+        Language::Ja => ja_text(key),
+        Language::Ru => ru_text(key),
+    }
+}
+
 fn en_text(key: PiCopy) -> &'static str {
     match key {
-        PiCopy::ThinkingTitle => "thinking",
-        PiCopy::ThinkingLive => "streaming reasoning + tool state",
         PiCopy::Tutorial => "escape interrupt · : deck · / commands · ctrl+o compaction",
         PiCopy::StartupSectionMcp => "MCP",
         PiCopy::StartupSectionSkills => "Skills",
@@ -114,24 +104,16 @@ fn en_text(key: PiCopy) -> &'static str {
         PiCopy::CommandDeckDescReview => "Inspect the latest approval and review queue",
         PiCopy::CommandDeckLabelMission => "mission",
         PiCopy::CommandDeckDescMission => "Inspect mission-control lane counts and phase state",
-        PiCopy::CommandDeckLabelFastLane => "fast lane",
-        PiCopy::CommandDeckDescFastLane => "Summarize recent fast-lane execution batches",
-        PiCopy::CommandDeckLabelSafeLane => "safe lane",
-        PiCopy::CommandDeckDescSafeLane => "Summarize safe-lane runtime events",
-        PiCopy::CommandDeckLabelCheckpoint => "checkpoint",
-        PiCopy::CommandDeckDescCheckpoint => "Summarize durable turn finalization state",
-        PiCopy::CommandDeckLabelRepair => "repair tail",
-        PiCopy::CommandDeckDescRepair => "Repair durable turn finalization when safe",
         PiCopy::CommandDeckLabelExit => "exit",
         PiCopy::CommandDeckDescExit => "Leave interactive chat",
         PiCopy::CommandDeckEmpty => "no matching commands",
+        PiCopy::FooterQueueHint => "Tab to queue message",
+        PiCopy::FooterRestoreQueued => "to restore queued message",
     }
 }
 
 fn zh_cn_text(key: PiCopy) -> &'static str {
     match key {
-        PiCopy::ThinkingTitle => "思考中",
-        PiCopy::ThinkingLive => "实时显示推理与工具状态",
         PiCopy::Tutorial => "esc 中断 · : 命令台 · / 命令 · ctrl+o 压缩",
         PiCopy::StartupSectionMcp => "MCP",
         PiCopy::StartupSectionSkills => "技能",
@@ -152,24 +134,16 @@ fn zh_cn_text(key: PiCopy) -> &'static str {
         PiCopy::CommandDeckDescReview => "查看最新审批与审阅队列",
         PiCopy::CommandDeckLabelMission => "任务态势",
         PiCopy::CommandDeckDescMission => "查看 mission-control 分支数量与阶段状态",
-        PiCopy::CommandDeckLabelFastLane => "快速通道",
-        PiCopy::CommandDeckDescFastLane => "汇总最近的快速通道执行批次",
-        PiCopy::CommandDeckLabelSafeLane => "安全通道",
-        PiCopy::CommandDeckDescSafeLane => "汇总安全通道运行事件",
-        PiCopy::CommandDeckLabelCheckpoint => "检查点",
-        PiCopy::CommandDeckDescCheckpoint => "汇总持久化 turn 完成状态",
-        PiCopy::CommandDeckLabelRepair => "修复尾部",
-        PiCopy::CommandDeckDescRepair => "在安全时修复持久化 turn 尾部",
         PiCopy::CommandDeckLabelExit => "退出",
         PiCopy::CommandDeckDescExit => "离开交互聊天",
         PiCopy::CommandDeckEmpty => "没有匹配的命令",
+        PiCopy::FooterQueueHint => "按 Tab 将消息加入队列",
+        PiCopy::FooterRestoreQueued => "可恢复排队消息",
     }
 }
 
 fn zh_tw_text(key: PiCopy) -> &'static str {
     match key {
-        PiCopy::ThinkingTitle => "思考中",
-        PiCopy::ThinkingLive => "即時顯示推理與工具狀態",
         PiCopy::Tutorial => "esc 中斷 · : 命令台 · / 命令 · ctrl+o 壓縮",
         PiCopy::StartupSectionMcp => "MCP",
         PiCopy::StartupSectionSkills => "技能",
@@ -190,16 +164,70 @@ fn zh_tw_text(key: PiCopy) -> &'static str {
         PiCopy::CommandDeckDescReview => "查看最新核准與審閱佇列",
         PiCopy::CommandDeckLabelMission => "任務態勢",
         PiCopy::CommandDeckDescMission => "查看 mission-control 分支數量與階段狀態",
-        PiCopy::CommandDeckLabelFastLane => "快速通道",
-        PiCopy::CommandDeckDescFastLane => "彙總最近快速通道執行批次",
-        PiCopy::CommandDeckLabelSafeLane => "安全通道",
-        PiCopy::CommandDeckDescSafeLane => "彙總安全通道執行事件",
-        PiCopy::CommandDeckLabelCheckpoint => "檢查點",
-        PiCopy::CommandDeckDescCheckpoint => "彙總持久化 turn 完成狀態",
-        PiCopy::CommandDeckLabelRepair => "修復尾端",
-        PiCopy::CommandDeckDescRepair => "在安全時修復持久化 turn 尾端",
         PiCopy::CommandDeckLabelExit => "退出",
         PiCopy::CommandDeckDescExit => "離開互動聊天",
         PiCopy::CommandDeckEmpty => "沒有符合的命令",
+        PiCopy::FooterQueueHint => "按 Tab 將訊息加入佇列",
+        PiCopy::FooterRestoreQueued => "可還原排隊訊息",
+    }
+}
+
+fn ja_text(key: PiCopy) -> &'static str {
+    match key {
+        PiCopy::Tutorial => "esc 中断 · : デッキ · / コマンド · ctrl+o 圧縮",
+        PiCopy::StartupSectionMcp => "MCP",
+        PiCopy::StartupSectionSkills => "スキル",
+        PiCopy::StartupSectionAcp => "ACP",
+        PiCopy::CommandDeckLabelHelp => "ヘルプ",
+        PiCopy::CommandDeckDescHelp => "ショートカットと制御面コマンドを表示",
+        PiCopy::CommandDeckLabelStatus => "状態",
+        PiCopy::CommandDeckDescStatus => "実行姿勢と連続性設定を確認",
+        PiCopy::CommandDeckLabelHistory => "履歴",
+        PiCopy::CommandDeckDescHistory => "現在の転写ウィンドウを表示",
+        PiCopy::CommandDeckLabelCompact => "圧縮",
+        PiCopy::CommandDeckDescCompact => "手動の連続性チェックポイントを作成",
+        PiCopy::CommandDeckLabelSessions => "セッション",
+        PiCopy::CommandDeckDescSessions => "現在のスコープにぶら下がる可視セッションを確認",
+        PiCopy::CommandDeckLabelWorkers => "ワーカー",
+        PiCopy::CommandDeckDescWorkers => "可視の委譲ワーカーセッションを確認",
+        PiCopy::CommandDeckLabelReview => "レビュー",
+        PiCopy::CommandDeckDescReview => "最新の承認・レビューキューを確認",
+        PiCopy::CommandDeckLabelMission => "ミッション",
+        PiCopy::CommandDeckDescMission => "mission-control の分岐数と段階を確認",
+        PiCopy::CommandDeckLabelExit => "終了",
+        PiCopy::CommandDeckDescExit => "インタラクティブチャットを終了",
+        PiCopy::CommandDeckEmpty => "一致するコマンドがありません",
+        PiCopy::FooterQueueHint => "Tab でメッセージをキューへ",
+        PiCopy::FooterRestoreQueued => "でキュー済みメッセージを復元",
+    }
+}
+
+fn ru_text(key: PiCopy) -> &'static str {
+    match key {
+        PiCopy::Tutorial => "esc прервать · : панель · / команды · ctrl+o сжатие",
+        PiCopy::StartupSectionMcp => "MCP",
+        PiCopy::StartupSectionSkills => "Навыки",
+        PiCopy::StartupSectionAcp => "ACP",
+        PiCopy::CommandDeckLabelHelp => "помощь",
+        PiCopy::CommandDeckDescHelp => "Показать сочетания клавиш и команды панели",
+        PiCopy::CommandDeckLabelStatus => "статус",
+        PiCopy::CommandDeckDescStatus => "Проверить состояние рантайма и непрерывности",
+        PiCopy::CommandDeckLabelHistory => "история",
+        PiCopy::CommandDeckDescHistory => "Показать текущее окно транскрипта",
+        PiCopy::CommandDeckLabelCompact => "сжать",
+        PiCopy::CommandDeckDescCompact => "Создать ручную точку непрерывности",
+        PiCopy::CommandDeckLabelSessions => "сессии",
+        PiCopy::CommandDeckDescSessions => "Показать видимые сессии в текущей области",
+        PiCopy::CommandDeckLabelWorkers => "воркеры",
+        PiCopy::CommandDeckDescWorkers => "Показать видимые сессии делегированных воркеров",
+        PiCopy::CommandDeckLabelReview => "ревью",
+        PiCopy::CommandDeckDescReview => "Показать очередь последних одобрений и ревью",
+        PiCopy::CommandDeckLabelMission => "миссия",
+        PiCopy::CommandDeckDescMission => "Показать количество веток mission-control и фазу",
+        PiCopy::CommandDeckLabelExit => "выход",
+        PiCopy::CommandDeckDescExit => "Выйти из чата",
+        PiCopy::CommandDeckEmpty => "нет подходящих команд",
+        PiCopy::FooterQueueHint => "Tab — поставить сообщение в очередь",
+        PiCopy::FooterRestoreQueued => "чтобы вернуть сообщение из очереди",
     }
 }

@@ -164,7 +164,7 @@ pub fn render_brand_header(
         .into_iter()
         .map(|line| BrandLine::new(BrandLineRole::Banner, line))
         .collect::<Vec<_>>();
-    let wrap_width = width.max("LOONGCLAW".len());
+    let wrap_width = width.max(display_width("LOONGCLAW"));
     lines.extend(
         render_wrapped_text_line("", &build.render_version_line(), wrap_width)
             .into_iter()
@@ -189,9 +189,9 @@ pub fn render_compact_brand_header(
 ) -> Vec<BrandLine> {
     let brand = "LOONGCLAW";
     let version = build.render_version_line();
-    let width = width.max(brand.len());
+    let width = width.max(display_width(brand));
     let combined = format!("{brand}  {version}");
-    let mut lines = if combined.len() <= width {
+    let mut lines = if display_width(&combined) <= width {
         vec![BrandLine::new(BrandLineRole::Banner, combined)]
     } else {
         let mut compact_lines = vec![BrandLine::new(BrandLineRole::Banner, brand)];
@@ -264,6 +264,35 @@ fn resolve_render_width(terminal_width: Option<usize>, columns: Option<&str>) ->
     }
 
     parse_columns_width(columns).unwrap_or(80)
+}
+
+pub(crate) fn display_width(text: &str) -> usize {
+    text.chars().map(char_display_width).sum()
+}
+
+pub(crate) fn char_display_width(ch: char) -> usize {
+    if ch == '\n' || ch == '\r' {
+        0
+    } else if ch.is_ascii() {
+        1
+    } else if matches!(
+        ch,
+        '\u{1100}'..='\u{115F}'
+            | '\u{2329}'..='\u{232A}'
+            | '\u{2E80}'..='\u{A4CF}'
+            | '\u{AC00}'..='\u{D7A3}'
+            | '\u{F900}'..='\u{FAFF}'
+            | '\u{FE10}'..='\u{FE19}'
+            | '\u{FE30}'..='\u{FE6F}'
+            | '\u{FF00}'..='\u{FF60}'
+            | '\u{FFE0}'..='\u{FFE6}'
+            | '\u{1F300}'..='\u{1FAFF}'
+            | '\u{20000}'..='\u{3FFFD}'
+    ) {
+        2
+    } else {
+        1
+    }
 }
 
 fn parse_columns_width(columns: Option<&str>) -> Option<usize> {
@@ -392,7 +421,7 @@ fn render_wrapped_labeled_display_line(
     width: usize,
 ) -> Vec<String> {
     let labeled_prefix = format!("{prefix}{label}: ");
-    if labeled_prefix.len() <= width {
+    if display_width(&labeled_prefix) <= width {
         return render_wrapped_text_line_with_continuation(
             &labeled_prefix,
             continuation_prefix,
@@ -424,8 +453,8 @@ pub fn render_wrapped_segments(
     width: usize,
 ) -> Vec<String> {
     let width = width
-        .max(prefix.trim_end().len())
-        .max(continuation_prefix.len());
+        .max(display_width(prefix.trim_end()))
+        .max(display_width(continuation_prefix));
     let mut lines = Vec::new();
     let mut current_line = prefix.to_owned();
     let mut line_has_content = false;
@@ -438,9 +467,10 @@ pub fn render_wrapped_segments(
         let mut remaining = segment;
         loop {
             let joiner = if line_has_content { separator } else { "" };
-            let available = width.saturating_sub(current_line.len() + joiner.len());
+            let available =
+                width.saturating_sub(display_width(&current_line) + display_width(joiner));
 
-            if remaining.len() <= available {
+            if display_width(remaining) <= available {
                 current_line.push_str(joiner);
                 current_line.push_str(remaining);
                 line_has_content = true;
@@ -484,12 +514,12 @@ fn take_fitting_prefix(text: &str, max_width: usize) -> usize {
     let mut end = 0;
 
     for (index, character) in text.char_indices() {
-        let char_width = character.len_utf8();
+        let char_width = char_display_width(character);
         if used + char_width > max_width {
             break;
         }
         used += char_width;
-        end = index + char_width;
+        end = index + character.len_utf8();
     }
 
     if end == 0 {
@@ -668,7 +698,7 @@ mod tests {
         let lines = render_compact_brand_header(22, &build, Some("choose credential env"));
 
         assert!(
-            lines.iter().all(|line| line.text.len() <= 22),
+            lines.iter().all(|line| display_width(&line.text) <= 22),
             "compact brand header should respect narrow widths instead of forcing the brand and version onto one overflowing line: {lines:#?}"
         );
         assert_eq!(lines[0].text, "LOONGCLAW");
@@ -689,7 +719,7 @@ mod tests {
         );
 
         assert!(
-            lines.iter().all(|line| line.text.len() <= 18),
+            lines.iter().all(|line| display_width(&line.text) <= 18),
             "full brand header should respect narrow widths for version and subtitle lines: {lines:#?}"
         );
         assert_eq!(lines[0].text, "LOONGCLAW");
@@ -873,7 +903,7 @@ mod tests {
         );
 
         assert!(
-            lines.iter().all(|line| line.len() <= 28),
+            lines.iter().all(|line| display_width(line) <= 28),
             "shared presentation wrapping should split oversized single segments instead of overflowing the target width: {lines:#?}"
         );
         assert!(
@@ -890,7 +920,7 @@ mod tests {
             render_wrapped_display_line("- press Enter to use suggested env: OPENAI_API_KEY", 22);
 
         assert!(
-            lines.iter().all(|line| line.len() <= 22),
+            lines.iter().all(|line| display_width(line) <= 22),
             "long label prefixes should wrap instead of overflowing narrow widths: {lines:#?}"
         );
         assert_eq!(
@@ -901,5 +931,28 @@ mod tests {
                 "  OPENAI_API_KEY".to_owned(),
             ]
         );
+    }
+
+    #[test]
+    fn presentation_display_width_counts_cjk_as_wide_cells() {
+        assert_eq!(display_width("abc"), 3);
+        assert_eq!(display_width("你好"), 4);
+        assert_eq!(display_width("a你b"), 4);
+    }
+
+    #[test]
+    fn presentation_wraps_cjk_lines_by_terminal_cell_width() {
+        let lines = render_wrapped_display_line("你好你好你好", 6);
+
+        assert_eq!(lines, vec!["你好你".to_owned(), "好你好".to_owned()]);
+        assert!(lines.iter().all(|line| display_width(line) <= 6));
+    }
+
+    #[test]
+    fn presentation_wraps_mixed_cjk_and_ascii_without_overflow() {
+        let lines = render_wrapped_display_line("- 你好 abcdef 世界", 10);
+
+        assert!(lines.iter().all(|line| display_width(line) <= 10));
+        assert!(lines.first().is_some_and(|line| line.starts_with("- ")));
     }
 }

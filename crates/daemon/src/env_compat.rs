@@ -13,6 +13,10 @@ fn non_empty_env_var(name: &str) -> Option<std::ffi::OsString> {
 /// Copies deprecated `LOONGCLAW_*` env vars into their `LOONG_*` replacements
 /// and emits a deprecation warning. No-op when the new name is already set.
 pub fn make_env_compatible() {
+    make_env_compatible_with_warnings(true);
+}
+
+pub fn make_env_compatible_with_warnings(emit_warning: bool) {
     const MIGRATIONS: &[(&str, &str)] = &[("LOONG_HOME", "LOONGCLAW_HOME")];
 
     for &(new_name, old_name) in MIGRATIONS {
@@ -33,7 +37,9 @@ pub fn make_env_compatible() {
         unsafe {
             std::env::set_var(new_name, &old_value);
         }
-        tracing::warn!("{old_name} is deprecated. Set {new_name} instead.");
+        if emit_warning {
+            tracing::warn!("{old_name} is deprecated. Set {new_name} instead.");
+        }
     }
 }
 
