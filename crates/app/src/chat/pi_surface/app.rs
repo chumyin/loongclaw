@@ -122,7 +122,8 @@ impl App {
                 self.turn_start,
                 &live_lines,
                 self.spinner_seed,
-                self.pending_steers.len(),
+                &self.pending_steers,
+                &self.pending_queue,
                 size.width,
             );
             compact_pending_lines_for_height(raw_pending_lines, max_pending_height)
@@ -556,7 +557,6 @@ fn queue_pending_steer(app: &mut App, input: String) {
     if input.trim().is_empty() {
         return;
     }
-    app.message_list.add_steer_message(input.clone());
     app.pending_steers.push_back(input);
     app.focus = Focus::Composer;
 }
@@ -579,7 +579,6 @@ fn dequeue_pending_steer(app: &mut App) -> bool {
     let Some(input) = app.pending_steers.pop_back() else {
         return false;
     };
-    let _ = app.message_list.remove_latest_steer_message();
     app.composer.set_input(input);
     app.focus = Focus::Composer;
     true
@@ -1531,8 +1530,8 @@ fn pending_render_signature(app: &App) -> Option<u64> {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     focus_ring_frame(start).hash(&mut hasher);
     get_spinner_verb_with_seed(start, app.spinner_seed).hash(&mut hasher);
-    app.pending_steers.len().hash(&mut hasher);
-    app.pending_queue.len().hash(&mut hasher);
+    app.pending_steers.iter().for_each(|message| message.hash(&mut hasher));
+    app.pending_queue.iter().for_each(|message| message.hash(&mut hasher));
     for line in pending_live_lines(&app.live_lines, pending_signature_preview_budget(app)) {
         line.hash(&mut hasher);
     }
@@ -1571,10 +1570,12 @@ fn build_pending_lines(
     turn_start: Option<std::time::Instant>,
     live_lines: &[String],
     spinner_seed: u64,
-    steer_count: usize,
+    pending_steers: &VecDeque<String>,
+    pending_queue: &VecDeque<String>,
     width: u16,
 ) -> Vec<Line<'static>> {
     let start = turn_start.unwrap_or_else(std::time::Instant::now);
+    let pending_followup_count = pending_steers.len() + pending_queue.len();
     let mut spinner_spans = vec![
         Span::raw(" "),
         Span::styled(
@@ -1588,9 +1589,9 @@ fn build_pending_lines(
             Style::default().fg(PI_CYAN).add_modifier(Modifier::BOLD),
         ),
     ];
-    if steer_count > 0 {
+    if pending_followup_count > 0 {
         spinner_spans.push(Span::styled(
-            format!(" · steer ×{steer_count}"),
+            format!(" · follow-up ×{pending_followup_count}"),
             Style::default().fg(PI_GRAY),
         ));
     }
@@ -1634,8 +1635,92 @@ fn build_pending_lines(
             ]));
         }
     }
+    append_pending_input_preview_lines(
+        &mut lines,
+        pending_steers,
+        pending_queue,
+        width,
+        !live_lines.is_empty(),
+    );
     lines.push(Line::from(""));
     lines
+}
+
+fn append_pending_input_preview_lines(
+    lines: &mut Vec<Line<'static>>,
+    pending_steers: &VecDeque<String>,
+    pending_queue: &VecDeque<String>,
+    width: u16,
+    has_live_preview: bool,
+) {
+    if pending_steers.is_empty() && pending_queue.is_empty() {
+        return;
+    }
+
+    if has_live_preview || lines.last().is_some_and(|line| !line.spans.is_empty()) {
+        lines.push(Line::from(""));
+    }
+
+    let content_width = width.saturating_sub(6).max(1) as usize;
+    push_pending_input_section(
+        lines,
+        "steer queued for next reply",
+        pending_steers.iter(),
+        content_width,
+        Style::default()
+            .fg(PI_CYAN)
+            .add_modifier(Modifier::DIM | Modifier::BOLD),
+        Style::default().fg(PI_GRAY).add_modifier(Modifier::DIM),
+    );
+    if !pending_steers.is_empty() && !pending_queue.is_empty() {
+        lines.push(Line::from(""));
+    }
+    push_pending_input_section(
+        lines,
+        "queued follow-up",
+        pending_queue.iter(),
+        content_width,
+        Style::default().fg(PI_GRAY).add_modifier(Modifier::DIM | Modifier::BOLD),
+        Style::default().fg(PI_GRAY).add_modifier(Modifier::DIM | Modifier::ITALIC),
+    );
+}
+
+fn push_pending_input_section<'a>(
+    lines: &mut Vec<Line<'static>>,
+    title: &str,
+    messages: impl Iterator<Item = &'a String>,
+    content_width: usize,
+    header_style: Style,
+    message_style: Style,
+) {
+    let mut rendered_any = false;
+    for message in messages.take(3) {
+        if !rendered_any {
+            lines.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(title.to_owned(), header_style),
+            ]));
+            rendered_any = true;
+        }
+
+        let wrapped_lines =
+            crate::presentation::render_wrapped_display_line(message.as_str(), content_width);
+        let wrapped_count = wrapped_lines.len();
+        for (line_index, wrapped) in wrapped_lines.into_iter().take(3).enumerate() {
+            let prefix = if line_index == 0 { "    ↳ " } else { "      " };
+            lines.push(Line::from(vec![
+                Span::raw(prefix),
+                Span::styled(wrapped, message_style),
+            ]));
+        }
+
+        if wrapped_count > 3 {
+            lines.push(Line::from(vec![
+                Span::raw("      "),
+                Span::styled("…".to_owned(), message_style),
+            ]));
+        }
+    }
 }
 
 fn compact_pending_lines_for_height(

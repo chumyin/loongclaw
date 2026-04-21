@@ -104,28 +104,6 @@ impl MessageList {
         self.invalidate_render_cache();
     }
 
-    pub fn add_steer_message(&mut self, msg: String) {
-        self.messages.push(Message {
-            role: "Steer".to_string(),
-            contents: vec![MessageContent::Markdown(msg)],
-        });
-        self.scroll_offset = 0;
-        self.invalidate_render_cache();
-    }
-
-    pub fn remove_latest_steer_message(&mut self) -> bool {
-        if let Some(index) = self
-            .messages
-            .iter()
-            .rposition(|message| message.role == "Steer")
-        {
-            self.messages.remove(index);
-            self.invalidate_render_cache();
-            return true;
-        }
-        false
-    }
-
     pub fn add_assistant_message(&mut self, msg: String) {
         let contents = build_assistant_contents(&msg);
         self.messages.push(Message {
@@ -271,21 +249,9 @@ impl MessageList {
                     }
                     MessageContent::Markdown(md) => {
                         let is_user = msg.role == "You";
-                        let is_steer = msg.role == "Steer";
                         let md_lines = markdown::render_markdown_to_lines(md);
 
-                        if is_user || is_steer {
-                            if is_steer {
-                                text_lines.push(Line::from(vec![
-                                    Span::raw("  "),
-                                    Span::styled(
-                                        "steer",
-                                        Style::default()
-                                            .fg(PI_CYAN)
-                                            .add_modifier(Modifier::DIM | Modifier::BOLD),
-                                    ),
-                                ]));
-                            }
+                        if is_user {
                             let mut padding =
                                 Line::from(vec![Span::raw(" ".repeat(width as usize))]);
                             for span in &mut padding.spans {
@@ -603,7 +569,7 @@ fn normalize_rendered_system_line(line: &str) -> Option<String> {
 
 fn content_renders_colored_block(role: &str, content: &MessageContent) -> bool {
     match content {
-        MessageContent::Markdown(_) => matches!(role, "You" | "Steer"),
+        MessageContent::Markdown(_) => role == "You",
         MessageContent::Diff { .. }
         | MessageContent::ToolCall { .. }
         | MessageContent::Error { .. }
@@ -1817,43 +1783,6 @@ mod tests {
             Some(MessageContent::Image { alt, url })
                 if alt == "plan" && url == "https://example.com/plan.png"
         ));
-    }
-
-    #[test]
-    fn steer_messages_render_with_steer_label() {
-        let mut list = MessageList::new();
-        list.add_steer_message("nudge this answer".to_owned());
-
-        let rendered = list.get_rendered_lines(40);
-        let flattened = rendered
-            .into_iter()
-            .map(|line| {
-                line.spans
-                    .into_iter()
-                    .map(|span| span.content.to_string())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        assert!(flattened.contains("steer"));
-        assert!(flattened.contains("nudge this answer"));
-    }
-
-    #[test]
-    fn remove_latest_steer_message_only_removes_steer_tail() {
-        let mut list = MessageList::new();
-        list.add_user_message("first".to_owned());
-        list.add_steer_message("queued-1".to_owned());
-        list.add_steer_message("queued-2".to_owned());
-
-        assert!(list.remove_latest_steer_message());
-        let roles = list
-            .messages
-            .iter()
-            .map(|message| message.role.as_str())
-            .collect::<Vec<_>>();
-        assert_eq!(roles, vec!["You", "Steer"]);
     }
 
     #[test]
