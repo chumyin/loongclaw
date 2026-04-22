@@ -1492,13 +1492,15 @@ fn build_cli_chat_live_tool_section(
 #[cfg(test)]
 mod tests {
     use super::{
-        CliChatLiveOutputView, CliChatLiveSurfaceSink, CliChatLiveSurfaceSnapshot,
-        CliChatLiveToolSnapshot, build_cli_chat_live_compact_observer_controller,
+        CliChatLiveFileChangeView, CliChatLiveOutputView, CliChatLiveSurfaceSink,
+        CliChatLiveSurfaceSnapshot, CliChatLiveToolSnapshot,
+        build_cli_chat_live_compact_observer_controller,
         render_cli_chat_live_compact_lines_with_width,
     };
     use crate::conversation::{
         ConversationTurnPhase, ConversationTurnPhaseEvent, ConversationTurnToolState, ExecutionLane,
     };
+    use crate::tools::runtime_events::ToolFileChangeKind;
     use std::sync::Arc;
     use std::sync::Mutex as StdMutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1607,6 +1609,53 @@ mod tests {
         assert!(joined.contains("↳ request") || joined.contains("query=rust"));
         assert!(!joined.contains("↳ args query=rust"));
         assert!(joined.contains("limit=5"));
+    }
+
+    #[test]
+    fn compact_render_compacts_stderr_and_file_children() {
+        let snapshot = CliChatLiveSurfaceSnapshot {
+            phase: ConversationTurnPhase::RunningTools,
+            provider_round: Some(1),
+            lane: Some(ExecutionLane::Fast),
+            tool_call_count: 1,
+            message_count: Some(3),
+            estimated_tokens: Some(900),
+            first_token_latency_ms: None,
+            draft_preview: None,
+            tools: vec![CliChatLiveToolSnapshot {
+                tool_call_id: "call-3".to_owned(),
+                name: Some("exec".to_owned()),
+                request_summary: None,
+                args: String::new(),
+                status: ConversationTurnToolState::Completed,
+                detail: Some("ok".to_owned()),
+                stdout: empty_output(),
+                stderr: CliChatLiveOutputView {
+                    text: "permission denied".to_owned(),
+                    total_bytes: 17,
+                    total_lines: 1,
+                    truncated: false,
+                },
+                file_change: Some(CliChatLiveFileChangeView {
+                    path: "src/lib.rs".to_owned(),
+                    operation: ToolFileChangeKind::Edit,
+                    added_lines: 2,
+                    removed_lines: 1,
+                    preview: None,
+                }),
+                duration_ms: Some(42),
+                exit_code: Some(0),
+            }],
+        };
+
+        let lines = render_cli_chat_live_compact_lines_with_width(&snapshot, 64);
+        let joined = lines.join("\n");
+
+        assert!(joined.contains("• Closed exec · ok"));
+        assert!(joined.contains("↳ stderr 1 lines · 17 bytes"));
+        assert!(joined.contains("permission denied"));
+        assert!(joined.contains("↳ file edit src/lib.rs (+2 / -1)"));
+        assert!(joined.contains("↳ metrics 42ms · exit=0"));
     }
 
     #[test]
