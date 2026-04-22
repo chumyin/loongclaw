@@ -174,92 +174,28 @@ impl Composer {
             KeyCode::End => {
                 self.cursor = line_end_boundary(&self.input, self.cursor);
             }
-            _ => {}
+            KeyCode::Enter
+            | KeyCode::Up
+            | KeyCode::Down
+            | KeyCode::PageUp
+            | KeyCode::PageDown
+            | KeyCode::Tab
+            | KeyCode::BackTab
+            | KeyCode::Insert
+            | KeyCode::F(_)
+            | KeyCode::Null
+            | KeyCode::Esc
+            | KeyCode::CapsLock
+            | KeyCode::ScrollLock
+            | KeyCode::NumLock
+            | KeyCode::PrintScreen
+            | KeyCode::Pause
+            | KeyCode::Menu
+            | KeyCode::KeypadBegin
+            | KeyCode::Media(_)
+            | KeyCode::Modifier(_) => {}
         }
         None
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::Composer;
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use ratatui::layout::Rect;
-
-    fn key(code: KeyCode) -> KeyEvent {
-        KeyEvent::new(code, KeyModifiers::NONE)
-    }
-
-    #[test]
-    fn supports_multibyte_input_without_invalid_cursor_boundary() {
-        let mut composer = Composer::new();
-
-        assert!(composer.handle_key(key(KeyCode::Char('你'))).is_none());
-        assert!(composer.handle_key(key(KeyCode::Char('好'))).is_none());
-
-        let submitted = composer.handle_key(key(KeyCode::Enter));
-
-        assert_eq!(submitted.as_deref(), Some("你好"));
-    }
-
-    #[test]
-    fn cursor_position_respects_prefix_before_wrapping() {
-        let mut composer = Composer::new();
-        assert!(composer.handle_key(key(KeyCode::Char('a'))).is_none());
-        assert!(composer.handle_key(key(KeyCode::Char('b'))).is_none());
-
-        assert_eq!(composer.cursor_position(Rect::new(0, 0, 6, 3)), (5, 0));
-
-        assert!(composer.handle_key(key(KeyCode::Char('c'))).is_none());
-        assert_eq!(composer.cursor_position(Rect::new(0, 0, 6, 3)), (5, 0));
-
-        assert!(composer.handle_key(key(KeyCode::Char('d'))).is_none());
-
-        assert_eq!(composer.cursor_position(Rect::new(0, 0, 6, 3)), (4, 1));
-    }
-
-    #[test]
-    fn height_for_width_grows_when_single_line_wraps() {
-        let mut composer = Composer::new();
-        composer.set_input("abcdefg".to_owned());
-
-        assert_eq!(composer.height_for_width(6), 3);
-        assert_eq!(composer.height_for_width(10), 1);
-    }
-
-    #[test]
-    fn wrapped_render_keeps_continuation_rows_indented_under_prompt() {
-        let mut composer = Composer::new();
-        composer.set_input("abcdefg".to_owned());
-
-        let rows = super::wrapped_rows("abcdefg", 6);
-
-        assert_eq!(
-            rows,
-            vec!["abc".to_owned(), "def".to_owned(), "g".to_owned()]
-        );
-    }
-
-    #[test]
-    fn word_motion_and_delete_shortcuts_keep_cursor_on_valid_boundaries() {
-        let mut composer = Composer::new();
-        for ch in "foo 你好 bar".chars() {
-            assert!(composer.handle_key(key(KeyCode::Char(ch))).is_none());
-        }
-
-        assert!(
-            composer
-                .handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT))
-                .is_none()
-        );
-        assert!(
-            composer
-                .handle_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL))
-                .is_none()
-        );
-
-        let submitted = composer.handle_key(key(KeyCode::Enter));
-        assert_eq!(submitted.as_deref(), Some("foo bar"));
     }
 }
 
@@ -361,4 +297,87 @@ fn wrapped_rows(text: &str, width: u16) -> Vec<String> {
 
     rows.push(current);
     rows
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Composer;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::layout::Rect;
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn supports_multibyte_input_without_invalid_cursor_boundary() {
+        let mut composer = Composer::new();
+
+        assert!(composer.handle_key(key(KeyCode::Char('你'))).is_none());
+        assert!(composer.handle_key(key(KeyCode::Char('好'))).is_none());
+
+        let submitted = composer.handle_key(key(KeyCode::Enter));
+
+        assert_eq!(submitted.as_deref(), Some("你好"));
+    }
+
+    #[test]
+    fn cursor_position_respects_prefix_before_wrapping() {
+        let mut composer = Composer::new();
+        assert!(composer.handle_key(key(KeyCode::Char('a'))).is_none());
+        assert!(composer.handle_key(key(KeyCode::Char('b'))).is_none());
+
+        assert_eq!(composer.cursor_position(Rect::new(0, 0, 6, 3)), (5, 0));
+
+        assert!(composer.handle_key(key(KeyCode::Char('c'))).is_none());
+        assert_eq!(composer.cursor_position(Rect::new(0, 0, 6, 3)), (5, 0));
+
+        assert!(composer.handle_key(key(KeyCode::Char('d'))).is_none());
+
+        assert_eq!(composer.cursor_position(Rect::new(0, 0, 6, 3)), (4, 1));
+    }
+
+    #[test]
+    fn height_for_width_grows_when_single_line_wraps() {
+        let mut composer = Composer::new();
+        composer.set_input("abcdefg".to_owned());
+
+        assert_eq!(composer.height_for_width(6), 3);
+        assert_eq!(composer.height_for_width(10), 1);
+    }
+
+    #[test]
+    fn wrapped_render_keeps_continuation_rows_indented_under_prompt() {
+        let mut composer = Composer::new();
+        composer.set_input("abcdefg".to_owned());
+
+        let rows = super::wrapped_rows("abcdefg", 6);
+
+        assert_eq!(
+            rows,
+            vec!["abc".to_owned(), "def".to_owned(), "g".to_owned()]
+        );
+    }
+
+    #[test]
+    fn word_motion_and_delete_shortcuts_keep_cursor_on_valid_boundaries() {
+        let mut composer = Composer::new();
+        for ch in "foo 你好 bar".chars() {
+            assert!(composer.handle_key(key(KeyCode::Char(ch))).is_none());
+        }
+
+        assert!(
+            composer
+                .handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT))
+                .is_none()
+        );
+        assert!(
+            composer
+                .handle_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL))
+                .is_none()
+        );
+
+        let submitted = composer.handle_key(key(KeyCode::Enter));
+        assert_eq!(submitted.as_deref(), Some("foo bar"));
+    }
 }

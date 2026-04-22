@@ -111,7 +111,7 @@ pub fn render_markdown_to_lines(md: &str) -> Vec<Line<'static>> {
                     HeadingLevel::H1 => "# ",
                     HeadingLevel::H2 => "## ",
                     HeadingLevel::H3 => "### ",
-                    _ => "#### ",
+                    HeadingLevel::H4 | HeadingLevel::H5 | HeadingLevel::H6 => "#### ",
                 };
                 current_spans.push(Span::styled(
                     prefix.to_string(),
@@ -184,7 +184,15 @@ pub fn render_markdown_to_lines(md: &str) -> Vec<Line<'static>> {
                 }
                 lines.push(Line::from(""));
             }
-            _ => {}
+            Event::Start(_)
+            | Event::End(_)
+            | Event::InlineMath(_)
+            | Event::DisplayMath(_)
+            | Event::Html(_)
+            | Event::InlineHtml(_)
+            | Event::FootnoteReference(_)
+            | Event::Rule
+            | Event::TaskListMarker(_) => {}
         }
     }
 

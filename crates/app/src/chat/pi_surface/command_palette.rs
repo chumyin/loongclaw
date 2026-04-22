@@ -141,7 +141,7 @@ impl CommandPalette {
         self.sync_scroll(selected, filtered.len());
         let start = self.scroll_offset.min(filtered.len().saturating_sub(1));
         let end = (start + visible_rows).min(filtered.len());
-        let visible = &filtered[start..end];
+        let visible = filtered.get(start..end).unwrap_or(&[]);
 
         let label_width = filtered
             .iter()
@@ -300,7 +300,23 @@ impl CommandPalette {
                 self.scroll_offset = 0;
                 None
             }
-            _ => None,
+            KeyCode::Left
+            | KeyCode::Right
+            | KeyCode::Tab
+            | KeyCode::BackTab
+            | KeyCode::Delete
+            | KeyCode::Insert
+            | KeyCode::F(_)
+            | KeyCode::Null
+            | KeyCode::CapsLock
+            | KeyCode::ScrollLock
+            | KeyCode::NumLock
+            | KeyCode::PrintScreen
+            | KeyCode::Pause
+            | KeyCode::Menu
+            | KeyCode::KeypadBegin
+            | KeyCode::Media(_)
+            | KeyCode::Modifier(_) => None,
         }
     }
 

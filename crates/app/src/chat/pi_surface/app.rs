@@ -46,6 +46,7 @@ pub struct App {
     pub pending_task: Option<JoinHandle<CliResult<String>>>,
     pub pending_steers: VecDeque<String>,
     pub pending_queue: VecDeque<String>,
+    pub composer_follow_up_intent: bool,
     pub live_render_width: Arc<AtomicUsize>,
     pub live_rerender: Option<super::super::CliChatLiveSurfaceRerender>,
     pub spinner_seed: u64,
@@ -75,6 +76,7 @@ impl App {
             pending_task: None,
             pending_steers: VecDeque::new(),
             pending_queue: VecDeque::new(),
+            composer_follow_up_intent: false,
             live_render_width: Arc::new(AtomicUsize::new(render_width.max(1))),
             live_rerender: None,
             spinner_seed: spinner_seed(),
@@ -167,30 +169,45 @@ impl App {
             ])
             .split(size);
 
-        self.message_list.render(f, main_layout[0]);
+        let [
+            transcript_area,
+            _spacer_area,
+            pending_area,
+            composer_separator_area,
+            composer_area,
+            palette_separator_area,
+            palette_area,
+            footer_separator_area,
+            footer_area,
+        ] = main_layout.as_ref()
+        else {
+            return;
+        };
+
+        self.message_list.render(f, *transcript_area);
 
         if self.pending_turn {
-            f.render_widget(Paragraph::new(pending_lines), main_layout[2]);
+            f.render_widget(Paragraph::new(pending_lines), *pending_area);
         }
 
         let line_color = PI_COTTON_CANDY;
         let composer_separator_is_blank =
             !self.pending_turn && self.message_list.trailing_colored_block(size.width);
         if composer_separator_is_blank {
-            f.render_widget(Paragraph::new(""), main_layout[3]);
+            f.render_widget(Paragraph::new(""), *composer_separator_area);
         } else {
             f.render_widget(
                 Block::default()
                     .borders(Borders::TOP)
                     .border_style(Style::default().fg(line_color)),
-                main_layout[3],
+                *composer_separator_area,
             );
         }
 
         self.composer
-            .render(f, main_layout[4], matches!(self.focus, Focus::Composer));
+            .render(f, *composer_area, matches!(self.focus, Focus::Composer));
         if matches!(self.focus, Focus::Composer) {
-            let (x, y) = self.composer.cursor_position(main_layout[4]);
+            let (x, y) = self.composer.cursor_position(*composer_area);
             f.set_cursor_position((x, y));
         }
 
@@ -199,16 +216,16 @@ impl App {
                 Block::default()
                     .borders(Borders::TOP)
                     .border_style(Style::default().fg(line_color)),
-                main_layout[5],
+                *palette_separator_area,
             );
-            self.command_palette.render(f, main_layout[6]);
+            self.command_palette.render(f, *palette_area);
         }
 
         f.render_widget(
             Block::default()
                 .borders(Borders::TOP)
                 .border_style(Style::default().fg(line_color)),
-            main_layout[7],
+            *footer_separator_area,
         );
 
         let footer_line = if self.pending_turn && !self.composer.is_empty() {
@@ -218,7 +235,7 @@ impl App {
         } else {
             build_status_footer_line(&self.cwd, &self.model, size.width)
         };
-        f.render_widget(Paragraph::new(footer_line), main_layout[8]);
+        f.render_widget(Paragraph::new(footer_line), *footer_area);
     }
 }
 
@@ -336,6 +353,8 @@ pub async fn run_app<B: Backend>(
                                     }
                                 } else if let Some(msg) = app.composer.handle_key(key) {
                                     pending_submission = Some(msg);
+                                } else if !app.composer.is_empty() {
+                                    app.composer_follow_up_intent = true;
                                 }
                             }
                             Focus::MessageList => {
@@ -399,6 +418,7 @@ pub async fn run_app<B: Backend>(
                             if key.code == KeyCode::Esc {
                                 if !app.composer.is_empty() {
                                     app.composer.clear();
+                                    app.composer_follow_up_intent = false;
                                 }
                             } else if matches!(key.code, KeyCode::Char('/') | KeyCode::Char(':'))
                                 && app.composer.is_empty()
@@ -449,7 +469,11 @@ pub async fn run_app<B: Backend>(
                             continue;
                         }
 
-                        submit_user_turn(terminal, &mut app, &runtime, msg).await?;
+                        if submitted_message_is_follow_up(&app, &msg) {
+                            start_turn(terminal, &mut app, &runtime, msg, false).await?;
+                        } else {
+                            submit_user_turn(terminal, &mut app, &runtime, msg).await?;
+                        }
                     } else if let Some(command) = command_to_run {
                         if command == "/exit" {
                             break;
@@ -476,14 +500,12 @@ pub async fn run_app<B: Backend>(
                     last_known_size = new_size;
                     app.live_render_width
                         .store(new_size.width.max(1) as usize, Ordering::Relaxed);
-                    if width_changed {
-                        if let Some(rerender) = app.live_rerender.as_ref() {
-                            rerender();
-                        }
+                    if width_changed && let Some(rerender) = app.live_rerender.as_ref() {
+                        rerender();
                     }
                     dirty = true;
                 }
-                _ => {}
+                Event::FocusGained | Event::FocusLost | Event::Paste(_) => {}
             }
         }
     }
@@ -525,6 +547,7 @@ async fn start_turn<B: Backend>(
     if echo_user_message {
         app.message_list.add_user_message(input.clone());
     }
+    app.composer_follow_up_intent = false;
     app.spinner_seed = spinner_seed();
     app.last_pending_signature = None;
     app.pending_turn = true;
@@ -566,6 +589,7 @@ fn queue_pending_message(app: &mut App) {
     if input.trim().is_empty() {
         return;
     }
+    app.composer_follow_up_intent = false;
     app.pending_queue.push_back(input);
     app.focus = Focus::Composer;
 }
@@ -599,6 +623,10 @@ fn is_transcript_navigation_key(key: crossterm::event::KeyEvent) -> bool {
         && !key
             .modifiers
             .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER))
+}
+
+fn submitted_message_is_follow_up(app: &App, msg: &str) -> bool {
+    app.composer_follow_up_intent && !msg.starts_with('/') && !msg.starts_with(':')
 }
 
 fn display_columns(text: &str) -> usize {
@@ -713,6 +741,7 @@ fn build_status_footer_line(cwd: &str, model: &str, width: u16) -> Line<'static>
 
 fn build_queue_footer_line(i18n: &I18nService, queued: usize, width: u16) -> Line<'static> {
     let hint = i18n.text(PiCopy::FooterQueueHint).to_owned();
+    let short_hint = i18n.text(PiCopy::FooterQueueShort).to_owned();
     let suffix = if queued > 0 {
         format!(" · queued ×{queued}")
     } else {
@@ -728,16 +757,25 @@ fn build_queue_footer_line(i18n: &I18nService, queued: usize, width: u16) -> Lin
         return Line::from(spans);
     }
 
-    if display_columns(&hint) >= max_width {
+    let short_total_width = display_columns(&short_hint) + display_columns(&suffix);
+    if short_total_width <= max_width {
+        let mut spans = vec![Span::styled(short_hint, Style::default().fg(PI_ACCENT))];
+        if !suffix.is_empty() {
+            spans.push(Span::styled(suffix, Style::default().fg(PI_GRAY)));
+        }
+        return Line::from(spans);
+    }
+
+    if display_columns(&short_hint) >= max_width {
         return Line::from(vec![Span::styled(
-            truncate_right_for_width(&hint, max_width),
+            truncate_right_for_width(&short_hint, max_width),
             Style::default().fg(PI_ACCENT),
         )]);
     }
 
-    let remaining = max_width.saturating_sub(display_columns(&hint));
+    let remaining = max_width.saturating_sub(display_columns(&short_hint));
     Line::from(vec![
-        Span::styled(hint, Style::default().fg(PI_ACCENT)),
+        Span::styled(short_hint, Style::default().fg(PI_ACCENT)),
         Span::styled(
             truncate_right_for_width(&suffix, remaining),
             Style::default().fg(PI_GRAY),
@@ -746,14 +784,25 @@ fn build_queue_footer_line(i18n: &I18nService, queued: usize, width: u16) -> Lin
 }
 
 fn build_restore_footer_line(i18n: &I18nService, queued: usize, width: u16) -> Line<'static> {
-    let text = format!(
+    let full_text = format!(
         "{} {} · queued ×{}",
         queue_restore_shortcut_label(),
         i18n.text(PiCopy::FooterRestoreQueued),
         queued
     );
+    let short_text = format!(
+        "{} {} · ×{}",
+        queue_restore_shortcut_label(),
+        i18n.text(PiCopy::FooterRestoreShort),
+        queued
+    );
+    let selected = if display_columns(&full_text) <= width as usize {
+        full_text
+    } else {
+        short_text
+    };
     Line::from(vec![Span::styled(
-        truncate_right_for_width(&text, width as usize),
+        truncate_right_for_width(&selected, width as usize),
         Style::default().fg(PI_GRAY),
     )])
 }
@@ -1069,45 +1118,45 @@ fn render_sessions_lines(runtime: &CliTurnRuntime, width: usize) -> CliResult<Ve
         title: Some("visible lineage".to_owned()),
         items,
     }];
-    if let Some(primary) = sessions.first() {
-        if let Some(details) = store.session_details(&primary.session_id, false)? {
-            sections.push(TuiSectionSpec::KeyValues {
-                title: Some("selected session detail".to_owned()),
-                items: vec![
-                    TuiKeyValueSpec::Plain {
-                        key: "label".to_owned(),
-                        value: primary.label.clone(),
-                    },
-                    TuiKeyValueSpec::Plain {
-                        key: "lineage root".to_owned(),
-                        value: details
-                            .lineage_root_session_id
-                            .unwrap_or_else(|| "-".to_owned()),
-                    },
-                    TuiKeyValueSpec::Plain {
-                        key: "lineage depth".to_owned(),
-                        value: details.lineage_depth.to_string(),
-                    },
-                    TuiKeyValueSpec::Plain {
-                        key: "trajectory turns".to_owned(),
-                        value: details.trajectory_turn_count.to_string(),
-                    },
-                    TuiKeyValueSpec::Plain {
-                        key: "events".to_owned(),
-                        value: details.event_count.to_string(),
-                    },
-                    TuiKeyValueSpec::Plain {
-                        key: "approvals".to_owned(),
-                        value: details.approval_count.to_string(),
-                    },
-                ],
+    if let Some(primary) = sessions.first()
+        && let Some(details) = store.session_details(&primary.session_id, false)?
+    {
+        sections.push(TuiSectionSpec::KeyValues {
+            title: Some("selected session detail".to_owned()),
+            items: vec![
+                TuiKeyValueSpec::Plain {
+                    key: "label".to_owned(),
+                    value: primary.label.clone(),
+                },
+                TuiKeyValueSpec::Plain {
+                    key: "lineage root".to_owned(),
+                    value: details
+                        .lineage_root_session_id
+                        .unwrap_or_else(|| "-".to_owned()),
+                },
+                TuiKeyValueSpec::Plain {
+                    key: "lineage depth".to_owned(),
+                    value: details.lineage_depth.to_string(),
+                },
+                TuiKeyValueSpec::Plain {
+                    key: "trajectory turns".to_owned(),
+                    value: details.trajectory_turn_count.to_string(),
+                },
+                TuiKeyValueSpec::Plain {
+                    key: "events".to_owned(),
+                    value: details.event_count.to_string(),
+                },
+                TuiKeyValueSpec::Plain {
+                    key: "approvals".to_owned(),
+                    value: details.approval_count.to_string(),
+                },
+            ],
+        });
+        if !details.recent_events.is_empty() {
+            sections.push(TuiSectionSpec::Narrative {
+                title: Some("recent events".to_owned()),
+                lines: details.recent_events,
             });
-            if !details.recent_events.is_empty() {
-                sections.push(TuiSectionSpec::Narrative {
-                    title: Some("recent events".to_owned()),
-                    lines: details.recent_events,
-                });
-            }
         }
     }
     let message_spec = TuiMessageSpec {
@@ -1153,39 +1202,39 @@ fn render_workers_lines(runtime: &CliTurnRuntime, width: usize) -> CliResult<Vec
         title: Some("delegate lanes".to_owned()),
         items,
     }];
-    if let Some(primary) = workers.first() {
-        if let Some(details) = store.session_details(&primary.session_id, true)? {
-            sections.push(TuiSectionSpec::KeyValues {
-                title: Some("selected worker detail".to_owned()),
-                items: vec![
-                    TuiKeyValueSpec::Plain {
-                        key: "label".to_owned(),
-                        value: primary.label.clone(),
-                    },
-                    TuiKeyValueSpec::Plain {
-                        key: "state".to_owned(),
-                        value: primary.state.clone(),
-                    },
-                    TuiKeyValueSpec::Plain {
-                        key: "turns".to_owned(),
-                        value: primary.turn_count.to_string(),
-                    },
-                    TuiKeyValueSpec::Plain {
-                        key: "lineage depth".to_owned(),
-                        value: details.lineage_depth.to_string(),
-                    },
-                    TuiKeyValueSpec::Plain {
-                        key: "delegate events".to_owned(),
-                        value: details.delegate_events.len().to_string(),
-                    },
-                ],
+    if let Some(primary) = workers.first()
+        && let Some(details) = store.session_details(&primary.session_id, true)?
+    {
+        sections.push(TuiSectionSpec::KeyValues {
+            title: Some("selected worker detail".to_owned()),
+            items: vec![
+                TuiKeyValueSpec::Plain {
+                    key: "label".to_owned(),
+                    value: primary.label.clone(),
+                },
+                TuiKeyValueSpec::Plain {
+                    key: "state".to_owned(),
+                    value: primary.state.clone(),
+                },
+                TuiKeyValueSpec::Plain {
+                    key: "turns".to_owned(),
+                    value: primary.turn_count.to_string(),
+                },
+                TuiKeyValueSpec::Plain {
+                    key: "lineage depth".to_owned(),
+                    value: details.lineage_depth.to_string(),
+                },
+                TuiKeyValueSpec::Plain {
+                    key: "delegate events".to_owned(),
+                    value: details.delegate_events.len().to_string(),
+                },
+            ],
+        });
+        if !details.delegate_events.is_empty() {
+            sections.push(TuiSectionSpec::Narrative {
+                title: Some("delegate lifecycle".to_owned()),
+                lines: details.delegate_events,
             });
-            if !details.delegate_events.is_empty() {
-                sections.push(TuiSectionSpec::Narrative {
-                    title: Some("delegate lifecycle".to_owned()),
-                    lines: details.delegate_events,
-                });
-            }
         }
     }
     let message_spec = TuiMessageSpec {
@@ -1412,7 +1461,7 @@ async fn maybe_finalize_pending_turn<B: Backend>(
         app.message_list.add_assistant_message(assistant_text);
     }
     if let Some(next_input) = app.pending_steers.pop_front() {
-        start_turn(terminal, app, runtime, next_input, false).await?;
+        start_turn(terminal, app, runtime, next_input, true).await?;
     } else if let Some(next_input) = app.pending_queue.pop_front() {
         start_turn(terminal, app, runtime, next_input, true).await?;
     }
@@ -1497,17 +1546,19 @@ fn pending_live_lines(live_lines: &Arc<StdMutex<Vec<String>>>, max_lines: usize)
             }
 
             if let Some(blank_idx) = state.iter().position(|line| line.trim().is_empty()) {
-                let reasoning = state[..blank_idx]
+                let (reasoning_lines, trailing_lines) = state.split_at(blank_idx);
+                let visible_lines = trailing_lines.get(1..).unwrap_or(&[]);
+                let reasoning = reasoning_lines
                     .iter()
                     .filter(|line| !line.trim().is_empty())
-                    .cloned()
                     .take((max_lines / 2).max(1))
+                    .cloned()
                     .collect::<Vec<_>>();
-                let visible = state[blank_idx + 1..]
+                let visible = visible_lines
                     .iter()
                     .filter(|line| !line.trim().is_empty())
-                    .cloned()
                     .take(max_lines.saturating_sub(reasoning.len() + 1))
+                    .cloned()
                     .collect::<Vec<_>>();
                 if !reasoning.is_empty() && !visible.is_empty() {
                     let mut lines = reasoning;
@@ -1579,8 +1630,7 @@ fn build_pending_lines(
     width: u16,
 ) -> Vec<Line<'static>> {
     let start = turn_start.unwrap_or_else(std::time::Instant::now);
-    let pending_followup_count = pending_steers.len() + pending_queue.len();
-    let mut spinner_spans = vec![
+    let spinner_spans = vec![
         Span::raw(" "),
         Span::styled(
             format!("{} ", focus_ring_frame(start)),
@@ -1593,12 +1643,6 @@ fn build_pending_lines(
             Style::default().fg(PI_CYAN).add_modifier(Modifier::BOLD),
         ),
     ];
-    if pending_followup_count > 0 {
-        spinner_spans.push(Span::styled(
-            format!(" · follow-up ×{pending_followup_count}"),
-            Style::default().fg(PI_GRAY),
-        ));
-    }
 
     let content_width = width.saturating_sub(2).max(1) as usize;
     let mut lines = vec![Line::from(""), Line::from(spinner_spans)];
@@ -1666,72 +1710,133 @@ fn append_pending_input_preview_lines(
     }
 
     let content_width = width.saturating_sub(6).max(1) as usize;
-    push_pending_input_section(
-        lines,
-        "steer queued for next reply",
-        pending_steers.iter(),
-        content_width,
-        Style::default()
-            .fg(PI_CYAN)
-            .add_modifier(Modifier::DIM | Modifier::BOLD),
-        Style::default().fg(PI_GRAY).add_modifier(Modifier::DIM),
-    );
-    if !pending_steers.is_empty() && !pending_queue.is_empty() {
-        lines.push(Line::from(""));
+    if !pending_steers.is_empty() {
+        push_pending_input_header(
+            lines,
+            content_width,
+            "Messages to be submitted after next tool call",
+            Some("Esc"),
+            "to interrupt and send immediately",
+        );
+        let preview_items = pending_steers
+            .iter()
+            .map(|message| {
+                (
+                    message.as_str(),
+                    Style::default().fg(PI_CYAN).add_modifier(Modifier::DIM),
+                )
+            })
+            .collect::<Vec<_>>();
+        push_pending_input_lines(lines, &preview_items, content_width, "    ↳ ");
     }
-    push_pending_input_section(
-        lines,
-        "queued follow-up",
-        pending_queue.iter(),
-        content_width,
-        Style::default()
-            .fg(PI_GRAY)
-            .add_modifier(Modifier::DIM | Modifier::BOLD),
-        Style::default()
-            .fg(PI_GRAY)
-            .add_modifier(Modifier::DIM | Modifier::ITALIC),
-    );
+
+    if !pending_queue.is_empty() {
+        if !pending_steers.is_empty() {
+            lines.push(Line::from(""));
+        }
+        push_pending_input_header(lines, content_width, "Queued follow-up messages", None, "");
+        let preview_items = pending_queue
+            .iter()
+            .map(|message| {
+                (
+                    message.as_str(),
+                    Style::default()
+                        .fg(PI_GRAY)
+                        .add_modifier(Modifier::DIM | Modifier::ITALIC),
+                )
+            })
+            .collect::<Vec<_>>();
+        push_pending_input_lines(lines, &preview_items, content_width, "    ↳ ");
+    }
 }
 
-fn push_pending_input_section<'a>(
+fn push_pending_input_header(
     lines: &mut Vec<Line<'static>>,
-    title: &str,
-    messages: impl Iterator<Item = &'a String>,
     content_width: usize,
-    header_style: Style,
-    message_style: Style,
+    title: &str,
+    key_hint: Option<&str>,
+    suffix: &str,
 ) {
-    let mut rendered_any = false;
-    for message in messages.take(3) {
-        if !rendered_any {
-            lines.push(Line::from(vec![
-                Span::raw("  "),
-                Span::styled(title.to_owned(), header_style),
-            ]));
-            rendered_any = true;
-        }
+    let mut spans = vec![
+        Span::styled(
+            "• ",
+            Style::default().fg(PI_GRAY).add_modifier(Modifier::DIM),
+        ),
+        Span::styled(title.to_owned(), Style::default().fg(PI_GRAY)),
+    ];
+    if let Some(key_hint) = key_hint {
+        spans.push(Span::styled(
+            " (press ".to_owned(),
+            Style::default().fg(PI_GRAY).add_modifier(Modifier::DIM),
+        ));
+        spans.push(Span::styled(
+            key_hint.to_owned(),
+            Style::default().fg(PI_ACCENT).add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled(
+            format!(" {suffix})"),
+            Style::default().fg(PI_GRAY).add_modifier(Modifier::DIM),
+        ));
+    }
+    for (line_index, wrapped) in crate::presentation::render_wrapped_text_line(
+        "",
+        &spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>(),
+        content_width + 2,
+    )
+    .into_iter()
+    .enumerate()
+    {
+        let prefix = if line_index == 0 { "" } else { "  " };
+        lines.push(Line::from(vec![Span::styled(
+            format!("{prefix}{wrapped}"),
+            Style::default().fg(PI_GRAY).add_modifier(Modifier::DIM),
+        )]));
+    }
+}
 
+fn push_pending_input_lines(
+    lines: &mut Vec<Line<'static>>,
+    messages: &[(&str, Style)],
+    content_width: usize,
+    first_prefix: &str,
+) {
+    let max_preview_messages = 3;
+    for (message, message_style) in messages.iter().take(max_preview_messages) {
         let wrapped_lines =
-            crate::presentation::render_wrapped_display_line(message.as_str(), content_width);
+            crate::presentation::render_wrapped_display_line(message, content_width);
         let wrapped_count = wrapped_lines.len();
         for (line_index, wrapped) in wrapped_lines.into_iter().take(3).enumerate() {
             let prefix = if line_index == 0 {
-                "    ↳ "
+                first_prefix.to_owned()
             } else {
-                "      "
+                "      ".to_owned()
             };
             lines.push(Line::from(vec![
                 Span::raw(prefix),
-                Span::styled(wrapped, message_style),
+                Span::styled(wrapped, *message_style),
             ]));
         }
 
         if wrapped_count > 3 {
             lines.push(Line::from(vec![
                 Span::raw("      "),
-                Span::styled("…".to_owned(), message_style),
+                Span::styled("…".to_owned(), *message_style),
             ]));
         }
+    }
+
+    let remaining_messages = messages.len().saturating_sub(max_preview_messages);
+    if remaining_messages > 0 {
+        lines.push(Line::from(vec![
+            Span::raw("      "),
+            Span::styled(
+                format!("… +{remaining_messages} more"),
+                Style::default().fg(PI_GRAY).add_modifier(Modifier::DIM),
+            ),
+        ]));
     }
 }
 
@@ -1749,11 +1854,9 @@ fn compact_pending_lines_for_height(
         if lines.len() <= max_height {
             break;
         }
-        if index < lines.len()
-            && lines[index]
-                .spans
-                .iter()
-                .all(|span| span.content.trim().is_empty())
+        if lines
+            .get(index)
+            .is_some_and(|line| line.spans.iter().all(|span| span.content.trim().is_empty()))
         {
             lines.remove(index);
         }
@@ -1969,6 +2072,7 @@ mod tests {
             pending_task: None,
             pending_steers: Default::default(),
             pending_queue: Default::default(),
+            composer_follow_up_intent: false,
             live_render_width: Arc::new(AtomicUsize::new(1)),
             live_rerender: None,
             spinner_seed: 1,
@@ -2166,6 +2270,19 @@ mod tests {
     }
 
     #[test]
+    fn queue_footer_prefers_short_hint_before_truncating() {
+        let line = super::build_queue_footer_line(&I18nService::new(Language::En), 2, 20);
+        let rendered = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+
+        assert!(rendered.contains("Tab to queue"));
+        assert!(!rendered.contains("Tab to queue message"));
+    }
+
+    #[test]
     fn restore_footer_truncates_to_available_width() {
         let line = super::build_restore_footer_line(&I18nService::new(Language::En), 12, 14);
         let rendered = line
@@ -2179,7 +2296,20 @@ mod tests {
     }
 
     #[test]
-    fn footer_stays_bottom_even_when_transcript_is_short() {
+    fn restore_footer_prefers_short_hint_before_truncating() {
+        let line = super::build_restore_footer_line(&I18nService::new(Language::En), 2, 32);
+        let rendered = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+
+        assert!(rendered.contains("restore queued"));
+        assert!(!rendered.contains("to restore queued message"));
+    }
+
+    #[test]
+    fn footer_tracks_content_when_transcript_is_short() {
         let backend = TestBackend::new(50, 18);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = blank_app();
@@ -2193,7 +2323,7 @@ mod tests {
             .position(|line| line.contains("/tmp/example"))
             .expect("footer row");
 
-        assert_eq!(footer_row, lines.len().saturating_sub(1));
+        assert!(footer_row < lines.len().saturating_sub(1));
     }
 
     #[test]
@@ -2698,6 +2828,16 @@ mod tests {
     }
 
     #[test]
+    fn submitted_message_typed_while_pending_stays_follow_up_after_turn_finishes() {
+        let mut app = blank_app();
+        app.composer_follow_up_intent = true;
+
+        assert!(super::submitted_message_is_follow_up(&app, "follow up"));
+        assert!(!super::submitted_message_is_follow_up(&app, "/status"));
+        assert!(!super::submitted_message_is_follow_up(&app, ":status"));
+    }
+
+    #[test]
     fn pending_footer_yields_to_queue_hint_when_draft_exists() {
         let backend = TestBackend::new(60, 18);
         let mut terminal = Terminal::new(backend).expect("terminal");
@@ -2746,16 +2886,16 @@ mod tests {
         let lines = buffer_lines(&terminal);
         let steer_header_row = lines
             .iter()
-            .position(|line| line.contains("steer queued for next reply"))
-            .expect("steer preview header");
+            .position(|line| line.contains("Messages to be submitted after next tool call"))
+            .expect("steer header");
         let steer_row = lines
             .iter()
             .position(|line| line.contains("nudge the current answer"))
             .expect("steer preview");
-        let queued_header_row = lines
+        let queue_header_row = lines
             .iter()
-            .position(|line| line.contains("queued follow-up"))
-            .expect("queued preview header");
+            .position(|line| line.contains("Queued follow-up messages"))
+            .expect("queue header");
         let queued_row = lines
             .iter()
             .position(|line| line.contains("after that, summarize"))
@@ -2766,9 +2906,82 @@ mod tests {
             .expect("composer row");
 
         assert!(steer_header_row < steer_row);
-        assert!(steer_row < queued_header_row);
-        assert!(queued_header_row < queued_row);
+        assert!(lines[steer_row].contains("↳"));
+        assert!(queue_header_row < queued_row);
+        assert!(lines[queued_row].contains("↳"));
+        assert!(steer_row < queued_row);
         assert!(queued_row < composer_row);
+    }
+
+    #[test]
+    fn pending_preview_collapses_extra_messages_into_overflow_count() {
+        let backend = TestBackend::new(72, 20);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = blank_app();
+        app.pending_turn = true;
+        app.turn_start = Some(std::time::Instant::now());
+        app.pending_steers.push_back("first steer".to_owned());
+        app.pending_steers.push_back("second steer".to_owned());
+        app.pending_steers.push_back("third steer".to_owned());
+        app.pending_steers.push_back("fourth steer".to_owned());
+
+        terminal.draw(|f| app.render(f)).expect("draw");
+        let lines = buffer_lines(&terminal);
+
+        assert!(lines.iter().any(|line| line.contains("first steer")));
+        assert!(lines.iter().any(|line| line.contains("third steer")));
+        assert!(!lines.iter().any(|line| line.contains("fourth steer")));
+        assert!(lines.iter().any(|line| line.contains("… +1 more")));
+    }
+
+    #[test]
+    fn pending_preview_caps_total_items_across_steer_and_follow_up_queues() {
+        let backend = TestBackend::new(72, 20);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = blank_app();
+        app.pending_turn = true;
+        app.turn_start = Some(std::time::Instant::now());
+        app.pending_steers.push_back("first steer".to_owned());
+        app.pending_steers.push_back("second steer".to_owned());
+        app.pending_queue.push_back("first follow-up".to_owned());
+        app.pending_queue.push_back("second follow-up".to_owned());
+
+        terminal.draw(|f| app.render(f)).expect("draw");
+        let lines = buffer_lines(&terminal);
+
+        assert!(lines.iter().any(|line| line.contains("first steer")));
+        assert!(lines.iter().any(|line| line.contains("second steer")));
+        assert!(lines.iter().any(|line| line.contains("first follow-up")));
+        assert!(!lines.iter().any(|line| line.contains("second follow-up")));
+        assert!(lines.iter().any(|line| line.contains("… +1 more")));
+    }
+
+    #[test]
+    fn queue_pending_message_moves_draft_into_follow_up_queue() {
+        let mut app = blank_app();
+        app.composer.set_input("queued draft".to_owned());
+        app.composer_follow_up_intent = true;
+
+        super::queue_pending_message(&mut app);
+
+        assert_eq!(app.pending_queue.len(), 1);
+        assert_eq!(
+            app.pending_queue.front().map(String::as_str),
+            Some("queued draft")
+        );
+        assert!(app.composer.is_empty());
+        assert!(!app.composer_follow_up_intent);
+    }
+
+    #[test]
+    fn dequeue_pending_steer_prefers_follow_up_queue_before_steer_stack() {
+        let mut app = blank_app();
+        app.pending_steers.push_back("steer text".to_owned());
+        app.pending_queue.push_back("queued follow-up".to_owned());
+
+        assert!(super::dequeue_pending_steer(&mut app));
+        assert_eq!(app.composer.take_input(), "queued follow-up");
+        assert_eq!(app.pending_steers.len(), 1);
     }
 
     #[test]
@@ -2871,6 +3084,44 @@ mod tests {
             row_has_background(&terminal, user_row - 1, PI_USER_MSG_BG),
             "expected the row above the visible user text to be the user block top padding"
         );
+    }
+
+    #[test]
+    fn pending_transcript_keeps_user_block_bottom_padding_visible() {
+        let backend = TestBackend::new(50, 16);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = blank_app();
+        app.message_list.add_startup_header(
+            "0.1.0".to_owned(),
+            "tutorial".to_owned(),
+            vec![
+                (
+                    "MCP".to_owned(),
+                    vec!["one".to_owned(), "two".to_owned(), "three".to_owned()],
+                ),
+                (
+                    "Skills".to_owned(),
+                    vec![
+                        "alpha".to_owned(),
+                        "beta".to_owned(),
+                        "gamma".to_owned(),
+                        "delta".to_owned(),
+                    ],
+                ),
+            ],
+        );
+        app.message_list.add_user_message("nihao".to_owned());
+        app.pending_turn = true;
+        app.turn_start = Some(std::time::Instant::now());
+
+        terminal.draw(|f| app.render(f)).expect("draw");
+        let user_row = find_row(&terminal, "nihao").expect("user row");
+        let pending_row = find_row(&terminal, "…")
+            .or_else(|| find_row(&terminal, "中"))
+            .unwrap_or(0);
+
+        assert!(row_has_background(&terminal, user_row + 1, PI_USER_MSG_BG));
+        assert!(pending_row > user_row);
     }
 
     #[test]

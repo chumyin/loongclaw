@@ -33,7 +33,6 @@ const LOONG_MAYA_BLUE_FALLBACK: Color = Color::Rgb(112, 193, 255);
 // Dynamic Backgrounds for blocks
 pub const PI_USER_MSG_BG: Color = LOONG_USER_HI_BG;
 pub const PI_TOOL_BG: Color = LOONG_TOOL_READ_BG;
-pub const PI_ERROR_BG: Color = Color::Rgb(54, 22, 28);
 pub const PI_COMPACTION_BG: Color = Color::Rgb(40, 40, 50); // Muted base for the tag to sit on
 pub const PI_COTTON_CANDY: Color = LOONG_COTTON_CANDY;
 
@@ -46,7 +45,11 @@ pub fn focus_ring_frame(start_time: Instant) -> &'static str {
         150
     };
     let frame_index = (elapsed_ms / current_interval) as usize;
-    FOCUS_RING_FRAMES[frame_index % FOCUS_RING_FRAMES.len()]
+    let selected_index = frame_index % FOCUS_RING_FRAMES.len();
+    FOCUS_RING_FRAMES
+        .get(selected_index)
+        .copied()
+        .unwrap_or(FOCUS_RING_FRAMES.first().copied().unwrap_or("·"))
 }
 
 pub fn spinner_seed() -> u64 {
@@ -72,5 +75,9 @@ pub fn get_spinner_verb_with_seed(start_time: Instant, seed: u64) -> &'static st
     h = (h ^ (h >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
     h = (h ^ (h >> 27)).wrapping_mul(0x94D049BB133111EB);
     h = h ^ (h >> 31);
-    SPINNERS_ZH_CN[h as usize % SPINNERS_ZH_CN.len()]
+    let selected_index = h as usize % SPINNERS_ZH_CN.len();
+    SPINNERS_ZH_CN
+        .get(selected_index)
+        .copied()
+        .unwrap_or(SPINNERS_ZH_CN.first().copied().unwrap_or("thinking"))
 }

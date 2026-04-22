@@ -54,8 +54,11 @@ fn redacted_command_name(command: &Commands) -> &'static str {
     command.command_kind_for_logging()
 }
 
-fn quiet_interactive_log_directive(command: &Commands, logs_explicitly_configured: bool) -> Option<&'static str> {
-    if logs_explicitly_configured {
+fn quiet_interactive_log_directive(
+    command: &Commands,
+    loongclaw_log_explicitly_configured: bool,
+) -> Option<&'static str> {
+    if loongclaw_log_explicitly_configured {
         return None;
     }
 
@@ -102,13 +105,11 @@ async fn main() {
         "default"
     };
     let command = cli.command.unwrap_or_else(resolve_default_entry_command);
-    let logs_explicitly_configured = std::env::var_os("LOONGCLAW_LOG")
+    let loongclaw_log_explicitly_configured = std::env::var_os("LOONGCLAW_LOG")
         .as_deref()
-        .is_some_and(|value| !value.is_empty())
-        || std::env::var_os("RUST_LOG")
-            .as_deref()
-            .is_some_and(|value| !value.is_empty());
-    let directive_override = quiet_interactive_log_directive(&command, logs_explicitly_configured);
+        .is_some_and(|value| !value.is_empty());
+    let directive_override =
+        quiet_interactive_log_directive(&command, loongclaw_log_explicitly_configured);
     init_tracing_with_directive_override(directive_override);
     loongclaw_daemon::make_env_compatible_with_warnings(!suppress_env_compat_warning(&command));
     check_legacy_home_migration();
@@ -1190,6 +1191,34 @@ mod tests {
         };
 
         assert_eq!(quiet_interactive_log_directive(&command, false), Some("error"));
+        assert_eq!(quiet_interactive_log_directive(&command, true), None);
+    }
+
+    #[test]
+    fn interactive_chat_still_quiets_ambient_rust_log_noise() {
+        let command = Commands::Chat {
+            config: None,
+            session: None,
+            acp: false,
+            acp_event_stream: false,
+            acp_bootstrap_mcp_server: Vec::new(),
+            acp_cwd: None,
+        };
+
+        assert_eq!(quiet_interactive_log_directive(&command, false), Some("error"));
+    }
+
+    #[test]
+    fn interactive_chat_honors_explicit_loongclaw_log_override() {
+        let command = Commands::Chat {
+            config: None,
+            session: None,
+            acp: false,
+            acp_event_stream: false,
+            acp_bootstrap_mcp_server: Vec::new(),
+            acp_cwd: None,
+        };
+
         assert_eq!(quiet_interactive_log_directive(&command, true), None);
     }
 

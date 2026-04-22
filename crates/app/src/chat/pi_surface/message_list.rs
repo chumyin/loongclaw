@@ -12,8 +12,10 @@ use ratatui::{
     widgets::Paragraph,
 };
 use serde_json::Value;
+use std::sync::LazyLock;
 
 const PROVIDER_ERROR_REPLY_PREFIX: &str = "[provider_error] ";
+static EMPTY_RENDER_LINES: LazyLock<Vec<Line<'static>>> = LazyLock::new(Vec::new);
 
 pub enum MessageContent {
     RenderedLines(Vec<String>),
@@ -175,11 +177,10 @@ impl MessageList {
                 lines,
             });
         }
-        &self
-            .render_cache
+        self.render_cache
             .as_ref()
-            .expect("render cache should be populated")
-            .lines
+            .map(|cache| &cache.lines)
+            .unwrap_or(&EMPTY_RENDER_LINES)
     }
 
     fn compute_rendered_lines(&self, width: u16) -> Vec<Line<'static>> {
@@ -383,12 +384,12 @@ impl MessageList {
         }
         let max_scroll_start = total_lines.saturating_sub(area.height as usize);
         let raw_scroll_val = max_scroll_start.saturating_sub(self.scroll_offset as usize);
-        let mut scroll_start = if !self.snap_scroll_on_next_render && !self.follow_tail {
-            self.last_scroll_start.min(max_scroll_start)
-        } else if self.snap_scroll_on_next_render {
-            adjust_scroll_start_for_message_boundary(&text_lines, raw_scroll_val)
-        } else {
+        let mut scroll_start = if self.follow_tail {
             raw_scroll_val
+        } else if !self.snap_scroll_on_next_render {
+            self.last_scroll_start.min(max_scroll_start)
+        } else {
+            adjust_scroll_start_for_message_boundary(&text_lines, raw_scroll_val)
         };
         scroll_start = scroll_start.min(max_scroll_start);
         self.last_scroll_start = scroll_start;
@@ -419,7 +420,28 @@ impl MessageList {
             }
             KeyCode::Home => self.scroll_offset = u16::MAX,
             KeyCode::End => self.scroll_offset = 0,
-            _ => {}
+            KeyCode::Backspace
+            | KeyCode::Enter
+            | KeyCode::Left
+            | KeyCode::Right
+            | KeyCode::PageUp
+            | KeyCode::Tab
+            | KeyCode::BackTab
+            | KeyCode::Delete
+            | KeyCode::Insert
+            | KeyCode::F(_)
+            | KeyCode::Char(_)
+            | KeyCode::Null
+            | KeyCode::Esc
+            | KeyCode::CapsLock
+            | KeyCode::ScrollLock
+            | KeyCode::NumLock
+            | KeyCode::PrintScreen
+            | KeyCode::Pause
+            | KeyCode::Menu
+            | KeyCode::KeypadBegin
+            | KeyCode::Media(_)
+            | KeyCode::Modifier(_) => {}
         }
         self.follow_tail = self.scroll_offset == 0;
     }
@@ -433,7 +455,12 @@ impl MessageList {
             crossterm::event::MouseEventKind::ScrollDown => {
                 self.scroll_offset = self.scroll_offset.saturating_sub(self.mouse_step)
             }
-            _ => {}
+            crossterm::event::MouseEventKind::Down(_)
+            | crossterm::event::MouseEventKind::Up(_)
+            | crossterm::event::MouseEventKind::Drag(_)
+            | crossterm::event::MouseEventKind::Moved
+            | crossterm::event::MouseEventKind::ScrollLeft
+            | crossterm::event::MouseEventKind::ScrollRight => {}
         }
         self.follow_tail = self.scroll_offset == 0;
     }
@@ -468,17 +495,17 @@ fn pad_plain(line: &mut Line, width: u16) {
 
 fn adjust_scroll_start_for_message_boundary(lines: &[Line<'static>], start: usize) -> usize {
     let adjusted_for_block = adjust_scroll_start_for_block_boundary(lines, start);
-    if adjusted_for_block == start && dominant_block_bg(&lines[start]).is_none() {
+    if adjusted_for_block == start && lines.get(start).and_then(dominant_block_bg).is_none() {
         return start;
     }
     let start = adjusted_for_block;
-    if start == 0 || start >= lines.len() || is_visual_blank_line(&lines[start]) {
+    if start == 0 || start >= lines.len() || lines.get(start).is_some_and(is_visual_blank_line) {
         return start;
     }
 
     let lookback = start.saturating_sub(4);
     for index in (lookback..start).rev() {
-        if is_visual_blank_line(&lines[index]) {
+        if lines.get(index).is_some_and(is_visual_blank_line) {
             return index + 1;
         }
     }
@@ -489,20 +516,25 @@ fn adjust_scroll_start_for_block_boundary(lines: &[Line<'static>], start: usize)
     if start == 0 || start >= lines.len() {
         return start;
     }
-    if lines[start].spans.is_empty() {
+    if lines.get(start).is_some_and(|line| line.spans.is_empty()) {
         return start;
     }
-    let Some(bg) = dominant_block_bg(&lines[start]) else {
+    let Some(bg) = lines.get(start).and_then(dominant_block_bg) else {
         return start;
     };
     let mut adjusted = start;
-    while adjusted > 0 && dominant_block_bg(&lines[adjusted - 1]) == Some(bg) {
+    while adjusted > 0 && lines.get(adjusted - 1).and_then(dominant_block_bg) == Some(bg) {
         adjusted -= 1;
     }
-    if is_visual_blank_line(&lines[adjusted]) {
+    if lines.get(adjusted).is_some_and(is_visual_blank_line) {
         let mut candidate = adjusted + 1;
-        while candidate < lines.len() && dominant_block_bg(&lines[candidate]) == Some(bg) {
-            if !is_visual_blank_line(&lines[candidate]) {
+        while candidate < lines.len()
+            && lines.get(candidate).and_then(dominant_block_bg) == Some(bg)
+        {
+            if lines
+                .get(candidate)
+                .is_some_and(|line| !is_visual_blank_line(line))
+            {
                 return candidate;
             }
             candidate += 1;
@@ -531,13 +563,6 @@ fn dominant_block_bg(line: &Line<'static>) -> Option<Color> {
         .any(|span| span.style.bg == Some(PI_TOOL_BG))
     {
         return Some(PI_TOOL_BG);
-    }
-    if line
-        .spans
-        .iter()
-        .any(|span| span.style.bg == Some(PI_ERROR_BG))
-    {
-        return Some(PI_ERROR_BG);
     }
     if line
         .spans
@@ -576,9 +601,9 @@ fn content_renders_colored_block(role: &str, content: &MessageContent) -> bool {
         MessageContent::Markdown(_) => role == "You",
         MessageContent::Diff { .. }
         | MessageContent::ToolCall { .. }
-        | MessageContent::Error { .. }
         | MessageContent::Compaction { .. } => true,
-        MessageContent::RenderedLines(_)
+        MessageContent::Error { .. }
+        | MessageContent::RenderedLines(_)
         | MessageContent::Image { .. }
         | MessageContent::StartupHeader { .. } => false,
     }
@@ -836,7 +861,12 @@ fn build_assistant_contents(text: &str) -> Vec<MessageContent> {
                     lines,
                 });
             }
-            other => {
+            other @ (TuiSectionSpec::Narrative { .. }
+            | TuiSectionSpec::KeyValues { .. }
+            | TuiSectionSpec::ActionGroup { .. }
+            | TuiSectionSpec::Checklist { .. }
+            | TuiSectionSpec::Callout { .. }
+            | TuiSectionSpec::Preformatted { .. }) => {
                 let markdown = render_section_markdown(&other);
                 append_markdown_or_image_contents(&markdown, &mut contents);
             }
@@ -908,15 +938,15 @@ fn extract_summary_details(summary: &str) -> Option<(String, Vec<String>)> {
     let mut trimmed_summary = summary.trim().to_owned();
     let mut details = Vec::new();
 
-    if let Some(start) = trimmed_summary.find(" (last_reason=") {
-        if trimmed_summary.ends_with(')') {
-            let reason =
-                trimmed_summary[start + " (last_reason=".len()..trimmed_summary.len() - 1].trim();
-            if !reason.is_empty() {
-                details.push(format!("last_reason: {reason}"));
-            }
-            trimmed_summary = trimmed_summary[..start].trim().to_owned();
+    if let Some(start) = trimmed_summary.find(" (last_reason=")
+        && trimmed_summary.ends_with(')')
+    {
+        let reason =
+            trimmed_summary[start + " (last_reason=".len()..trimmed_summary.len() - 1].trim();
+        if !reason.is_empty() {
+            details.push(format!("last_reason: {reason}"));
         }
+        trimmed_summary = trimmed_summary[..start].trim().to_owned();
     }
 
     if let Some((prefix, json_value, suffix, separator)) =
@@ -1050,39 +1080,39 @@ fn append_json_detail_lines(key: Option<&str>, json_text: &str, details: &mut Ve
 }
 
 fn append_json_value_lines(prefix: &str, value: &Value, details: &mut Vec<String>) {
-    if prefix == "provider_failover" {
-        if let Some(object) = value.as_object() {
-            if let (Some(attempt), Some(max_attempts)) = (
-                object.get("attempt").and_then(Value::as_u64),
-                object.get("max_attempts").and_then(Value::as_u64),
-            ) {
-                details.push(format!(
-                    "provider_failover.attempt: {attempt}/{max_attempts}"
-                ));
-            }
-            if let Some(reason) = object.get("reason").and_then(Value::as_str) {
-                details.push(format!("provider_failover.reason: {reason}"));
-            }
-            if let Some(stage) = object.get("stage").and_then(Value::as_str) {
-                details.push(format!("provider_failover.stage: {stage}"));
-            }
-            if let Some(model) = object.get("model").and_then(Value::as_str) {
-                details.push(format!("provider_failover.model: {model}"));
-            }
-            if let Some(status_code) = object.get("status_code").and_then(Value::as_u64) {
-                details.push(format!("provider_failover.status_code: {status_code}"));
-            }
-            for (key, value) in object {
-                if matches!(
-                    key.as_str(),
-                    "attempt" | "max_attempts" | "reason" | "stage" | "model" | "status_code"
-                ) {
-                    continue;
-                }
-                append_json_value_lines(&format!("{prefix}.{key}"), value, details);
-            }
-            return;
+    if prefix == "provider_failover"
+        && let Some(object) = value.as_object()
+    {
+        if let (Some(attempt), Some(max_attempts)) = (
+            object.get("attempt").and_then(Value::as_u64),
+            object.get("max_attempts").and_then(Value::as_u64),
+        ) {
+            details.push(format!(
+                "provider_failover.attempt: {attempt}/{max_attempts}"
+            ));
         }
+        if let Some(reason) = object.get("reason").and_then(Value::as_str) {
+            details.push(format!("provider_failover.reason: {reason}"));
+        }
+        if let Some(stage) = object.get("stage").and_then(Value::as_str) {
+            details.push(format!("provider_failover.stage: {stage}"));
+        }
+        if let Some(model) = object.get("model").and_then(Value::as_str) {
+            details.push(format!("provider_failover.model: {model}"));
+        }
+        if let Some(status_code) = object.get("status_code").and_then(Value::as_u64) {
+            details.push(format!("provider_failover.status_code: {status_code}"));
+        }
+        for (key, value) in object {
+            if matches!(
+                key.as_str(),
+                "attempt" | "max_attempts" | "reason" | "stage" | "model" | "status_code"
+            ) {
+                continue;
+            }
+            append_json_value_lines(&format!("{prefix}.{key}"), value, details);
+        }
+        return;
     }
 
     match value {
@@ -1097,7 +1127,9 @@ fn append_json_value_lines(prefix: &str, value: &Value, details: &mut Vec<String
             }
         }
         Value::String(text) => details.push(format!("{prefix}: {text}")),
-        _ => details.push(format!("{prefix}: {value}")),
+        Value::Null | Value::Bool(_) | Value::Number(_) => {
+            details.push(format!("{prefix}: {value}"))
+        }
     }
 }
 
@@ -1400,69 +1432,67 @@ fn render_error_block_lines(
     details: &[String],
     width: u16,
 ) -> Vec<Line<'static>> {
-    let mut rendered = Vec::new();
     let title_label = format!("[{title}]");
-    let inline_width = 1
-        + crate::presentation::display_width(&title_label)
-        + 1
-        + crate::presentation::display_width(summary);
+    let summary = summary.trim();
+    let details_body = details
+        .iter()
+        .map(|detail| detail.trim())
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>()
+        .join(" · ");
+
+    let mut rendered = Vec::new();
+
+    rendered.push(Line::from(""));
+
+    let inline_width = crate::presentation::display_width(&title_label)
+        + if summary.is_empty() {
+            0
+        } else {
+            1 + crate::presentation::display_width(summary)
+        };
     if inline_width <= width as usize {
-        rendered.push(styled_background_line(
-            vec![
-                Span::raw(" "),
-                Span::styled(
-                    title_label,
-                    Style::default().fg(PI_RED).add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(" "),
-                Span::styled(
-                    summary.to_owned(),
-                    Style::default().fg(ratatui::style::Color::White),
-                ),
-            ],
-            width,
-            PI_ERROR_BG,
-        ));
+        let mut spans = vec![Span::styled(
+            title_label,
+            Style::default().fg(PI_RED).add_modifier(Modifier::BOLD),
+        )];
+        if !summary.is_empty() {
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(
+                summary.to_owned(),
+                Style::default().fg(PI_RED).add_modifier(Modifier::DIM),
+            ));
+        }
+        rendered.push(Line::from(spans));
     } else {
-        rendered.push(styled_background_line(
-            vec![
-                Span::raw(" "),
-                Span::styled(
-                    title_label,
-                    Style::default().fg(PI_RED).add_modifier(Modifier::BOLD),
-                ),
-            ],
-            width,
-            PI_ERROR_BG,
-        ));
+        rendered.push(Line::from(vec![Span::styled(
+            title_label,
+            Style::default().fg(PI_RED).add_modifier(Modifier::BOLD),
+        )]));
 
-        for wrapped in crate::presentation::render_wrapped_display_line(
-            format!("  {summary}").as_str(),
-            width as usize,
-        ) {
-            rendered.push(styled_background_line(
-                vec![Span::styled(
+        if !summary.is_empty() {
+            for wrapped in crate::presentation::render_wrapped_display_line(summary, width as usize)
+            {
+                rendered.push(Line::from(vec![Span::styled(
                     wrapped,
-                    Style::default().fg(ratatui::style::Color::White),
-                )],
-                width,
-                PI_ERROR_BG,
-            ));
-        }
-    }
-    for detail in details {
-        for wrapped in crate::presentation::render_wrapped_display_line(
-            format!("  {detail}").as_str(),
-            width as usize,
-        ) {
-            rendered.push(styled_background_line(
-                vec![Span::styled(wrapped, Style::default().fg(PI_GRAY))],
-                width,
-                PI_ERROR_BG,
-            ));
+                    Style::default().fg(PI_RED).add_modifier(Modifier::DIM),
+                )]));
+            }
         }
     }
 
+    if !details_body.is_empty() {
+        for wrapped in
+            crate::presentation::render_wrapped_display_line(&details_body, width as usize)
+        {
+            rendered.push(Line::from(vec![Span::styled(
+                wrapped,
+                Style::default().fg(PI_RED).add_modifier(Modifier::DIM),
+            )]));
+        }
+    }
+
+    rendered.push(Line::from(""));
     rendered
 }
 
@@ -1604,7 +1634,7 @@ mod tests {
         MessageContent, MessageList, ToolStatus, adjust_scroll_start_for_message_boundary,
         build_assistant_contents, dominant_block_bg,
     };
-    use crate::chat::pi_surface::utils::{PI_ERROR_BG, PI_USER_MSG_BG};
+    use crate::chat::pi_surface::utils::PI_USER_MSG_BG;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
     use ratatui::{Terminal, backend::TestBackend};
 
@@ -1713,7 +1743,7 @@ mod tests {
     }
 
     #[test]
-    fn inserts_blank_spacer_between_adjacent_colored_blocks() {
+    fn provider_error_renders_without_background_block() {
         let mut list = MessageList::new();
         list.add_user_message("hi".to_owned());
         list.add_assistant_message(
@@ -1721,18 +1751,42 @@ mod tests {
         );
 
         let rendered = list.get_rendered_lines(40);
+        assert!(
+            rendered
+                .iter()
+                .filter(|line| line
+                    .spans
+                    .iter()
+                    .any(|span| span.content.contains("provider error")))
+                .all(|line| dominant_block_bg(line).is_none())
+        );
+    }
+
+    #[test]
+    fn inserts_blank_spacer_between_adjacent_colored_blocks() {
+        let mut list = MessageList::new();
+        list.add_user_message("hi".to_owned());
+        list.add_assistant_message("### Tool activity\n> [completed] read_file".to_owned());
+
+        let rendered = list.get_rendered_lines(40);
         let last_user_block_row = rendered
             .iter()
             .rposition(|line| dominant_block_bg(line) == Some(PI_USER_MSG_BG))
             .expect("user block row");
-        let first_error_block_row = rendered
+        let first_tool_block_row = rendered
             .iter()
-            .position(|line| dominant_block_bg(line) == Some(PI_ERROR_BG))
-            .expect("error block row");
+            .enumerate()
+            .find_map(|(idx, line)| {
+                line.spans
+                    .iter()
+                    .any(|span| span.content.contains("Tool activity"))
+                    .then_some(idx)
+            })
+            .expect("tool block row");
 
-        assert!(first_error_block_row > last_user_block_row);
+        assert!(first_tool_block_row > last_user_block_row);
         assert!(
-            rendered[last_user_block_row + 1..first_error_block_row]
+            rendered[last_user_block_row + 1..first_tool_block_row]
                 .iter()
                 .any(|line| line
                     .spans

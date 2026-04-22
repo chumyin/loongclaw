@@ -33,7 +33,9 @@ pub enum PiCopy {
     CommandDeckDescExit,
     CommandDeckEmpty,
     FooterQueueHint,
+    FooterQueueShort,
     FooterRestoreQueued,
+    FooterRestoreShort,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,7 +110,9 @@ fn en_text(key: PiCopy) -> &'static str {
         PiCopy::CommandDeckDescExit => "Leave interactive chat",
         PiCopy::CommandDeckEmpty => "no matching commands",
         PiCopy::FooterQueueHint => "Tab to queue message",
+        PiCopy::FooterQueueShort => "Tab to queue",
         PiCopy::FooterRestoreQueued => "to restore queued message",
+        PiCopy::FooterRestoreShort => "restore queued",
     }
 }
 
@@ -138,7 +142,9 @@ fn zh_cn_text(key: PiCopy) -> &'static str {
         PiCopy::CommandDeckDescExit => "离开交互聊天",
         PiCopy::CommandDeckEmpty => "没有匹配的命令",
         PiCopy::FooterQueueHint => "按 Tab 将消息加入队列",
+        PiCopy::FooterQueueShort => "Tab 加入队列",
         PiCopy::FooterRestoreQueued => "可恢复排队消息",
+        PiCopy::FooterRestoreShort => "恢复队列",
     }
 }
 
@@ -168,7 +174,9 @@ fn zh_tw_text(key: PiCopy) -> &'static str {
         PiCopy::CommandDeckDescExit => "離開互動聊天",
         PiCopy::CommandDeckEmpty => "沒有符合的命令",
         PiCopy::FooterQueueHint => "按 Tab 將訊息加入佇列",
+        PiCopy::FooterQueueShort => "Tab 加入佇列",
         PiCopy::FooterRestoreQueued => "可還原排隊訊息",
+        PiCopy::FooterRestoreShort => "還原佇列",
     }
 }
 
@@ -198,7 +206,9 @@ fn ja_text(key: PiCopy) -> &'static str {
         PiCopy::CommandDeckDescExit => "インタラクティブチャットを終了",
         PiCopy::CommandDeckEmpty => "一致するコマンドがありません",
         PiCopy::FooterQueueHint => "Tab でメッセージをキューへ",
+        PiCopy::FooterQueueShort => "Tab でキューへ",
         PiCopy::FooterRestoreQueued => "でキュー済みメッセージを復元",
+        PiCopy::FooterRestoreShort => "キュー復元",
     }
 }
 
@@ -228,6 +238,8 @@ fn ru_text(key: PiCopy) -> &'static str {
         PiCopy::CommandDeckDescExit => "Выйти из чата",
         PiCopy::CommandDeckEmpty => "нет подходящих команд",
         PiCopy::FooterQueueHint => "Tab — поставить сообщение в очередь",
+        PiCopy::FooterQueueShort => "Tab — в очередь",
         PiCopy::FooterRestoreQueued => "чтобы вернуть сообщение из очереди",
+        PiCopy::FooterRestoreShort => "вернуть очередь",
     }
 }

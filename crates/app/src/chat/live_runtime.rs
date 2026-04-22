@@ -237,7 +237,7 @@ impl CliChatLiveSurfaceObserver {
             if state.latest_phase_event.is_none() {
                 None
             } else {
-                build_cli_chat_live_surface_snapshot(&mut state).map(|snapshot| {
+                build_cli_chat_live_surface_snapshot(&state).map(|snapshot| {
                     let lines = match self.render_mode {
                         CliChatLiveSurfaceRenderMode::Card => {
                             render_cli_chat_live_surface_lines_with_width(
@@ -996,7 +996,9 @@ fn split_live_preview_text(preview: &str) -> (Option<String>, Option<String>) {
             continue;
         }
 
-        let ch = preview[idx..].chars().next().expect("char boundary");
+        let Some(ch) = preview[idx..].chars().next() else {
+            break;
+        };
         if in_think {
             thinking.push(ch);
         } else {

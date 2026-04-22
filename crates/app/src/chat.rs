@@ -424,6 +424,9 @@ pub async fn run_cli_ask(
 
 pub fn run_concurrent_cli_host(options: &ConcurrentCliHostOptions) -> CliResult<()> {
     reject_disabled_cli_channel(&options.config)?;
+    if options.session_id.trim().is_empty() {
+        return Err("concurrent CLI host requires an explicit session id".to_owned());
+    }
     if pi_surface::interactive_terminal_surface_supported() {
         return pi_surface::run_concurrent_cli_host_surface(options);
     }

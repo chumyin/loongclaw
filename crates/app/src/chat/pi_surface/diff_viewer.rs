@@ -10,7 +10,9 @@ pub fn render_diff_to_lines(diff: &str) -> Vec<Line<'static>> {
     let mut index = 0usize;
 
     while index < raw_lines.len() {
-        let current = raw_lines[index];
+        let Some(current) = raw_lines.get(index).copied() else {
+            break;
+        };
         if let Some(removed) = current.strip_prefix('-')
             && let Some(next) = raw_lines
                 .get(index + 1)
