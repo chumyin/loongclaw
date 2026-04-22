@@ -2456,6 +2456,34 @@ mod tests {
     }
 
     #[test]
+    fn tool_activity_burst_keeps_unique_request_children_per_called_group() {
+        let mut list = MessageList::new();
+        list.add_assistant_message(
+            "### Tool activity\n> Called demo_mcp.search\n> request: {\"query\":\"rust\",\"limit\":5}\n> Called demo_mcp.search_again\n> request: {\"query\":\"rust\",\"limit\":5}\n> file: edit src/lib.rs (+2 / -1)\n> metrics: 42ms · exit=0".to_owned(),
+        );
+
+        let rendered = list
+            .get_rendered_lines(64)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        let request_label_count = rendered
+            .iter()
+            .filter(|line| line.contains("↳ request"))
+            .count();
+
+        assert_eq!(request_label_count, 2);
+        assert!(rendered.iter().any(|line| line.contains("↳ file edit src/lib.rs")));
+        assert!(rendered.iter().any(|line| line.contains("↳ metrics 42ms · exit=0")));
+    }
+
+    #[test]
     fn provider_error_promotes_to_structured_error_block() {
         let contents = build_assistant_contents(
             "[provider_error] provider returned status 401 for model `gpt-5.4` on attempt 1/3: {\"code\":\"INVALID_API_KEY\",\"message\":\"Invalid API key\"} | provider_failover={\"reason\":\"auth_rejected\",\"stage\":\"status_failure\",\"model\":\"gpt-5.4\",\"attempt\":1,\"max_attempts\":3,\"status_code\":401}",
