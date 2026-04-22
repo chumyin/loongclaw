@@ -496,7 +496,7 @@ pub async fn run_app<B: Backend>(
                     dirty = true;
                 }
                 Event::Resize(width, height) => {
-                    let new_size = ratatui::layout::Rect::new(0, 0, width, height);
+                    let new_size = ratatui::layout::Size::new(width, height);
                     if new_size.width == last_known_size.width
                         && new_size.height == last_known_size.height
                     {
