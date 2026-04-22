@@ -320,6 +320,30 @@ impl MessageList {
                 previous_colored_block = current_colored_block;
             }
         }
+
+        for line in &mut text_lines {
+            let is_user_bg = line
+                .spans
+                .iter()
+                .any(|span| span.style.bg == Some(PI_USER_MSG_BG));
+            let is_compaction_bg = line
+                .spans
+                .iter()
+                .any(|span| span.style.bg == Some(PI_COMPACTION_BG));
+            let background = if is_user_bg {
+                Some(PI_USER_MSG_BG)
+            } else if is_compaction_bg {
+                Some(PI_COMPACTION_BG)
+            } else {
+                None
+            };
+            if let Some(background) = background {
+                pad_and_bg(line, width, background);
+            } else {
+                pad_plain(line, width);
+            }
+        }
+
         text_lines
     }
 
@@ -347,30 +371,7 @@ impl MessageList {
 
         self.page_step = page_step_for_height(area.height);
         self.mouse_step = mouse_step_for_height(area.height);
-        let mut text_lines = self.get_rendered_lines(area.width);
-
-        for line in &mut text_lines {
-            let is_user_bg = line
-                .spans
-                .iter()
-                .any(|s| s.style.bg == Some(PI_USER_MSG_BG));
-            let is_comp_bg = line
-                .spans
-                .iter()
-                .any(|s| s.style.bg == Some(PI_COMPACTION_BG));
-            let bg = if is_user_bg {
-                Some(PI_USER_MSG_BG)
-            } else if is_comp_bg {
-                Some(PI_COMPACTION_BG)
-            } else {
-                None
-            };
-            if let Some(c) = bg {
-                pad_and_bg(line, area.width, c);
-            } else {
-                pad_plain(line, area.width);
-            }
-        }
+        let text_lines = self.get_rendered_lines(area.width);
 
         let total_lines = text_lines.len();
         if total_lines == 0 {
@@ -1865,6 +1866,29 @@ mod tests {
             .cloned()
             .collect::<Vec<_>>();
         assert_eq!(non_empty, vec!["  你好"]);
+    }
+
+    #[test]
+    fn rendered_lines_are_pre_padded_for_stable_cached_redraws() {
+        let mut list = MessageList::new();
+        list.add_assistant_message("hello".to_owned());
+
+        let rendered = list
+            .get_rendered_lines(18)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        assert!(
+            rendered
+                .iter()
+                .all(|line| crate::presentation::display_width(line) == 18)
+        );
     }
 
     #[test]

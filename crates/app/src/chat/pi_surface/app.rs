@@ -256,6 +256,7 @@ pub async fn run_app<B: Backend>(
     let mut last_resize_at: Option<std::time::Instant> = None;
     let mut last_resize_requires_quiet = false;
     let mut last_resize_draw_at: Option<std::time::Instant> = None;
+    let mut pending_live_resize_rerender = false;
 
     loop {
         if maybe_finalize_pending_turn(terminal, &mut app, &runtime).await? {
@@ -277,6 +278,12 @@ pub async fn run_app<B: Backend>(
             last_resize_draw_at.map(|instant| instant.elapsed()),
         );
         if dirty && resize_ready {
+            if pending_live_resize_rerender {
+                if let Some(rerender) = app.live_rerender.as_ref() {
+                    rerender();
+                }
+                pending_live_resize_rerender = false;
+            }
             terminal
                 .draw(|f| app.render(f))
                 .map_err(|e| format!("draw error: {}", e))?;
@@ -488,10 +495,13 @@ pub async fn run_app<B: Backend>(
                     app.message_list.handle_mouse(mouse_event);
                     dirty = true;
                 }
-                Event::Resize(_, _) => {
-                    let new_size = terminal
-                        .size()
-                        .map_err(|e| format!("failed to query terminal size: {e}"))?;
+                Event::Resize(width, height) => {
+                    let new_size = ratatui::layout::Size::new(width, height);
+                    if new_size.width == last_known_size.width
+                        && new_size.height == last_known_size.height
+                    {
+                        continue;
+                    }
                     let width_changed = last_known_size.width != new_size.width;
                     last_resize_requires_quiet =
                         resize_reflow_required(last_known_size.width, new_size.width);
@@ -500,8 +510,8 @@ pub async fn run_app<B: Backend>(
                     last_known_size = new_size;
                     app.live_render_width
                         .store(new_size.width.max(1) as usize, Ordering::Relaxed);
-                    if width_changed && let Some(rerender) = app.live_rerender.as_ref() {
-                        rerender();
+                    if width_changed && app.live_rerender.is_some() {
+                        pending_live_resize_rerender = true;
                     }
                     dirty = true;
                 }
