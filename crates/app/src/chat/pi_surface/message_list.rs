@@ -1415,6 +1415,10 @@ fn render_tool_detail_lines(line: &str, width: u16) -> Vec<Line<'static>> {
         return rendered;
     }
 
+    if let Some(rendered) = render_named_activity_line(line, content_width) {
+        return rendered;
+    }
+
     if let Some(body) = line.strip_prefix("↳ ") {
         let prefix = "↳ ";
         let body = if let Some(args) = body.strip_prefix("args ") {
@@ -1459,6 +1463,22 @@ fn render_tool_detail_lines(line: &str, width: u16) -> Vec<Line<'static>> {
         return render_tool_detail_lines(&format!("↳ request {}", request.trim_start()), width);
     }
 
+    if let Some(stdout) = line.strip_prefix("stdout:") {
+        return render_tool_detail_lines(&format!("↳ stdout {}", stdout.trim_start()), width);
+    }
+
+    if let Some(stderr) = line.strip_prefix("stderr:") {
+        return render_tool_detail_lines(&format!("↳ stderr {}", stderr.trim_start()), width);
+    }
+
+    if let Some(file) = line.strip_prefix("file:") {
+        return render_tool_detail_lines(&format!("↳ file {}", file.trim_start()), width);
+    }
+
+    if let Some(metrics) = line.strip_prefix("metrics:") {
+        return render_tool_detail_lines(&format!("↳ metrics {}", metrics.trim_start()), width);
+    }
+
     if let Some((prefix, body)) = line.split_once(':') {
         let prefix = format!("{prefix}: ");
         let (prefix_style, body_style) = match prefix.trim_end() {
@@ -1468,14 +1488,6 @@ fn render_tool_detail_lines(line: &str, width: u16) -> Vec<Line<'static>> {
             ),
             "stderr:" => (
                 Style::default().fg(PI_RED).add_modifier(Modifier::BOLD),
-                Style::default().fg(PI_DARK_GRAY),
-            ),
-            "file:" => (
-                Style::default().fg(PI_CYAN).add_modifier(Modifier::BOLD),
-                Style::default().fg(PI_DARK_GRAY),
-            ),
-            "metrics:" => (
-                Style::default().fg(PI_ACCENT).add_modifier(Modifier::BOLD),
                 Style::default().fg(PI_DARK_GRAY),
             ),
             _ => (
@@ -1516,6 +1528,80 @@ fn render_tool_detail_lines(line: &str, width: u16) -> Vec<Line<'static>> {
             ])
         })
         .collect()
+}
+
+fn render_named_activity_line(line: &str, content_width: usize) -> Option<Vec<Line<'static>>> {
+    let trimmed = line.trim().strip_prefix("• ").unwrap_or(line.trim());
+
+    let (headline_label, headline_style, rest) = if let Some(rest) = trimmed.strip_prefix("Called ")
+    {
+        (
+            "Called",
+            Style::default().fg(PI_CYAN).add_modifier(Modifier::BOLD),
+            rest,
+        )
+    } else if let Some(rest) = trimmed.strip_prefix("Closed ") {
+        (
+            "Closed",
+            Style::default().fg(PI_GRAY).add_modifier(Modifier::BOLD),
+            rest,
+        )
+    } else if let Some(rest) = trimmed.strip_prefix("Approval ") {
+        (
+            "Approval",
+            Style::default().fg(PI_ACCENT).add_modifier(Modifier::BOLD),
+            rest,
+        )
+    } else if let Some(rest) = trimmed.strip_prefix("Denied ") {
+        (
+            "Denied",
+            Style::default().fg(PI_RED).add_modifier(Modifier::BOLD),
+            rest,
+        )
+    } else {
+        return None;
+    };
+
+    let display_body = if rest.contains(" (id=") || rest.contains(" - ") {
+        let (headline_body, detail_suffix) = normalize_activity_target_and_detail(rest);
+        if let Some(detail_suffix) = detail_suffix {
+            format!("{headline_body} · {detail_suffix}")
+        } else {
+            headline_body
+        }
+    } else {
+        rest.to_owned()
+    };
+
+    let body_width = content_width
+        .saturating_sub(crate::presentation::display_width(headline_label) + 3)
+        .max(1);
+    let wrapped = crate::presentation::render_wrapped_display_line(&display_body, body_width);
+
+    Some(
+        wrapped
+            .into_iter()
+            .enumerate()
+            .map(|(index, wrapped_line)| {
+                if index == 0 {
+                    Line::from(vec![
+                        Span::styled("• ", Style::default().fg(PI_GRAY)),
+                        Span::styled(format!("{headline_label} "), headline_style),
+                        Span::styled(wrapped_line, Style::default().fg(PI_DARK_GRAY)),
+                    ])
+                } else {
+                    Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(
+                            " ".repeat(crate::presentation::display_width(headline_label) + 1),
+                            headline_style,
+                        ),
+                        Span::styled(wrapped_line, Style::default().fg(PI_DARK_GRAY)),
+                    ])
+                }
+            })
+            .collect(),
+    )
 }
 
 fn render_status_activity_line(line: &str, content_width: usize) -> Option<Vec<Line<'static>>> {
@@ -1846,7 +1932,7 @@ mod tests {
             rendered
                 .iter()
                 .filter(|line| line.spans.iter().any(|span| {
-                    span.content.contains("Closed") || span.content.contains("stdout:")
+                    span.content.contains("Closed") || span.content.contains("stdout")
                 }))
                 .all(|line| dominant_block_bg(line).is_none())
         );
@@ -1965,6 +2051,36 @@ mod tests {
     }
 
     #[test]
+    fn plain_called_closed_lines_render_with_bullet_status_flow() {
+        let mut list = MessageList::new();
+        list.add_assistant_message(
+            "### Tool activity\n> Called demo_mcp.search\n> Closed demo_mcp.search · ok".to_owned(),
+        );
+
+        let rendered = list
+            .get_rendered_lines(52)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line.contains("• Called demo_mcp.search"))
+        );
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line.contains("• Closed demo_mcp.search · ok"))
+        );
+    }
+
+    #[test]
     fn tool_activity_dedupes_args_when_request_and_args_match() {
         let mut list = MessageList::new();
         list.add_assistant_message(
@@ -1987,6 +2103,36 @@ mod tests {
             !rendered
                 .iter()
                 .any(|line| line.contains("↳ args query=rust"))
+        );
+    }
+
+    #[test]
+    fn tool_activity_compacts_file_and_metrics_into_arrow_children() {
+        let mut list = MessageList::new();
+        list.add_assistant_message(
+            "### Tool activity\n> Called demo_mcp.edit\n> file: edit src/lib.rs (+2 / -1)\n> metrics: 42ms · exit=0".to_owned(),
+        );
+
+        let rendered = list
+            .get_rendered_lines(52)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line.contains("↳ file edit src/lib.rs (+2 / -1)"))
+        );
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line.contains("↳ metrics 42ms · exit=0"))
         );
     }
 

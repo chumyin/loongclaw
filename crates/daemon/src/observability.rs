@@ -65,11 +65,17 @@ pub fn debug_variant_name(value: &impl Debug) -> String {
 }
 
 pub fn init_tracing() {
+    init_tracing_with_directive_override(None);
+}
+
+pub fn init_tracing_with_directive_override(directive_override: Option<&str>) {
     let log_format = LogFormat::parse(std::env::var("LOONG_LOG_FORMAT").ok().as_deref());
-    let directive = resolved_log_directive(
-        std::env::var("LOONG_LOG").ok().as_deref(),
-        std::env::var("RUST_LOG").ok().as_deref(),
-    );
+    let directive = directive_override.map(str::to_owned).unwrap_or_else(|| {
+        resolved_log_directive(
+            std::env::var("LOONG_LOG").ok().as_deref(),
+            std::env::var("RUST_LOG").ok().as_deref(),
+        )
+    });
     let env_filter = build_env_filter(directive.as_str());
     let use_ansi = log_format != LogFormat::Json && io::stderr().is_terminal();
     let base = tracing_subscriber::fmt()
@@ -94,7 +100,8 @@ pub fn init_tracing() {
 #[cfg(test)]
 mod tests {
     use super::{
-        LogFormat, build_env_filter, debug_variant_name, resolved_log_directive, summarize_error,
+        LogFormat, build_env_filter, debug_variant_name, init_tracing_with_directive_override,
+        resolved_log_directive, summarize_error,
     };
     use crate::Commands;
 
@@ -155,5 +162,10 @@ mod tests {
 
         assert_eq!(welcome, "Welcome");
         assert_eq!(turn_run, "Turn");
+    }
+
+    #[test]
+    fn init_tracing_with_directive_override_accepts_invalid_directive_without_panicking() {
+        init_tracing_with_directive_override(Some("[broken"));
     }
 }

@@ -103,7 +103,7 @@ wat = "1"
 
 [[bin]]
 name = "loong"
-path = "src/bin/loong.rs"
+path = "src/main.rs"
 
 [[test]]
 name = "daemon_smoke"

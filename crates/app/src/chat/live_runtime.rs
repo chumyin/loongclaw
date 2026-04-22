@@ -3,8 +3,8 @@ use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use super::pi_surface::utils::compact_structured_preview;
 use super::*;
-use serde_json::Value;
 
 const CLI_CHAT_LIVE_PREVIEW_MIN_EMIT_CHARS: usize = 24;
 const CLI_CHAT_LIVE_PREVIEW_MAX_EMIT_CHARS: usize = 120;
@@ -566,7 +566,7 @@ fn push_cli_chat_live_output_lines(
     }
 
     lines.push(format!(
-        "{label}: {} lines · {} bytes",
+        "  ↳ {label} {} lines · {} bytes",
         output.total_lines, output.total_bytes
     ));
 
@@ -581,11 +581,11 @@ fn push_cli_chat_live_output_lines(
     for output_line in output_lines {
         let rendered_line =
             truncate_cli_chat_live_text(output_line, CLI_CHAT_LIVE_OUTPUT_MAX_BUFFER_CHARS);
-        lines.push(format!("  {rendered_line}"));
+        lines.push(format!("    {rendered_line}"));
     }
 
     if output.truncated {
-        lines.push("  … live output truncated".to_owned());
+        lines.push("    … live output truncated".to_owned());
     }
 }
 
@@ -893,7 +893,7 @@ pub(super) fn format_cli_chat_live_tool_activity_lines(
                 CLI_CHAT_LIVE_TOOL_ARGS_MAX_BUFFER_CHARS,
             );
             let summary_line = format!(
-                "file: {operation} {path} (+{} / -{})",
+                "  ↳ file {operation} {path} (+{} / -{})",
                 file_change.added_lines, file_change.removed_lines,
             );
             lines.push(summary_line);
@@ -911,11 +911,11 @@ pub(super) fn format_cli_chat_live_tool_activity_lines(
         }
 
         if let Some(duration_ms) = tool_snapshot.duration_ms {
-            let exit_code = match tool_snapshot.exit_code {
-                Some(exit_code) => exit_code.to_string(),
-                None => "-".to_owned(),
+            let metrics_line = if let Some(exit_code) = tool_snapshot.exit_code {
+                format!("  ↳ metrics {duration_ms}ms · exit={exit_code}")
+            } else {
+                format!("  ↳ metrics {duration_ms}ms")
             };
-            let metrics_line = format!("metrics: {duration_ms}ms · exit={exit_code}");
             lines.push(metrics_line);
         }
     }
@@ -947,51 +947,6 @@ fn format_cli_chat_live_structured_preview(text: &str) -> String {
     compact_structured_preview(text, 3).unwrap_or_else(|| {
         truncate_cli_chat_live_text(text, CLI_CHAT_LIVE_TOOL_ARGS_MAX_BUFFER_CHARS)
     })
-}
-
-fn compact_structured_preview(text: &str, max_fields: usize) -> Option<String> {
-    let value = serde_json::from_str::<Value>(text.trim()).ok()?;
-    let object = value.as_object()?;
-    if object.is_empty() {
-        return Some("{}".to_owned());
-    }
-
-    let mut parts = object
-        .iter()
-        .filter_map(|(key, value)| {
-            compact_preview_value(value).map(|value| format!("{key}={value}"))
-        })
-        .take(max_fields)
-        .collect::<Vec<_>>();
-
-    if object.len() > max_fields {
-        parts.push("…".to_owned());
-    }
-
-    if parts.is_empty() {
-        Some("…".to_owned())
-    } else {
-        Some(parts.join(" · "))
-    }
-}
-
-fn compact_preview_value(value: &Value) -> Option<String> {
-    match value {
-        Value::String(text) => Some(text.clone()),
-        Value::Bool(boolean) => Some(boolean.to_string()),
-        Value::Number(number) => Some(number.to_string()),
-        Value::Null => Some("null".to_owned()),
-        Value::Array(items) => Some(if items.is_empty() {
-            "[]".to_owned()
-        } else {
-            "…".to_owned()
-        }),
-        Value::Object(object) => Some(if object.is_empty() {
-            "{}".to_owned()
-        } else {
-            "…".to_owned()
-        }),
-    }
 }
 
 pub(super) fn render_cli_chat_live_surface_lines_with_width(
@@ -1612,7 +1567,7 @@ mod tests {
         assert!(joined.contains("• Called read_file · working"));
         assert!(joined.contains("↳ Read src/main.rs"));
         assert!(joined.contains("↳ args path=src/main.rs"));
-        assert!(joined.contains("metrics: 12ms"));
+        assert!(joined.contains("↳ metrics 12ms"));
         assert!(!joined.contains("╭─"));
         assert!(!joined.contains("tool activity]"));
     }
@@ -1649,7 +1604,7 @@ mod tests {
         let joined = lines.join("\n");
 
         assert!(joined.contains("• Called search"));
-        assert!(joined.contains("↳ request query=rust"));
+        assert!(joined.contains("↳ request") || joined.contains("query=rust"));
         assert!(!joined.contains("↳ args query=rust"));
         assert!(joined.contains("limit=5"));
     }

@@ -4980,7 +4980,7 @@ allowed_decisions: yes / auto / full / esc";
         assert!(
             final_batch
                 .iter()
-                .any(|line| line.contains("stdout: 2 lines · 22 bytes")),
+                .any(|line| line.contains("↳ stdout 2 lines · 22 bytes")),
             "runtime output should surface stdout counters: {final_batch:#?}"
         );
         assert!(
@@ -4990,13 +4990,13 @@ allowed_decisions: yes / auto / full / esc";
         assert!(
             final_batch
                 .iter()
-                .any(|line| line.contains("file: edit src/lib.rs (+2 / -1)")),
+                .any(|line| line.contains("↳ file edit src/lib.rs (+2 / -1)")),
             "runtime output should surface file change summaries: {final_batch:#?}"
         );
         assert!(
             final_batch
                 .iter()
-                .any(|line| line.contains("metrics: 42ms · exit=0")),
+                .any(|line| line.contains("↳ metrics 42ms · exit=0")),
             "runtime output should surface command metrics: {final_batch:#?}"
         );
     }
