@@ -2934,9 +2934,15 @@ mod tests {
             .iter()
             .position(|line| line.contains("root cause"))
             .expect("steer preview row");
+        let queue_header_row = lines
+            .iter()
+            .position(|line| line.contains("Queued follow-up messages"))
+            .expect("queued header row");
         let queued_row = lines
             .iter()
-            .position(|line| line.contains("summarize the diff"))
+            .enumerate()
+            .skip(queue_header_row + 1)
+            .find_map(|(idx, line)| line.contains("↳").then_some(idx))
             .expect("queued preview row");
         let composer_row = lines
             .iter()
@@ -2944,10 +2950,11 @@ mod tests {
             .expect("composer row");
         let footer_row = lines
             .iter()
-            .position(|line| line.contains("queued ×1"))
+            .position(|line| line.contains("Option + Up") || line.contains("Alt + Up"))
             .expect("restore footer row");
 
-        assert!(steer_row < queued_row);
+        assert!(steer_row < queue_header_row);
+        assert!(queue_header_row < queued_row);
         assert!(queued_row < composer_row);
         assert!(composer_row < footer_row);
         assert!(lines[queued_row].contains("↳"));
