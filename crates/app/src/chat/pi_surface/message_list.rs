@@ -1375,10 +1375,10 @@ fn render_tool_block_lines(
 fn dedupe_tool_activity_detail_lines(lines: &[String]) -> Vec<String> {
     let mut deduped = Vec::with_capacity(lines.len());
     let mut seen_structured_previews = std::collections::BTreeSet::new();
-    let mut last_normalized_line: Option<String> = None;
+    let mut last_dedupe_key: Option<String> = None;
     for line in lines {
-        let normalized_line = line.trim().to_owned();
-        if last_normalized_line.as_deref() == Some(normalized_line.as_str()) {
+        let dedupe_key = tool_activity_dedupe_key(line);
+        if last_dedupe_key.as_deref() == Some(dedupe_key.as_str()) {
             continue;
         }
 
@@ -1394,7 +1394,7 @@ fn dedupe_tool_activity_detail_lines(lines: &[String]) -> Vec<String> {
         }
 
         deduped.push(line.clone());
-        last_normalized_line = Some(normalized_line);
+        last_dedupe_key = Some(dedupe_key);
     }
 
     deduped
@@ -1409,6 +1409,55 @@ fn tool_activity_line_starts_new_group(line: &str) -> bool {
         || trimmed.starts_with("Closed ")
         || trimmed.starts_with("Approval ")
         || trimmed.starts_with("Denied ")
+}
+
+fn tool_activity_dedupe_key(line: &str) -> String {
+    if let Some(preview) = compact_tool_request_preview(line) {
+        return format!("request:{preview}");
+    }
+    if let Some(preview) = compact_tool_args_preview(line) {
+        return format!("args:{preview}");
+    }
+    if let Some((label, body)) = normalized_activity_headline(line) {
+        return format!("status:{label}:{body}");
+    }
+
+    line.trim().to_owned()
+}
+
+fn normalized_activity_headline(line: &str) -> Option<(String, String)> {
+    let trimmed = line.trim().strip_prefix("• ").unwrap_or(line.trim());
+
+    let (label, rest) = if let Some(status) = trimmed.strip_prefix('[') {
+        let (status, rest) = status.split_once("] ")?;
+        let label = match status {
+            "running" | "pending" => "Called",
+            "completed" | "failed" | "interrupted" => "Closed",
+            "needs_approval" => "Approval",
+            "denied" => "Denied",
+            _ => return None,
+        };
+        (label, rest)
+    } else if let Some(rest) = trimmed.strip_prefix("Called ") {
+        ("Called", rest)
+    } else if let Some(rest) = trimmed.strip_prefix("Closed ") {
+        ("Closed", rest)
+    } else if let Some(rest) = trimmed.strip_prefix("Approval ") {
+        ("Approval", rest)
+    } else if let Some(rest) = trimmed.strip_prefix("Denied ") {
+        ("Denied", rest)
+    } else {
+        return None;
+    };
+
+    let (body, detail) = normalize_activity_target_and_detail(rest);
+    let body = if let Some(detail) = detail {
+        format!("{body} · {detail}")
+    } else {
+        body
+    };
+
+    Some((label.to_owned(), body))
 }
 
 fn compact_tool_request_preview(line: &str) -> Option<String> {
@@ -2297,6 +2346,32 @@ mod tests {
             .count();
 
         assert_eq!(called_count, 1);
+        assert_eq!(closed_count, 1);
+    }
+
+    #[test]
+    fn tool_activity_dedupes_consecutive_bracket_status_lines_with_different_ids() {
+        let mut list = MessageList::new();
+        list.add_assistant_message(
+            "### Tool activity\n> [completed] read_file (id=call-1) - ok\n> [completed] read_file (id=call-2) - ok".to_owned(),
+        );
+
+        let rendered = list
+            .get_rendered_lines(60)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        let closed_count = rendered
+            .iter()
+            .filter(|line| line.contains("• Closed read_file · ok"))
+            .count();
+
         assert_eq!(closed_count, 1);
     }
 
