@@ -1376,19 +1376,21 @@ fn dedupe_tool_activity_detail_lines(lines: &[String]) -> Vec<String> {
     let mut deduped = Vec::with_capacity(lines.len());
     let mut seen_structured_previews = std::collections::BTreeSet::new();
     let mut last_normalized_line: Option<String> = None;
-
     for line in lines {
         let normalized_line = line.trim().to_owned();
         if last_normalized_line.as_deref() == Some(normalized_line.as_str()) {
             continue;
         }
 
-        if let Some(preview) = compact_tool_request_preview(line)
-            .or_else(|| compact_tool_args_preview(line))
+        if tool_activity_line_starts_new_group(line) {
+            seen_structured_previews.clear();
+        }
+
+        if let Some(preview) =
+            compact_tool_request_preview(line).or_else(|| compact_tool_args_preview(line))
+            && !seen_structured_previews.insert(preview)
         {
-            if !seen_structured_previews.insert(preview) {
-                continue;
-            }
+            continue;
         }
 
         deduped.push(line.clone());
@@ -1396,6 +1398,17 @@ fn dedupe_tool_activity_detail_lines(lines: &[String]) -> Vec<String> {
     }
 
     deduped
+}
+
+fn tool_activity_line_starts_new_group(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed.starts_with('[')
+        || trimmed.starts_with("• Called ")
+        || trimmed.starts_with("• Closed ")
+        || trimmed.starts_with("Called ")
+        || trimmed.starts_with("Closed ")
+        || trimmed.starts_with("Approval ")
+        || trimmed.starts_with("Denied ")
 }
 
 fn compact_tool_request_preview(line: &str) -> Option<String> {
@@ -1412,8 +1425,8 @@ fn compact_tool_args_preview(line: &str) -> Option<String> {
     let body = trimmed
         .strip_prefix("args:")
         .or_else(|| trimmed.strip_prefix("args "))
-        .strip_prefix("args ")
-        .or_else(|| trimmed.strip_prefix("↳ args "))?;
+        .or_else(|| trimmed.strip_prefix("↳ args "))?
+        .trim_start();
     compact_structured_preview(body, 3)
 }
 
@@ -2095,6 +2108,29 @@ mod tests {
     }
 
     #[test]
+    fn tool_activity_compacts_plain_args_with_colon_prefix() {
+        let mut list = MessageList::new();
+        list.add_assistant_message(
+            "### Tool activity\n> Called demo_mcp.search\n> args: {\"query\":\"rust\",\"limit\":5,\"scope\":\"repo\"}".to_owned(),
+        );
+
+        let rendered = list
+            .get_rendered_lines(52)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        assert!(rendered.iter().any(|line| line.contains("↳ args")));
+        assert!(rendered.iter().any(|line| line.contains("query=rust")));
+        assert!(rendered.iter().any(|line| line.contains("limit=5")));
+    }
+
+    #[test]
     fn plain_called_closed_lines_render_with_bullet_status_flow() {
         let mut list = MessageList::new();
         list.add_assistant_message(
@@ -2129,6 +2165,89 @@ mod tests {
         let mut list = MessageList::new();
         list.add_assistant_message(
             "### Tool activity\n> Called demo_mcp.search\n> request: {\"query\":\"rust\",\"limit\":5,\"scope\":\"repo\"}\n> args {\"query\":\"rust\",\"limit\":5,\"scope\":\"repo\"}".to_owned(),
+        );
+
+        let rendered = list
+            .get_rendered_lines(60)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        assert!(rendered.iter().any(|line| line.contains("↳ request")));
+        assert!(
+            !rendered
+                .iter()
+                .any(|line| line.contains("↳ args query=rust"))
+        );
+    }
+
+    #[test]
+    fn tool_activity_resets_request_dedupe_for_new_called_group() {
+        let mut list = MessageList::new();
+        list.add_assistant_message(
+            "### Tool activity\n> Called demo_mcp.search\n> request: {\"query\":\"rust\",\"limit\":5}\n> Called demo_mcp.search_again\n> request: {\"query\":\"rust\",\"limit\":5}".to_owned(),
+        );
+
+        let rendered = list
+            .get_rendered_lines(64)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        let request_label_count = rendered
+            .iter()
+            .filter(|line| line.contains("↳ request"))
+            .count();
+        let query_count = rendered
+            .iter()
+            .filter(|line| line.contains("query=rust"))
+            .count();
+
+        assert_eq!(request_label_count, 2);
+        assert!(query_count >= 2);
+    }
+
+    #[test]
+    fn tool_activity_dedupes_request_when_matching_args_arrive_first() {
+        let mut list = MessageList::new();
+        list.add_assistant_message(
+            "### Tool activity\n> Called demo_mcp.search\n> args {\"query\":\"rust\",\"limit\":5,\"scope\":\"repo\"}\n> request: {\"query\":\"rust\",\"limit\":5,\"scope\":\"repo\"}".to_owned(),
+        );
+
+        let rendered = list
+            .get_rendered_lines(60)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        assert!(rendered.iter().any(|line| line.contains("↳ args")));
+        assert!(
+            !rendered
+                .iter()
+                .any(|line| line.contains("↳ request query=rust"))
+        );
+    }
+
+    #[test]
+    fn tool_activity_dedupes_args_with_colon_prefix_when_request_matches() {
+        let mut list = MessageList::new();
+        list.add_assistant_message(
+            "### Tool activity\n> Called demo_mcp.search\n> request: {\"query\":\"rust\",\"limit\":5,\"scope\":\"repo\"}\n> args: {\"query\":\"rust\",\"limit\":5,\"scope\":\"repo\"}".to_owned(),
         );
 
         let rendered = list
@@ -2208,6 +2327,56 @@ mod tests {
             rendered
                 .iter()
                 .any(|line| line.contains("↳ metrics 42ms · exit=0"))
+        );
+    }
+
+    #[test]
+    fn tool_activity_compacts_stdout_into_arrow_children() {
+        let mut list = MessageList::new();
+        list.add_assistant_message(
+            "### Tool activity\n> Called demo_mcp.exec\n> stdout: 2 lines · 22 bytes".to_owned(),
+        );
+
+        let rendered = list
+            .get_rendered_lines(52)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line.contains("↳ stdout 2 lines · 22 bytes"))
+        );
+    }
+
+    #[test]
+    fn tool_activity_compacts_stderr_into_arrow_children() {
+        let mut list = MessageList::new();
+        list.add_assistant_message(
+            "### Tool activity\n> Called demo_mcp.exec\n> stderr: 1 lines · 12 bytes".to_owned(),
+        );
+
+        let rendered = list
+            .get_rendered_lines(52)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line.contains("↳ stderr 1 lines · 12 bytes"))
         );
     }
 
