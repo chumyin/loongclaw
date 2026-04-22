@@ -4974,7 +4974,7 @@ allowed_decisions: yes / auto / full / esc";
         assert!(
             final_batch
                 .iter()
-                .any(|line| line.contains("[completed] exec (id=call-tool-2) - ok")),
+                .any(|line| line.contains("• Closed exec · ok")),
             "runtime output should surface the visible tool name: {final_batch:#?}"
         );
         assert!(
