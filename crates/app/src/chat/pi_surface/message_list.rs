@@ -1374,35 +1374,44 @@ fn render_tool_block_lines(
 
 fn dedupe_tool_activity_detail_lines(lines: &[String]) -> Vec<String> {
     let mut deduped = Vec::with_capacity(lines.len());
-    let mut last_request_preview: Option<String> = None;
+    let mut seen_structured_previews = std::collections::BTreeSet::new();
+    let mut last_normalized_line: Option<String> = None;
 
     for line in lines {
-        if let Some(preview) = compact_tool_request_preview(line) {
-            last_request_preview = Some(preview);
-            deduped.push(line.clone());
+        let normalized_line = line.trim().to_owned();
+        if last_normalized_line.as_deref() == Some(normalized_line.as_str()) {
             continue;
         }
 
-        if let Some(preview) = compact_tool_args_preview(line)
-            && last_request_preview.as_deref() == Some(preview.as_str())
+        if let Some(preview) = compact_tool_request_preview(line)
+            .or_else(|| compact_tool_args_preview(line))
         {
-            continue;
+            if !seen_structured_previews.insert(preview) {
+                continue;
+            }
         }
 
         deduped.push(line.clone());
+        last_normalized_line = Some(normalized_line);
     }
 
     deduped
 }
 
 fn compact_tool_request_preview(line: &str) -> Option<String> {
-    let body = line.trim().strip_prefix("request:")?.trim_start();
+    let trimmed = line.trim();
+    let body = trimmed
+        .strip_prefix("request:")
+        .or_else(|| trimmed.strip_prefix("request "))?
+        .trim_start();
     compact_structured_preview(body, 3)
 }
 
 fn compact_tool_args_preview(line: &str) -> Option<String> {
     let trimmed = line.trim();
     let body = trimmed
+        .strip_prefix("args:")
+        .or_else(|| trimmed.strip_prefix("args "))
         .strip_prefix("args ")
         .or_else(|| trimmed.strip_prefix("↳ args "))?;
     compact_structured_preview(body, 3)
@@ -1461,6 +1470,18 @@ fn render_tool_detail_lines(line: &str, width: u16) -> Vec<Line<'static>> {
 
     if let Some(request) = line.strip_prefix("request:") {
         return render_tool_detail_lines(&format!("↳ request {}", request.trim_start()), width);
+    }
+
+    if let Some(request) = line.strip_prefix("request ") {
+        return render_tool_detail_lines(&format!("↳ request {}", request.trim_start()), width);
+    }
+
+    if let Some(args) = line.strip_prefix("args:") {
+        return render_tool_detail_lines(&format!("↳ args {}", args.trim_start()), width);
+    }
+
+    if let Some(args) = line.strip_prefix("args ") {
+        return render_tool_detail_lines(&format!("↳ args {}", args.trim_start()), width);
     }
 
     if let Some(stdout) = line.strip_prefix("stdout:") {
@@ -2051,6 +2072,29 @@ mod tests {
     }
 
     #[test]
+    fn tool_activity_compacts_plain_args_without_arrow_prefix() {
+        let mut list = MessageList::new();
+        list.add_assistant_message(
+            "### Tool activity\n> Called demo_mcp.search\n> args {\"query\":\"rust\",\"limit\":5,\"scope\":\"repo\"}".to_owned(),
+        );
+
+        let rendered = list
+            .get_rendered_lines(52)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        assert!(rendered.iter().any(|line| line.contains("↳ args")));
+        assert!(rendered.iter().any(|line| line.contains("query=rust")));
+        assert!(rendered.iter().any(|line| line.contains("limit=5")));
+    }
+
+    #[test]
     fn plain_called_closed_lines_render_with_bullet_status_flow() {
         let mut list = MessageList::new();
         list.add_assistant_message(
@@ -2104,6 +2148,37 @@ mod tests {
                 .iter()
                 .any(|line| line.contains("↳ args query=rust"))
         );
+    }
+
+    #[test]
+    fn tool_activity_dedupes_consecutive_duplicate_status_lines() {
+        let mut list = MessageList::new();
+        list.add_assistant_message(
+            "### Tool activity\n> Called demo_mcp.search\n> Called demo_mcp.search\n> Closed demo_mcp.search · ok\n> Closed demo_mcp.search · ok".to_owned(),
+        );
+
+        let rendered = list
+            .get_rendered_lines(60)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        let called_count = rendered
+            .iter()
+            .filter(|line| line.contains("• Called demo_mcp.search"))
+            .count();
+        let closed_count = rendered
+            .iter()
+            .filter(|line| line.contains("• Closed demo_mcp.search · ok"))
+            .count();
+
+        assert_eq!(called_count, 1);
+        assert_eq!(closed_count, 1);
     }
 
     #[test]
