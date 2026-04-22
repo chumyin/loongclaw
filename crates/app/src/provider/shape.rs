@@ -36,76 +36,24 @@ pub fn extract_provider_turn_with_scope_and_messages(
     if let Some(message) = openai_message(body) {
         let mut assistant_text = message_content(message).unwrap_or_default();
         let mut raw_meta = message.clone();
+        if let Some(usage) = body.get("usage")
+            && let Some(raw_meta_object) = raw_meta.as_object_mut()
+        {
+            raw_meta_object.insert("usage".to_owned(), usage.clone());
+        }
         let mut tool_intents =
             extract_openai_tool_intents(message, session_id, turn_id, &bridge_context);
 
         if tool_intents.is_empty() {
-            match extract_json_tool_call_turn(
+            let extraction = extract_openai_text_tool_turn(
                 assistant_text.as_str(),
+                &mut raw_meta,
                 session_id,
                 turn_id,
                 &bridge_context,
-            ) {
-                JsonToolBlockParseResult::Parsed {
-                    cleaned_text,
-                    tool_intents: json_tool_intents,
-                    telemetry,
-                } => {
-                    assistant_text = cleaned_text;
-                    tool_intents = json_tool_intents;
-                    attach_json_tool_block_parse_telemetry(&mut raw_meta, telemetry);
-                }
-                JsonToolBlockParseResult::Malformed { telemetry } => {
-                    attach_json_tool_block_parse_telemetry(&mut raw_meta, telemetry);
-                }
-                JsonToolBlockParseResult::Absent => {}
-            }
-        }
-
-        if tool_intents.is_empty() {
-            match extract_invoke_block_turn(
-                assistant_text.as_str(),
-                session_id,
-                turn_id,
-                &bridge_context,
-            ) {
-                InvokeBlockParseResult::Parsed {
-                    cleaned_text,
-                    tool_intents: invoke_tool_intents,
-                    telemetry,
-                } => {
-                    assistant_text = cleaned_text;
-                    tool_intents = invoke_tool_intents;
-                    attach_invoke_block_parse_telemetry(&mut raw_meta, telemetry);
-                }
-                InvokeBlockParseResult::Malformed { telemetry } => {
-                    attach_invoke_block_parse_telemetry(&mut raw_meta, telemetry);
-                }
-                InvokeBlockParseResult::Absent => {}
-            }
-        }
-
-        if tool_intents.is_empty() {
-            match extract_inline_function_call_turn(
-                assistant_text.as_str(),
-                session_id,
-                turn_id,
-                &bridge_context,
-            ) {
-                InlineFunctionParseResult::Parsed {
-                    cleaned_text,
-                    tool_intents: inline_tool_intents,
-                    telemetry,
-                } => {
-                    assistant_text = cleaned_text;
-                    tool_intents = inline_tool_intents;
-                    attach_inline_function_parse_telemetry(&mut raw_meta, telemetry);
-                }
-                InlineFunctionParseResult::Malformed { telemetry } => {
-                    attach_inline_function_parse_telemetry(&mut raw_meta, telemetry);
-                }
-                InlineFunctionParseResult::Absent => {}
-            }
+            );
+            assistant_text = extraction.assistant_text;
+            tool_intents = extraction.tool_intents;
         }
 
         return Some(ProviderTurn {
@@ -161,16 +109,20 @@ struct ProviderToolBridgeContext {
     discoverable_leases: BTreeMap<String, String>,
 }
 
+struct OpenAiTextToolTurnExtraction {
+    assistant_text: String,
+    tool_intents: Vec<ToolIntent>,
+}
+
 fn provider_tool_bridge_context_from_messages(messages: &[Value]) -> ProviderToolBridgeContext {
     messages
         .iter()
         .rev()
         .filter(|message| message.get("role").and_then(Value::as_str) == Some("assistant"))
         .filter_map(|message| {
-            message
-                .get("content")
-                .and_then(Value::as_str)
-                .and_then(parse_discovery_followup_leases_from_message_content)
+            let content = message.get("content")?;
+            let content_text = extract_content_text(content)?;
+            parse_discovery_followup_leases_from_message_content(content_text.as_str())
         })
         .find(|context| !context.discoverable_leases.is_empty())
         .unwrap_or_default()
@@ -222,15 +174,87 @@ fn parse_discovery_followup_leases_from_message_content(
             let Some(discoverable_tool_name) = discoverable_tool_name(tool_id) else {
                 continue;
             };
-            discoverable_leases
-                .entry(discoverable_tool_name.to_owned())
-                .or_insert_with(|| lease.to_owned());
+            discoverable_leases.insert(discoverable_tool_name.to_owned(), lease.to_owned());
         }
     }
 
     (!discoverable_leases.is_empty()).then_some(ProviderToolBridgeContext {
         discoverable_leases,
     })
+}
+
+fn extract_openai_text_tool_turn(
+    assistant_text: &str,
+    raw_meta: &mut Value,
+    session_id: Option<&str>,
+    turn_id: Option<&str>,
+    bridge_context: &ProviderToolBridgeContext,
+) -> OpenAiTextToolTurnExtraction {
+    let mut cleaned_text = assistant_text.to_owned();
+    let mut tool_intents = Vec::new();
+
+    match extract_json_tool_call_turn(cleaned_text.as_str(), session_id, turn_id, bridge_context) {
+        JsonToolBlockParseResult::Parsed {
+            cleaned_text: parsed_text,
+            tool_intents: parsed_tool_intents,
+            telemetry,
+        } => {
+            cleaned_text = parsed_text;
+            tool_intents = parsed_tool_intents;
+            attach_json_tool_block_parse_telemetry(raw_meta, telemetry);
+        }
+        JsonToolBlockParseResult::Malformed { telemetry } => {
+            attach_json_tool_block_parse_telemetry(raw_meta, telemetry);
+        }
+        JsonToolBlockParseResult::Absent => {}
+    }
+
+    if tool_intents.is_empty() {
+        match extract_invoke_block_turn(cleaned_text.as_str(), session_id, turn_id, bridge_context)
+        {
+            InvokeBlockParseResult::Parsed {
+                cleaned_text: parsed_text,
+                tool_intents: parsed_tool_intents,
+                telemetry,
+            } => {
+                cleaned_text = parsed_text;
+                tool_intents = parsed_tool_intents;
+                attach_invoke_block_parse_telemetry(raw_meta, telemetry);
+            }
+            InvokeBlockParseResult::Malformed { telemetry } => {
+                attach_invoke_block_parse_telemetry(raw_meta, telemetry);
+            }
+            InvokeBlockParseResult::Absent => {}
+        }
+    }
+
+    if tool_intents.is_empty() {
+        match extract_inline_function_call_turn(
+            cleaned_text.as_str(),
+            session_id,
+            turn_id,
+            bridge_context,
+        ) {
+            InlineFunctionParseResult::Parsed {
+                cleaned_text: parsed_text,
+                tool_intents: parsed_tool_intents,
+                telemetry,
+            } => {
+                cleaned_text = parsed_text;
+                tool_intents = parsed_tool_intents;
+                attach_inline_function_parse_telemetry(raw_meta, telemetry);
+            }
+            InlineFunctionParseResult::Malformed { telemetry } => {
+                attach_inline_function_parse_telemetry(raw_meta, telemetry);
+            }
+            InlineFunctionParseResult::Absent => {}
+        }
+    }
+
+    OpenAiTextToolTurnExtraction {
+        assistant_text: cleaned_text,
+        tool_intents,
+    }
 }
 
 pub(super) fn extract_message_content(body: &Value) -> Option<String> {
@@ -301,24 +325,54 @@ fn build_provider_tool_intent(
     bridge_context: &ProviderToolBridgeContext,
 ) -> ToolIntent {
     let canonical_tool_name = tools::canonical_tool_name(raw_tool_name).to_owned();
-    let (tool_name, args_json) = discoverable_tool_name(canonical_tool_name.as_str())
-        .and_then(|discoverable_tool_name| {
+
+    let normalized_direct_tool_intent = (canonical_tool_name == "tool.invoke")
+        .then(|| direct_tool_intent_from_invoke_payload(&args_json))
+        .flatten();
+    let (tool_name, args_json) = if let Some((tool_name, arguments)) = normalized_direct_tool_intent
+    {
+        (tool_name, arguments)
+    } else {
+        let direct_tool_name =
+            tools::direct_tool_name_for_hidden_tool(canonical_tool_name.as_str())
+                .map(str::to_owned);
+        let hidden_tool_name = direct_tool_name
+            .is_none()
+            .then(|| discoverable_tool_name(canonical_tool_name.as_str()))
+            .flatten();
+        let hidden_operation = tools::hidden_operation_for_tool_name(canonical_tool_name.as_str());
+        let leased_hidden_tool_call = hidden_tool_name.and_then(|discoverable_tool_name| {
             bridge_context
                 .discoverable_leases
                 .get(discoverable_tool_name)
                 .cloned()
                 .map(|lease| {
+                    let mut arguments = args_json.clone();
+                    if let Some(operation) = hidden_operation.as_deref()
+                        && let Some(arguments_object) = arguments.as_object_mut()
+                    {
+                        arguments_object
+                            .entry("operation".to_owned())
+                            .or_insert_with(|| json!(operation));
+                    }
                     (
                         "tool.invoke".to_owned(),
                         json!({
                             "tool_id": discoverable_tool_name,
                             "lease": lease,
-                            "arguments": args_json,
+                            "arguments": arguments,
                         }),
                     )
                 })
-        })
-        .unwrap_or((canonical_tool_name, args_json));
+        });
+        match direct_tool_name {
+            Some(direct_tool_name) => (direct_tool_name, args_json),
+            None => match leased_hidden_tool_call {
+                Some(leased_hidden_tool_call) => leased_hidden_tool_call,
+                None => (canonical_tool_name, args_json),
+            },
+        }
+    };
     ToolIntent {
         tool_name,
         args_json,
@@ -329,10 +383,24 @@ fn build_provider_tool_intent(
     }
 }
 
+fn direct_tool_intent_from_invoke_payload(payload: &Value) -> Option<(String, Value)> {
+    let payload_object = payload.as_object()?;
+    let tool_id = payload_object.get("tool_id")?.as_str()?;
+    let direct_tool_name = tools::direct_tool_name_for_hidden_tool(tool_id)?;
+    let arguments = payload_object.get("arguments")?.clone();
+
+    Some((direct_tool_name.to_owned(), arguments))
+}
+
 fn discoverable_tool_name(raw_tool_name: &str) -> Option<&'static str> {
     let resolved = tools::resolve_tool_execution(raw_tool_name)?;
-    (!tools::is_provider_exposed_tool_name(resolved.canonical_name))
-        .then_some(resolved.canonical_name)
+    if tools::is_provider_exposed_tool_name(resolved.canonical_name) {
+        return None;
+    }
+
+    tools::direct_tool_name_for_hidden_tool(resolved.canonical_name)
+        .or_else(|| tools::hidden_facade_tool_name_for_hidden_tool(resolved.canonical_name))
+        .or(Some(resolved.canonical_name))
 }
 
 fn extract_openai_tool_intents(
@@ -537,13 +605,26 @@ fn extract_responses_provider_turn(
     bridge_context: &ProviderToolBridgeContext,
 ) -> Option<ProviderTurn> {
     let output = response_output_items(body)?;
-    let assistant_text = extract_responses_message_content(body).unwrap_or_default();
-    let tool_intents = output
+    let mut assistant_text = extract_responses_message_content(body).unwrap_or_default();
+    let mut raw_meta = body.clone();
+    let mut tool_intents = output
         .iter()
         .filter_map(|item| {
             response_tool_intent_from_item(item, session_id, turn_id, bridge_context)
         })
         .collect::<Vec<_>>();
+
+    if tool_intents.is_empty() && !assistant_text.is_empty() {
+        let extraction = extract_openai_text_tool_turn(
+            assistant_text.as_str(),
+            &mut raw_meta,
+            session_id,
+            turn_id,
+            bridge_context,
+        );
+        assistant_text = extraction.assistant_text;
+        tool_intents = extraction.tool_intents;
+    }
 
     if assistant_text.is_empty() && tool_intents.is_empty() {
         return None;
@@ -552,7 +633,7 @@ fn extract_responses_provider_turn(
     Some(ProviderTurn {
         assistant_text,
         tool_intents,
-        raw_meta: body.clone(),
+        raw_meta,
     })
 }
 
@@ -949,6 +1030,9 @@ fn attach_provider_parse_telemetry(
     tool_count: usize,
     error_code: Option<&str>,
 ) {
+    const PROVIDER_PARSE_META_KEY: &str = "loong_provider_parse";
+    const LEGACY_PROVIDER_PARSE_META_KEY: &str = "loong_provider_parse";
+
     let Some(message) = raw_meta.as_object_mut() else {
         return;
     };
@@ -963,13 +1047,15 @@ fn attach_provider_parse_telemetry(
         );
     }
 
-    let provider_parse = message
-        .entry("loongclaw_provider_parse".to_owned())
-        .or_insert_with(|| Value::Object(serde_json::Map::new()));
-    let Some(provider_parse) = provider_parse.as_object_mut() else {
-        return;
-    };
-    provider_parse.insert(key.to_owned(), Value::Object(entry));
+    for parse_key in [PROVIDER_PARSE_META_KEY, LEGACY_PROVIDER_PARSE_META_KEY] {
+        let provider_parse = message
+            .entry(parse_key.to_owned())
+            .or_insert_with(|| Value::Object(serde_json::Map::new()));
+        let Some(provider_parse) = provider_parse.as_object_mut() else {
+            continue;
+        };
+        provider_parse.insert(key.to_owned(), Value::Object(entry.clone()));
+    }
 }
 
 fn extract_json_tool_call_turn(
@@ -1039,6 +1125,24 @@ fn extract_tagged_json_tool_call_turn(
             tool_intents.len(),
         ) {
             Ok(parsed_tool_intents) => parsed_tool_intents,
+            Err(JsonToolBlockParseError::InvalidJson) => {
+                let fallback_tool_intents = parse_wrapped_non_json_tool_calls(
+                    block_body,
+                    session_id,
+                    turn_id,
+                    bridge_context,
+                    tool_intents.len(),
+                );
+                let Some(fallback_tool_intents) = fallback_tool_intents else {
+                    return JsonToolBlockParseResult::Malformed {
+                        telemetry: JsonToolBlockParseTelemetry::malformed(
+                            tool_intents.len(),
+                            JsonToolBlockParseError::InvalidJson,
+                        ),
+                    };
+                };
+                fallback_tool_intents
+            }
             Err(error_code) => {
                 return JsonToolBlockParseResult::Malformed {
                     telemetry: JsonToolBlockParseTelemetry::malformed(
@@ -1164,6 +1268,36 @@ fn parse_json_tool_call_sequence(
     }
 
     Ok(tool_intents)
+}
+
+fn parse_wrapped_non_json_tool_calls(
+    block_body: &str,
+    session_id: Option<&str>,
+    turn_id: Option<&str>,
+    bridge_context: &ProviderToolBridgeContext,
+    tool_offset: usize,
+) -> Option<Vec<ToolIntent>> {
+    let mut nested_raw_meta = Value::Object(serde_json::Map::new());
+    let extraction = extract_openai_text_tool_turn(
+        block_body,
+        &mut nested_raw_meta,
+        session_id,
+        turn_id,
+        bridge_context,
+    );
+    let has_tool_intents = !extraction.tool_intents.is_empty();
+    let has_residual_text = !extraction.assistant_text.is_empty();
+    if !has_tool_intents || has_residual_text {
+        return None;
+    }
+
+    let mut wrapped_tool_intents = extraction.tool_intents;
+    for (index, intent) in wrapped_tool_intents.iter_mut().enumerate() {
+        let wrapped_tool_call_id = format!("wrapped-call-{}", tool_offset + index);
+        intent.tool_call_id = wrapped_tool_call_id;
+    }
+
+    Some(wrapped_tool_intents)
 }
 
 fn parse_plain_json_tool_call_candidate(
@@ -1676,6 +1810,21 @@ fn extract_inline_function_call_turn(
     turn_id: Option<&str>,
     bridge_context: &ProviderToolBridgeContext,
 ) -> InlineFunctionParseResult {
+    match extract_xml_inline_function_call_turn(text, session_id, turn_id, bridge_context) {
+        InlineFunctionParseResult::Absent => {
+            extract_bracket_inline_function_call_turn(text, session_id, turn_id, bridge_context)
+        }
+        result @ InlineFunctionParseResult::Parsed { .. }
+        | result @ InlineFunctionParseResult::Malformed { .. } => result,
+    }
+}
+
+fn extract_xml_inline_function_call_turn(
+    text: &str,
+    session_id: Option<&str>,
+    turn_id: Option<&str>,
+    bridge_context: &ProviderToolBridgeContext,
+) -> InlineFunctionParseResult {
     const FUNCTION_OPEN: &str = "<function=";
     const FUNCTION_CLOSE: &str = "</function>";
 
@@ -1728,6 +1877,124 @@ fn extract_inline_function_call_turn(
         };
         let function_body = &body_remainder[..body_end];
         let function_end = body_start + body_end + FUNCTION_CLOSE.len();
+        if !is_standalone_inline_function_end(text, function_end) {
+            cleaned.push_str(&text[cursor..function_end]);
+            cursor = function_end;
+            continue;
+        }
+
+        let canonical_tool_name = tools::canonical_tool_name(raw_tool_name).to_owned();
+        let args_json =
+            match parse_inline_function_parameters(canonical_tool_name.as_str(), function_body) {
+                Ok(args_json) => args_json,
+                Err(error_code) => {
+                    return InlineFunctionParseResult::Malformed {
+                        telemetry: InlineFunctionParseTelemetry::malformed(
+                            tool_intents.len(),
+                            error_code,
+                        ),
+                    };
+                }
+            };
+
+        found_inline_function = true;
+        cleaned.push_str(&text[cursor..start]);
+        let tool_call_id = format!("inline-call-{}", tool_intents.len());
+        tool_intents.push(build_provider_tool_intent(
+            canonical_tool_name.as_str(),
+            args_json,
+            "provider_inline_function_call",
+            session_id,
+            turn_id,
+            tool_call_id,
+            bridge_context,
+        ));
+
+        cursor = function_end;
+    }
+
+    if !found_inline_function {
+        return InlineFunctionParseResult::Absent;
+    }
+
+    cleaned.push_str(&text[cursor..]);
+    let telemetry = InlineFunctionParseTelemetry::parsed(tool_intents.len());
+    InlineFunctionParseResult::Parsed {
+        cleaned_text: normalize_text(cleaned.as_str()).unwrap_or_default(),
+        tool_intents,
+        telemetry,
+    }
+}
+
+fn extract_bracket_inline_function_call_turn(
+    text: &str,
+    session_id: Option<&str>,
+    turn_id: Option<&str>,
+    bridge_context: &ProviderToolBridgeContext,
+) -> InlineFunctionParseResult {
+    const FUNCTION_OPEN: &str = "[";
+    const FUNCTION_CLOSE: &str = "</function>";
+
+    let mut cursor = 0usize;
+    let mut cleaned = String::new();
+    let mut tool_intents = Vec::new();
+    let mut found_inline_function = false;
+
+    while let Some(relative_start) = text[cursor..].find(FUNCTION_OPEN) {
+        let start = cursor + relative_start;
+        if !is_standalone_inline_function_start(text, start)
+            || is_inside_markdown_fence(text, start)
+            || is_inside_markdown_indented_code_block(text, start)
+        {
+            let next_cursor = start + FUNCTION_OPEN.len();
+            cleaned.push_str(&text[cursor..next_cursor]);
+            cursor = next_cursor;
+            continue;
+        }
+
+        let name_start = start + FUNCTION_OPEN.len();
+        let header_remainder = &text[name_start..];
+        let Some(header_end) = header_remainder.find(']') else {
+            let next_cursor = start + FUNCTION_OPEN.len();
+            cleaned.push_str(&text[cursor..next_cursor]);
+            cursor = next_cursor;
+            continue;
+        };
+
+        let raw_tool_name = header_remainder[..header_end].trim();
+        if raw_tool_name.is_empty() {
+            return InlineFunctionParseResult::Malformed {
+                telemetry: InlineFunctionParseTelemetry::malformed(
+                    tool_intents.len(),
+                    InlineFunctionParseError::EmptyFunctionName,
+                ),
+            };
+        }
+
+        let body_start = name_start + header_end + 1;
+        let body_remainder = &text[body_start..];
+        let body_trimmed = body_remainder.trim_start_matches([' ', '\t', '\r', '\n']);
+        if !body_trimmed.starts_with("<parameter=") {
+            let next_cursor = body_start;
+            cleaned.push_str(&text[cursor..next_cursor]);
+            cursor = next_cursor;
+            continue;
+        }
+
+        let skipped_body_whitespace = body_remainder.len() - body_trimmed.len();
+        let parameter_start = body_start + skipped_body_whitespace;
+        let parameter_remainder = &text[parameter_start..];
+        let Some(body_end) = parameter_remainder.find(FUNCTION_CLOSE) else {
+            return InlineFunctionParseResult::Malformed {
+                telemetry: InlineFunctionParseTelemetry::malformed(
+                    tool_intents.len(),
+                    InlineFunctionParseError::MissingFunctionClose,
+                ),
+            };
+        };
+
+        let function_body = &parameter_remainder[..body_end];
+        let function_end = parameter_start + body_end + FUNCTION_CLOSE.len();
         if !is_standalone_inline_function_end(text, function_end) {
             cleaned.push_str(&text[cursor..function_end]);
             cursor = function_end;
@@ -2289,6 +2556,34 @@ mod tests {
         })]
     }
 
+    fn discovery_followup_part_messages(tool_id: &str, lease: &str) -> Vec<Value> {
+        let payload_summary = serde_json::to_string(&json!({
+            "results": [
+                {
+                    "tool_id": tool_id,
+                    "lease": lease,
+                }
+            ]
+        }))
+        .expect("encode search payload summary");
+        let envelope = serde_json::to_string(&json!({
+            "status": "ok",
+            "tool": "tool.search",
+            "tool_call_id": "call-search",
+            "payload_summary": payload_summary,
+            "payload_chars": payload_summary.chars().count(),
+            "payload_truncated": false,
+        }))
+        .expect("encode search envelope");
+        vec![json!({
+            "role": "assistant",
+            "content": [{
+                "type": "input_text",
+                "text": format!("[tool_result]\n[ok] {envelope}"),
+            }],
+        })]
+    }
+
     #[test]
     fn extract_provider_turn_parses_tool_calls() {
         let body = serde_json::json!({
@@ -2309,7 +2604,7 @@ mod tests {
         let turn = extract_provider_turn(&body).expect("turn");
         assert_eq!(turn.assistant_text, "checking");
         assert_eq!(turn.tool_intents.len(), 1);
-        assert_eq!(turn.tool_intents[0].tool_name, "file.read");
+        assert_eq!(turn.tool_intents[0].tool_name, "read");
         assert_eq!(turn.tool_intents[0].args_json, json!({"path":"README.md"}));
         assert_eq!(turn.tool_intents[0].tool_call_id, "call_1");
     }
@@ -2363,12 +2658,12 @@ mod tests {
         });
         let turn = extract_provider_turn(&body).expect("turn");
         assert_eq!(turn.tool_intents.len(), 1);
-        assert_eq!(turn.tool_intents[0].tool_name, "file.read");
+        assert_eq!(turn.tool_intents[0].tool_name, "read");
         assert_eq!(turn.tool_intents[0].args_json, json!({"path":"README.md"}));
     }
 
     #[test]
-    fn extract_provider_turn_with_scope_rewrites_discoverable_tools_to_tool_invoke_after_search() {
+    fn extract_provider_turn_with_scope_prefers_direct_surface_for_direct_tools_after_search() {
         let body = serde_json::json!({
             "choices": [{
                 "message": {
@@ -2384,7 +2679,7 @@ mod tests {
                 }
             }]
         });
-        let messages = discovery_followup_messages("file.read", "lease-openai");
+        let messages = discovery_followup_messages("read", "lease-openai");
 
         let turn = extract_provider_turn_with_scope_and_messages(
             &body,
@@ -2395,16 +2690,11 @@ mod tests {
         .expect("turn");
         assert_eq!(turn.assistant_text, "checking");
         assert_eq!(turn.tool_intents.len(), 1);
-        assert_eq!(turn.tool_intents[0].tool_name, "tool.invoke");
+        assert_eq!(turn.tool_intents[0].tool_name, "read");
         assert_eq!(turn.tool_intents[0].session_id, "session-shape");
         assert_eq!(turn.tool_intents[0].turn_id, "turn-shape");
         assert_eq!(turn.tool_intents[0].tool_call_id, "call_compat");
-        assert_eq!(turn.tool_intents[0].args_json["tool_id"], "file.read");
-        assert_eq!(
-            turn.tool_intents[0].args_json["arguments"],
-            json!({"path":"README.md"})
-        );
-        assert_eq!(turn.tool_intents[0].args_json["lease"], "lease-openai");
+        assert_eq!(turn.tool_intents[0].args_json, json!({"path":"README.md"}));
     }
 
     #[cfg(feature = "feishu-integration")]
@@ -2444,13 +2734,10 @@ mod tests {
             turn.tool_intents[0].tool_call_id,
             "call_feishu_card_update_1"
         );
-        assert_eq!(
-            turn.tool_intents[0].args_json["tool_id"],
-            "feishu.card.update"
-        );
+        assert_eq!(turn.tool_intents[0].args_json["tool_id"], "channel");
         assert_eq!(
             turn.tool_intents[0].args_json["arguments"],
-            json!({"markdown":"callback updated"})
+            json!({"markdown":"callback updated","operation":"card.update"})
         );
         assert_eq!(turn.tool_intents[0].args_json["lease"], "lease-feishu");
     }
@@ -2460,7 +2747,7 @@ mod tests {
         let payload_summary = serde_json::to_string(&json!({
             "results": [
                 {
-                    "tool_id": "file.read",
+                    "tool_id": "read",
                     "lease": "lease-truncated",
                 }
             ]
@@ -2503,18 +2790,18 @@ mod tests {
         )
         .expect("turn");
         // When payload is truncated, bridge context should be empty,
-        // so the tool call should NOT be rewritten to tool.invoke.
-        assert_eq!(turn.tool_intents[0].tool_name, "file.read");
+        // so the hidden alias should fall back to the direct visible surface instead of tool.invoke.
+        assert_eq!(turn.tool_intents[0].tool_name, "read");
         assert_eq!(turn.tool_intents[0].args_json, json!({"path": "README.md"}));
     }
 
     #[test]
-    fn bridge_context_accepts_compacted_search_results() {
+    fn bridge_context_ignores_compacted_direct_surface_leases() {
         let payload_summary = serde_json::to_string(&json!({
             "query": "read repo file",
             "results": [
                 {
-                    "tool_id": "file.read",
+                    "tool_id": "read",
                     "summary": "Read a UTF-8 text file from the configured workspace root and return contents.",
                     "argument_hint": "path:string,offset?:integer,limit?:integer",
                     "required_fields": ["path"],
@@ -2539,19 +2826,20 @@ mod tests {
         })];
 
         let context = provider_tool_bridge_context_from_messages(&messages);
-        assert_eq!(
-            context.discoverable_leases.get("file.read"),
-            Some(&"lease-compacted".to_owned())
+        assert!(
+            context.discoverable_leases.is_empty(),
+            "direct surfaces should stay direct instead of being rebound through lease context"
         );
     }
 
     #[test]
-    fn provider_shape_discovery_followup_uses_first_lease_in_multiline_source_order() {
+    fn provider_shape_discovery_followup_keeps_direct_surfaces_out_of_lease_context_even_with_multiple_results()
+     {
         let first_summary = serde_json::to_string(&json!({
             "query": "read repo file",
             "results": [
                 {
-                    "tool_id": "file.read",
+                    "tool_id": "read",
                     "summary": "Read a UTF-8 text file from the configured workspace root and return contents.",
                     "argument_hint": "path:string,offset?:integer,limit?:integer",
                     "required_fields": ["path"],
@@ -2565,7 +2853,7 @@ mod tests {
             "query": "read repo file again",
             "results": [
                 {
-                    "tool_id": "file.read",
+                    "tool_id": "read",
                     "summary": "Read a UTF-8 text file from the configured workspace root and return contents.",
                     "argument_hint": "path:string,offset?:integer,limit?:integer",
                     "required_fields": ["path"],
@@ -2599,9 +2887,137 @@ mod tests {
         })];
 
         let context = provider_tool_bridge_context_from_messages(&messages);
+        assert!(
+            context.discoverable_leases.is_empty(),
+            "direct surfaces should not accumulate lease state from search followups"
+        );
+    }
+
+    #[test]
+    fn provider_shape_discovery_followup_uses_latest_hidden_lease_in_multiline_source_order() {
+        let first_summary = serde_json::to_string(&json!({
+            "query": "external skills policy",
+            "results": [
+                {
+                    "tool_id": "skills",
+                    "summary": "Manage installable external skills and related policy surfaces.",
+                    "argument_hint": "operation:string",
+                    "required_fields": ["operation"],
+                    "required_field_groups": [["operation"]],
+                    "lease": "lease-first"
+                }
+            ]
+        }))
+        .expect("encode first search payload summary");
+        let second_summary = serde_json::to_string(&json!({
+            "query": "external skills policy again",
+            "results": [
+                {
+                    "tool_id": "skills",
+                    "summary": "Manage installable external skills and related policy surfaces.",
+                    "argument_hint": "operation:string",
+                    "required_fields": ["operation"],
+                    "required_field_groups": [["operation"]],
+                    "lease": "lease-second"
+                }
+            ]
+        }))
+        .expect("encode second search payload summary");
+        let first_envelope = serde_json::to_string(&json!({
+            "status": "ok",
+            "tool": "tool.search",
+            "tool_call_id": "call-search-1",
+            "payload_summary": first_summary,
+            "payload_chars": 0,
+            "payload_truncated": false,
+        }))
+        .expect("encode first search envelope");
+        let second_envelope = serde_json::to_string(&json!({
+            "status": "ok",
+            "tool": "tool.search",
+            "tool_call_id": "call-search-2",
+            "payload_summary": second_summary,
+            "payload_chars": 0,
+            "payload_truncated": false,
+        }))
+        .expect("encode second search envelope");
+        let messages = vec![json!({
+            "role": "assistant",
+            "content": format!("[tool_result]\n[ok] {first_envelope}\n[ok] {second_envelope}"),
+        })];
+
+        let context = provider_tool_bridge_context_from_messages(&messages);
         assert_eq!(
-            context.discoverable_leases.get("file.read"),
-            Some(&"lease-first".to_owned())
+            context.discoverable_leases.get("skills"),
+            Some(&"lease-second".to_owned())
+        );
+    }
+
+    #[test]
+    fn provider_shape_discovery_followup_ignores_newer_mixed_content_messages() {
+        let latest_summary = serde_json::to_string(&json!({
+            "query": "external skills policy",
+            "results": [
+                {
+                    "tool_id": "skills",
+                    "summary": "Manage installable external skills and related policy surfaces.",
+                    "argument_hint": "operation:string",
+                    "required_fields": ["operation"],
+                    "required_field_groups": [["operation"]],
+                    "lease": "lease-latest"
+                }
+            ]
+        }))
+        .expect("encode latest search payload summary");
+        let stale_summary = serde_json::to_string(&json!({
+            "query": "older external skills card",
+            "results": [
+                {
+                    "tool_id": "skills",
+                    "summary": "Manage installable external skills and related policy surfaces.",
+                    "argument_hint": "operation:string",
+                    "required_fields": ["operation"],
+                    "required_field_groups": [["operation"]],
+                    "lease": "lease-stale"
+                }
+            ]
+        }))
+        .expect("encode stale search payload summary");
+        let latest_envelope = serde_json::to_string(&json!({
+            "status": "ok",
+            "tool": "tool.search",
+            "tool_call_id": "call-search-latest",
+            "payload_summary": latest_summary,
+            "payload_chars": 0,
+            "payload_truncated": false,
+        }))
+        .expect("encode latest search envelope");
+        let stale_envelope = serde_json::to_string(&json!({
+            "status": "ok",
+            "tool": "tool.search",
+            "tool_call_id": "call-search-stale",
+            "payload_summary": stale_summary,
+            "payload_chars": 0,
+            "payload_truncated": false,
+        }))
+        .expect("encode stale search envelope");
+        let messages = vec![
+            json!({
+                "role": "assistant",
+                "content": format!("[tool_result]\n[ok] {latest_envelope}"),
+            }),
+            json!({
+                "role": "assistant",
+                "content": format!(
+                    "I am quoting an older card for context.\n[tool_result]\n[ok] {stale_envelope}\nPlease refresh before reusing it."
+                ),
+            }),
+        ];
+
+        let context = provider_tool_bridge_context_from_messages(&messages);
+        assert_eq!(
+            context.discoverable_leases.get("skills"),
+            Some(&"lease-latest".to_owned())
         );
     }
 
@@ -2638,7 +3054,7 @@ mod tests {
                 }
             ]
         });
-        let messages = discovery_followup_messages("file.read", "lease-responses");
+        let messages = discovery_followup_messages("read", "lease-responses");
         let turn = extract_provider_turn_with_scope(
             &body,
             Some("session-responses"),
@@ -2647,7 +3063,7 @@ mod tests {
         .expect("responses turn without search context should stay direct");
         assert_eq!(turn.assistant_text, "Reading the file.");
         assert_eq!(turn.tool_intents.len(), 1);
-        assert_eq!(turn.tool_intents[0].tool_name, "file.read");
+        assert_eq!(turn.tool_intents[0].tool_name, "read");
         assert_eq!(turn.tool_intents[0].session_id, "session-responses");
         assert_eq!(turn.tool_intents[0].turn_id, "turn-responses");
         assert_eq!(turn.tool_intents[0].args_json, json!({"path": "README.md"}));
@@ -2661,13 +3077,78 @@ mod tests {
         )
         .expect("responses turn with search context");
         assert_eq!(turn.tool_intents.len(), 1);
-        assert_eq!(turn.tool_intents[0].tool_name, "tool.invoke");
-        assert_eq!(turn.tool_intents[0].args_json["tool_id"], "file.read");
+        assert_eq!(turn.tool_intents[0].tool_name, "read");
+        assert_eq!(turn.tool_intents[0].args_json, json!({"path": "README.md"}));
+    }
+
+    #[test]
+    fn extract_provider_turn_supports_responses_textual_tool_calls() {
+        let body = serde_json::json!({
+            "output": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": "Let me run it.\n[tool_invoke]\n<parameter=tool_id>shell.exec</parameter>\n<parameter=lease>lease-responses-text</parameter>\n<parameter=arguments>{\"command\":\"echo\",\"args\":[\"hello\"]}</parameter>\n</function>"
+                        }
+                    ]
+                }
+            ]
+        });
+
+        let turn = extract_provider_turn_with_scope(
+            &body,
+            Some("session-responses-text"),
+            Some("turn-responses-text"),
+        )
+        .expect("responses textual tool turn");
+        assert_eq!(turn.assistant_text, "Let me run it.");
+        assert_eq!(turn.tool_intents.len(), 1);
+        assert_eq!(turn.tool_intents[0].tool_name, "exec");
+        assert_eq!(turn.tool_intents[0].session_id, "session-responses-text");
+        assert_eq!(turn.tool_intents[0].turn_id, "turn-responses-text");
         assert_eq!(
-            turn.tool_intents[0].args_json["arguments"],
-            json!({"path": "README.md"})
+            turn.tool_intents[0].args_json,
+            json!({
+                "command": "echo",
+                "args": ["hello"]
+            })
         );
-        assert_eq!(turn.tool_intents[0].args_json["lease"], "lease-responses");
+    }
+
+    #[test]
+    fn extract_provider_turn_supports_responses_function_calls_with_array_followup_messages() {
+        let body = serde_json::json!({
+            "output": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [
+                        {"type": "output_text", "text": "Reading the file."}
+                    ]
+                },
+                {
+                    "type": "function_call",
+                    "name": "file_read",
+                    "arguments": "{\"path\":\"README.md\"}",
+                    "call_id": "call_resp_1"
+                }
+            ]
+        });
+        let messages = discovery_followup_part_messages("file.read", "lease-responses-parts");
+
+        let turn = extract_provider_turn_with_scope_and_messages(
+            &body,
+            Some("session-responses"),
+            Some("turn-responses"),
+            &messages,
+        )
+        .expect("responses turn with array-form search context");
+        assert_eq!(turn.tool_intents.len(), 1);
+        assert_eq!(turn.tool_intents[0].tool_name, "read");
+        assert_eq!(turn.tool_intents[0].args_json, json!({"path": "README.md"}));
     }
 
     #[test]
@@ -2679,7 +3160,7 @@ mod tests {
                 }
             }]
         });
-        let messages = discovery_followup_messages("shell.exec", "lease-shell-inline");
+        let messages = discovery_followup_messages("exec", "lease-shell-inline");
 
         let turn = extract_provider_turn_with_scope_and_messages(&body, None, None, &messages)
             .expect("turn");
@@ -2688,23 +3169,22 @@ mod tests {
             "sorry, that command failed. let me retry with a simpler approach:"
         );
         assert_eq!(turn.tool_intents.len(), 1);
-        assert_eq!(turn.tool_intents[0].tool_name, "tool.invoke");
-        assert_eq!(turn.tool_intents[0].args_json["tool_id"], "shell.exec");
+        assert_eq!(turn.tool_intents[0].tool_name, "exec");
         assert_eq!(
-            turn.tool_intents[0].args_json["arguments"],
+            turn.tool_intents[0].args_json,
             json!({"command":"ls /root"})
         );
         assert_eq!(
-            turn.tool_intents[0].args_json["lease"],
-            "lease-shell-inline"
-        );
-        assert_eq!(
-            turn.raw_meta["loongclaw_provider_parse"]["inline_function"]["status"],
+            turn.raw_meta["loong_provider_parse"]["inline_function"]["status"],
             "parsed"
         );
         assert_eq!(
-            turn.raw_meta["loongclaw_provider_parse"]["inline_function"]["tool_count"],
+            turn.raw_meta["loong_provider_parse"]["inline_function"]["tool_count"],
             1
+        );
+        assert_eq!(
+            turn.raw_meta["loong_provider_parse"]["inline_function"]["status"],
+            "parsed"
         );
     }
 
@@ -2728,13 +3208,10 @@ mod tests {
         );
         assert_eq!(turn.tool_intents.len(), 1);
         assert_eq!(turn.tool_intents[0].tool_name, "tool.invoke");
-        assert_eq!(
-            turn.tool_intents[0].args_json["tool_id"],
-            "external_skills.invoke"
-        );
+        assert_eq!(turn.tool_intents[0].args_json["tool_id"], "skills");
         assert_eq!(
             turn.tool_intents[0].args_json["arguments"],
-            json!({"skill_id":"home-assistant-1-0-0","action":"get_states"})
+            json!({"skill_id":"home-assistant-1-0-0","action":"get_states","operation":"run"})
         );
         assert_eq!(
             turn.tool_intents[0].args_json["lease"],
@@ -2767,12 +3244,16 @@ mod tests {
             })
         );
         assert_eq!(
-            turn.raw_meta["loongclaw_provider_parse"]["json_tool_block"]["status"],
+            turn.raw_meta["loong_provider_parse"]["json_tool_block"]["status"],
             "parsed"
         );
         assert_eq!(
-            turn.raw_meta["loongclaw_provider_parse"]["json_tool_block"]["tool_count"],
+            turn.raw_meta["loong_provider_parse"]["json_tool_block"]["tool_count"],
             1
+        );
+        assert_eq!(
+            turn.raw_meta["loong_provider_parse"]["json_tool_block"]["status"],
+            "parsed"
         );
     }
 
@@ -2829,6 +3310,29 @@ mod tests {
     }
 
     #[test]
+    fn extract_provider_turn_parses_tool_call_wrapped_inline_function_blocks() {
+        let body = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "content": "let me run the command.\n<tool_call>\n<function=tool_invoke><parameter=tool_id>shell.exec</parameter><parameter=lease>lease-inline-wrap</parameter><parameter=arguments>{\"command\":\"echo\",\"args\":[\"hello\"]}</parameter></function>\n</tool_call>"
+                }
+            }]
+        });
+
+        let turn = extract_provider_turn(&body).expect("turn");
+        assert_eq!(turn.assistant_text, "let me run the command.");
+        assert_eq!(turn.tool_intents.len(), 1);
+        assert_eq!(turn.tool_intents[0].tool_name, "exec");
+        assert_eq!(
+            turn.tool_intents[0].args_json,
+            json!({
+                "command": "echo",
+                "args": ["hello"]
+            })
+        );
+    }
+
+    #[test]
     fn extract_provider_turn_parses_function_calls_invoke_blocks() {
         let body = serde_json::json!({
             "choices": [{
@@ -2853,7 +3357,11 @@ mod tests {
             })
         );
         assert_eq!(
-            turn.raw_meta["loongclaw_provider_parse"]["invoke_block"]["status"],
+            turn.raw_meta["loong_provider_parse"]["invoke_block"]["status"],
+            "parsed"
+        );
+        assert_eq!(
+            turn.raw_meta["loong_provider_parse"]["invoke_block"]["status"],
             "parsed"
         );
     }
@@ -2872,7 +3380,7 @@ mod tests {
 
         assert_eq!(turn.assistant_text, "let me run the shell command.");
         assert_eq!(turn.tool_intents.len(), 1);
-        assert_eq!(turn.tool_intents[0].tool_name, "shell.exec");
+        assert_eq!(turn.tool_intents[0].tool_name, "exec");
         assert_eq!(
             turn.tool_intents[0].args_json,
             json!({
@@ -2910,7 +3418,30 @@ mod tests {
     }
 
     #[test]
-    fn extract_provider_turn_rewrites_function_calls_invoke_discoverable_tools_after_search() {
+    fn extract_provider_turn_parses_bracket_inline_function_blocks() {
+        let body = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "content": "let me handle this.\n[tool_invoke]\n<parameter=tool_id>shell.exec</parameter>\n<parameter=lease>lease-bracket-inline</parameter>\n<parameter=arguments>{\"command\":\"echo\",\"args\":[\"hello\"]}</parameter>\n</function>"
+                }
+            }]
+        });
+
+        let turn = extract_provider_turn(&body).expect("turn");
+        assert_eq!(turn.assistant_text, "let me handle this.");
+        assert_eq!(turn.tool_intents.len(), 1);
+        assert_eq!(turn.tool_intents[0].tool_name, "exec");
+        assert_eq!(
+            turn.tool_intents[0].args_json,
+            json!({
+                "command": "echo",
+                "args": ["hello"]
+            })
+        );
+    }
+
+    #[test]
+    fn extract_provider_turn_prefers_direct_surface_for_function_call_followups_after_search() {
         let body = serde_json::json!({
             "choices": [{
                 "message": {
@@ -2918,28 +3449,18 @@ mod tests {
                 }
             }]
         });
-        let messages = discovery_followup_messages("file.read", "lease-invoke-followup");
+        let messages = discovery_followup_messages("read", "lease-invoke-followup");
 
         let turn = extract_provider_turn_with_scope_and_messages(&body, None, None, &messages)
             .expect("turn");
         assert_eq!(turn.assistant_text, "now i'll read the file.");
         assert_eq!(turn.tool_intents.len(), 1);
-        assert_eq!(turn.tool_intents[0].tool_name, "tool.invoke");
-        assert_eq!(turn.tool_intents[0].args_json["tool_id"], "file.read");
-        assert_eq!(
-            turn.tool_intents[0].args_json["lease"],
-            "lease-invoke-followup"
-        );
-        assert_eq!(
-            turn.tool_intents[0].args_json["arguments"],
-            json!({
-                "path": "note.md"
-            })
-        );
+        assert_eq!(turn.tool_intents[0].tool_name, "read");
+        assert_eq!(turn.tool_intents[0].args_json, json!({"path": "note.md"}));
     }
 
     #[test]
-    fn extract_provider_turn_rewrites_plain_json_discoverable_tool_to_tool_invoke_after_search() {
+    fn extract_provider_turn_prefers_direct_surface_for_plain_json_followups_after_search() {
         let body = serde_json::json!({
             "choices": [{
                 "message": {
@@ -2947,24 +3468,14 @@ mod tests {
                 }
             }]
         });
-        let messages = discovery_followup_messages("file.read", "lease-json-followup");
+        let messages = discovery_followup_messages("read", "lease-json-followup");
 
         let turn = extract_provider_turn_with_scope_and_messages(&body, None, None, &messages)
             .expect("turn");
         assert_eq!(turn.assistant_text, "now i'll read the file.");
         assert_eq!(turn.tool_intents.len(), 1);
-        assert_eq!(turn.tool_intents[0].tool_name, "tool.invoke");
-        assert_eq!(turn.tool_intents[0].args_json["tool_id"], "file.read");
-        assert_eq!(
-            turn.tool_intents[0].args_json["lease"],
-            "lease-json-followup"
-        );
-        assert_eq!(
-            turn.tool_intents[0].args_json["arguments"],
-            json!({
-                "path": "note.md"
-            })
-        );
+        assert_eq!(turn.tool_intents[0].tool_name, "read");
+        assert_eq!(turn.tool_intents[0].args_json, json!({"path": "note.md"}));
     }
 
     #[test]
@@ -3002,12 +3513,16 @@ mod tests {
             "let me search for the right tool first.\n{\n  \"name\": \"tool_search\",\n  \"arguments\": \"{bad\"\n}"
         );
         assert_eq!(
-            turn.raw_meta["loongclaw_provider_parse"]["json_tool_block"]["status"],
+            turn.raw_meta["loong_provider_parse"]["json_tool_block"]["status"],
             "malformed"
         );
         assert_eq!(
-            turn.raw_meta["loongclaw_provider_parse"]["json_tool_block"]["error_code"],
+            turn.raw_meta["loong_provider_parse"]["json_tool_block"]["error_code"],
             "invalid_json"
+        );
+        assert_eq!(
+            turn.raw_meta["loong_provider_parse"]["json_tool_block"]["status"],
+            "malformed"
         );
     }
 
@@ -3150,7 +3665,7 @@ mod tests {
         let turn = extract_provider_turn(&body).expect("turn");
         assert_eq!(turn.assistant_text, "let me retry:");
         assert_eq!(turn.tool_intents.len(), 1);
-        assert_eq!(turn.tool_intents[0].tool_name, "shell.exec");
+        assert_eq!(turn.tool_intents[0].tool_name, "exec");
         assert_eq!(turn.tool_intents[0].args_json, json!({"command": "ls"}));
     }
 
@@ -3167,7 +3682,7 @@ mod tests {
         let turn = extract_provider_turn(&body).expect("turn");
         assert_eq!(turn.assistant_text, "let me retry:");
         assert_eq!(turn.tool_intents.len(), 1);
-        assert_eq!(turn.tool_intents[0].tool_name, "shell.exec");
+        assert_eq!(turn.tool_intents[0].tool_name, "exec");
         assert_eq!(turn.tool_intents[0].args_json, json!({"command": "ls"}));
     }
 
@@ -3232,12 +3747,16 @@ mod tests {
         );
         assert!(turn.tool_intents.is_empty());
         assert_eq!(
-            turn.raw_meta["loongclaw_provider_parse"]["inline_function"]["status"],
+            turn.raw_meta["loong_provider_parse"]["inline_function"]["status"],
             "malformed"
         );
         assert_eq!(
-            turn.raw_meta["loongclaw_provider_parse"]["inline_function"]["error_code"],
+            turn.raw_meta["loong_provider_parse"]["inline_function"]["error_code"],
             "missing_function_close"
+        );
+        assert_eq!(
+            turn.raw_meta["loong_provider_parse"]["inline_function"]["status"],
+            "malformed"
         );
     }
 
@@ -3291,19 +3810,14 @@ mod tests {
                 }
             ]
         });
-        let messages = discovery_followup_messages("file.read", "lease-anthropic");
+        let messages = discovery_followup_messages("read", "lease-anthropic");
         let turn = extract_provider_turn_with_scope_and_messages(&body, None, None, &messages)
             .expect("turn");
         assert_eq!(turn.assistant_text, "checking");
         assert_eq!(turn.tool_intents.len(), 1);
-        assert_eq!(turn.tool_intents[0].tool_name, "tool.invoke");
+        assert_eq!(turn.tool_intents[0].tool_name, "read");
         assert_eq!(turn.tool_intents[0].tool_call_id, "toolu_1");
-        assert_eq!(turn.tool_intents[0].args_json["tool_id"], "file.read");
-        assert_eq!(
-            turn.tool_intents[0].args_json["arguments"]["path"],
-            "README.md"
-        );
-        assert_eq!(turn.tool_intents[0].args_json["lease"], "lease-anthropic");
+        assert_eq!(turn.tool_intents[0].args_json, json!({"path": "README.md"}));
     }
 
     #[test]
@@ -3330,19 +3844,14 @@ mod tests {
             },
             "stopReason": "tool_use"
         });
-        let messages = discovery_followup_messages("file.read", "lease-bedrock");
+        let messages = discovery_followup_messages("read", "lease-bedrock");
         let turn = extract_provider_turn_with_scope_and_messages(&body, None, None, &messages)
             .expect("turn");
         assert_eq!(turn.assistant_text, "checking");
         assert_eq!(turn.tool_intents.len(), 1);
-        assert_eq!(turn.tool_intents[0].tool_name, "tool.invoke");
+        assert_eq!(turn.tool_intents[0].tool_name, "read");
         assert_eq!(turn.tool_intents[0].tool_call_id, "toolu_1");
-        assert_eq!(turn.tool_intents[0].args_json["tool_id"], "file.read");
-        assert_eq!(
-            turn.tool_intents[0].args_json["arguments"]["path"],
-            "README.md"
-        );
-        assert_eq!(turn.tool_intents[0].args_json["lease"], "lease-bedrock");
+        assert_eq!(turn.tool_intents[0].args_json, json!({"path": "README.md"}));
         assert_eq!(turn.raw_meta["content"][1]["type"], "tool_use");
         assert_eq!(turn.raw_meta["content"][1]["id"], "toolu_1");
     }

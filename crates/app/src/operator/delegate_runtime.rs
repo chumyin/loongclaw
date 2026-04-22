@@ -2,13 +2,13 @@ use std::path::PathBuf;
 
 use serde_json::{Value, json};
 
-use crate::config::LoongClawConfig;
+use crate::config::LoongConfig;
 use crate::conversation::{
     ConstrainedSubagentContractView, ConstrainedSubagentExecution, ConstrainedSubagentIdentity,
-    ConstrainedSubagentIsolation, ConstrainedSubagentMode, ConstrainedSubagentProfile,
-    ConstrainedSubagentTerminalReason, ConversationRuntimeBinding, DelegateBuiltinProfile,
+    ConstrainedSubagentIsolation, ConstrainedSubagentMode, ConstrainedSubagentOwnerKind,
+    ConstrainedSubagentProfile, ConstrainedSubagentTerminalReason, ConversationRuntimeBinding,
+    DelegateBuiltinProfile,
 };
-use crate::memory::runtime_config::MemoryRuntimeConfig;
 use crate::runtime_self_continuity::RuntimeSelfContinuity;
 use crate::session::frozen_result::capture_frozen_result;
 use crate::session::recovery::{
@@ -19,6 +19,7 @@ use crate::session::repository::{
     CreateSessionWithEventRequest, FinalizeSessionTerminalRequest, NewSessionRecord, SessionKind,
     SessionRepository, SessionState,
 };
+use crate::session::store::SessionStoreConfig;
 use crate::tools::runtime_config::ToolRuntimeNarrowing;
 use crate::trust::{
     delegate_child_trust_event, embed_trust_event_payload, extract_trust_event_payload,
@@ -36,6 +37,7 @@ pub(crate) struct DelegateChildLifecycleSeed {
 pub(crate) struct DelegateChildExecutionPolicy {
     pub isolation: ConstrainedSubagentIsolation,
     pub profile: Option<DelegateBuiltinProfile>,
+    pub owner_kind: Option<ConstrainedSubagentOwnerKind>,
     pub timeout_seconds: u64,
     pub allow_shell_in_child: bool,
     pub child_tool_allowlist: Vec<String>,
@@ -114,7 +116,7 @@ pub(crate) fn next_delegate_child_depth(
 }
 
 pub(crate) fn build_delegate_child_lifecycle_seed(
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     binding: ConversationRuntimeBinding<'_>,
     mode: ConstrainedSubagentMode,
     next_child_depth: usize,
@@ -123,6 +125,7 @@ pub(crate) fn build_delegate_child_lifecycle_seed(
     child_session_id: &str,
     child_label: Option<String>,
     task: &str,
+    canonical_task_id: Option<&str>,
     runtime_self_continuity: Option<&RuntimeSelfContinuity>,
     identity: Option<ConstrainedSubagentIdentity>,
     execution_policy: DelegateChildExecutionPolicy,
@@ -141,6 +144,7 @@ pub(crate) fn build_delegate_child_lifecycle_seed(
         child_session_id,
         child_label,
         task,
+        canonical_task_id,
         runtime_self_continuity,
         &execution,
         mode,
@@ -151,7 +155,7 @@ pub(crate) fn build_delegate_child_lifecycle_seed(
 }
 
 fn build_delegate_child_execution(
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     binding: ConversationRuntimeBinding<'_>,
     mode: ConstrainedSubagentMode,
     next_child_depth: usize,
@@ -168,6 +172,7 @@ fn build_delegate_child_execution(
     ConstrainedSubagentExecution {
         mode,
         isolation: execution_policy.isolation,
+        owner_kind: execution_policy.owner_kind,
         depth: next_child_depth,
         max_depth: config.tools.delegate.max_depth,
         active_children,
@@ -188,6 +193,7 @@ fn build_delegate_child_request(
     child_session_id: &str,
     child_label: Option<String>,
     task: &str,
+    canonical_task_id: Option<&str>,
     runtime_self_continuity: Option<&RuntimeSelfContinuity>,
     execution: &ConstrainedSubagentExecution,
     mode: ConstrainedSubagentMode,
@@ -201,6 +207,7 @@ fn build_delegate_child_request(
         child_session_id,
         task,
         child_label.as_deref(),
+        canonical_task_id,
         runtime_self_continuity,
         execution,
         profile,
@@ -248,6 +255,7 @@ fn build_delegate_child_event_payload(
     child_session_id: &str,
     task: &str,
     child_label: Option<&str>,
+    canonical_task_id: Option<&str>,
     runtime_self_continuity: Option<&RuntimeSelfContinuity>,
     execution: &ConstrainedSubagentExecution,
     profile: Option<DelegateBuiltinProfile>,
@@ -260,6 +268,8 @@ fn build_delegate_child_event_payload(
         child_label,
         profile,
         runtime_self_continuity,
+        canonical_task_id,
+        Some(child_session_id),
     );
     let payload_with_trust =
         embed_trust_event_payload(event_payload_json.clone(), trust_event.clone());
@@ -273,7 +283,7 @@ fn build_delegate_child_event_payload(
 
 #[cfg(test)]
 pub(crate) fn finalize_async_delegate_spawn_failure(
-    memory_config: &MemoryRuntimeConfig,
+    memory_config: &SessionStoreConfig,
     child_session_id: &str,
     parent_session_id: &str,
     label: Option<String>,
@@ -303,7 +313,7 @@ pub(crate) fn finalize_async_delegate_spawn_failure(
 }
 
 pub(crate) fn finalize_async_delegate_spawn_failure_with_recovery(
-    memory_config: &MemoryRuntimeConfig,
+    memory_config: &SessionStoreConfig,
     child_session_id: &str,
     parent_session_id: &str,
     label: Option<String>,
@@ -593,9 +603,9 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::config::LoongClawConfig;
-    use crate::memory::runtime_config::MemoryRuntimeConfig;
+    use crate::config::LoongConfig;
     use crate::session::repository::{NewSessionEvent, NewSessionRecord};
+    use crate::session::store::SessionStoreConfig;
     use crate::trust::extract_trust_event_payload;
 
     fn isolated_repo(test_name: &str) -> SessionRepository {
@@ -605,13 +615,13 @@ mod tests {
 
     fn isolated_repo_with_path(test_name: &str) -> (SessionRepository, std::path::PathBuf) {
         let sqlite_path = std::env::temp_dir().join(format!(
-            "loongclaw-operator-delegate-runtime-{test_name}-{}.sqlite3",
+            "loong-operator-delegate-runtime-{test_name}-{}.sqlite3",
             std::process::id()
         ));
         let _ = std::fs::remove_file(&sqlite_path);
-        let config = MemoryRuntimeConfig {
+        let config = SessionStoreConfig {
             sqlite_path: Some(sqlite_path),
-            ..MemoryRuntimeConfig::default()
+            ..SessionStoreConfig::default()
         };
         let repo = SessionRepository::new(&config).expect("session repository");
         let sqlite_path = config.sqlite_path.expect("sqlite path");
@@ -708,10 +718,11 @@ mod tests {
 
     #[test]
     fn build_delegate_child_lifecycle_seed_uses_mode_specific_state_and_event_kind() {
-        let config = LoongClawConfig::default();
+        let config = LoongConfig::default();
         let execution_policy = DelegateChildExecutionPolicy {
             isolation: ConstrainedSubagentIsolation::Shared,
             profile: None,
+            owner_kind: None,
             timeout_seconds: 42,
             allow_shell_in_child: false,
             child_tool_allowlist: config.tools.delegate.child_tool_allowlist.clone(),
@@ -728,6 +739,7 @@ mod tests {
             "child-session",
             Some("worker".to_owned()),
             "research",
+            Some("task-root"),
             None,
             None,
             execution_policy,
@@ -742,10 +754,11 @@ mod tests {
 
     #[test]
     fn build_delegate_child_lifecycle_seed_embeds_delegate_trust_event() {
-        let config = LoongClawConfig::default();
+        let config = LoongConfig::default();
         let execution_policy = DelegateChildExecutionPolicy {
             isolation: ConstrainedSubagentIsolation::Shared,
             profile: None,
+            owner_kind: None,
             timeout_seconds: 60,
             allow_shell_in_child: false,
             child_tool_allowlist: config.tools.delegate.child_tool_allowlist.clone(),
@@ -762,6 +775,7 @@ mod tests {
             "child-session",
             Some("worker".to_owned()),
             "research",
+            Some("task-root"),
             None,
             None,
             execution_policy,
@@ -769,6 +783,14 @@ mod tests {
 
         let trust_event = extract_trust_event_payload(&seed.request.event_payload_json);
         assert!(trust_event.is_some(), "expected trust event payload");
+        assert_eq!(
+            seed.request.event_payload_json["task_scope"]["task_id"],
+            "task-root"
+        );
+        assert_eq!(
+            seed.request.event_payload_json["task_session_id"],
+            "child-session"
+        );
     }
 
     #[test]
@@ -881,6 +903,7 @@ mod tests {
         let execution = ConstrainedSubagentExecution {
             mode: ConstrainedSubagentMode::Async,
             isolation: ConstrainedSubagentIsolation::default(),
+            owner_kind: None,
             depth: 1,
             max_depth: 1,
             active_children: 0,
@@ -913,9 +936,9 @@ mod tests {
         drop(conn);
 
         finalize_async_delegate_spawn_failure_with_recovery(
-            &MemoryRuntimeConfig {
+            &SessionStoreConfig {
                 sqlite_path: Some(sqlite_path),
-                ..MemoryRuntimeConfig::default()
+                ..SessionStoreConfig::default()
             },
             "child-session",
             "root-session",

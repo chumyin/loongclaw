@@ -31,6 +31,8 @@ pub(crate) struct GatewayAcpSessionQuery {
     #[serde(default)]
     pub(crate) conversation_id: Option<String>,
     #[serde(default)]
+    pub(crate) participant_id: Option<String>,
+    #[serde(default)]
     pub(crate) thread_id: Option<String>,
 }
 
@@ -161,7 +163,7 @@ fn gateway_acp_runtime_context(
     app_state: &GatewayControlAppState,
 ) -> Result<
     (
-        &crate::mvp::config::LoongClawConfig,
+        &crate::mvp::config::LoongConfig,
         &crate::mvp::acp::AcpSessionManager,
     ),
     GatewayAcpJsonResponse,
@@ -203,6 +205,7 @@ fn build_query_address(
     let channel_id = query.channel_id.as_deref();
     let conversation_id = query.conversation_id.as_deref();
     let account_id = query.account_id.as_deref();
+    let participant_id = query.participant_id.as_deref();
     let thread_id = query.thread_id.as_deref();
 
     build_acp_dispatch_address(
@@ -210,6 +213,7 @@ fn build_query_address(
         channel_id,
         conversation_id,
         account_id,
+        participant_id,
         thread_id,
     )
 }
@@ -256,7 +260,7 @@ fn gateway_acp_error_code(status_code: StatusCode) -> &'static str {
 
 fn internal_server_error(context: &str, error: &str) -> GatewayAcpJsonResponse {
     tracing::error!(
-        target: "loongclaw.gateway",
+        target: "loong.gateway",
         context = context,
         error = %error,
         "gateway ACP request failed"

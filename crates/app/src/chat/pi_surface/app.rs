@@ -2,7 +2,7 @@ use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use ratatui::{
     Frame, Terminal,
     backend::Backend,
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
@@ -19,7 +19,6 @@ use crate::CliResult;
 use crate::chat::CliChatOptions;
 use crate::chat::CliTurnRuntime;
 use crate::chat::control_plane::ChatControlPlaneStore;
-use crate::conversation::ConversationRuntimeBinding;
 use crate::tui_surface::{TuiKeyValueSpec, TuiMessageSpec, TuiSectionSpec};
 
 use super::command_palette::{CommandAction, CommandPalette};
@@ -34,6 +33,9 @@ pub enum Focus {
     CommandPalette,
     MessageList,
 }
+
+const FOOTER_BOTTOM_BREATHING_HEIGHT: u16 = 1;
+const FOOTER_HORIZONTAL_INDENT: u16 = 2;
 
 pub struct App {
     pub message_list: MessageList,
@@ -115,7 +117,7 @@ impl App {
             }
             + 1
             + 1
-            + 1;
+            + FOOTER_BOTTOM_BREATHING_HEIGHT;
         let max_pending_height = size.height.saturating_sub(reserved_without_pending).max(3);
         let max_pending_preview_lines = max_pending_height.saturating_sub(3).max(1) as usize;
         let live_lines = pending_live_lines(&self.live_lines, max_pending_preview_lines);
@@ -147,7 +149,8 @@ impl App {
                 0
             }
             + 1
-            + 1;
+            + 1
+            + FOOTER_BOTTOM_BREATHING_HEIGHT;
         let available_transcript_height = size.height.saturating_sub(bottom_band_height).max(1);
         let transcript_height = if self.message_list.messages.is_empty() {
             0
@@ -166,6 +169,7 @@ impl App {
                 Constraint::Length(palette_height),
                 Constraint::Length(1),
                 Constraint::Length(1),
+                Constraint::Length(FOOTER_BOTTOM_BREATHING_HEIGHT),
             ])
             .split(size);
 
@@ -179,6 +183,7 @@ impl App {
             palette_area,
             footer_separator_area,
             footer_area,
+            footer_bottom_spacing_area,
         ] = main_layout.as_ref()
         else {
             return;
@@ -228,14 +233,24 @@ impl App {
             *footer_separator_area,
         );
 
+        let footer_content_area = footer_content_area(*footer_area);
         let footer_line = if self.pending_turn && !self.composer.is_empty() {
-            build_queue_footer_line(&self.i18n, self.pending_queue.len(), size.width)
+            build_queue_footer_line(
+                &self.i18n,
+                self.pending_queue.len(),
+                footer_content_area.width,
+            )
         } else if self.pending_turn && !self.pending_queue.is_empty() {
-            build_restore_footer_line(&self.i18n, self.pending_queue.len(), size.width)
+            build_restore_footer_line(
+                &self.i18n,
+                self.pending_queue.len(),
+                footer_content_area.width,
+            )
         } else {
-            build_status_footer_line(&self.cwd, &self.model, size.width)
+            build_status_footer_line(&self.cwd, &self.model, footer_content_area.width)
         };
-        f.render_widget(Paragraph::new(footer_line), *footer_area);
+        f.render_widget(Paragraph::new(footer_line), footer_content_area);
+        f.render_widget(Paragraph::new(""), *footer_bottom_spacing_area);
     }
 }
 
@@ -348,9 +363,7 @@ pub async fn run_app<B: Backend>(
                                 {
                                     app.command_palette.show(":");
                                     app.focus = Focus::CommandPalette;
-                                } else if is_transcript_navigation_key(key)
-                                    && app.composer.is_empty()
-                                {
+                                } else if should_route_composer_key_to_transcript(&app, key) {
                                     app.message_list.handle_key(key);
                                 } else if key.code == KeyCode::Tab {
                                     if !app.composer.is_empty() {
@@ -432,7 +445,7 @@ pub async fn run_app<B: Backend>(
                             {
                                 app.command_palette.show(":");
                                 app.focus = Focus::CommandPalette;
-                            } else if is_transcript_navigation_key(key) && app.composer.is_empty() {
+                            } else if should_route_composer_key_to_transcript(&app, key) {
                                 app.message_list.handle_key(key);
                             } else if key.code == KeyCode::Tab {
                                 app.focus = Focus::MessageList;
@@ -635,8 +648,18 @@ fn is_transcript_navigation_key(key: crossterm::event::KeyEvent) -> bool {
             .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER))
 }
 
+fn should_route_composer_key_to_transcript(app: &App, key: crossterm::event::KeyEvent) -> bool {
+    matches!(
+        key.code,
+        KeyCode::Up | KeyCode::Down | KeyCode::PageUp | KeyCode::PageDown
+    ) || (app.composer.is_empty() && is_transcript_navigation_key(key))
+}
+
 fn submitted_message_is_follow_up(app: &App, msg: &str) -> bool {
-    app.composer_follow_up_intent && !msg.starts_with('/') && !msg.starts_with(':')
+    app.pending_turn
+        && app.composer_follow_up_intent
+        && !msg.starts_with('/')
+        && !msg.starts_with(':')
 }
 
 fn display_columns(text: &str) -> usize {
@@ -749,6 +772,19 @@ fn build_status_footer_line(cwd: &str, model: &str, width: u16) -> Line<'static>
     ])
 }
 
+fn footer_content_area(area: Rect) -> Rect {
+    if area.width <= FOOTER_HORIZONTAL_INDENT {
+        return area;
+    }
+
+    Rect {
+        x: area.x.saturating_add(FOOTER_HORIZONTAL_INDENT),
+        y: area.y,
+        width: area.width.saturating_sub(FOOTER_HORIZONTAL_INDENT),
+        height: area.height,
+    }
+}
+
 fn build_queue_footer_line(i18n: &I18nService, queued: usize, width: u16) -> Line<'static> {
     let hint = i18n.text(PiCopy::FooterQueueHint).to_owned();
     let short_hint = i18n.text(PiCopy::FooterQueueShort).to_owned();
@@ -852,7 +888,7 @@ async fn build_command_lines(
                 let history_lines = super::super::operator_surfaces::load_history_lines(
                     &runtime.session_id,
                     runtime.config.memory.sliding_window,
-                    ConversationRuntimeBinding::kernel(&runtime.kernel_ctx),
+                    runtime.conversation_binding(),
                     &runtime.memory_config,
                 )
                 .await?;
@@ -883,7 +919,7 @@ async fn build_command_lines(
                     &runtime.config,
                     &runtime.session_id,
                     &runtime.turn_coordinator,
-                    ConversationRuntimeBinding::kernel(&runtime.kernel_ctx),
+                    runtime.conversation_binding(),
                 )
                 .await?;
                 Ok(
@@ -911,7 +947,7 @@ async fn build_command_lines(
                 let summary = crate::conversation::load_fast_lane_tool_batch_event_summary(
                     &runtime.session_id,
                     runtime.config.memory.sliding_window,
-                    ConversationRuntimeBinding::kernel(&runtime.kernel_ctx),
+                    runtime.conversation_binding(),
                     &runtime.memory_config,
                 )
                 .await?;
@@ -939,7 +975,7 @@ async fn build_command_lines(
                 let summary = crate::conversation::load_safe_lane_event_summary(
                     &runtime.session_id,
                     runtime.config.memory.sliding_window,
-                    ConversationRuntimeBinding::kernel(&runtime.kernel_ctx),
+                    runtime.conversation_binding(),
                     &runtime.memory_config,
                 )
                 .await?;
@@ -971,7 +1007,7 @@ async fn build_command_lines(
                         &runtime.config,
                         &runtime.session_id,
                         runtime.config.memory.sliding_window,
-                        ConversationRuntimeBinding::kernel(&runtime.kernel_ctx),
+                        runtime.conversation_binding(),
                     )
                     .await?;
                 Ok(
@@ -1002,7 +1038,7 @@ async fn build_command_lines(
                     .repair_turn_checkpoint_tail(
                         &runtime.config,
                         &runtime.session_id,
-                        ConversationRuntimeBinding::kernel(&runtime.kernel_ctx),
+                        runtime.conversation_binding(),
                     )
                     .await?;
                 Ok(
@@ -1461,6 +1497,7 @@ async fn maybe_finalize_pending_turn<B: Backend>(
     app.pending_turn = false;
     app.turn_start = None;
     app.live_rerender = None;
+    app.composer_follow_up_intent = false;
     clear_live_lines(&app.live_lines);
     app.focus = Focus::Composer;
     if super::super::build_cli_chat_approval_screen_spec(&assistant_text).is_some() {
@@ -1500,6 +1537,7 @@ fn spawn_pending_turn(
                     channel_id: runtime.session_address.channel_id.clone(),
                     account_id: runtime.session_address.account_id.clone(),
                     conversation_id: runtime.session_address.conversation_id.clone(),
+                    participant_id: runtime.session_address.participant_id.clone(),
                     thread_id: runtime.session_address.thread_id.clone(),
                     metadata: std::collections::BTreeMap::new(),
                     acp: runtime.explicit_acp_request,
@@ -1711,6 +1749,8 @@ fn append_pending_input_preview_lines(
     width: u16,
     has_live_preview: bool,
 ) {
+    const MAX_PENDING_PREVIEW_MESSAGES: usize = 3;
+
     if pending_steers.is_empty() && pending_queue.is_empty() {
         return;
     }
@@ -1720,6 +1760,7 @@ fn append_pending_input_preview_lines(
     }
 
     let content_width = width.saturating_sub(6).max(1) as usize;
+    let mut remaining_preview_budget = MAX_PENDING_PREVIEW_MESSAGES;
     if !pending_steers.is_empty() {
         push_pending_input_header(
             lines,
@@ -1737,7 +1778,14 @@ fn append_pending_input_preview_lines(
                 )
             })
             .collect::<Vec<_>>();
-        push_pending_input_lines(lines, &preview_items, content_width, "    ↳ ");
+        let displayed = push_pending_input_lines(
+            lines,
+            &preview_items,
+            content_width,
+            "    ↳ ",
+            remaining_preview_budget,
+        );
+        remaining_preview_budget = remaining_preview_budget.saturating_sub(displayed);
     }
 
     if !pending_queue.is_empty() {
@@ -1756,7 +1804,13 @@ fn append_pending_input_preview_lines(
                 )
             })
             .collect::<Vec<_>>();
-        push_pending_input_lines(lines, &preview_items, content_width, "    ↳ ");
+        push_pending_input_lines(
+            lines,
+            &preview_items,
+            content_width,
+            "    ↳ ",
+            remaining_preview_budget,
+        );
     }
 }
 
@@ -1812,8 +1866,9 @@ fn push_pending_input_lines(
     messages: &[(&str, Style)],
     content_width: usize,
     first_prefix: &str,
-) {
-    let max_preview_messages = 3;
+    max_preview_messages: usize,
+) -> usize {
+    let displayed_messages = messages.len().min(max_preview_messages);
     for (message, message_style) in messages.iter().take(max_preview_messages) {
         let wrapped_lines =
             crate::presentation::render_wrapped_display_line(message, content_width);
@@ -1838,7 +1893,7 @@ fn push_pending_input_lines(
         }
     }
 
-    let remaining_messages = messages.len().saturating_sub(max_preview_messages);
+    let remaining_messages = messages.len().saturating_sub(displayed_messages);
     if remaining_messages > 0 {
         lines.push(Line::from(vec![
             Span::raw("      "),
@@ -1848,6 +1903,8 @@ fn push_pending_input_lines(
             ),
         ]));
     }
+
+    displayed_messages
 }
 
 fn compact_pending_lines_for_height(
@@ -2359,7 +2416,7 @@ mod tests {
     }
 
     #[test]
-    fn footer_reaches_bottom_when_transcript_fills_available_height() {
+    fn footer_keeps_one_breathing_row_when_transcript_fills_available_height() {
         let backend = TestBackend::new(50, 12);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = blank_app();
@@ -2376,7 +2433,31 @@ mod tests {
             .position(|line| line.contains("/tmp/example"))
             .expect("footer row");
 
-        assert_eq!(footer_row, lines.len().saturating_sub(1));
+        assert_eq!(
+            footer_row,
+            lines
+                .len()
+                .saturating_sub(super::FOOTER_BOTTOM_BREATHING_HEIGHT as usize + 1)
+        );
+        assert!(lines.last().is_some_and(|line| line.trim().is_empty()));
+    }
+
+    #[test]
+    fn footer_content_uses_codex_like_left_indent_when_space_allows() {
+        let backend = TestBackend::new(50, 18);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = blank_app();
+        app.message_list.add_user_message("hi".to_owned());
+        app.message_list.add_assistant_message("hello".to_owned());
+
+        terminal.draw(|f| app.render(f)).expect("draw");
+        let lines = buffer_lines(&terminal);
+        let footer_line = lines
+            .iter()
+            .find(|line| line.contains("/tmp/example"))
+            .expect("footer line");
+
+        assert!(footer_line.starts_with("  /tmp/example"));
     }
 
     #[test]
@@ -2398,6 +2479,52 @@ mod tests {
                 .iter()
                 .any(|line| line.contains("streamed reply line"))
         );
+    }
+
+    #[test]
+    fn composer_and_footer_move_up_after_pending_turn_finishes() {
+        let backend = TestBackend::new(60, 18);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = blank_app();
+        app.message_list.add_user_message("hi".to_owned());
+        app.pending_turn = true;
+        app.turn_start = Some(std::time::Instant::now());
+        if let Ok(mut lines) = app.live_lines.lock() {
+            *lines = vec!["streamed reply line".to_owned()];
+        }
+
+        terminal.draw(|f| app.render(f)).expect("draw pending");
+        let pending_lines = buffer_lines(&terminal);
+        let pending_composer_row = pending_lines
+            .iter()
+            .position(|line| line.contains("›"))
+            .expect("pending composer row");
+        let pending_footer_row = pending_lines
+            .iter()
+            .position(|line| line.contains("/tmp/example"))
+            .expect("pending footer row");
+
+        app.pending_turn = false;
+        app.turn_start = None;
+        if let Ok(mut lines) = app.live_lines.lock() {
+            lines.clear();
+        }
+        app.message_list
+            .add_assistant_message("streamed reply line".to_owned());
+
+        terminal.draw(|f| app.render(f)).expect("draw complete");
+        let settled_lines = buffer_lines(&terminal);
+        let settled_composer_row = settled_lines
+            .iter()
+            .position(|line| line.contains("›"))
+            .expect("settled composer row");
+        let settled_footer_row = settled_lines
+            .iter()
+            .position(|line| line.contains("/tmp/example"))
+            .expect("settled footer row");
+
+        assert!(settled_composer_row < pending_composer_row);
+        assert!(settled_footer_row < pending_footer_row);
     }
 
     #[test]
@@ -2838,10 +2965,44 @@ mod tests {
     }
 
     #[test]
-    fn submitted_message_typed_while_pending_stays_follow_up_after_turn_finishes() {
+    fn composer_routes_arrow_and_page_scroll_even_with_a_draft() {
+        let mut app = blank_app();
+        app.composer.set_input("draft".to_owned());
+
+        assert!(super::should_route_composer_key_to_transcript(
+            &app,
+            crossterm::event::KeyEvent::new(KeyCode::Up, KeyModifiers::NONE,)
+        ));
+        assert!(super::should_route_composer_key_to_transcript(
+            &app,
+            crossterm::event::KeyEvent::new(KeyCode::Down, KeyModifiers::NONE,)
+        ));
+        assert!(super::should_route_composer_key_to_transcript(
+            &app,
+            crossterm::event::KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE,)
+        ));
+        assert!(super::should_route_composer_key_to_transcript(
+            &app,
+            crossterm::event::KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE,)
+        ));
+        assert!(!super::should_route_composer_key_to_transcript(
+            &app,
+            crossterm::event::KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE,)
+        ));
+        assert!(!super::should_route_composer_key_to_transcript(
+            &app,
+            crossterm::event::KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE,)
+        ));
+    }
+
+    #[test]
+    fn submitted_message_is_not_treated_as_follow_up_after_pending_turn_finishes() {
         let mut app = blank_app();
         app.composer_follow_up_intent = true;
 
+        assert!(!super::submitted_message_is_follow_up(&app, "follow up"));
+
+        app.pending_turn = true;
         assert!(super::submitted_message_is_follow_up(&app, "follow up"));
         assert!(!super::submitted_message_is_follow_up(&app, "/status"));
         assert!(!super::submitted_message_is_follow_up(&app, ":status"));

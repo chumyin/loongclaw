@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use loong_contracts::TaskScopeDescriptor;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
@@ -19,6 +20,22 @@ pub enum ConstrainedSubagentIsolation {
     #[default]
     Shared,
     Worktree,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConstrainedSubagentOwnerKind {
+    AsyncDelegateSpawner,
+    BackgroundTaskHost,
+}
+
+impl ConstrainedSubagentOwnerKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::AsyncDelegateSpawner => "async_delegate_spawner",
+            Self::BackgroundTaskHost => "background_task_host",
+        }
+    }
 }
 
 impl ConstrainedSubagentIsolation {
@@ -467,6 +484,8 @@ pub struct ConstrainedSubagentExecution {
     pub mode: ConstrainedSubagentMode,
     #[serde(default)]
     pub isolation: ConstrainedSubagentIsolation,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_kind: Option<ConstrainedSubagentOwnerKind>,
     pub depth: usize,
     pub max_depth: usize,
     pub active_children: usize,
@@ -490,6 +509,10 @@ pub struct ConstrainedSubagentSpawnEventPayload {
     pub task: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_scope: Option<TaskScopeDescriptor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile: Option<DelegateBuiltinProfile>,
     pub execution: ConstrainedSubagentExecution,
@@ -531,7 +554,9 @@ impl ConstrainedSubagentExecution {
     }
 
     pub fn spawn_payload(&self, task: &str, label: Option<&str>) -> Value {
-        self.spawn_payload_with_profile_and_runtime_self_continuity(task, label, None, None)
+        self.spawn_payload_with_profile_and_runtime_self_continuity(
+            task, label, None, None, None, None,
+        )
     }
 
     pub fn spawn_payload_with_profile(
@@ -540,7 +565,9 @@ impl ConstrainedSubagentExecution {
         label: Option<&str>,
         profile: Option<DelegateBuiltinProfile>,
     ) -> Value {
-        self.spawn_payload_with_profile_and_runtime_self_continuity(task, label, profile, None)
+        self.spawn_payload_with_profile_and_runtime_self_continuity(
+            task, label, profile, None, None, None,
+        )
     }
 
     pub(crate) fn spawn_payload_with_profile_and_runtime_self_continuity(
@@ -549,10 +576,18 @@ impl ConstrainedSubagentExecution {
         label: Option<&str>,
         profile: Option<DelegateBuiltinProfile>,
         runtime_self_continuity: Option<&RuntimeSelfContinuity>,
+        task_scope_task_id: Option<&str>,
+        task_session_id: Option<&str>,
     ) -> Value {
+        let task_scope = task_scope_task_id.map(|task_id| TaskScopeDescriptor {
+            task_id: task_id.to_owned(),
+        });
+        let task_session_id = task_session_id.map(ToOwned::to_owned);
         json!(ConstrainedSubagentSpawnEventPayload {
             task: task.to_owned(),
             label: label.map(ToOwned::to_owned),
+            task_scope,
+            task_session_id,
             profile,
             execution: self.clone(),
             runtime_self_continuity: runtime_self_continuity.cloned(),
@@ -598,6 +633,7 @@ mod tests {
         let execution = ConstrainedSubagentExecution {
             mode: ConstrainedSubagentMode::Async,
             isolation: ConstrainedSubagentIsolation::Shared,
+            owner_kind: Some(ConstrainedSubagentOwnerKind::BackgroundTaskHost),
             depth: 1,
             max_depth: 2,
             active_children: 0,
@@ -629,6 +665,12 @@ mod tests {
             ConstrainedSubagentExecution::profile_from_event_payload(&payload),
             Some(DelegateBuiltinProfile::Research)
         );
+        assert_eq!(
+            ConstrainedSubagentExecution::from_event_payload(&payload)
+                .and_then(|execution| execution.owner_kind)
+                .map(ConstrainedSubagentOwnerKind::as_str),
+            Some("background_task_host")
+        );
     }
 
     #[test]
@@ -636,6 +678,7 @@ mod tests {
         let execution = ConstrainedSubagentExecution {
             mode: ConstrainedSubagentMode::Inline,
             isolation: ConstrainedSubagentIsolation::Shared,
+            owner_kind: None,
             depth: 1,
             max_depth: 2,
             active_children: 0,
@@ -650,8 +693,11 @@ mod tests {
             profile: Some(ConstrainedSubagentProfile::for_child_depth(1, 2)),
         };
         let continuity = RuntimeSelfContinuity {
+            workspace_guidance: crate::workspace_guidance::WorkspaceGuidanceModel {
+                entries: vec!["Keep continuity explicit.".to_owned()],
+            },
             runtime_self: RuntimeSelfModel {
-                standing_instructions: vec!["Keep continuity explicit.".to_owned()],
+                standing_instructions: Vec::new(),
                 tool_usage_policy: vec!["Search memory before guessing workspace facts.".to_owned()],
                 soul_guidance: vec!["Prefer rigorous execution.".to_owned()],
                 identity_context: vec!["# Identity\n- Name: Child".to_owned()],
@@ -671,6 +717,8 @@ mod tests {
             Some("child"),
             None,
             Some(&continuity),
+            Some("task-root"),
+            Some("child-session"),
         );
 
         assert_eq!(
@@ -685,6 +733,8 @@ mod tests {
             payload["runtime_self_continuity"]["runtime_self"]["tool_usage_policy"][0],
             "Search memory before guessing workspace facts."
         );
+        assert_eq!(payload["task_scope"]["task_id"], "task-root");
+        assert_eq!(payload["task_session_id"], "child-session");
     }
 
     #[test]
@@ -692,6 +742,7 @@ mod tests {
         let execution = ConstrainedSubagentExecution {
             mode: ConstrainedSubagentMode::Async,
             isolation: ConstrainedSubagentIsolation::Shared,
+            owner_kind: None,
             depth: 1,
             max_depth: 3,
             active_children: 0,
@@ -728,6 +779,7 @@ mod tests {
         let execution = ConstrainedSubagentExecution {
             mode: ConstrainedSubagentMode::Inline,
             isolation: ConstrainedSubagentIsolation::Shared,
+            owner_kind: None,
             depth: 2,
             max_depth: 3,
             active_children: 1,

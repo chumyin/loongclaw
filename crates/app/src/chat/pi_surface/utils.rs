@@ -1,5 +1,6 @@
 use crate::constants::spinners::*;
 use ratatui::style::Color;
+use serde_json::Value;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 pub const FOCUS_RING_FRAMES: [&str; 18] = [
@@ -19,7 +20,6 @@ pub const LOONG_COMPACTION_TAG: Color = Color::Rgb(168, 234, 235); // #A8EAEB (T
 
 // Functional Aliases
 pub const PI_CYAN: Color = LOONG_MAYA_BLUE_FALLBACK;
-pub const PI_YELLOW: Color = Color::Rgb(255, 217, 122);
 pub const PI_GREEN: Color = LOONG_EMERALD;
 pub const PI_RED: Color = Color::Rgb(255, 46, 0);
 pub const PI_HEADING: Color = LOONG_AMETHYST_SMOKE;
@@ -80,4 +80,49 @@ pub fn get_spinner_verb_with_seed(start_time: Instant, seed: u64) -> &'static st
         .get(selected_index)
         .copied()
         .unwrap_or(SPINNERS_ZH_CN.first().copied().unwrap_or("thinking"))
+}
+
+pub fn compact_structured_preview(text: &str, max_fields: usize) -> Option<String> {
+    let value = serde_json::from_str::<Value>(text.trim()).ok()?;
+    let object = value.as_object()?;
+    if object.is_empty() {
+        return Some("{}".to_owned());
+    }
+
+    let mut parts = object
+        .iter()
+        .filter_map(|(key, value)| {
+            compact_preview_value(value).map(|value| format!("{key}={value}"))
+        })
+        .take(max_fields)
+        .collect::<Vec<_>>();
+
+    if object.len() > max_fields {
+        parts.push("…".to_owned());
+    }
+
+    if parts.is_empty() {
+        Some("…".to_owned())
+    } else {
+        Some(parts.join(" · "))
+    }
+}
+
+fn compact_preview_value(value: &Value) -> Option<String> {
+    match value {
+        Value::String(text) => Some(text.clone()),
+        Value::Bool(boolean) => Some(boolean.to_string()),
+        Value::Number(number) => Some(number.to_string()),
+        Value::Null => Some("null".to_owned()),
+        Value::Array(items) => Some(if items.is_empty() {
+            "[]".to_owned()
+        } else {
+            "…".to_owned()
+        }),
+        Value::Object(object) => Some(if object.is_empty() {
+            "{}".to_owned()
+        } else {
+            "…".to_owned()
+        }),
+    }
 }

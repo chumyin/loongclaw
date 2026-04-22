@@ -4,6 +4,7 @@ use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::*;
+use serde_json::Value;
 
 const CLI_CHAT_LIVE_PREVIEW_MIN_EMIT_CHARS: usize = 24;
 const CLI_CHAT_LIVE_PREVIEW_MAX_EMIT_CHARS: usize = 120;
@@ -72,6 +73,7 @@ pub(super) struct CliChatLiveSurfaceSnapshot {
     pub tool_call_count: usize,
     pub message_count: Option<usize>,
     pub estimated_tokens: Option<usize>,
+    pub first_token_latency_ms: Option<u64>,
     pub draft_preview: Option<String>,
     pub tools: Vec<CliChatLiveToolSnapshot>,
 }
@@ -117,6 +119,7 @@ impl CliChatLiveToolState {
 #[derive(Debug, Clone, Default)]
 pub(super) struct CliChatLiveSurfaceState {
     pub latest_phase_event: Option<ConversationTurnPhaseEvent>,
+    pub first_token_latency_ms: Option<u64>,
     pub draft_preview: String,
     pub tool_states: BTreeMap<String, CliChatLiveToolState>,
     pub tool_call_index_map: BTreeMap<usize, String>,
@@ -347,6 +350,9 @@ impl CliChatLiveSurfaceObserver {
             let mut should_render = false;
 
             if let Some(text_delta) = text_delta {
+                if state.first_token_latency_ms.is_none() {
+                    state.first_token_latency_ms = event.elapsed_ms;
+                }
                 let preview_char_limit = cli_chat_live_preview_char_limit(render_width);
                 append_cli_chat_live_buffer(
                     &mut state.draft_preview,
@@ -441,6 +447,7 @@ pub(super) fn cli_chat_live_phase_starts_provider_request(phase: ConversationTur
 }
 
 pub(super) fn reset_cli_chat_live_request_state(state: &mut CliChatLiveSurfaceState) {
+    state.first_token_latency_ms = None;
     state.draft_preview.clear();
     state.tool_states.clear();
     state.tool_call_index_map.clear();
@@ -791,6 +798,7 @@ pub(super) fn build_cli_chat_live_surface_snapshot(
         tool_call_count: phase_event.tool_call_count,
         message_count: phase_event.message_count,
         estimated_tokens: phase_event.estimated_tokens,
+        first_token_latency_ms: state.first_token_latency_ms,
         draft_preview,
         tools,
     })
@@ -806,7 +814,10 @@ fn build_cli_chat_live_tool_snapshots(
     for tool_state in ordered_states {
         let snapshot = CliChatLiveToolSnapshot {
             tool_call_id: tool_state.tool_call_id.clone(),
-            name: tool_state.name.clone(),
+            name: tool_state
+                .name
+                .as_deref()
+                .map(crate::tools::user_visible_tool_name),
             request_summary: tool_state.request_summary.clone(),
             args: tool_state.args.clone(),
             status: tool_state.status,
@@ -829,27 +840,32 @@ pub(super) fn format_cli_chat_live_tool_activity_lines(
     let mut lines = Vec::new();
 
     for tool_snapshot in tool_snapshots {
-        let status = tool_snapshot.status.as_str().replace('_', " ");
         let name = tool_snapshot.name.as_deref().unwrap_or("pending");
-        let tool_call_id = tool_snapshot.tool_call_id.as_str();
-        let tool_line = if let Some(detail) = tool_snapshot.detail.as_deref() {
-            format!("[{status}] {name} (id={tool_call_id}) - {detail}")
-        } else {
-            format!("[{status}] {name} (id={tool_call_id})")
-        };
+        let tool_line = format_cli_chat_live_tool_headline(tool_snapshot, name);
         lines.push(tool_line);
 
-        if let Some(request_summary) = tool_snapshot.request_summary.as_deref() {
-            let request_summary = truncate_cli_chat_live_text(
-                request_summary,
-                CLI_CHAT_LIVE_TOOL_ARGS_MAX_BUFFER_CHARS,
-            );
-            let request_line = format!("request: {request_summary}");
+        let request_preview = tool_snapshot
+            .request_summary
+            .as_deref()
+            .map(format_cli_chat_live_structured_preview);
+        let args_preview = (!tool_snapshot.args.is_empty())
+            .then(|| format_cli_chat_live_structured_preview(tool_snapshot.args.as_str()));
+
+        if let Some(request_preview) = request_preview.as_deref() {
+            let request_line = if args_preview.as_deref() == Some(request_preview) {
+                format!("  ↳ request {request_preview}")
+            } else if tool_snapshot.request_summary.as_deref() == Some(request_preview) {
+                format!("  ↳ {request_preview}")
+            } else {
+                format!("  ↳ request {request_preview}")
+            };
             lines.push(request_line);
         }
 
-        if !tool_snapshot.args.is_empty() {
-            let args_line = format!("args: {}", tool_snapshot.args);
+        if let Some(args_preview) = args_preview.as_deref()
+            && request_preview.as_deref() != Some(args_preview)
+        {
+            let args_line = format!("  ↳ args {args_preview}");
             lines.push(args_line);
         }
 
@@ -905,6 +921,77 @@ pub(super) fn format_cli_chat_live_tool_activity_lines(
     }
 
     lines
+}
+
+fn format_cli_chat_live_tool_headline(
+    tool_snapshot: &CliChatLiveToolSnapshot,
+    name: &str,
+) -> String {
+    let prefix = match tool_snapshot.status {
+        ConversationTurnToolState::Running => "• Called",
+        ConversationTurnToolState::Completed
+        | ConversationTurnToolState::Failed
+        | ConversationTurnToolState::Interrupted => "• Closed",
+        ConversationTurnToolState::NeedsApproval => "• Approval",
+        ConversationTurnToolState::Denied => "• Denied",
+    };
+
+    if let Some(detail) = tool_snapshot.detail.as_deref() {
+        format!("{prefix} {name} · {detail}")
+    } else {
+        format!("{prefix} {name}")
+    }
+}
+
+fn format_cli_chat_live_structured_preview(text: &str) -> String {
+    compact_structured_preview(text, 3).unwrap_or_else(|| {
+        truncate_cli_chat_live_text(text, CLI_CHAT_LIVE_TOOL_ARGS_MAX_BUFFER_CHARS)
+    })
+}
+
+fn compact_structured_preview(text: &str, max_fields: usize) -> Option<String> {
+    let value = serde_json::from_str::<Value>(text.trim()).ok()?;
+    let object = value.as_object()?;
+    if object.is_empty() {
+        return Some("{}".to_owned());
+    }
+
+    let mut parts = object
+        .iter()
+        .filter_map(|(key, value)| {
+            compact_preview_value(value).map(|value| format!("{key}={value}"))
+        })
+        .take(max_fields)
+        .collect::<Vec<_>>();
+
+    if object.len() > max_fields {
+        parts.push("…".to_owned());
+    }
+
+    if parts.is_empty() {
+        Some("…".to_owned())
+    } else {
+        Some(parts.join(" · "))
+    }
+}
+
+fn compact_preview_value(value: &Value) -> Option<String> {
+    match value {
+        Value::String(text) => Some(text.clone()),
+        Value::Bool(boolean) => Some(boolean.to_string()),
+        Value::Number(number) => Some(number.to_string()),
+        Value::Null => Some("null".to_owned()),
+        Value::Array(items) => Some(if items.is_empty() {
+            "[]".to_owned()
+        } else {
+            "…".to_owned()
+        }),
+        Value::Object(object) => Some(if object.is_empty() {
+            "{}".to_owned()
+        } else {
+            "…".to_owned()
+        }),
+    }
 }
 
 pub(super) fn render_cli_chat_live_surface_lines_with_width(
@@ -1078,6 +1165,10 @@ fn build_cli_chat_live_surface_card_title(snapshot: &CliChatLiveSurfaceSnapshot)
         segments.push(format!("~{estimated_tokens} tok"));
     }
 
+    if let Some(first_token_latency_ms) = snapshot.first_token_latency_ms {
+        segments.push(format!("ttft {first_token_latency_ms}ms"));
+    }
+
     segments.join(" · ")
 }
 
@@ -1117,6 +1208,12 @@ fn cli_chat_live_surface_detail(snapshot: &CliChatLiveSurfaceSnapshot) -> String
         }
         ConversationTurnPhase::RequestingProvider => {
             let provider_round = snapshot.provider_round.unwrap_or(1);
+            if let Some(first_token_latency_ms) = snapshot.first_token_latency_ms {
+                return format!(
+                    "Provider round {provider_round} started streaming after {first_token_latency_ms} ms."
+                );
+            }
+
             format!("Requesting provider round {provider_round} and waiting for the reply.")
         }
         ConversationTurnPhase::RunningTools => {
@@ -1131,6 +1228,12 @@ fn cli_chat_live_surface_detail(snapshot: &CliChatLiveSurfaceSnapshot) -> String
         }
         ConversationTurnPhase::RequestingFollowupProvider => {
             let provider_round = snapshot.provider_round.unwrap_or(1);
+            if let Some(first_token_latency_ms) = snapshot.first_token_latency_ms {
+                return format!(
+                    "Follow-up provider round {provider_round} started streaming after {first_token_latency_ms} ms."
+                );
+            }
+
             format!("Sending tool results back for provider round {provider_round}.")
         }
         ConversationTurnPhase::FinalizingReply => {
@@ -1217,6 +1320,10 @@ fn cli_chat_live_model_detail(snapshot: &CliChatLiveSurfaceSnapshot) -> String {
         ConversationTurnPhase::RequestingProvider
         | ConversationTurnPhase::RequestingFollowupProvider => {
             let provider_round = snapshot.provider_round.unwrap_or(1);
+            if let Some(first_token_latency_ms) = snapshot.first_token_latency_ms {
+                return format!("first token in {first_token_latency_ms} ms");
+            }
+
             format!("provider round {provider_round} in progress")
         }
         ConversationTurnPhase::RunningTools
@@ -1380,6 +1487,13 @@ fn build_cli_chat_live_status_items(snapshot: &CliChatLiveSurfaceSnapshot) -> Ve
         });
     }
 
+    if let Some(first_token_latency_ms) = snapshot.first_token_latency_ms {
+        items.push(TuiKeyValueSpec::Plain {
+            key: "first token".to_owned(),
+            value: format!("{first_token_latency_ms} ms"),
+        });
+    }
+
     items
 }
 
@@ -1452,6 +1566,7 @@ mod tests {
             tool_call_count: 0,
             message_count: Some(4),
             estimated_tokens: Some(1200),
+            first_token_latency_ms: None,
             draft_preview: Some("Hello there\nHow are you?".to_owned()),
             tools: Vec::new(),
         };
@@ -1474,6 +1589,7 @@ mod tests {
             tool_call_count: 1,
             message_count: Some(6),
             estimated_tokens: Some(1800),
+            first_token_latency_ms: None,
             draft_preview: None,
             tools: vec![CliChatLiveToolSnapshot {
                 tool_call_id: "call-1".to_owned(),
@@ -1493,11 +1609,49 @@ mod tests {
         let lines = render_cli_chat_live_compact_lines_with_width(&snapshot, 60);
         let joined = lines.join("\n");
 
-        assert!(joined.contains("read_file"));
-        assert!(joined.contains("request: Read src/main.rs"));
+        assert!(joined.contains("• Called read_file · working"));
+        assert!(joined.contains("↳ Read src/main.rs"));
+        assert!(joined.contains("↳ args path=src/main.rs"));
         assert!(joined.contains("metrics: 12ms"));
         assert!(!joined.contains("╭─"));
         assert!(!joined.contains("tool activity]"));
+    }
+
+    #[test]
+    fn compact_render_compacts_structured_request_and_args_previews() {
+        let snapshot = CliChatLiveSurfaceSnapshot {
+            phase: ConversationTurnPhase::RunningTools,
+            provider_round: Some(1),
+            lane: Some(ExecutionLane::Fast),
+            tool_call_count: 1,
+            message_count: Some(3),
+            estimated_tokens: Some(900),
+            first_token_latency_ms: None,
+            draft_preview: None,
+            tools: vec![CliChatLiveToolSnapshot {
+                tool_call_id: "call-2".to_owned(),
+                name: Some("search".to_owned()),
+                request_summary: Some(
+                    "{\"query\":\"rust\",\"limit\":5,\"scope\":\"repo\"}".to_owned(),
+                ),
+                args: "{\"query\":\"rust\",\"limit\":5,\"scope\":\"repo\"}".to_owned(),
+                status: ConversationTurnToolState::Running,
+                detail: None,
+                stdout: empty_output(),
+                stderr: empty_output(),
+                file_change: None,
+                duration_ms: None,
+                exit_code: None,
+            }],
+        };
+
+        let lines = render_cli_chat_live_compact_lines_with_width(&snapshot, 64);
+        let joined = lines.join("\n");
+
+        assert!(joined.contains("• Called search"));
+        assert!(joined.contains("↳ request query=rust"));
+        assert!(!joined.contains("↳ args query=rust"));
+        assert!(joined.contains("limit=5"));
     }
 
     #[test]
@@ -1509,6 +1663,7 @@ mod tests {
             tool_call_count: 0,
             message_count: Some(2),
             estimated_tokens: Some(512),
+            first_token_latency_ms: None,
             draft_preview: Some(
                 "<think>quiet reasoning\nsecond line</think>Hello there".to_owned(),
             ),
@@ -1534,6 +1689,7 @@ mod tests {
             tool_call_count: 0,
             message_count: Some(2),
             estimated_tokens: Some(512),
+            first_token_latency_ms: None,
             draft_preview: Some(
                 "\n\n<think>reasoning line</think>\n\n\nvisible reply\n\n".to_owned(),
             ),
@@ -1579,6 +1735,7 @@ mod tests {
                 tool_call: None,
             },
             index: None,
+            elapsed_ms: Some(42),
         });
 
         render_width.store(12, Ordering::Relaxed);

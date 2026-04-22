@@ -1,10 +1,11 @@
 use super::*;
 use crate::KernelContext;
-use crate::config::{LoongClawConfig, ProviderConfig, ReasoningEffort};
+use crate::config::{LoongConfig, ProviderConfig, ReasoningEffort};
+use crate::provider::rate_limit::RateLimitObservation;
 use crate::test_support::ScopedEnv;
-use loongclaw_contracts::{Capability, ExecutionRoute, HarnessKind, SecretRef};
-use loongclaw_kernel::{
-    AuditEventKind, FixedClock, InMemoryAuditSink, LoongClawKernel, StaticPolicyEngine,
+use loong_contracts::{Capability, ExecutionRoute, HarnessKind, SecretRef};
+use loong_kernel::{
+    AuditEventKind, FixedClock, InMemoryAuditSink, LoongKernel, StaticPolicyEngine,
     VerticalPackManifest,
 };
 use reqwest::header::{HeaderMap, HeaderValue, RETRY_AFTER};
@@ -31,8 +32,7 @@ fn build_provider_failover_test_kernel_context(
 ) -> (KernelContext, Arc<InMemoryAuditSink>) {
     let audit = Arc::new(InMemoryAuditSink::default());
     let clock = Arc::new(FixedClock::new(1_700_000_321));
-    let mut kernel =
-        LoongClawKernel::with_runtime(StaticPolicyEngine::default(), clock, audit.clone());
+    let mut kernel = LoongKernel::with_runtime(StaticPolicyEngine::default(), clock, audit.clone());
     kernel
         .register_pack(VerticalPackManifest {
             pack_id: "provider-test-pack".to_owned(),
@@ -84,7 +84,7 @@ fn next_model_cooldown_test_namespace() -> String {
 
 #[test]
 fn provider_tool_schema_readiness_reports_default_structured_mode() {
-    let config = LoongClawConfig::default();
+    let config = LoongConfig::default();
 
     let readiness = provider_tool_schema_readiness(&config);
 
@@ -98,25 +98,25 @@ fn provider_tool_schema_readiness_reports_default_structured_mode() {
 
 #[test]
 fn provider_tool_schema_readiness_honors_disabled_mode_and_model_hints() {
-    let disabled_config = LoongClawConfig {
+    let disabled_config = LoongConfig {
         provider: ProviderConfig {
             tool_schema_mode: crate::config::ProviderToolSchemaModeConfig::Disabled,
             ..ProviderConfig::default()
         },
-        ..LoongClawConfig::default()
+        ..LoongConfig::default()
     };
     let disabled_readiness = provider_tool_schema_readiness(&disabled_config);
 
     assert!(!disabled_readiness.structured_tool_schema_enabled);
     assert_eq!(disabled_readiness.effective_tool_schema_mode, "disabled");
 
-    let hinted_config = LoongClawConfig {
+    let hinted_config = LoongConfig {
         provider: ProviderConfig {
             model: "gpt-no-tools-preview".to_owned(),
             tool_schema_disabled_model_hints: vec!["no-tools".to_owned()],
             ..ProviderConfig::default()
         },
-        ..LoongClawConfig::default()
+        ..LoongConfig::default()
     };
     let hinted_readiness = provider_tool_schema_readiness(&hinted_config);
 
@@ -143,9 +143,45 @@ fn read_local_provider_request(stream: &mut std::net::TcpStream, deadline: Insta
     stream
         .set_read_timeout(Some(timeout))
         .expect("set accepted stream read timeout");
-    let mut request_buf = [0_u8; 8192];
-    let len = stream.read(&mut request_buf).expect("read request");
-    String::from_utf8_lossy(&request_buf[..len]).to_string()
+    let mut request_bytes = Vec::new();
+    let mut request_buf = [0_u8; 4096];
+    let mut expected_len = None;
+
+    loop {
+        let len = stream.read(&mut request_buf).expect("read request");
+        if len == 0 {
+            break;
+        }
+        request_bytes.extend_from_slice(&request_buf[..len]);
+
+        if expected_len.is_none()
+            && let Some(headers_end) = request_bytes
+                .windows(4)
+                .position(|window| window == b"\r\n\r\n")
+        {
+            let headers_end = headers_end + 4;
+            let headers = String::from_utf8_lossy(&request_bytes[..headers_end]);
+            let content_length = headers
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    if !name.eq_ignore_ascii_case("content-length") {
+                        return None;
+                    }
+                    value.trim().parse::<usize>().ok()
+                })
+                .unwrap_or(0);
+            expected_len = Some(headers_end + content_length);
+        }
+
+        if let Some(expected_len) = expected_len
+            && request_bytes.len() >= expected_len
+        {
+            break;
+        }
+    }
+
+    String::from_utf8_lossy(&request_bytes).to_string()
 }
 
 #[test]
@@ -177,13 +213,13 @@ fn read_local_provider_request_accepts_elapsed_deadline() {
 
 #[tokio::test]
 async fn provider_auth_ready_accepts_x_api_key_providers() {
-    let config = LoongClawConfig {
+    let config = LoongConfig {
         provider: ProviderConfig {
             kind: ProviderKind::Anthropic,
             api_key: Some(SecretRef::Inline("anthropic-secret".to_owned())),
             ..ProviderConfig::default()
         },
-        ..LoongClawConfig::default()
+        ..LoongConfig::default()
     };
 
     assert!(provider_auth_ready(&config).await);
@@ -191,13 +227,13 @@ async fn provider_auth_ready_accepts_x_api_key_providers() {
 
 #[tokio::test]
 async fn provider_auth_ready_accepts_manual_auth_headers_for_custom_provider() {
-    let config = LoongClawConfig {
+    let config = LoongConfig {
         provider: ProviderConfig {
             kind: ProviderKind::Custom,
             headers: BTreeMap::from([("authorization".to_owned(), "Token manual-auth".to_owned())]),
             ..ProviderConfig::default()
         },
-        ..LoongClawConfig::default()
+        ..LoongConfig::default()
     };
 
     assert!(provider_auth_ready(&config).await);
@@ -212,12 +248,12 @@ async fn provider_auth_ready_accepts_bedrock_sigv4_credentials() {
     env.set("AWS_REGION", "us-west-2");
     env.remove("AWS_SESSION_TOKEN");
 
-    let config = LoongClawConfig {
+    let config = LoongConfig {
         provider: ProviderConfig {
             kind: ProviderKind::Bedrock,
             ..ProviderConfig::default()
         },
-        ..LoongClawConfig::default()
+        ..LoongConfig::default()
     };
 
     assert!(provider_auth_ready(&config).await);
@@ -702,10 +738,10 @@ fn clear_provider_auth_envs(env: &mut ScopedEnv, env_keys: &[&'static str]) {
     }
 }
 
-fn test_config(provider: ProviderConfig) -> LoongClawConfig {
-    LoongClawConfig {
+fn test_config(provider: ProviderConfig) -> LoongConfig {
+    LoongConfig {
         provider,
-        ..LoongClawConfig::default()
+        ..LoongConfig::default()
     }
 }
 
@@ -1206,10 +1242,13 @@ fn build_messages_includes_capability_snapshot_block() {
         "system prompt should contain capability snapshot marker, got: {system_content}"
     );
     assert!(
-        system_content.contains("- tool.search: Discover non-core tools"),
-        "system prompt should describe tool.search"
+        system_content.contains("- read:"),
+        "system prompt should advertise the direct read surface"
     );
-    assert!(system_content.contains("- tool.invoke: Invoke a discovered non-core tool"));
+    assert!(system_content.contains("- write:"));
+    assert!(system_content.contains("- exec:"));
+    assert!(system_content.contains("- tool.search: Discover hidden specialized tools"));
+    assert!(system_content.contains("- tool.invoke: Invoke a discovered hidden specialized tool"));
     assert!(!system_content.contains("shell.exec"));
     assert!(!system_content.contains("file.read"));
     assert!(!system_content.contains("file.write"));
@@ -1355,13 +1394,13 @@ fn completion_body_omits_optional_fields_when_not_configured() {
 
 #[test]
 fn anthropic_completion_body_uses_native_messages_shape() {
-    let config = LoongClawConfig {
+    let config = LoongConfig {
         provider: ProviderConfig {
             kind: ProviderKind::Anthropic,
             max_tokens: Some(2_048),
             ..ProviderConfig::default()
         },
-        ..LoongClawConfig::default()
+        ..LoongConfig::default()
     };
     let messages = vec![
         json!({"role": "system", "content": "sys"}),
@@ -1384,14 +1423,33 @@ fn anthropic_completion_body_uses_native_messages_shape() {
 }
 
 #[test]
+fn openai_completion_body_includes_stop_sequences() {
+    let config = test_config(ProviderConfig {
+        kind: ProviderKind::Openai,
+        stop: vec!["END".to_owned(), "HALT".to_owned()],
+        ..ProviderConfig::default()
+    });
+    let messages = vec![json!({"role": "user", "content": "hello"})];
+
+    let body = build_completion_request_body(
+        &config,
+        &messages,
+        "gpt-5",
+        CompletionPayloadMode::default_for(&config.provider),
+    );
+
+    assert_eq!(body["stop"], json!(["END", "HALT"]));
+}
+
+#[test]
 fn bedrock_completion_body_uses_converse_shape() {
-    let config = LoongClawConfig {
+    let config = LoongConfig {
         provider: ProviderConfig {
             kind: ProviderKind::Bedrock,
             max_tokens: Some(2_048),
             ..ProviderConfig::default()
         },
-        ..LoongClawConfig::default()
+        ..LoongConfig::default()
     };
     let messages = vec![
         json!({"role": "system", "content": "sys"}),
@@ -1450,7 +1508,7 @@ fn kimi_coding_request_headers_include_default_user_agent() {
         .expect("default user-agent")
         .to_str()
         .expect("user-agent value");
-    assert_eq!(user_agent, "KimiCLI/LoongClaw");
+    assert_eq!(user_agent, "KimiCLI/Loong");
 }
 
 #[test]
@@ -1601,7 +1659,15 @@ fn turn_body_includes_tool_schema_and_auto_choice() {
         .filter_map(Value::as_str)
         .collect();
 
-    let expected = vec!["tool_invoke", "tool_search"];
+    let expected = vec![
+        "browser",
+        "exec",
+        "read",
+        "tool_invoke",
+        "tool_search",
+        "web",
+        "write",
+    ];
 
     for expected_name in expected {
         assert!(
@@ -1615,12 +1681,12 @@ fn turn_body_includes_tool_schema_and_auto_choice() {
 #[cfg(any(feature = "tool-file", feature = "tool-shell"))]
 #[test]
 fn anthropic_turn_body_uses_native_messages_shape_and_tool_schema() {
-    let config = LoongClawConfig {
+    let config = LoongConfig {
         provider: ProviderConfig {
             kind: ProviderKind::Anthropic,
             ..ProviderConfig::default()
         },
-        ..LoongClawConfig::default()
+        ..LoongConfig::default()
     };
     let messages = vec![
         json!({
@@ -1675,12 +1741,12 @@ fn anthropic_turn_body_uses_native_messages_shape_and_tool_schema() {
 #[cfg(any(feature = "tool-file", feature = "tool-shell"))]
 #[test]
 fn anthropic_turn_body_converts_tool_schema_to_native_format() {
-    let config = LoongClawConfig {
+    let config = LoongConfig {
         provider: ProviderConfig {
             kind: ProviderKind::Anthropic,
             ..ProviderConfig::default()
         },
-        ..LoongClawConfig::default()
+        ..LoongConfig::default()
     };
 
     let body = build_turn_request_body(
@@ -1704,12 +1770,12 @@ fn anthropic_turn_body_converts_tool_schema_to_native_format() {
 
 #[test]
 fn anthropic_turn_body_preserves_native_tool_use_and_tool_result_blocks() {
-    let config = LoongClawConfig {
+    let config = LoongConfig {
         provider: ProviderConfig {
             kind: ProviderKind::Anthropic,
             ..ProviderConfig::default()
         },
-        ..LoongClawConfig::default()
+        ..LoongConfig::default()
     };
 
     let body = build_turn_request_body(
@@ -1725,7 +1791,7 @@ fn anthropic_turn_body_preserves_native_tool_use_and_tool_result_blocks() {
                     {
                         "type": "tool_use",
                         "id": "toolu_1",
-                        "name": "file_read",
+                        "name": "read",
                         "input": {
                             "path": "README.md"
                         }
@@ -1767,14 +1833,14 @@ fn anthropic_turn_body_preserves_native_tool_use_and_tool_result_blocks() {
 #[cfg(any(feature = "tool-file", feature = "tool-shell"))]
 #[test]
 fn opencode_zen_gemini_turn_body_uses_google_generate_content_shape() {
-    let config = LoongClawConfig {
+    let config = LoongConfig {
         provider: ProviderConfig {
             kind: ProviderKind::OpencodeZen,
             api_key: Some(SecretRef::Inline("opencode-secret".to_owned())),
             max_tokens: Some(2048),
             ..ProviderConfig::default()
         },
-        ..LoongClawConfig::default()
+        ..LoongConfig::default()
     };
     let messages = vec![
         json!({
@@ -1827,12 +1893,12 @@ fn opencode_zen_gemini_turn_body_uses_google_generate_content_shape() {
 #[cfg(any(feature = "tool-file", feature = "tool-shell"))]
 #[test]
 fn opencode_zen_gemini_turn_body_preserves_native_tool_result_blocks() {
-    let config = LoongClawConfig {
+    let config = LoongConfig {
         provider: ProviderConfig {
             kind: ProviderKind::OpencodeZen,
             ..ProviderConfig::default()
         },
-        ..LoongClawConfig::default()
+        ..LoongConfig::default()
     };
     let messages = vec![
         json!({
@@ -1845,7 +1911,7 @@ fn opencode_zen_gemini_turn_body_preserves_native_tool_result_blocks() {
                 {
                     "type": "tool_use",
                     "id": "toolu_1",
-                    "name": "file_read",
+                    "name": "read",
                     "input": {
                         "path": "README.md"
                     }
@@ -1901,12 +1967,12 @@ fn opencode_zen_gemini_turn_body_preserves_native_tool_result_blocks() {
     assert_eq!(body["contents"][0]["role"], "model");
     assert_eq!(
         body["contents"][0]["parts"][1]["functionCall"]["name"],
-        "file_read"
+        "read"
     );
     assert_eq!(body["contents"][1]["role"], "user");
     assert_eq!(
         body["contents"][1]["parts"][0]["functionResponse"]["name"],
-        "file_read"
+        "read"
     );
     assert_eq!(
         body["contents"][1]["parts"][0]["functionResponse"]["response"]["path"],
@@ -1921,13 +1987,13 @@ fn opencode_zen_gemini_turn_body_preserves_native_tool_result_blocks() {
 #[cfg(any(feature = "tool-file", feature = "tool-shell"))]
 #[test]
 fn opencode_zen_gemini_turn_body_preserves_native_tool_results() {
-    let config = LoongClawConfig {
+    let config = LoongConfig {
         provider: ProviderConfig {
             kind: ProviderKind::OpencodeZen,
             api_key: Some(SecretRef::Inline("opencode-secret".to_owned())),
             ..ProviderConfig::default()
         },
-        ..LoongClawConfig::default()
+        ..LoongConfig::default()
     };
     let messages = vec![
         json!({
@@ -1940,7 +2006,7 @@ fn opencode_zen_gemini_turn_body_preserves_native_tool_results() {
                 {
                     "type": "tool_use",
                     "id": "toolu_1",
-                    "name": "file_read",
+                    "name": "read",
                     "input": {
                         "path": "README.md"
                     }
@@ -1995,12 +2061,12 @@ fn opencode_zen_gemini_turn_body_preserves_native_tool_results() {
     assert_eq!(body["contents"][0]["role"], "model");
     assert_eq!(
         body["contents"][0]["parts"][1]["functionCall"]["name"],
-        "file_read"
+        "read"
     );
     assert_eq!(body["contents"][1]["role"], "user");
     assert_eq!(
         body["contents"][1]["parts"][0]["functionResponse"]["name"],
-        "file_read"
+        "read"
     );
     assert_eq!(
         body["contents"][1]["parts"][0]["functionResponse"]["response"]["result"],
@@ -2015,12 +2081,12 @@ fn opencode_zen_gemini_turn_body_preserves_native_tool_results() {
 #[cfg(any(feature = "tool-file", feature = "tool-shell"))]
 #[test]
 fn bedrock_turn_body_uses_native_tool_blocks_and_tool_config() {
-    let config = LoongClawConfig {
+    let config = LoongConfig {
         provider: ProviderConfig {
             kind: ProviderKind::Bedrock,
             ..ProviderConfig::default()
         },
-        ..LoongClawConfig::default()
+        ..LoongConfig::default()
     };
 
     let body = build_turn_request_body(
@@ -2036,7 +2102,7 @@ fn bedrock_turn_body_uses_native_tool_blocks_and_tool_config() {
                     {
                         "type": "tool_use",
                         "id": "toolu_1",
-                        "name": "file_read",
+                        "name": "read",
                         "input": {
                             "path": "README.md"
                         }
@@ -2118,7 +2184,7 @@ fn extract_provider_turn_supports_google_generate_content_tool_calls() {
                         },
                         {
                             "functionCall": {
-                                "name": "file_read",
+                                "name": "read",
                                 "args": {
                                     "path": "README.md"
                                 }
@@ -2135,7 +2201,7 @@ fn extract_provider_turn_supports_google_generate_content_tool_calls() {
 
     assert_eq!(turn.assistant_text, "checking");
     assert_eq!(turn.tool_intents.len(), 1);
-    assert_eq!(turn.tool_intents[0].tool_name, "file.read");
+    assert_eq!(turn.tool_intents[0].tool_name, "read");
     assert_eq!(turn.tool_intents[0].args_json["path"], "README.md");
 }
 
@@ -2187,7 +2253,7 @@ fn responses_turn_body_preserves_native_function_call_roundtrip_items() {
             }),
             json!({
                 "type": "function_call",
-                "name": "file_read",
+                "name": "read",
                 "call_id": "call_resp_1",
                 "arguments": "{\"path\":\"README.md\"}"
             }),
@@ -2351,7 +2417,7 @@ fn provider_runtime_contract_defaults_are_stable() {
         openai_contract.transport_mode,
         ProviderTransportMode::OpenAiChatCompletions
     );
-    assert!(!openai_contract.supports_turn_streaming_events());
+    assert!(openai_contract.supports_turn_streaming_events());
     assert_eq!(
         openai_contract.profile_health_mode,
         ProviderProfileHealthMode::EnforceUnusableWindows
@@ -2491,7 +2557,7 @@ fn provider_runtime_contract_defaults_are_stable() {
         kimi_coding_contract.transport_mode,
         ProviderTransportMode::KimiApi
     );
-    assert!(!kimi_coding_contract.supports_turn_streaming_events());
+    assert!(kimi_coding_contract.supports_turn_streaming_events());
     assert!(!kimi_coding_contract.validation.forbid_kimi_coding_endpoint);
     assert!(
         kimi_coding_contract
@@ -2570,7 +2636,7 @@ fn provider_runtime_contract_defaults_are_stable() {
 #[tokio::test(flavor = "current_thread")]
 async fn request_turn_streaming_rejects_unsupported_transport_modes() {
     let config = test_config(ProviderConfig {
-        kind: ProviderKind::Openai,
+        kind: ProviderKind::Bedrock,
         ..ProviderConfig::default()
     });
 
@@ -2594,6 +2660,16 @@ async fn request_turn_streaming_rejects_unsupported_transport_modes() {
         error.contains("does not support live turn streaming events"),
         "the provider error should explain the unsupported transport: {error}"
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn request_turn_streaming_supports_openai_chat_completions_transports() {
+    let config = test_config(ProviderConfig {
+        kind: ProviderKind::Openai,
+        ..ProviderConfig::default()
+    });
+
+    assert!(supports_turn_streaming_events(&config));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -2622,6 +2698,7 @@ async fn sibling_provider_tests_can_inject_mock_transport_into_dispatch_layer() 
                     }
                 }]
             }),
+            rate_limit: None,
         },
     )]);
 
@@ -2638,6 +2715,7 @@ async fn sibling_provider_tests_can_inject_mock_transport_into_dispatch_layer() 
         &auth_context,
         &request_policy,
         &transport,
+        None,
     )
     .await
     .expect("dispatch helper should accept mock transport from sibling tests");
@@ -2903,9 +2981,8 @@ async fn responses_completion_falls_back_to_chat_completions_for_compatible_endp
         let mut requests = Vec::new();
         for _ in 0..2 {
             let (mut stream, _) = listener.accept().expect("accept local provider request");
-            let mut request_buf = [0_u8; 8192];
-            let len = stream.read(&mut request_buf).expect("read request");
-            let request = String::from_utf8_lossy(&request_buf[..len]).to_string();
+            let request =
+                read_local_provider_request(&mut stream, Instant::now() + Duration::from_secs(1));
             requests.push(request.clone());
 
             let (status_line, body) = if request.starts_with("POST /v1/responses ") {
@@ -2986,9 +3063,8 @@ async fn responses_turn_falls_back_to_chat_completions_for_compatible_endpoints(
         let mut requests = Vec::new();
         for _ in 0..2 {
             let (mut stream, _) = listener.accept().expect("accept local provider request");
-            let mut request_buf = [0_u8; 8192];
-            let len = stream.read(&mut request_buf).expect("read request");
-            let request = String::from_utf8_lossy(&request_buf[..len]).to_string();
+            let request =
+                read_local_provider_request(&mut stream, Instant::now() + Duration::from_secs(1));
             requests.push(request.clone());
 
             let (status_line, body) = if request.starts_with("POST /v1/responses ") {
@@ -3071,9 +3147,8 @@ async fn responses_turn_does_not_fallback_for_generic_gateway_failures() {
         let mut requests = Vec::new();
         for _ in 0..3 {
             let (mut stream, _) = listener.accept().expect("accept local provider request");
-            let mut request_buf = [0_u8; 8192];
-            let len = stream.read(&mut request_buf).expect("read request");
-            let request = String::from_utf8_lossy(&request_buf[..len]).to_string();
+            let request =
+                read_local_provider_request(&mut stream, Instant::now() + Duration::from_secs(1));
             requests.push(request.clone());
 
             let body =
@@ -3137,9 +3212,8 @@ async fn routed_google_requests_do_not_retry_responses_fallback_logic() {
     let server = std::thread::spawn(move || {
         let mut requests = Vec::new();
         let (mut stream, _) = listener.accept().expect("accept local provider request");
-        let mut request_buf = [0_u8; 8192];
-        let len = stream.read(&mut request_buf).expect("read request");
-        let request = String::from_utf8_lossy(&request_buf[..len]).to_string();
+        let request =
+            read_local_provider_request(&mut stream, Instant::now() + Duration::from_secs(1));
         requests.push(request);
 
         let body = r#"{"error":{"message":"unsupported google route request"}}"#;
@@ -3798,7 +3872,12 @@ fn model_candidate_cooldown_reorders_candidates_with_active_cooldown() {
         max_cooldown: Duration::from_secs(600),
         max_entries: MODEL_CANDIDATE_COOLDOWN_CACHE_MAX_ENTRIES,
     };
-    register_model_candidate_cooldown(&policy, "model-a", ProviderFailoverReason::ModelMismatch);
+    register_model_candidate_cooldown(
+        &policy,
+        "model-a",
+        ProviderFailoverReason::ModelMismatch,
+        None,
+    );
 
     let ordered = prioritize_model_candidates_by_cooldown(
         vec![
@@ -3819,13 +3898,316 @@ fn model_candidate_cooldown_ignores_non_model_replacement_failures() {
         max_cooldown: Duration::from_secs(600),
         max_entries: MODEL_CANDIDATE_COOLDOWN_CACHE_MAX_ENTRIES,
     };
-    register_model_candidate_cooldown(&policy, "model-a", ProviderFailoverReason::RequestRejected);
+    register_model_candidate_cooldown(
+        &policy,
+        "model-a",
+        ProviderFailoverReason::RequestRejected,
+        None,
+    );
 
     let ordered = prioritize_model_candidates_by_cooldown(
         vec!["model-a".to_owned(), "model-b".to_owned()],
         Some(&policy),
     );
     assert_eq!(ordered, vec!["model-a", "model-b"]);
+}
+
+#[test]
+fn model_candidate_cooldown_prefers_observed_rate_limit_window() {
+    let policy = ModelCandidateCooldownPolicy {
+        namespace: next_model_cooldown_test_namespace(),
+        cooldown: Duration::from_secs(60),
+        max_cooldown: Duration::from_secs(600),
+        max_entries: MODEL_CANDIDATE_COOLDOWN_CACHE_MAX_ENTRIES,
+    };
+    let observation = RateLimitObservation {
+        requests_limit: None,
+        requests_remaining: None,
+        requests_reset: Some(Duration::from_secs(90)),
+        tokens_limit: None,
+        tokens_remaining: None,
+        tokens_reset: Some(Duration::from_secs(120)),
+        retry_after: Some(Duration::from_secs(30)),
+        provider_family: crate::provider::rate_limit::ProviderHeaderFamily::OpenAi,
+    };
+
+    let effective = resolve_model_candidate_cooldown_duration(&policy, Some(&observation));
+
+    assert_eq!(effective, Duration::from_secs(120));
+}
+
+#[test]
+fn model_candidate_cooldown_prefers_provider_hint_even_when_shorter_than_policy_floor() {
+    let policy = ModelCandidateCooldownPolicy {
+        namespace: next_model_cooldown_test_namespace(),
+        cooldown: Duration::from_secs(60),
+        max_cooldown: Duration::from_secs(600),
+        max_entries: MODEL_CANDIDATE_COOLDOWN_CACHE_MAX_ENTRIES,
+    };
+    let observation = RateLimitObservation {
+        requests_limit: None,
+        requests_remaining: None,
+        requests_reset: None,
+        tokens_limit: None,
+        tokens_remaining: None,
+        tokens_reset: None,
+        retry_after: Some(Duration::from_secs(5)),
+        provider_family: crate::provider::rate_limit::ProviderHeaderFamily::OpenAi,
+    };
+
+    let effective = resolve_model_candidate_cooldown_duration(&policy, Some(&observation));
+
+    assert_eq!(effective, Duration::from_secs(5));
+}
+
+#[test]
+fn model_request_error_preserves_rate_limit_observation() {
+    let observation = RateLimitObservation {
+        requests_limit: Some(100),
+        requests_remaining: Some(1),
+        requests_reset: Some(Duration::from_secs(45)),
+        tokens_limit: None,
+        tokens_remaining: None,
+        tokens_reset: None,
+        retry_after: Some(Duration::from_secs(15)),
+        provider_family: crate::provider::rate_limit::ProviderHeaderFamily::OpenAi,
+    };
+    let error = build_model_request_error_with_rate_limit(
+        "provider returned status 429 for model `model-z`".to_owned(),
+        false,
+        ProviderFailoverReason::RateLimited,
+        ProviderFailoverStage::StatusFailure,
+        "model-z",
+        2,
+        3,
+        Some(429),
+        None,
+        Some(observation.clone()),
+    );
+
+    assert_eq!(error.rate_limit, Some(observation));
+}
+
+#[test]
+fn request_across_model_candidates_preserves_first_cooldown_trigger_across_auth_profiles() {
+    let provider = ProviderConfig::default();
+    let policy = ModelCandidateCooldownPolicy {
+        namespace: next_model_cooldown_test_namespace(),
+        cooldown: Duration::from_secs(60),
+        max_cooldown: Duration::from_secs(600),
+        max_entries: MODEL_CANDIDATE_COOLDOWN_CACHE_MAX_ENTRIES,
+    };
+    let auth_profiles = vec![
+        ProviderAuthProfile {
+            id: "profile-a".to_owned(),
+            authorization_secret: Some("secret-a".to_owned()),
+            api_key_secret: None,
+            auth_cache_key: Some("bearer:secret-a".to_owned()),
+        },
+        ProviderAuthProfile {
+            id: "profile-b".to_owned(),
+            authorization_secret: Some("secret-b".to_owned()),
+            api_key_secret: None,
+            auth_cache_key: Some("bearer:secret-b".to_owned()),
+        },
+    ];
+    let attempts = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let rate_limit = RateLimitObservation {
+        requests_limit: None,
+        requests_remaining: None,
+        requests_reset: Some(Duration::from_secs(120)),
+        tokens_limit: None,
+        tokens_remaining: None,
+        tokens_reset: None,
+        retry_after: Some(Duration::from_secs(30)),
+        provider_family: crate::provider::rate_limit::ProviderHeaderFamily::OpenAi,
+    };
+
+    let result: Result<String, String> = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime")
+        .block_on(async {
+            request_failover_runtime::request_across_model_candidates(
+                &provider,
+                ProviderRuntimeBinding::direct(),
+                &auth_profiles,
+                None,
+                &["model-a".to_owned(), "model-b".to_owned()],
+                true,
+                Some(&policy),
+                |model, _auto_model_mode, auth_profile| {
+                    let attempts = attempts.clone();
+                    let rate_limit = rate_limit.clone();
+                    async move {
+                        attempts
+                            .lock()
+                            .expect("attempts lock")
+                            .push(format!("{model}:{}", auth_profile.id));
+                        if model == "model-a" && auth_profile.id == "profile-a" {
+                            return Err(build_model_request_error_with_rate_limit(
+                                "rate limited".to_owned(),
+                                false,
+                                ProviderFailoverReason::RateLimited,
+                                ProviderFailoverStage::StatusFailure,
+                                model.as_str(),
+                                1,
+                                3,
+                                Some(429),
+                                None,
+                                Some(rate_limit),
+                            ));
+                        }
+                        if model == "model-a" {
+                            return Err(build_model_request_error(
+                                "auth rejected".to_owned(),
+                                false,
+                                ProviderFailoverReason::AuthRejected,
+                                ProviderFailoverStage::StatusFailure,
+                                model.as_str(),
+                                1,
+                                3,
+                                Some(401),
+                                None,
+                            ));
+                        }
+                        Err(build_model_request_error(
+                            "request rejected".to_owned(),
+                            false,
+                            ProviderFailoverReason::RequestRejected,
+                            ProviderFailoverStage::StatusFailure,
+                            model.as_str(),
+                            1,
+                            3,
+                            Some(400),
+                            None,
+                        ))
+                    }
+                },
+            )
+            .await
+        });
+
+    assert!(result.is_err());
+    let attempts = attempts.lock().expect("attempts lock").clone();
+    assert_eq!(
+        attempts[..2],
+        [
+            "model-a:profile-a".to_owned(),
+            "model-a:profile-b".to_owned()
+        ]
+    );
+    assert_eq!(
+        prioritize_model_candidates_by_cooldown(
+            vec!["model-a".to_owned(), "model-b".to_owned()],
+            Some(&policy)
+        ),
+        vec!["model-b".to_owned(), "model-a".to_owned()]
+    );
+}
+
+#[test]
+fn request_across_model_candidates_upgrades_to_later_rate_limit_hint() {
+    let provider = ProviderConfig::default();
+    let policy = ModelCandidateCooldownPolicy {
+        namespace: next_model_cooldown_test_namespace(),
+        cooldown: Duration::ZERO,
+        max_cooldown: Duration::from_secs(600),
+        max_entries: MODEL_CANDIDATE_COOLDOWN_CACHE_MAX_ENTRIES,
+    };
+    let auth_profiles = vec![
+        ProviderAuthProfile {
+            id: "profile-a".to_owned(),
+            authorization_secret: Some("secret-a".to_owned()),
+            api_key_secret: None,
+            auth_cache_key: Some("bearer:secret-a".to_owned()),
+        },
+        ProviderAuthProfile {
+            id: "profile-b".to_owned(),
+            authorization_secret: Some("secret-b".to_owned()),
+            api_key_secret: None,
+            auth_cache_key: Some("bearer:secret-b".to_owned()),
+        },
+    ];
+    let rate_limit = RateLimitObservation {
+        requests_limit: None,
+        requests_remaining: None,
+        requests_reset: Some(Duration::from_secs(120)),
+        tokens_limit: None,
+        tokens_remaining: None,
+        tokens_reset: None,
+        retry_after: Some(Duration::from_secs(30)),
+        provider_family: crate::provider::rate_limit::ProviderHeaderFamily::OpenAi,
+    };
+
+    let result: Result<String, String> = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime")
+        .block_on(async {
+            request_failover_runtime::request_across_model_candidates(
+                &provider,
+                ProviderRuntimeBinding::direct(),
+                &auth_profiles,
+                None,
+                &["model-a".to_owned(), "model-b".to_owned()],
+                true,
+                Some(&policy),
+                |model, _auto_model_mode, auth_profile| {
+                    let rate_limit = rate_limit.clone();
+                    async move {
+                        if model == "model-a" && auth_profile.id == "profile-a" {
+                            return Err(build_model_request_error(
+                                "model mismatch".to_owned(),
+                                false,
+                                ProviderFailoverReason::ModelMismatch,
+                                ProviderFailoverStage::ModelCandidateRejected,
+                                model.as_str(),
+                                1,
+                                3,
+                                Some(404),
+                                None,
+                            ));
+                        }
+                        if model == "model-a" {
+                            return Err(build_model_request_error_with_rate_limit(
+                                "rate limited".to_owned(),
+                                false,
+                                ProviderFailoverReason::RateLimited,
+                                ProviderFailoverStage::StatusFailure,
+                                model.as_str(),
+                                1,
+                                3,
+                                Some(429),
+                                None,
+                                Some(rate_limit),
+                            ));
+                        }
+                        Err(build_model_request_error(
+                            "request rejected".to_owned(),
+                            false,
+                            ProviderFailoverReason::RequestRejected,
+                            ProviderFailoverStage::StatusFailure,
+                            model.as_str(),
+                            1,
+                            3,
+                            Some(400),
+                            None,
+                        ))
+                    }
+                },
+            )
+            .await
+        });
+
+    assert!(result.is_err());
+    assert_eq!(
+        prioritize_model_candidates_by_cooldown(
+            vec!["model-a".to_owned(), "model-b".to_owned()],
+            Some(&policy)
+        ),
+        vec!["model-b".to_owned(), "model-a".to_owned()]
+    );
 }
 
 #[test]

@@ -12,24 +12,24 @@ use crate::config::{
     DISCORD_BOT_TOKEN_ENV, FEISHU_APP_ID_ENV, FEISHU_APP_SECRET_ENV, FEISHU_ENCRYPT_KEY_ENV,
     FEISHU_VERIFICATION_TOKEN_ENV, FeishuChannelServeMode, GOOGLE_CHAT_WEBHOOK_URL_ENV,
     IMESSAGE_BRIDGE_TOKEN_ENV, IMESSAGE_BRIDGE_URL_ENV, IRC_NICKNAME_ENV, IRC_SERVER_ENV,
-    LINE_CHANNEL_ACCESS_TOKEN_ENV, LINE_CHANNEL_SECRET_ENV, LoongClawConfig,
-    MATRIX_ACCESS_TOKEN_ENV, MATTERMOST_BOT_TOKEN_ENV, MATTERMOST_SERVER_URL_ENV,
-    NEXTCLOUD_TALK_SERVER_URL_ENV, NEXTCLOUD_TALK_SHARED_SECRET_ENV, NOSTR_PRIVATE_KEY_ENV,
-    NOSTR_RELAY_URLS_ENV, ResolvedDingtalkChannelConfig, ResolvedDiscordChannelConfig,
-    ResolvedEmailChannelConfig, ResolvedFeishuChannelConfig, ResolvedGoogleChatChannelConfig,
-    ResolvedImessageChannelConfig, ResolvedIrcChannelConfig, ResolvedLineChannelConfig,
-    ResolvedMatrixChannelConfig, ResolvedMattermostChannelConfig,
-    ResolvedNextcloudTalkChannelConfig, ResolvedNostrChannelConfig, ResolvedSignalChannelConfig,
-    ResolvedSlackChannelConfig, ResolvedSynologyChatChannelConfig, ResolvedTeamsChannelConfig,
-    ResolvedTelegramChannelConfig, ResolvedTlonChannelConfig, ResolvedTwitchChannelConfig,
-    ResolvedWebhookChannelConfig, ResolvedWecomChannelConfig, ResolvedWhatsappChannelConfig,
-    SIGNAL_ACCOUNT_ENV, SIGNAL_SERVICE_URL_ENV, SLACK_BOT_TOKEN_ENV,
-    SYNOLOGY_CHAT_INCOMING_URL_ENV, SYNOLOGY_CHAT_TOKEN_ENV, TEAMS_APP_ID_ENV,
-    TEAMS_APP_PASSWORD_ENV, TEAMS_TENANT_ID_ENV, TEAMS_WEBHOOK_URL_ENV, TELEGRAM_BOT_TOKEN_ENV,
-    TWITCH_ACCESS_TOKEN_ENV, WEBHOOK_ENDPOINT_URL_ENV, WEBHOOK_SIGNING_SECRET_ENV,
-    WECOM_BOT_ID_ENV, WECOM_SECRET_ENV, WHATSAPP_ACCESS_TOKEN_ENV, WHATSAPP_APP_SECRET_ENV,
-    WHATSAPP_PHONE_NUMBER_ID_ENV, WHATSAPP_VERIFY_TOKEN_ENV, WebhookPayloadFormat,
-    parse_email_smtp_endpoint, parse_irc_server_endpoint,
+    LINE_CHANNEL_ACCESS_TOKEN_ENV, LINE_CHANNEL_SECRET_ENV, LoongConfig, MATRIX_ACCESS_TOKEN_ENV,
+    MATTERMOST_BOT_TOKEN_ENV, MATTERMOST_SERVER_URL_ENV, NEXTCLOUD_TALK_SERVER_URL_ENV,
+    NEXTCLOUD_TALK_SHARED_SECRET_ENV, NOSTR_PRIVATE_KEY_ENV, NOSTR_RELAY_URLS_ENV,
+    ResolvedDingtalkChannelConfig, ResolvedDiscordChannelConfig, ResolvedEmailChannelConfig,
+    ResolvedFeishuChannelConfig, ResolvedGoogleChatChannelConfig, ResolvedImessageChannelConfig,
+    ResolvedIrcChannelConfig, ResolvedLineChannelConfig, ResolvedMatrixChannelConfig,
+    ResolvedMattermostChannelConfig, ResolvedNextcloudTalkChannelConfig,
+    ResolvedNostrChannelConfig, ResolvedSignalChannelConfig, ResolvedSlackChannelConfig,
+    ResolvedSynologyChatChannelConfig, ResolvedTeamsChannelConfig, ResolvedTelegramChannelConfig,
+    ResolvedTlonChannelConfig, ResolvedTwitchChannelConfig, ResolvedWebhookChannelConfig,
+    ResolvedWecomChannelConfig, ResolvedWhatsappChannelConfig, SIGNAL_ACCOUNT_ENV,
+    SIGNAL_SERVICE_URL_ENV, SLACK_BOT_TOKEN_ENV, SYNOLOGY_CHAT_INCOMING_URL_ENV,
+    SYNOLOGY_CHAT_TOKEN_ENV, TEAMS_APP_ID_ENV, TEAMS_APP_PASSWORD_ENV, TEAMS_TENANT_ID_ENV,
+    TEAMS_WEBHOOK_URL_ENV, TELEGRAM_BOT_TOKEN_ENV, TWITCH_ACCESS_TOKEN_ENV,
+    WEBHOOK_ENDPOINT_URL_ENV, WEBHOOK_SIGNING_SECRET_ENV, WECOM_BOT_ID_ENV, WECOM_SECRET_ENV,
+    WHATSAPP_ACCESS_TOKEN_ENV, WHATSAPP_APP_SECRET_ENV, WHATSAPP_PHONE_NUMBER_ID_ENV,
+    WHATSAPP_VERIFY_TOKEN_ENV, WebhookPayloadFormat, parse_email_smtp_endpoint,
+    parse_irc_server_endpoint,
 };
 
 use self::descriptors::CHANNEL_REGISTRY;
@@ -37,7 +37,14 @@ pub use self::tlon::TLON_CATALOG_COMMAND_FAMILY_DESCRIPTOR;
 pub use self::twitch::TWITCH_CATALOG_COMMAND_FAMILY_DESCRIPTOR;
 use super::{
     ChannelCatalogTargetKind, ChannelOperationRuntime, ChannelPlatform,
-    core::webhook_auth::build_webhook_auth_header_from_parts, runtime::state,
+    access_policy::{ChannelInboundAccessPolicy, ChannelInboundAccessPolicySummary},
+    core::webhook_auth::build_webhook_auth_header_from_parts,
+    runtime::state,
+};
+#[allow(unused_imports)]
+pub use bridge::{
+    ONEBOT_CATALOG_COMMAND_FAMILY_DESCRIPTOR, QQBOT_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
+    WEIXIN_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
 };
 
 #[path = "registry_bridge.rs"]
@@ -51,6 +58,9 @@ mod plugin_bridge;
 #[path = "registry_surface.rs"]
 mod surface_support;
 
+#[path = "registry_status.rs"]
+mod status_support;
+
 #[cfg(test)]
 #[path = "registry_plugin_bridge_tests.rs"]
 mod plugin_bridge_tests;
@@ -62,8 +72,9 @@ pub use super::catalog::{
     ChannelCatalogOperationRequirement, ChannelCommandFamilyDescriptor, ChannelDoctorCheckSpec,
     ChannelDoctorCheckTrigger, ChannelDoctorOperationSpec, ChannelOnboardingDescriptor,
     ChannelOnboardingStrategy, ChannelOperationDescriptor, ChannelRuntimeCommandDescriptor,
-    FEISHU_RUNTIME_COMMAND_DESCRIPTOR, MATRIX_RUNTIME_COMMAND_DESCRIPTOR,
-    TELEGRAM_RUNTIME_COMMAND_DESCRIPTOR, WECOM_RUNTIME_COMMAND_DESCRIPTOR,
+    FEISHU_RUNTIME_COMMAND_DESCRIPTOR, LINE_RUNTIME_COMMAND_DESCRIPTOR,
+    MATRIX_RUNTIME_COMMAND_DESCRIPTOR, TELEGRAM_RUNTIME_COMMAND_DESCRIPTOR,
+    WEBHOOK_RUNTIME_COMMAND_DESCRIPTOR, WECOM_RUNTIME_COMMAND_DESCRIPTOR,
     WHATSAPP_RUNTIME_COMMAND_DESCRIPTOR, catalog_only_channel_entries, list_channel_catalog,
     normalize_channel_catalog_id, normalize_channel_platform,
     resolve_channel_catalog_command_family_descriptor, resolve_channel_catalog_entry,
@@ -85,6 +96,18 @@ pub use plugin_bridge::{
 };
 use plugin_bridge::{
     channel_surface_plugin_bridge_discovery_by_id, plugin_bridge_contract_from_descriptor,
+};
+use status_support::{
+    apply_runtime_attention, attach_runtime, build_invalid_dingtalk_snapshot,
+    build_invalid_discord_snapshot, build_invalid_email_snapshot, build_invalid_feishu_snapshot,
+    build_invalid_google_chat_snapshot, build_invalid_imessage_snapshot,
+    build_invalid_irc_snapshot, build_invalid_line_snapshot, build_invalid_matrix_snapshot,
+    build_invalid_mattermost_snapshot, build_invalid_nextcloud_talk_snapshot,
+    build_invalid_signal_snapshot, build_invalid_slack_snapshot,
+    build_invalid_synology_chat_snapshot, build_invalid_teams_snapshot,
+    build_invalid_telegram_snapshot, build_invalid_webhook_snapshot, build_invalid_wecom_snapshot,
+    build_invalid_whatsapp_snapshot, disabled_operation, misconfigured_operation, ready_operation,
+    unsupported_operation,
 };
 use surface_support::build_channel_surfaces;
 
@@ -171,6 +194,8 @@ pub struct ChannelStatusSnapshot {
     pub enabled: bool,
     pub api_base_url: Option<String>,
     pub notes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reserved_runtime_fields: Vec<String>,
     pub operations: Vec<ChannelOperationStatus>,
 }
 
@@ -186,6 +211,17 @@ pub struct ChannelInventory {
     pub catalog_only_channels: Vec<ChannelCatalogEntry>,
     pub channel_catalog: Vec<ChannelCatalogEntry>,
     pub channel_surfaces: Vec<ChannelSurface>,
+    pub channel_access_policies: Vec<ChannelConfiguredAccountAccessPolicy>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ChannelConfiguredAccountAccessPolicy {
+    pub channel_id: &'static str,
+    pub configured_account_id: String,
+    pub conversation_config_key: &'static str,
+    pub sender_config_key: &'static str,
+    #[serde(flatten)]
+    pub summary: ChannelInboundAccessPolicySummary,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -209,7 +245,7 @@ pub(crate) struct ChannelRegistryOperationDescriptor {
 }
 
 pub(crate) type ChannelSnapshotBuilder =
-    fn(&ChannelRegistryDescriptor, &LoongClawConfig, &Path, u64) -> Vec<ChannelStatusSnapshot>;
+    fn(&ChannelRegistryDescriptor, &LoongConfig, &Path, u64) -> Vec<ChannelStatusSnapshot>;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ChannelRegistryDescriptor {
@@ -231,7 +267,7 @@ pub(crate) struct ChannelRegistryDescriptor {
 const TELEGRAM_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     id: CHANNEL_OPERATION_SEND_ID,
     label: "direct send",
-    command: "telegram-send",
+    command: "channels send telegram",
     availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: false,
     requirements: TELEGRAM_SEND_REQUIREMENTS,
@@ -242,7 +278,7 @@ const TELEGRAM_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation
 const TELEGRAM_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     id: CHANNEL_OPERATION_SERVE_ID,
     label: "reply loop",
-    command: "telegram-serve",
+    command: "channels serve telegram",
     availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: true,
     requirements: TELEGRAM_SERVE_REQUIREMENTS,
@@ -297,12 +333,36 @@ const TELEGRAM_ALLOWED_CHAT_IDS_REQUIREMENT: ChannelCatalogOperationRequirement 
         env_pointer_paths: &[],
         default_env_var: None,
     };
+const TELEGRAM_ALLOWED_SENDER_IDS_REQUIREMENT: ChannelCatalogOperationRequirement =
+    ChannelCatalogOperationRequirement {
+        id: "allowed_sender_ids",
+        label: "allowed sender ids",
+        config_paths: &[
+            "telegram.allowed_sender_ids",
+            "telegram.accounts.<account>.allowed_sender_ids",
+        ],
+        env_pointer_paths: &[],
+        default_env_var: None,
+    };
+const TELEGRAM_REQUIRE_MENTION_REQUIREMENT: ChannelCatalogOperationRequirement =
+    ChannelCatalogOperationRequirement {
+        id: "require_mention",
+        label: "require explicit bot mention outside private chats",
+        config_paths: &[
+            "telegram.require_mention",
+            "telegram.accounts.<account>.require_mention",
+        ],
+        env_pointer_paths: &[],
+        default_env_var: None,
+    };
 const TELEGRAM_SEND_REQUIREMENTS: &[ChannelCatalogOperationRequirement] =
     &[TELEGRAM_ENABLED_REQUIREMENT, TELEGRAM_BOT_TOKEN_REQUIREMENT];
 const TELEGRAM_SERVE_REQUIREMENTS: &[ChannelCatalogOperationRequirement] = &[
     TELEGRAM_ENABLED_REQUIREMENT,
     TELEGRAM_BOT_TOKEN_REQUIREMENT,
     TELEGRAM_ALLOWED_CHAT_IDS_REQUIREMENT,
+    TELEGRAM_ALLOWED_SENDER_IDS_REQUIREMENT,
+    TELEGRAM_REQUIRE_MENTION_REQUIREMENT,
 ];
 
 const TELEGRAM_SERVE_DOCTOR_CHECKS: &[ChannelDoctorCheckSpec] = &[
@@ -334,7 +394,7 @@ const TELEGRAM_CAPABILITIES: &[ChannelCapability] = &[
 ];
 const TELEGRAM_ONBOARDING_DESCRIPTOR: ChannelOnboardingDescriptor = ChannelOnboardingDescriptor {
     strategy: ChannelOnboardingStrategy::ManualConfig,
-    setup_hint: "configure telegram bot credentials and allowed chat ids in loongclaw.toml under telegram or telegram.accounts.<account>",
+    setup_hint: "configure telegram bot credentials, allowed chat ids, and optional mention gating in loong.toml under telegram or telegram.accounts.<account>",
     status_command: "loong doctor",
     repair_command: Some("loong doctor --fix"),
 };
@@ -342,7 +402,7 @@ const TELEGRAM_ONBOARDING_DESCRIPTOR: ChannelOnboardingDescriptor = ChannelOnboa
 const FEISHU_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     id: CHANNEL_OPERATION_SEND_ID,
     label: "direct send",
-    command: "feishu-send",
+    command: "feishu send",
     availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: false,
     requirements: FEISHU_SEND_REQUIREMENTS,
@@ -356,7 +416,7 @@ const FEISHU_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
 const FEISHU_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     id: CHANNEL_OPERATION_SERVE_ID,
     label: "inbound reply service",
-    command: "feishu-serve",
+    command: "feishu serve",
     availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: true,
     requirements: FEISHU_SERVE_REQUIREMENTS,
@@ -416,6 +476,17 @@ const FEISHU_ALLOWED_CHAT_IDS_REQUIREMENT: ChannelCatalogOperationRequirement =
         env_pointer_paths: &[],
         default_env_var: None,
     };
+const FEISHU_ALLOWED_SENDER_IDS_REQUIREMENT: ChannelCatalogOperationRequirement =
+    ChannelCatalogOperationRequirement {
+        id: "allowed_sender_ids",
+        label: "allowed sender ids",
+        config_paths: &[
+            "feishu.allowed_sender_ids",
+            "feishu.accounts.<account>.allowed_sender_ids",
+        ],
+        env_pointer_paths: &[],
+        default_env_var: None,
+    };
 const FEISHU_MODE_REQUIREMENT: ChannelCatalogOperationRequirement =
     ChannelCatalogOperationRequirement {
         id: "mode",
@@ -463,6 +534,7 @@ const FEISHU_SERVE_REQUIREMENTS: &[ChannelCatalogOperationRequirement] = &[
     FEISHU_APP_SECRET_REQUIREMENT,
     FEISHU_MODE_REQUIREMENT,
     FEISHU_ALLOWED_CHAT_IDS_REQUIREMENT,
+    FEISHU_ALLOWED_SENDER_IDS_REQUIREMENT,
     FEISHU_VERIFICATION_TOKEN_REQUIREMENT,
     FEISHU_ENCRYPT_KEY_REQUIREMENT,
 ];
@@ -499,16 +571,16 @@ const FEISHU_CAPABILITIES: &[ChannelCapability] = &[
     ChannelCapability::RuntimeTracking,
 ];
 const FEISHU_ONBOARDING_DESCRIPTOR: ChannelOnboardingDescriptor = ChannelOnboardingDescriptor {
-    strategy: ChannelOnboardingStrategy::ManualConfig,
-    setup_hint: "configure feishu or lark app credentials, allowed chat ids, and either webhook secrets or mode = \"websocket\" in loongclaw.toml under feishu or feishu.accounts.<account>",
+    strategy: ChannelOnboardingStrategy::QrRegistration,
+    setup_hint: "run `loong feishu onboard` to create Feishu or Lark bot credentials from an in-terminal QR flow and persist them under feishu or feishu.accounts.<account>; `loong feishu onboard --manual --app-id ... --app-secret ...` remains available for manual credential handoff, and webhook mode still requires verification_token plus encrypt_key",
     status_command: "loong doctor",
-    repair_command: Some("loong doctor --fix"),
+    repair_command: Some("loong feishu onboard"),
 };
 
 const MATRIX_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     id: CHANNEL_OPERATION_SEND_ID,
     label: "direct send",
-    command: "matrix-send",
+    command: "channels send matrix",
     availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: false,
     requirements: MATRIX_SEND_REQUIREMENTS,
@@ -519,7 +591,7 @@ const MATRIX_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
 const MATRIX_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     id: CHANNEL_OPERATION_SERVE_ID,
     label: "sync reply loop",
-    command: "matrix-serve",
+    command: "channels serve matrix",
     availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: true,
     requirements: MATRIX_SERVE_REQUIREMENTS,
@@ -544,7 +616,7 @@ pub const MATRIX_COMMAND_FAMILY_DESCRIPTOR: ChannelCommandFamilyDescriptor =
 const WECOM_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     id: CHANNEL_OPERATION_SEND_ID,
     label: "proactive send",
-    command: "wecom-send",
+    command: "channels send wecom",
     availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: false,
     requirements: WECOM_SEND_REQUIREMENTS,
@@ -555,7 +627,7 @@ const WECOM_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
 const WECOM_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     id: CHANNEL_OPERATION_SERVE_ID,
     label: "long connection reply loop",
-    command: "wecom-serve",
+    command: "channels serve wecom",
     availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: true,
     requirements: WECOM_SERVE_REQUIREMENTS,
@@ -618,6 +690,28 @@ const MATRIX_ALLOWED_ROOM_IDS_REQUIREMENT: ChannelCatalogOperationRequirement =
         env_pointer_paths: &[],
         default_env_var: None,
     };
+const MATRIX_ALLOWED_SENDER_IDS_REQUIREMENT: ChannelCatalogOperationRequirement =
+    ChannelCatalogOperationRequirement {
+        id: "allowed_sender_ids",
+        label: "allowed sender ids",
+        config_paths: &[
+            "matrix.allowed_sender_ids",
+            "matrix.accounts.<account>.allowed_sender_ids",
+        ],
+        env_pointer_paths: &[],
+        default_env_var: None,
+    };
+const MATRIX_REQUIRE_MENTION_REQUIREMENT: ChannelCatalogOperationRequirement =
+    ChannelCatalogOperationRequirement {
+        id: "require_mention",
+        label: "require explicit mention in synced rooms",
+        config_paths: &[
+            "matrix.require_mention",
+            "matrix.accounts.<account>.require_mention",
+        ],
+        env_pointer_paths: &[],
+        default_env_var: None,
+    };
 const MATRIX_USER_ID_REQUIREMENT: ChannelCatalogOperationRequirement =
     ChannelCatalogOperationRequirement {
         id: "user_id",
@@ -636,6 +730,8 @@ const MATRIX_SERVE_REQUIREMENTS: &[ChannelCatalogOperationRequirement] = &[
     MATRIX_ACCESS_TOKEN_REQUIREMENT,
     MATRIX_BASE_URL_REQUIREMENT,
     MATRIX_ALLOWED_ROOM_IDS_REQUIREMENT,
+    MATRIX_ALLOWED_SENDER_IDS_REQUIREMENT,
+    MATRIX_REQUIRE_MENTION_REQUIREMENT,
     MATRIX_USER_ID_REQUIREMENT,
 ];
 
@@ -672,7 +768,7 @@ const MATRIX_CAPABILITIES: &[ChannelCapability] = &[
 ];
 const MATRIX_ONBOARDING_DESCRIPTOR: ChannelOnboardingDescriptor = ChannelOnboardingDescriptor {
     strategy: ChannelOnboardingStrategy::ManualConfig,
-    setup_hint: "configure matrix access tokens, homeserver base url, and allowed room ids in loongclaw.toml under matrix or matrix.accounts.<account>",
+    setup_hint: "configure matrix access tokens, homeserver base url, allowed room ids, and optional mention gating in loong.toml under matrix or matrix.accounts.<account>",
     status_command: "loong doctor",
     repair_command: Some("loong doctor --fix"),
 };
@@ -694,6 +790,8 @@ const PLUGIN_BRIDGE_RECOMMENDED_METADATA_KEYS: &[&str] = &[
     "transport_family",
     "target_contract",
     "account_scope",
+    "channel_runtime_contract",
+    "channel_runtime_operations_json",
 ];
 
 const CONFIG_BACKED_SEND_CHANNEL_CAPABILITIES: &[ChannelCapability] =
@@ -754,7 +852,7 @@ const DISCORD_SERVE_REQUIREMENTS: &[ChannelCatalogOperationRequirement] = &[
 const DISCORD_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     id: CHANNEL_OPERATION_SEND_ID,
     label: "direct send",
-    command: "discord-send",
+    command: "channels send discord",
     availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: false,
     requirements: DISCORD_SEND_REQUIREMENTS,
@@ -793,7 +891,7 @@ const DISCORD_OPERATIONS: &[ChannelRegistryOperationDescriptor] = &[
 ];
 const DISCORD_ONBOARDING_DESCRIPTOR: ChannelOnboardingDescriptor = ChannelOnboardingDescriptor {
     strategy: ChannelOnboardingStrategy::ManualConfig,
-    setup_hint: "configure discord bot credentials in loongclaw.toml under discord or discord.accounts.<account>; outbound direct send is shipped, while gateway-based serve support remains planned",
+    setup_hint: "configure discord bot credentials in loong.toml under discord or discord.accounts.<account>; outbound direct send is shipped, while gateway-based serve support remains planned",
     status_command: "loong doctor",
     repair_command: Some("loong doctor --fix"),
 };
@@ -904,7 +1002,7 @@ const SLACK_OPERATIONS: &[ChannelRegistryOperationDescriptor] = &[
 ];
 const SLACK_ONBOARDING_DESCRIPTOR: ChannelOnboardingDescriptor = ChannelOnboardingDescriptor {
     strategy: ChannelOnboardingStrategy::ManualConfig,
-    setup_hint: "configure slack bot credentials in loongclaw.toml under slack or slack.accounts.<account>; outbound direct send is shipped, while Events API or Socket Mode serve support remains planned",
+    setup_hint: "configure slack bot credentials in loong.toml under slack or slack.accounts.<account>; outbound direct send is shipped, while Events API or Socket Mode serve support remains planned",
     status_command: "loong doctor",
     repair_command: Some("loong doctor --fix"),
 };
@@ -957,7 +1055,7 @@ const LINE_SERVE_REQUIREMENTS: &[ChannelCatalogOperationRequirement] = &[
 const LINE_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     id: CHANNEL_OPERATION_SEND_ID,
     label: "push send",
-    command: "line-send",
+    command: "channels send line",
     availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: false,
     requirements: LINE_SEND_REQUIREMENTS,
@@ -967,8 +1065,8 @@ const LINE_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
 const LINE_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     id: CHANNEL_OPERATION_SERVE_ID,
     label: "webhook reply loop",
-    command: "line-serve",
-    availability: ChannelCatalogOperationAvailability::Stub,
+    command: "channels serve line",
+    availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: true,
     requirements: LINE_SERVE_REQUIREMENTS,
     default_target_kind: None,
@@ -981,6 +1079,24 @@ pub const LINE_CATALOG_COMMAND_FAMILY_DESCRIPTOR: ChannelCatalogCommandFamilyDes
         send: LINE_SEND_OPERATION,
         serve: LINE_SERVE_OPERATION,
     };
+
+pub const LINE_COMMAND_FAMILY_DESCRIPTOR: ChannelCommandFamilyDescriptor =
+    ChannelCommandFamilyDescriptor {
+        runtime: LINE_RUNTIME_COMMAND_DESCRIPTOR,
+        catalog: LINE_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
+    };
+
+const LINE_SERVE_DOCTOR_CHECKS: &[ChannelDoctorCheckSpec] = &[
+    ChannelDoctorCheckSpec {
+        name: "line serve health",
+        trigger: ChannelDoctorCheckTrigger::OperationHealth,
+    },
+    ChannelDoctorCheckSpec {
+        name: "line serve runtime",
+        trigger: ChannelDoctorCheckTrigger::ReadyRuntime,
+    },
+];
+
 const LINE_OPERATIONS: &[ChannelRegistryOperationDescriptor] = &[
     ChannelRegistryOperationDescriptor {
         operation: LINE_CATALOG_COMMAND_FAMILY_DESCRIPTOR.send,
@@ -988,12 +1104,19 @@ const LINE_OPERATIONS: &[ChannelRegistryOperationDescriptor] = &[
     },
     ChannelRegistryOperationDescriptor {
         operation: LINE_CATALOG_COMMAND_FAMILY_DESCRIPTOR.serve,
-        doctor_checks: &[],
+        doctor_checks: LINE_SERVE_DOCTOR_CHECKS,
     },
+];
+const LINE_CAPABILITIES: &[ChannelCapability] = &[
+    ChannelCapability::RuntimeBacked,
+    ChannelCapability::MultiAccount,
+    ChannelCapability::Send,
+    ChannelCapability::Serve,
+    ChannelCapability::RuntimeTracking,
 ];
 const LINE_ONBOARDING_DESCRIPTOR: ChannelOnboardingDescriptor = ChannelOnboardingDescriptor {
     strategy: ChannelOnboardingStrategy::ManualConfig,
-    setup_hint: "configure LINE Messaging API credentials in loongclaw.toml under line or line.accounts.<account>; outbound push send is shipped, while inbound webhook serve support remains planned",
+    setup_hint: "configure LINE Messaging API credentials in loong.toml under line or line.accounts.<account>; outbound push send and inbound webhook serve are shipped, and line-serve requires --bind plus an optional --path override at runtime",
     status_command: "loong doctor",
     repair_command: Some("loong doctor --fix"),
 };
@@ -1033,6 +1156,17 @@ const WECOM_ALLOWED_CONVERSATION_IDS_REQUIREMENT: ChannelCatalogOperationRequire
         env_pointer_paths: &[],
         default_env_var: None,
     };
+const WECOM_ALLOWED_SENDER_IDS_REQUIREMENT: ChannelCatalogOperationRequirement =
+    ChannelCatalogOperationRequirement {
+        id: "allowed_sender_ids",
+        label: "allowed sender ids",
+        config_paths: &[
+            "wecom.allowed_sender_ids",
+            "wecom.accounts.<account>.allowed_sender_ids",
+        ],
+        env_pointer_paths: &[],
+        default_env_var: None,
+    };
 const WECOM_WEBSOCKET_URL_REQUIREMENT: ChannelCatalogOperationRequirement =
     ChannelCatalogOperationRequirement {
         id: "websocket_url",
@@ -1066,6 +1200,7 @@ const WECOM_SERVE_REQUIREMENTS: &[ChannelCatalogOperationRequirement] = &[
     WECOM_BOT_ID_REQUIREMENT,
     WECOM_SECRET_REQUIREMENT,
     WECOM_ALLOWED_CONVERSATION_IDS_REQUIREMENT,
+    WECOM_ALLOWED_SENDER_IDS_REQUIREMENT,
     WECOM_WEBSOCKET_URL_REQUIREMENT,
     WECOM_PING_INTERVAL_REQUIREMENT,
 ];
@@ -1102,7 +1237,7 @@ const WECOM_CAPABILITIES: &[ChannelCapability] = &[
 ];
 const WECOM_ONBOARDING_DESCRIPTOR: ChannelOnboardingDescriptor = ChannelOnboardingDescriptor {
     strategy: ChannelOnboardingStrategy::ManualConfig,
-    setup_hint: "configure wecom aibot long connection credentials, allowed conversation ids, and optional websocket overrides in loongclaw.toml under wecom or wecom.accounts.<account>; do not configure webhook callback mode for this surface",
+    setup_hint: "configure wecom aibot long connection credentials, allowed conversation ids, and optional websocket overrides in loong.toml under wecom or wecom.accounts.<account>; do not configure webhook callback mode for this surface",
     status_command: "loong doctor",
     repair_command: Some("loong doctor --fix"),
 };
@@ -1152,7 +1287,7 @@ const DINGTALK_SERVE_REQUIREMENTS: &[ChannelCatalogOperationRequirement] = &[
 const DINGTALK_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     id: CHANNEL_OPERATION_SEND_ID,
     label: "custom robot send",
-    command: "dingtalk-send",
+    command: "channels send dingtalk",
     availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: false,
     requirements: DINGTALK_SEND_REQUIREMENTS,
@@ -1188,7 +1323,7 @@ const DINGTALK_OPERATIONS: &[ChannelRegistryOperationDescriptor] = &[
 ];
 const DINGTALK_ONBOARDING_DESCRIPTOR: ChannelOnboardingDescriptor = ChannelOnboardingDescriptor {
     strategy: ChannelOnboardingStrategy::ManualConfig,
-    setup_hint: "configure DingTalk custom robot webhook credentials in loongclaw.toml under dingtalk or dingtalk.accounts.<account>; outbound webhook send is shipped, while inbound outgoing-callback serve support remains planned",
+    setup_hint: "configure DingTalk custom robot webhook credentials in loong.toml under dingtalk or dingtalk.accounts.<account>; outbound webhook send is shipped, while inbound outgoing-callback serve support remains planned",
     status_command: "loong doctor",
     repair_command: Some("loong doctor --fix"),
 };
@@ -1272,7 +1407,7 @@ const WHATSAPP_SERVE_REQUIREMENTS: &[ChannelCatalogOperationRequirement] = &[
 const WHATSAPP_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     id: CHANNEL_OPERATION_SEND_ID,
     label: "business send",
-    command: "whatsapp-send",
+    command: "channels send whatsapp",
     availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: false,
     requirements: WHATSAPP_SEND_REQUIREMENTS,
@@ -1282,7 +1417,7 @@ const WHATSAPP_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation
 const WHATSAPP_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     id: CHANNEL_OPERATION_SERVE_ID,
     label: "cloud webhook service",
-    command: "whatsapp-serve",
+    command: "channels serve whatsapp",
     availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: true,
     requirements: WHATSAPP_SERVE_REQUIREMENTS,
@@ -1331,7 +1466,7 @@ const WHATSAPP_CAPABILITIES: &[ChannelCapability] = &[
 ];
 const WHATSAPP_ONBOARDING_DESCRIPTOR: ChannelOnboardingDescriptor = ChannelOnboardingDescriptor {
     strategy: ChannelOnboardingStrategy::ManualConfig,
-    setup_hint: "configure whatsapp cloud api credentials (access_token, phone_number_id, verify_token, app_secret) in loongclaw.toml under whatsapp or whatsapp.accounts.<account>; both outbound business send and inbound webhook serve are shipped",
+    setup_hint: "configure whatsapp cloud api credentials (access_token, phone_number_id, verify_token, app_secret) in loong.toml under whatsapp or whatsapp.accounts.<account>; both outbound business send and inbound webhook serve are shipped",
     status_command: "loong doctor",
     repair_command: Some("loong doctor --fix"),
 };
@@ -1443,7 +1578,7 @@ const EMAIL_SERVE_REQUIREMENTS: &[ChannelCatalogOperationRequirement] = &[
 const EMAIL_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     id: CHANNEL_OPERATION_SEND_ID,
     label: "smtp send",
-    command: "email-send",
+    command: "channels send email",
     availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: false,
     requirements: EMAIL_SEND_REQUIREMENTS,
@@ -1506,17 +1641,6 @@ const WEBHOOK_ENDPOINT_URL_REQUIREMENT: ChannelCatalogOperationRequirement =
         ],
         default_env_var: Some(WEBHOOK_ENDPOINT_URL_ENV),
     };
-const WEBHOOK_PUBLIC_BASE_URL_REQUIREMENT: ChannelCatalogOperationRequirement =
-    ChannelCatalogOperationRequirement {
-        id: "public_base_url",
-        label: "public base url",
-        config_paths: &[
-            "webhook.public_base_url",
-            "webhook.accounts.<account>.public_base_url",
-        ],
-        env_pointer_paths: &[],
-        default_env_var: None,
-    };
 const WEBHOOK_SIGNING_SECRET_REQUIREMENT: ChannelCatalogOperationRequirement =
     ChannelCatalogOperationRequirement {
         id: "signing_secret",
@@ -1537,13 +1661,12 @@ const WEBHOOK_SEND_REQUIREMENTS: &[ChannelCatalogOperationRequirement] = &[
 ];
 const WEBHOOK_SERVE_REQUIREMENTS: &[ChannelCatalogOperationRequirement] = &[
     WEBHOOK_ENABLED_REQUIREMENT,
-    WEBHOOK_PUBLIC_BASE_URL_REQUIREMENT,
     WEBHOOK_SIGNING_SECRET_REQUIREMENT,
 ];
 const WEBHOOK_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     id: CHANNEL_OPERATION_SEND_ID,
     label: "http post send",
-    command: "webhook-send",
+    command: "channels send webhook",
     availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: false,
     requirements: WEBHOOK_SEND_REQUIREMENTS,
@@ -1553,8 +1676,8 @@ const WEBHOOK_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation 
 const WEBHOOK_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     id: CHANNEL_OPERATION_SERVE_ID,
     label: "inbound webhook service",
-    command: "webhook-serve",
-    availability: ChannelCatalogOperationAvailability::Stub,
+    command: "channels serve webhook",
+    availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: true,
     requirements: WEBHOOK_SERVE_REQUIREMENTS,
     default_target_kind: None,
@@ -1569,6 +1692,23 @@ pub const WEBHOOK_CATALOG_COMMAND_FAMILY_DESCRIPTOR: ChannelCatalogCommandFamily
         serve: WEBHOOK_SERVE_OPERATION,
     };
 
+pub const WEBHOOK_COMMAND_FAMILY_DESCRIPTOR: ChannelCommandFamilyDescriptor =
+    ChannelCommandFamilyDescriptor {
+        runtime: WEBHOOK_RUNTIME_COMMAND_DESCRIPTOR,
+        catalog: WEBHOOK_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
+    };
+
+const WEBHOOK_SERVE_DOCTOR_CHECKS: &[ChannelDoctorCheckSpec] = &[
+    ChannelDoctorCheckSpec {
+        name: "webhook serve health",
+        trigger: ChannelDoctorCheckTrigger::OperationHealth,
+    },
+    ChannelDoctorCheckSpec {
+        name: "webhook serve runtime",
+        trigger: ChannelDoctorCheckTrigger::ReadyRuntime,
+    },
+];
+
 const WEBHOOK_OPERATIONS: &[ChannelRegistryOperationDescriptor] = &[
     ChannelRegistryOperationDescriptor {
         operation: WEBHOOK_CATALOG_COMMAND_FAMILY_DESCRIPTOR.send,
@@ -1576,12 +1716,19 @@ const WEBHOOK_OPERATIONS: &[ChannelRegistryOperationDescriptor] = &[
     },
     ChannelRegistryOperationDescriptor {
         operation: WEBHOOK_CATALOG_COMMAND_FAMILY_DESCRIPTOR.serve,
-        doctor_checks: &[],
+        doctor_checks: WEBHOOK_SERVE_DOCTOR_CHECKS,
     },
+];
+const WEBHOOK_CAPABILITIES: &[ChannelCapability] = &[
+    ChannelCapability::RuntimeBacked,
+    ChannelCapability::MultiAccount,
+    ChannelCapability::Send,
+    ChannelCapability::Serve,
+    ChannelCapability::RuntimeTracking,
 ];
 const WEBHOOK_ONBOARDING_DESCRIPTOR: ChannelOnboardingDescriptor = ChannelOnboardingDescriptor {
     strategy: ChannelOnboardingStrategy::ManualConfig,
-    setup_hint: "configure generic webhook delivery in loongclaw.toml under webhook or webhook.accounts.<account>; outbound endpoint send is shipped, while inbound webhook serve support remains planned",
+    setup_hint: "configure generic webhook delivery in loong.toml under webhook or webhook.accounts.<account>; outbound endpoint send and inbound signed webhook serve are shipped, and webhook-serve requires --bind plus an optional --path override at runtime",
     status_command: "loong doctor",
     repair_command: Some("loong doctor --fix"),
 };
@@ -1622,7 +1769,7 @@ const GOOGLE_CHAT_SERVE_REQUIREMENTS: &[ChannelCatalogOperationRequirement] = &[
 const GOOGLE_CHAT_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     id: CHANNEL_OPERATION_SEND_ID,
     label: "incoming webhook send",
-    command: "google-chat-send",
+    command: "channels send google-chat",
     availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: false,
     requirements: GOOGLE_CHAT_SEND_REQUIREMENTS,
@@ -1659,7 +1806,7 @@ const GOOGLE_CHAT_OPERATIONS: &[ChannelRegistryOperationDescriptor] = &[
 const GOOGLE_CHAT_ONBOARDING_DESCRIPTOR: ChannelOnboardingDescriptor =
     ChannelOnboardingDescriptor {
         strategy: ChannelOnboardingStrategy::ManualConfig,
-        setup_hint: "configure Google Chat incoming webhook credentials in loongclaw.toml under google_chat or google_chat.accounts.<account>; outbound webhook send is shipped, while interactive event serve support remains planned",
+        setup_hint: "configure Google Chat incoming webhook credentials in loong.toml under google_chat or google_chat.accounts.<account>; outbound webhook send is shipped, while interactive event serve support remains planned",
         status_command: "loong doctor",
         repair_command: Some("loong doctor --fix"),
     };
@@ -1722,7 +1869,7 @@ const SIGNAL_SERVE_REQUIREMENTS: &[ChannelCatalogOperationRequirement] = &[
 const SIGNAL_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     id: CHANNEL_OPERATION_SEND_ID,
     label: "direct message send",
-    command: "signal-send",
+    command: "channels send signal",
     availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: false,
     requirements: SIGNAL_SEND_REQUIREMENTS,
@@ -1758,7 +1905,7 @@ const SIGNAL_OPERATIONS: &[ChannelRegistryOperationDescriptor] = &[
 ];
 const SIGNAL_ONBOARDING_DESCRIPTOR: ChannelOnboardingDescriptor = ChannelOnboardingDescriptor {
     strategy: ChannelOnboardingStrategy::ManualConfig,
-    setup_hint: "configure signal bridge connection details in loongclaw.toml under signal or signal.accounts.<account>; outbound direct send is shipped, while inbound listener support remains planned",
+    setup_hint: "configure signal bridge connection details in loong.toml under signal or signal.accounts.<account>; outbound direct send is shipped, while inbound listener support remains planned",
     status_command: "loong doctor",
     repair_command: Some("loong doctor --fix"),
 };
@@ -1838,7 +1985,7 @@ const TEAMS_SERVE_REQUIREMENTS: &[ChannelCatalogOperationRequirement] = &[
 const TEAMS_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     id: CHANNEL_OPERATION_SEND_ID,
     label: "incoming webhook send",
-    command: "teams-send",
+    command: "channels send teams",
     availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: false,
     requirements: TEAMS_SEND_REQUIREMENTS,
@@ -1874,7 +2021,7 @@ const TEAMS_OPERATIONS: &[ChannelRegistryOperationDescriptor] = &[
 ];
 const TEAMS_ONBOARDING_DESCRIPTOR: ChannelOnboardingDescriptor = ChannelOnboardingDescriptor {
     strategy: ChannelOnboardingStrategy::ManualConfig,
-    setup_hint: "configure Microsoft Teams webhook delivery in loongclaw.toml under teams or teams.accounts.<account>; outbound incoming-webhook send is shipped, while bot-framework serve support remains planned",
+    setup_hint: "configure Microsoft Teams webhook delivery in loong.toml under teams or teams.accounts.<account>; outbound incoming-webhook send is shipped, while bot-framework serve support remains planned",
     status_command: "loong doctor",
     repair_command: Some("loong doctor --fix"),
 };
@@ -1943,7 +2090,7 @@ const MATTERMOST_SERVE_REQUIREMENTS: &[ChannelCatalogOperationRequirement] = &[
 const MATTERMOST_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     id: CHANNEL_OPERATION_SEND_ID,
     label: "channel send",
-    command: "mattermost-send",
+    command: "channels send mattermost",
     availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: false,
     requirements: MATTERMOST_SEND_REQUIREMENTS,
@@ -1979,7 +2126,7 @@ const MATTERMOST_OPERATIONS: &[ChannelRegistryOperationDescriptor] = &[
 ];
 const MATTERMOST_ONBOARDING_DESCRIPTOR: ChannelOnboardingDescriptor = ChannelOnboardingDescriptor {
     strategy: ChannelOnboardingStrategy::ManualConfig,
-    setup_hint: "configure Mattermost server and bot credentials in loongclaw.toml under mattermost or mattermost.accounts.<account>; outbound post send is shipped, while inbound websocket serve support remains planned",
+    setup_hint: "configure Mattermost server and bot credentials in loong.toml under mattermost or mattermost.accounts.<account>; outbound post send is shipped, while inbound websocket serve support remains planned",
     status_command: "loong doctor",
     repair_command: Some("loong doctor --fix"),
 };
@@ -2036,7 +2183,7 @@ const NEXTCLOUD_TALK_SERVE_REQUIREMENTS: &[ChannelCatalogOperationRequirement] =
 const NEXTCLOUD_TALK_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     id: CHANNEL_OPERATION_SEND_ID,
     label: "room send",
-    command: "nextcloud-talk-send",
+    command: "channels send nextcloud-talk",
     availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: false,
     requirements: NEXTCLOUD_TALK_SEND_REQUIREMENTS,
@@ -2073,7 +2220,7 @@ const NEXTCLOUD_TALK_OPERATIONS: &[ChannelRegistryOperationDescriptor] = &[
 const NEXTCLOUD_TALK_ONBOARDING_DESCRIPTOR: ChannelOnboardingDescriptor =
     ChannelOnboardingDescriptor {
         strategy: ChannelOnboardingStrategy::ManualConfig,
-        setup_hint: "configure Nextcloud Talk bot credentials in loongclaw.toml under nextcloud_talk or nextcloud_talk.accounts.<account>; outbound room send is shipped, while inbound bot callback serve support remains planned",
+        setup_hint: "configure Nextcloud Talk bot credentials in loong.toml under nextcloud_talk or nextcloud_talk.accounts.<account>; outbound room send is shipped, while inbound bot callback serve support remains planned",
         status_command: "loong doctor",
         repair_command: Some("loong doctor --fix"),
     };
@@ -2141,7 +2288,7 @@ const SYNOLOGY_CHAT_SERVE_REQUIREMENTS: &[ChannelCatalogOperationRequirement] = 
 const SYNOLOGY_CHAT_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     id: CHANNEL_OPERATION_SEND_ID,
     label: "chat send",
-    command: "synology-chat-send",
+    command: "channels send synology-chat",
     availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: false,
     requirements: SYNOLOGY_CHAT_SEND_REQUIREMENTS,
@@ -2178,7 +2325,7 @@ const SYNOLOGY_CHAT_OPERATIONS: &[ChannelRegistryOperationDescriptor] = &[
 const SYNOLOGY_CHAT_ONBOARDING_DESCRIPTOR: ChannelOnboardingDescriptor =
     ChannelOnboardingDescriptor {
         strategy: ChannelOnboardingStrategy::ManualConfig,
-        setup_hint: "configure Synology Chat incoming webhook credentials in loongclaw.toml under synology_chat or synology_chat.accounts.<account>; outbound incoming-webhook send is shipped, while inbound outgoing-webhook serve support remains planned",
+        setup_hint: "configure Synology Chat incoming webhook credentials in loong.toml under synology_chat or synology_chat.accounts.<account>; outbound incoming-webhook send is shipped, while inbound outgoing-webhook serve support remains planned",
         status_command: "loong doctor",
         repair_command: Some("loong doctor --fix"),
     };
@@ -2229,7 +2376,7 @@ const IRC_SERVE_REQUIREMENTS: &[ChannelCatalogOperationRequirement] = &[
 const IRC_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     id: CHANNEL_OPERATION_SEND_ID,
     label: "message send",
-    command: "irc-send",
+    command: "channels send irc",
     availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: false,
     requirements: IRC_SEND_REQUIREMENTS,
@@ -2265,7 +2412,7 @@ const IRC_OPERATIONS: &[ChannelRegistryOperationDescriptor] = &[
 ];
 const IRC_ONBOARDING_DESCRIPTOR: ChannelOnboardingDescriptor = ChannelOnboardingDescriptor {
     strategy: ChannelOnboardingStrategy::ManualConfig,
-    setup_hint: "configure IRC connection details in loongclaw.toml under irc or irc.accounts.<account>; outbound send is shipped, while long-lived relay-loop serve support remains planned",
+    setup_hint: "configure IRC connection details in loong.toml under irc or irc.accounts.<account>; outbound send is shipped, while long-lived relay-loop serve support remains planned",
     status_command: "loong doctor",
     repair_command: Some("loong doctor --fix"),
 };
@@ -2331,7 +2478,7 @@ const IMESSAGE_SERVE_REQUIREMENTS: &[ChannelCatalogOperationRequirement] = &[
 const IMESSAGE_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     id: CHANNEL_OPERATION_SEND_ID,
     label: "chat send",
-    command: "imessage-send",
+    command: "channels send imessage",
     availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: false,
     requirements: IMESSAGE_SEND_REQUIREMENTS,
@@ -2367,7 +2514,7 @@ const IMESSAGE_OPERATIONS: &[ChannelRegistryOperationDescriptor] = &[
 ];
 const IMESSAGE_ONBOARDING_DESCRIPTOR: ChannelOnboardingDescriptor = ChannelOnboardingDescriptor {
     strategy: ChannelOnboardingStrategy::ManualConfig,
-    setup_hint: "configure BlueBubbles bridge credentials in loongclaw.toml under imessage or imessage.accounts.<account>; outbound chat send is shipped, while inbound bridge sync serve support remains planned",
+    setup_hint: "configure BlueBubbles bridge credentials in loong.toml under imessage or imessage.accounts.<account>; outbound chat send is shipped, while inbound bridge sync serve support remains planned",
     status_command: "loong doctor",
     repair_command: Some("loong doctor --fix"),
 };
@@ -2430,7 +2577,7 @@ pub(super) fn channel_catalog_entry_from_descriptor(
     }
 }
 
-pub fn channel_inventory(config: &LoongClawConfig) -> ChannelInventory {
+pub fn channel_inventory(config: &LoongConfig) -> ChannelInventory {
     channel_inventory_with_now(
         config,
         state::default_channel_runtime_state_dir().as_path(),
@@ -2438,7 +2585,7 @@ pub fn channel_inventory(config: &LoongClawConfig) -> ChannelInventory {
     )
 }
 
-pub fn channel_status_snapshots(config: &LoongClawConfig) -> Vec<ChannelStatusSnapshot> {
+pub fn channel_status_snapshots(config: &LoongConfig) -> Vec<ChannelStatusSnapshot> {
     channel_status_snapshots_with_now(
         config,
         state::default_channel_runtime_state_dir().as_path(),
@@ -2447,7 +2594,7 @@ pub fn channel_status_snapshots(config: &LoongClawConfig) -> Vec<ChannelStatusSn
 }
 
 fn channel_inventory_with_now(
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     runtime_dir: &Path,
     now_ms: u64,
 ) -> ChannelInventory {
@@ -2458,16 +2605,18 @@ fn channel_inventory_with_now(
         channel_surface_plugin_bridge_discovery_by_id(config, &channel_catalog);
     let channel_surfaces =
         build_channel_surfaces(&channel_catalog, &channels, &plugin_bridge_discovery_by_id);
+    let channel_access_policies = build_channel_access_policies(config);
     ChannelInventory {
         channels,
         catalog_only_channels,
         channel_catalog,
         channel_surfaces,
+        channel_access_policies,
     }
 }
 
 fn channel_status_snapshots_with_now(
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     runtime_dir: &Path,
     now_ms: u64,
 ) -> Vec<ChannelStatusSnapshot> {
@@ -2482,6 +2631,126 @@ fn channel_status_snapshots_with_now(
     snapshots
 }
 
+fn build_channel_access_policies(
+    config: &LoongConfig,
+) -> Vec<ChannelConfiguredAccountAccessPolicy> {
+    let mut policies = Vec::new();
+    extend_telegram_channel_access_policies(&mut policies, config);
+    extend_feishu_channel_access_policies(&mut policies, config);
+    extend_matrix_channel_access_policies(&mut policies, config);
+    extend_wecom_channel_access_policies(&mut policies, config);
+    policies
+}
+
+fn extend_telegram_channel_access_policies(
+    policies: &mut Vec<ChannelConfiguredAccountAccessPolicy>,
+    config: &LoongConfig,
+) {
+    for configured_account_id in config.telegram.configured_account_ids() {
+        let resolved = config
+            .telegram
+            .resolve_account(Some(configured_account_id.as_str()));
+        let Ok(resolved) = resolved else {
+            continue;
+        };
+        let access_policy = ChannelInboundAccessPolicy::from_i64_lists(
+            resolved.allowed_chat_ids.as_slice(),
+            resolved.allowed_sender_ids.as_slice(),
+        );
+        let mut summary = access_policy.summary();
+        summary.mention_required = resolved.require_mention;
+        policies.push(ChannelConfiguredAccountAccessPolicy {
+            channel_id: "telegram",
+            configured_account_id: resolved.configured_account_id,
+            conversation_config_key: "allowed_chat_ids",
+            sender_config_key: "allowed_sender_ids",
+            summary,
+        });
+    }
+}
+
+fn extend_feishu_channel_access_policies(
+    policies: &mut Vec<ChannelConfiguredAccountAccessPolicy>,
+    config: &LoongConfig,
+) {
+    for configured_account_id in config.feishu.configured_account_ids() {
+        let resolved = config
+            .feishu
+            .resolve_account(Some(configured_account_id.as_str()));
+        let Ok(resolved) = resolved else {
+            continue;
+        };
+        let access_policy = ChannelInboundAccessPolicy::from_string_lists(
+            resolved.allowed_chat_ids.as_slice(),
+            resolved.allowed_sender_ids.as_slice(),
+            true,
+        );
+        let summary = access_policy.summary();
+        policies.push(ChannelConfiguredAccountAccessPolicy {
+            channel_id: "feishu",
+            configured_account_id: resolved.configured_account_id,
+            conversation_config_key: "allowed_chat_ids",
+            sender_config_key: "allowed_sender_ids",
+            summary,
+        });
+    }
+}
+
+fn extend_matrix_channel_access_policies(
+    policies: &mut Vec<ChannelConfiguredAccountAccessPolicy>,
+    config: &LoongConfig,
+) {
+    for configured_account_id in config.matrix.configured_account_ids() {
+        let resolved = config
+            .matrix
+            .resolve_account(Some(configured_account_id.as_str()));
+        let Ok(resolved) = resolved else {
+            continue;
+        };
+        let access_policy = ChannelInboundAccessPolicy::from_string_lists(
+            resolved.allowed_room_ids.as_slice(),
+            resolved.allowed_sender_ids.as_slice(),
+            false,
+        );
+        let mut summary = access_policy.summary();
+        summary.mention_required = resolved.require_mention;
+        policies.push(ChannelConfiguredAccountAccessPolicy {
+            channel_id: "matrix",
+            configured_account_id: resolved.configured_account_id,
+            conversation_config_key: "allowed_room_ids",
+            sender_config_key: "allowed_sender_ids",
+            summary,
+        });
+    }
+}
+
+fn extend_wecom_channel_access_policies(
+    policies: &mut Vec<ChannelConfiguredAccountAccessPolicy>,
+    config: &LoongConfig,
+) {
+    for configured_account_id in config.wecom.configured_account_ids() {
+        let resolved = config
+            .wecom
+            .resolve_account(Some(configured_account_id.as_str()));
+        let Ok(resolved) = resolved else {
+            continue;
+        };
+        let access_policy = ChannelInboundAccessPolicy::from_string_lists(
+            resolved.allowed_conversation_ids.as_slice(),
+            resolved.allowed_sender_ids.as_slice(),
+            false,
+        );
+        let summary = access_policy.summary();
+        policies.push(ChannelConfiguredAccountAccessPolicy {
+            channel_id: "wecom",
+            configured_account_id: resolved.configured_account_id,
+            conversation_config_key: "allowed_conversation_ids",
+            sender_config_key: "allowed_sender_ids",
+            summary,
+        });
+    }
+}
+
 fn validate_http_url(
     field: &str,
     value: &str,
@@ -2489,6 +2758,22 @@ fn validate_http_url(
     issues: &mut Vec<String>,
 ) -> Option<reqwest::Url> {
     let validation = super::http::validate_outbound_http_target(field, value, policy);
+    match validation {
+        Ok(url) => Some(url),
+        Err(error) => {
+            issues.push(error);
+            None
+        }
+    }
+}
+
+fn validate_http_base_url(
+    field: &str,
+    value: &str,
+    policy: super::http::ChannelOutboundHttpPolicy,
+    issues: &mut Vec<String>,
+) -> Option<reqwest::Url> {
+    let validation = super::http::validate_outbound_http_base_url(field, value, policy);
     match validation {
         Ok(url) => Some(url),
         Err(error) => {
@@ -2530,7 +2815,7 @@ fn runtime_backed_channel_registry_descriptors() -> Vec<&'static ChannelRegistry
 
 fn build_telegram_snapshots(
     descriptor: &ChannelRegistryDescriptor,
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     runtime_dir: &Path,
     now_ms: u64,
 ) -> Vec<ChannelStatusSnapshot> {
@@ -2584,8 +2869,13 @@ fn build_telegram_snapshot_for_account(
         send_issues.push("bot token is missing (telegram.bot_token or env)".to_owned());
     }
 
+    let access_policy = ChannelInboundAccessPolicy::from_i64_lists(
+        resolved.allowed_chat_ids.as_slice(),
+        resolved.allowed_sender_ids.as_slice(),
+    );
     let mut serve_issues = send_issues.clone();
-    if resolved.allowed_chat_ids.is_empty() {
+    let has_allowlist = access_policy.has_conversation_restrictions();
+    if !has_allowlist {
         serve_issues.push("allowed_chat_ids is empty".to_owned());
     }
 
@@ -2646,6 +2936,25 @@ fn build_telegram_snapshot_for_account(
         format!("account={}", resolved.account.label),
         format!("polling_timeout_s={}", resolved.polling_timeout_s),
     ];
+    if !resolved.allowed_chat_ids.is_empty() {
+        let allowed_chat_ids = resolved
+            .allowed_chat_ids
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        notes.push(format!("allowed_chat_ids={allowed_chat_ids}"));
+    }
+    if !resolved.allowed_sender_ids.is_empty() {
+        let allowed_sender_ids = resolved
+            .allowed_sender_ids
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        notes.push(format!("allowed_sender_ids={allowed_sender_ids}"));
+    }
+    notes.push(format!("require_mention={}", resolved.require_mention));
     if !resolved.acp.bootstrap_mcp_servers.is_empty() {
         notes.push(format!(
             "acp_bootstrap_mcp_servers={}",
@@ -2679,13 +2988,14 @@ fn build_telegram_snapshot_for_account(
         enabled: resolved.enabled,
         api_base_url: Some(resolved.base_url),
         notes,
+        reserved_runtime_fields: Vec::new(),
         operations: vec![send_operation, serve_operation],
     }
 }
 
 fn build_feishu_snapshots(
     descriptor: &ChannelRegistryDescriptor,
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     runtime_dir: &Path,
     now_ms: u64,
 ) -> Vec<ChannelStatusSnapshot> {
@@ -2727,7 +3037,7 @@ fn build_feishu_snapshots(
 
 fn build_matrix_snapshots(
     descriptor: &ChannelRegistryDescriptor,
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     runtime_dir: &Path,
     now_ms: u64,
 ) -> Vec<ChannelStatusSnapshot> {
@@ -2769,7 +3079,7 @@ fn build_matrix_snapshots(
 
 fn build_wecom_snapshots(
     descriptor: &ChannelRegistryDescriptor,
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     runtime_dir: &Path,
     now_ms: u64,
 ) -> Vec<ChannelStatusSnapshot> {
@@ -2811,7 +3121,7 @@ fn build_wecom_snapshots(
 
 fn build_discord_snapshots(
     descriptor: &ChannelRegistryDescriptor,
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     _runtime_dir: &Path,
     _now_ms: u64,
 ) -> Vec<ChannelStatusSnapshot> {
@@ -2853,7 +3163,7 @@ fn build_discord_snapshots(
 
 fn build_slack_snapshots(
     descriptor: &ChannelRegistryDescriptor,
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     _runtime_dir: &Path,
     _now_ms: u64,
 ) -> Vec<ChannelStatusSnapshot> {
@@ -2895,9 +3205,9 @@ fn build_slack_snapshots(
 
 fn build_line_snapshots(
     descriptor: &ChannelRegistryDescriptor,
-    config: &LoongClawConfig,
-    _runtime_dir: &Path,
-    _now_ms: u64,
+    config: &LoongConfig,
+    runtime_dir: &Path,
+    now_ms: u64,
 ) -> Vec<ChannelStatusSnapshot> {
     let compiled = cfg!(feature = "channel-line");
     let http_policy = super::http::outbound_http_policy_from_config(config);
@@ -2921,6 +3231,8 @@ fn build_line_snapshots(
                     is_default_account,
                     default_account_source,
                     http_policy,
+                    runtime_dir,
+                    now_ms,
                 ),
                 Err(error) => build_invalid_line_snapshot(
                     descriptor,
@@ -2929,6 +3241,8 @@ fn build_line_snapshots(
                     is_default_account,
                     default_account_source,
                     error,
+                    runtime_dir,
+                    now_ms,
                 ),
             }
         })
@@ -2937,7 +3251,7 @@ fn build_line_snapshots(
 
 fn build_dingtalk_snapshots(
     descriptor: &ChannelRegistryDescriptor,
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     _runtime_dir: &Path,
     _now_ms: u64,
 ) -> Vec<ChannelStatusSnapshot> {
@@ -2979,7 +3293,7 @@ fn build_dingtalk_snapshots(
 
 fn build_whatsapp_snapshots(
     descriptor: &ChannelRegistryDescriptor,
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     runtime_dir: &Path,
     now_ms: u64,
 ) -> Vec<ChannelStatusSnapshot> {
@@ -3023,7 +3337,7 @@ fn build_whatsapp_snapshots(
 
 fn build_email_snapshots(
     descriptor: &ChannelRegistryDescriptor,
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     _runtime_dir: &Path,
     _now_ms: u64,
 ) -> Vec<ChannelStatusSnapshot> {
@@ -3063,9 +3377,9 @@ fn build_email_snapshots(
 
 fn build_webhook_snapshots(
     descriptor: &ChannelRegistryDescriptor,
-    config: &LoongClawConfig,
-    _runtime_dir: &Path,
-    _now_ms: u64,
+    config: &LoongConfig,
+    runtime_dir: &Path,
+    now_ms: u64,
 ) -> Vec<ChannelStatusSnapshot> {
     let compiled = cfg!(feature = "channel-webhook");
     let http_policy = super::http::outbound_http_policy_from_config(config);
@@ -3089,6 +3403,8 @@ fn build_webhook_snapshots(
                     is_default_account,
                     default_account_source,
                     http_policy,
+                    runtime_dir,
+                    now_ms,
                 ),
                 Err(error) => build_invalid_webhook_snapshot(
                     descriptor,
@@ -3097,6 +3413,8 @@ fn build_webhook_snapshots(
                     is_default_account,
                     default_account_source,
                     error,
+                    runtime_dir,
+                    now_ms,
                 ),
             }
         })
@@ -3105,7 +3423,7 @@ fn build_webhook_snapshots(
 
 fn build_google_chat_snapshots(
     descriptor: &ChannelRegistryDescriptor,
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     _runtime_dir: &Path,
     _now_ms: u64,
 ) -> Vec<ChannelStatusSnapshot> {
@@ -3147,7 +3465,7 @@ fn build_google_chat_snapshots(
 
 fn build_signal_snapshots(
     descriptor: &ChannelRegistryDescriptor,
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     _runtime_dir: &Path,
     _now_ms: u64,
 ) -> Vec<ChannelStatusSnapshot> {
@@ -3189,7 +3507,7 @@ fn build_signal_snapshots(
 
 fn build_teams_snapshots(
     descriptor: &ChannelRegistryDescriptor,
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     _runtime_dir: &Path,
     _now_ms: u64,
 ) -> Vec<ChannelStatusSnapshot> {
@@ -3231,7 +3549,7 @@ fn build_teams_snapshots(
 
 fn build_mattermost_snapshots(
     descriptor: &ChannelRegistryDescriptor,
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     _runtime_dir: &Path,
     _now_ms: u64,
 ) -> Vec<ChannelStatusSnapshot> {
@@ -3273,7 +3591,7 @@ fn build_mattermost_snapshots(
 
 fn build_nextcloud_talk_snapshots(
     descriptor: &ChannelRegistryDescriptor,
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     _runtime_dir: &Path,
     _now_ms: u64,
 ) -> Vec<ChannelStatusSnapshot> {
@@ -3315,7 +3633,7 @@ fn build_nextcloud_talk_snapshots(
 
 fn build_synology_chat_snapshots(
     descriptor: &ChannelRegistryDescriptor,
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     _runtime_dir: &Path,
     _now_ms: u64,
 ) -> Vec<ChannelStatusSnapshot> {
@@ -3357,7 +3675,7 @@ fn build_synology_chat_snapshots(
 
 fn build_irc_snapshots(
     descriptor: &ChannelRegistryDescriptor,
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     _runtime_dir: &Path,
     _now_ms: u64,
 ) -> Vec<ChannelStatusSnapshot> {
@@ -3397,7 +3715,7 @@ fn build_irc_snapshots(
 
 fn build_imessage_snapshots(
     descriptor: &ChannelRegistryDescriptor,
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     _runtime_dir: &Path,
     _now_ms: u64,
 ) -> Vec<ChannelStatusSnapshot> {
@@ -3516,6 +3834,7 @@ fn build_dingtalk_snapshot_for_account(
             .and(webhook_url.as_deref())
             .and_then(super::http::redact_endpoint_status_url),
         notes,
+        reserved_runtime_fields: Vec::new(),
         operations: vec![send_operation, serve_operation],
     }
 }
@@ -3534,7 +3853,7 @@ fn build_discord_snapshot_for_account(
     }
 
     let resolved_api_base_url = resolved.resolved_api_base_url();
-    let api_base_url = validate_http_url(
+    let api_base_url = validate_http_base_url(
         "api_base_url",
         resolved_api_base_url.as_str(),
         http_policy,
@@ -3582,6 +3901,21 @@ fn build_discord_snapshot_for_account(
         "default_account_source={}",
         default_account_source.as_str()
     ));
+    let mut reserved_runtime_fields = Vec::new();
+    if resolved.application_id().is_some() {
+        reserved_runtime_fields.push("application_id".to_owned());
+        notes.push("reserved_runtime_field=application_id".to_owned());
+    }
+    if !resolved.allowed_guild_ids.is_empty() {
+        reserved_runtime_fields.push(format!(
+            "allowed_guild_ids:{}",
+            resolved.allowed_guild_ids.len()
+        ));
+        notes.push(format!(
+            "reserved_runtime_field=allowed_guild_ids:{}",
+            resolved.allowed_guild_ids.len()
+        ));
+    }
 
     ChannelStatusSnapshot {
         id: descriptor.id,
@@ -3598,6 +3932,7 @@ fn build_discord_snapshot_for_account(
             .as_ref()
             .and_then(|_| super::http::redact_endpoint_status_url(resolved_api_base_url.as_str())),
         notes,
+        reserved_runtime_fields,
         operations: vec![send_operation, serve_operation],
     }
 }
@@ -3616,7 +3951,7 @@ fn build_slack_snapshot_for_account(
     }
 
     let resolved_api_base_url = resolved.resolved_api_base_url();
-    let api_base_url = validate_http_url(
+    let api_base_url = validate_http_base_url(
         "api_base_url",
         resolved_api_base_url.as_str(),
         http_policy,
@@ -3680,6 +4015,7 @@ fn build_slack_snapshot_for_account(
             .as_ref()
             .and_then(|_| super::http::redact_endpoint_status_url(resolved_api_base_url.as_str())),
         notes,
+        reserved_runtime_fields: Vec::new(),
         operations: vec![send_operation, serve_operation],
     }
 }
@@ -3691,6 +4027,8 @@ fn build_line_snapshot_for_account(
     is_default_account: bool,
     default_account_source: ChannelDefaultAccountSelectionSource,
     http_policy: super::http::ChannelOutboundHttpPolicy,
+    runtime_dir: &Path,
+    now_ms: u64,
 ) -> ChannelStatusSnapshot {
     let mut send_issues = Vec::new();
     if resolved.channel_access_token().is_none() {
@@ -3698,7 +4036,7 @@ fn build_line_snapshot_for_account(
     }
 
     let resolved_api_base_url = resolved.resolved_api_base_url();
-    let api_base_url = validate_http_url(
+    let api_base_url = validate_http_base_url(
         "api_base_url",
         resolved_api_base_url.as_str(),
         http_policy,
@@ -3716,22 +4054,49 @@ fn build_line_snapshot_for_account(
             "disabled by line account configuration".to_owned(),
         )
     } else if !send_issues.is_empty() {
-        misconfigured_operation(LINE_SEND_OPERATION, send_issues)
+        misconfigured_operation(LINE_SEND_OPERATION, send_issues.clone())
     } else {
         ready_operation(LINE_SEND_OPERATION)
     };
+    let send_operation = attach_runtime(
+        ChannelPlatform::Line,
+        LINE_SEND_OPERATION,
+        send_operation,
+        resolved.account.id.as_str(),
+        resolved.account.label.as_str(),
+        runtime_dir,
+        now_ms,
+    );
+
+    let mut serve_issues = send_issues.clone();
+    if resolved.channel_secret().is_none() {
+        serve_issues.push("channel_secret is missing".to_owned());
+    }
 
     let serve_operation = if !compiled {
         unsupported_operation(
             LINE_SERVE_OPERATION,
             "binary built without feature `channel-line`".to_owned(),
         )
-    } else {
-        unsupported_operation(
+    } else if !resolved.enabled {
+        disabled_operation(
             LINE_SERVE_OPERATION,
-            "line serve runtime is not implemented yet".to_owned(),
+            "disabled by line account configuration".to_owned(),
         )
+    } else if !serve_issues.is_empty() {
+        misconfigured_operation(LINE_SERVE_OPERATION, serve_issues)
+    } else {
+        ready_operation(LINE_SERVE_OPERATION)
     };
+    let serve_operation = attach_runtime(
+        ChannelPlatform::Line,
+        LINE_SERVE_OPERATION,
+        serve_operation,
+        resolved.account.id.as_str(),
+        resolved.account.label.as_str(),
+        runtime_dir,
+        now_ms,
+    );
 
     let mut notes = vec![
         format!("configured_account_id={}", resolved.configured_account_id),
@@ -3762,6 +4127,7 @@ fn build_line_snapshot_for_account(
             .as_ref()
             .and_then(|_| super::http::redact_endpoint_status_url(resolved_api_base_url.as_str())),
         notes,
+        reserved_runtime_fields: Vec::new(),
         operations: vec![send_operation, serve_operation],
     }
 }
@@ -3785,7 +4151,7 @@ fn build_whatsapp_snapshot_for_account(
     }
 
     let resolved_api_base_url = resolved.resolved_api_base_url();
-    let api_base_url = validate_http_url(
+    let api_base_url = validate_http_base_url(
         "api_base_url",
         resolved_api_base_url.as_str(),
         http_policy,
@@ -3882,6 +4248,7 @@ fn build_whatsapp_snapshot_for_account(
             .as_ref()
             .and_then(|_| super::http::redact_endpoint_status_url(resolved_api_base_url.as_str())),
         notes,
+        reserved_runtime_fields: Vec::new(),
         operations: vec![send_operation, serve_operation],
     }
 }
@@ -4016,6 +4383,7 @@ fn build_email_snapshot_for_account(
         enabled: resolved.enabled,
         api_base_url,
         notes,
+        reserved_runtime_fields: Vec::new(),
         operations: vec![send_operation, serve_operation],
     }
 }
@@ -4027,6 +4395,8 @@ fn build_webhook_snapshot_for_account(
     is_default_account: bool,
     default_account_source: ChannelDefaultAccountSelectionSource,
     http_policy: super::http::ChannelOutboundHttpPolicy,
+    runtime_dir: &Path,
+    now_ms: u64,
 ) -> ChannelStatusSnapshot {
     let mut send_issues = Vec::new();
 
@@ -4044,8 +4414,9 @@ fn build_webhook_snapshot_for_account(
         resolved.auth_header_name.as_str(),
         resolved.auth_token_prefix.as_str(),
     );
-    if let Err(error) = auth_validation {
-        send_issues.push(error);
+    let auth_error = auth_validation.err();
+    if let Some(error) = auth_error.as_ref() {
+        send_issues.push(error.clone());
     }
 
     let payload_text_field = resolved.payload_text_field.trim();
@@ -4068,18 +4439,45 @@ fn build_webhook_snapshot_for_account(
     } else {
         ready_operation(WEBHOOK_SEND_OPERATION)
     };
+    let send_operation = attach_runtime(
+        ChannelPlatform::Webhook,
+        WEBHOOK_SEND_OPERATION,
+        send_operation,
+        resolved.account.id.as_str(),
+        resolved.account.label.as_str(),
+        runtime_dir,
+        now_ms,
+    );
+
+    let mut serve_issues = Vec::new();
+    if resolved.signing_secret().is_none() {
+        serve_issues.push("signing_secret is missing".to_owned());
+    }
 
     let serve_operation = if !compiled {
         unsupported_operation(
             WEBHOOK_SERVE_OPERATION,
             "binary built without feature `channel-webhook`".to_owned(),
         )
-    } else {
-        unsupported_operation(
+    } else if !resolved.enabled {
+        disabled_operation(
             WEBHOOK_SERVE_OPERATION,
-            "generic webhook serve runtime is not implemented yet".to_owned(),
+            "disabled by webhook account configuration".to_owned(),
         )
+    } else if !serve_issues.is_empty() {
+        misconfigured_operation(WEBHOOK_SERVE_OPERATION, serve_issues)
+    } else {
+        ready_operation(WEBHOOK_SERVE_OPERATION)
     };
+    let serve_operation = attach_runtime(
+        ChannelPlatform::Webhook,
+        WEBHOOK_SERVE_OPERATION,
+        serve_operation,
+        resolved.account.id.as_str(),
+        resolved.account.label.as_str(),
+        runtime_dir,
+        now_ms,
+    );
 
     let mut notes = vec![
         format!("configured_account_id={}", resolved.configured_account_id),
@@ -4100,10 +4498,10 @@ fn build_webhook_snapshot_for_account(
         .map(str::trim)
         .filter(|value| !value.is_empty());
     if public_base_url.is_some() {
-        notes.push("future_serve_public_base_url_configured=true".to_owned());
+        notes.push("public_base_url_configured=true".to_owned());
     }
     if resolved.signing_secret().is_some() {
-        notes.push("future_serve_signing_secret_configured=true".to_owned());
+        notes.push("signing_secret_configured=true".to_owned());
     }
     if is_default_account {
         notes.push("default_account=true".to_owned());
@@ -4129,6 +4527,7 @@ fn build_webhook_snapshot_for_account(
             .and(endpoint_url.as_deref())
             .and_then(super::http::redact_generic_webhook_status_url),
         notes,
+        reserved_runtime_fields: Vec::new(),
         operations: vec![send_operation, serve_operation],
     }
 }
@@ -4209,6 +4608,7 @@ fn build_google_chat_snapshot_for_account(
             .and(webhook_url.as_deref())
             .and_then(super::http::redact_endpoint_status_url),
         notes,
+        reserved_runtime_fields: Vec::new(),
         operations: vec![send_operation, serve_operation],
     }
 }
@@ -4229,7 +4629,7 @@ fn build_mattermost_snapshot_for_account(
     }
     let validated_server_url = server_url
         .as_deref()
-        .and_then(|url| validate_http_url("server_url", url, http_policy, &mut send_issues));
+        .and_then(|url| validate_http_base_url("server_url", url, http_policy, &mut send_issues));
     if resolved.bot_token().is_none() {
         send_issues.push("bot_token is missing".to_owned());
     }
@@ -4292,6 +4692,7 @@ fn build_mattermost_snapshot_for_account(
             .and(server_url.as_deref())
             .and_then(super::http::redact_endpoint_status_url),
         notes,
+        reserved_runtime_fields: Vec::new(),
         operations: vec![send_operation, serve_operation],
     }
 }
@@ -4312,7 +4713,7 @@ fn build_nextcloud_talk_snapshot_for_account(
     }
     let validated_server_url = server_url
         .as_deref()
-        .and_then(|url| validate_http_url("server_url", url, http_policy, &mut send_issues));
+        .and_then(|url| validate_http_base_url("server_url", url, http_policy, &mut send_issues));
     if resolved.shared_secret().is_none() {
         send_issues.push("shared_secret is missing".to_owned());
     }
@@ -4375,6 +4776,7 @@ fn build_nextcloud_talk_snapshot_for_account(
             .and(server_url.as_deref())
             .and_then(super::http::redact_endpoint_status_url),
         notes,
+        reserved_runtime_fields: Vec::new(),
         operations: vec![send_operation, serve_operation],
     }
 }
@@ -4466,6 +4868,7 @@ fn build_synology_chat_snapshot_for_account(
             .and(incoming_url.as_deref())
             .and_then(super::http::redact_endpoint_status_url),
         notes,
+        reserved_runtime_fields: Vec::new(),
         operations: vec![send_operation, serve_operation],
     }
 }
@@ -4489,7 +4892,7 @@ fn build_signal_snapshot_for_account(
     }
     let validated_service_url = service_url
         .as_deref()
-        .and_then(|url| validate_http_url("service_url", url, http_policy, &mut send_issues));
+        .and_then(|url| validate_http_base_url("service_url", url, http_policy, &mut send_issues));
 
     let send_operation = if !compiled {
         unsupported_operation(
@@ -4552,6 +4955,7 @@ fn build_signal_snapshot_for_account(
             .and(service_url.as_deref())
             .and_then(super::http::redact_endpoint_status_url),
         notes,
+        reserved_runtime_fields: Vec::new(),
         operations: vec![send_operation, serve_operation],
     }
 }
@@ -4644,6 +5048,7 @@ fn build_teams_snapshot_for_account(
             .and(webhook_url.as_deref())
             .and_then(super::http::redact_generic_webhook_status_url),
         notes,
+        reserved_runtime_fields: Vec::new(),
         operations: vec![send_operation, serve_operation],
     }
 }
@@ -4664,7 +5069,7 @@ fn build_imessage_snapshot_for_account(
     }
     let validated_bridge_url = bridge_url
         .as_deref()
-        .and_then(|url| validate_http_url("bridge_url", url, http_policy, &mut send_issues));
+        .and_then(|url| validate_http_base_url("bridge_url", url, http_policy, &mut send_issues));
     if resolved.bridge_token().is_none() {
         send_issues.push("bridge_token is missing".to_owned());
     }
@@ -4731,6 +5136,7 @@ fn build_imessage_snapshot_for_account(
             .and(bridge_url.as_deref())
             .and_then(super::http::redact_endpoint_status_url),
         notes,
+        reserved_runtime_fields: Vec::new(),
         operations: vec![send_operation, serve_operation],
     }
 }
@@ -4839,6 +5245,7 @@ fn build_irc_snapshot_for_account(
         enabled: resolved.enabled,
         api_base_url: summarize_irc_status_endpoint(server.as_deref()),
         notes,
+        reserved_runtime_fields: Vec::new(),
         operations: vec![send_operation, serve_operation],
     }
 }
@@ -4878,12 +5285,14 @@ fn build_feishu_snapshot_for_account(
         send_issues.push("app_secret is missing".to_owned());
     }
 
+    let access_policy = ChannelInboundAccessPolicy::from_string_lists(
+        resolved.allowed_chat_ids.as_slice(),
+        resolved.allowed_sender_ids.as_slice(),
+        true,
+    );
     let mut serve_issues = send_issues.clone();
-    if !resolved
-        .allowed_chat_ids
-        .iter()
-        .any(|value| !value.trim().is_empty())
-    {
+    let has_allowlist = access_policy.has_conversation_restrictions();
+    if !has_allowlist {
         serve_issues.push("allowed_chat_ids is empty".to_owned());
     }
     if resolved.mode == FeishuChannelServeMode::Webhook {
@@ -4953,6 +5362,15 @@ fn build_feishu_snapshot_for_account(
         format!("mode={}", resolved.mode.as_str()),
         format!("receive_id_type={}", resolved.receive_id_type),
     ];
+    if let Some(allowed_chat_ids) = access_policy.string_conversations() {
+        notes.push(format!("allowed_chat_ids={}", allowed_chat_ids.join(",")));
+    }
+    if let Some(allowed_sender_ids) = access_policy.string_senders() {
+        notes.push(format!(
+            "allowed_sender_ids={}",
+            allowed_sender_ids.join(",")
+        ));
+    }
     if resolved.mode == FeishuChannelServeMode::Webhook {
         notes.push(format!("webhook_bind={}", resolved.webhook_bind));
         notes.push(format!("webhook_path={}", resolved.webhook_path));
@@ -4990,6 +5408,7 @@ fn build_feishu_snapshot_for_account(
         enabled: resolved.enabled,
         api_base_url: Some(resolved.resolved_base_url()),
         notes,
+        reserved_runtime_fields: Vec::new(),
         operations: vec![send_operation, serve_operation],
     }
 }
@@ -5011,12 +5430,14 @@ fn build_matrix_snapshot_for_account(
         send_issues.push("base_url is missing".to_owned());
     }
 
+    let access_policy = ChannelInboundAccessPolicy::from_string_lists(
+        resolved.allowed_room_ids.as_slice(),
+        resolved.allowed_sender_ids.as_slice(),
+        false,
+    );
     let mut serve_issues = send_issues.clone();
-    if !resolved
-        .allowed_room_ids
-        .iter()
-        .any(|value| !value.trim().is_empty())
-    {
+    let has_allowlist = access_policy.has_conversation_restrictions();
+    if !has_allowlist {
         serve_issues.push("allowed_room_ids is empty".to_owned());
     }
     let has_user_id = resolved
@@ -5026,6 +5447,9 @@ fn build_matrix_snapshot_for_account(
         .is_some_and(|value| !value.is_empty());
     if resolved.ignore_self_messages && !has_user_id {
         serve_issues.push("user_id is missing while ignore_self_messages is enabled".to_owned());
+    }
+    if resolved.require_mention && !has_user_id {
+        serve_issues.push("user_id is missing while require_mention is enabled".to_owned());
     }
 
     let send_operation = if !compiled {
@@ -5086,6 +5510,16 @@ fn build_matrix_snapshot_for_account(
         format!("sync_timeout_s={}", resolved.sync_timeout_s),
         format!("ignore_self_messages={}", resolved.ignore_self_messages),
     ];
+    if let Some(allowed_room_ids) = access_policy.string_conversations() {
+        notes.push(format!("allowed_room_ids={}", allowed_room_ids.join(",")));
+    }
+    if let Some(allowed_sender_ids) = access_policy.string_senders() {
+        notes.push(format!(
+            "allowed_sender_ids={}",
+            allowed_sender_ids.join(",")
+        ));
+    }
+    notes.push(format!("require_mention={}", resolved.require_mention));
     if let Some(user_id) = resolved.user_id.as_deref() {
         notes.push(format!("user_id={user_id}"));
     }
@@ -5122,6 +5556,7 @@ fn build_matrix_snapshot_for_account(
         enabled: resolved.enabled,
         api_base_url: resolved.resolved_base_url(),
         notes,
+        reserved_runtime_fields: Vec::new(),
         operations: vec![send_operation, serve_operation],
     }
 }
@@ -5150,11 +5585,13 @@ fn build_wecom_snapshot_for_account(
         &mut send_issues,
     );
 
+    let access_policy = ChannelInboundAccessPolicy::from_string_lists(
+        resolved.allowed_conversation_ids.as_slice(),
+        resolved.allowed_sender_ids.as_slice(),
+        false,
+    );
     let mut serve_issues = send_issues.clone();
-    let has_allowlist = resolved
-        .allowed_conversation_ids
-        .iter()
-        .any(|value| !value.trim().is_empty());
+    let has_allowlist = access_policy.has_conversation_restrictions();
     if !has_allowlist {
         serve_issues.push("allowed_conversation_ids is empty".to_owned());
     }
@@ -5218,6 +5655,18 @@ fn build_wecom_snapshot_for_account(
         format!("ping_interval_s={}", resolved.ping_interval_s),
         format!("reconnect_interval_s={}", resolved.reconnect_interval_s),
     ];
+    if let Some(allowed_conversation_ids) = access_policy.string_conversations() {
+        notes.push(format!(
+            "allowed_conversation_ids={}",
+            allowed_conversation_ids.join(",")
+        ));
+    }
+    if let Some(allowed_sender_ids) = access_policy.string_senders() {
+        notes.push(format!(
+            "allowed_sender_ids={}",
+            allowed_sender_ids.join(",")
+        ));
+    }
     if !resolved.acp.bootstrap_mcp_servers.is_empty() {
         notes.push(format!(
             "acp_bootstrap_mcp_servers={}",
@@ -5251,1177 +5700,9 @@ fn build_wecom_snapshot_for_account(
         enabled: resolved.enabled,
         api_base_url: Some(websocket_url),
         notes,
+        reserved_runtime_fields: Vec::new(),
         operations: vec![send_operation, serve_operation],
     }
-}
-
-fn build_invalid_telegram_snapshot(
-    descriptor: &ChannelRegistryDescriptor,
-    compiled: bool,
-    configured_account_id: &str,
-    is_default_account: bool,
-    default_account_source: ChannelDefaultAccountSelectionSource,
-    error: String,
-) -> ChannelStatusSnapshot {
-    let send_operation = if !compiled {
-        unsupported_operation(
-            TELEGRAM_SEND_OPERATION,
-            "binary built without feature `channel-telegram`".to_owned(),
-        )
-    } else {
-        misconfigured_operation(TELEGRAM_SEND_OPERATION, vec![error.clone()])
-    };
-    let serve_operation = if !compiled {
-        unsupported_operation(
-            TELEGRAM_SERVE_OPERATION,
-            "binary built without feature `channel-telegram`".to_owned(),
-        )
-    } else {
-        misconfigured_operation(TELEGRAM_SERVE_OPERATION, vec![error.clone()])
-    };
-
-    let mut notes = vec![
-        format!("configured_account_id={configured_account_id}"),
-        format!("selection_error={error}"),
-    ];
-    if is_default_account {
-        notes.push("default_account=true".to_owned());
-    }
-    notes.push(format!(
-        "default_account_source={}",
-        default_account_source.as_str()
-    ));
-
-    ChannelStatusSnapshot {
-        id: descriptor.id,
-        configured_account_id: configured_account_id.to_owned(),
-        configured_account_label: configured_account_id.to_owned(),
-        is_default_account,
-        default_account_source,
-        label: descriptor.label,
-        aliases: descriptor.aliases.to_vec(),
-        transport: descriptor.transport,
-        compiled,
-        enabled: false,
-        api_base_url: None,
-        notes,
-        operations: vec![send_operation, serve_operation],
-    }
-}
-
-fn build_invalid_feishu_snapshot(
-    descriptor: &ChannelRegistryDescriptor,
-    compiled: bool,
-    configured_account_id: &str,
-    is_default_account: bool,
-    default_account_source: ChannelDefaultAccountSelectionSource,
-    error: String,
-) -> ChannelStatusSnapshot {
-    let send_operation = if !compiled {
-        unsupported_operation(
-            FEISHU_SEND_OPERATION,
-            "binary built without feature `channel-feishu`".to_owned(),
-        )
-    } else {
-        misconfigured_operation(FEISHU_SEND_OPERATION, vec![error.clone()])
-    };
-    let serve_operation = if !compiled {
-        unsupported_operation(
-            FEISHU_SERVE_OPERATION,
-            "binary built without feature `channel-feishu`".to_owned(),
-        )
-    } else {
-        misconfigured_operation(FEISHU_SERVE_OPERATION, vec![error.clone()])
-    };
-
-    let mut notes = vec![
-        format!("configured_account_id={configured_account_id}"),
-        format!("selection_error={error}"),
-    ];
-    if is_default_account {
-        notes.push("default_account=true".to_owned());
-    }
-    notes.push(format!(
-        "default_account_source={}",
-        default_account_source.as_str()
-    ));
-
-    ChannelStatusSnapshot {
-        id: descriptor.id,
-        configured_account_id: configured_account_id.to_owned(),
-        configured_account_label: configured_account_id.to_owned(),
-        is_default_account,
-        default_account_source,
-        label: descriptor.label,
-        aliases: descriptor.aliases.to_vec(),
-        transport: descriptor.transport,
-        compiled,
-        enabled: false,
-        api_base_url: None,
-        notes,
-        operations: vec![send_operation, serve_operation],
-    }
-}
-
-fn build_invalid_matrix_snapshot(
-    descriptor: &ChannelRegistryDescriptor,
-    compiled: bool,
-    configured_account_id: &str,
-    is_default_account: bool,
-    default_account_source: ChannelDefaultAccountSelectionSource,
-    error: String,
-) -> ChannelStatusSnapshot {
-    let send_operation = if !compiled {
-        unsupported_operation(
-            MATRIX_SEND_OPERATION,
-            "binary built without feature `channel-matrix`".to_owned(),
-        )
-    } else {
-        misconfigured_operation(MATRIX_SEND_OPERATION, vec![error.clone()])
-    };
-    let serve_operation = if !compiled {
-        unsupported_operation(
-            MATRIX_SERVE_OPERATION,
-            "binary built without feature `channel-matrix`".to_owned(),
-        )
-    } else {
-        misconfigured_operation(MATRIX_SERVE_OPERATION, vec![error.clone()])
-    };
-
-    let mut notes = vec![
-        format!("configured_account_id={configured_account_id}"),
-        format!("selection_error={error}"),
-    ];
-    if is_default_account {
-        notes.push("default_account=true".to_owned());
-    }
-    notes.push(format!(
-        "default_account_source={}",
-        default_account_source.as_str()
-    ));
-
-    ChannelStatusSnapshot {
-        id: descriptor.id,
-        configured_account_id: configured_account_id.to_owned(),
-        configured_account_label: configured_account_id.to_owned(),
-        is_default_account,
-        default_account_source,
-        label: descriptor.label,
-        aliases: descriptor.aliases.to_vec(),
-        transport: descriptor.transport,
-        compiled,
-        enabled: false,
-        api_base_url: None,
-        notes,
-        operations: vec![send_operation, serve_operation],
-    }
-}
-
-fn build_invalid_wecom_snapshot(
-    descriptor: &ChannelRegistryDescriptor,
-    compiled: bool,
-    configured_account_id: &str,
-    is_default_account: bool,
-    default_account_source: ChannelDefaultAccountSelectionSource,
-    error: String,
-) -> ChannelStatusSnapshot {
-    let send_operation = if !compiled {
-        unsupported_operation(
-            WECOM_SEND_OPERATION,
-            "binary built without feature `channel-wecom`".to_owned(),
-        )
-    } else {
-        misconfigured_operation(WECOM_SEND_OPERATION, vec![error.clone()])
-    };
-    let serve_operation = if !compiled {
-        unsupported_operation(
-            WECOM_SERVE_OPERATION,
-            "binary built without feature `channel-wecom`".to_owned(),
-        )
-    } else {
-        misconfigured_operation(WECOM_SERVE_OPERATION, vec![error.clone()])
-    };
-
-    let mut notes = vec![
-        format!("configured_account_id={configured_account_id}"),
-        format!("selection_error={error}"),
-    ];
-    if is_default_account {
-        notes.push("default_account=true".to_owned());
-    }
-    notes.push(format!(
-        "default_account_source={}",
-        default_account_source.as_str()
-    ));
-
-    ChannelStatusSnapshot {
-        id: descriptor.id,
-        configured_account_id: configured_account_id.to_owned(),
-        configured_account_label: configured_account_id.to_owned(),
-        is_default_account,
-        default_account_source,
-        label: descriptor.label,
-        aliases: descriptor.aliases.to_vec(),
-        transport: descriptor.transport,
-        compiled,
-        enabled: false,
-        api_base_url: None,
-        notes,
-        operations: vec![send_operation, serve_operation],
-    }
-}
-
-fn build_invalid_discord_snapshot(
-    descriptor: &ChannelRegistryDescriptor,
-    compiled: bool,
-    configured_account_id: &str,
-    is_default_account: bool,
-    default_account_source: ChannelDefaultAccountSelectionSource,
-    error: String,
-) -> ChannelStatusSnapshot {
-    let send_operation = if !compiled {
-        unsupported_operation(
-            DISCORD_SEND_OPERATION,
-            "binary built without feature `channel-discord`".to_owned(),
-        )
-    } else {
-        misconfigured_operation(DISCORD_SEND_OPERATION, vec![error.clone()])
-    };
-    let serve_operation = if !compiled {
-        unsupported_operation(
-            DISCORD_SERVE_OPERATION,
-            "binary built without feature `channel-discord`".to_owned(),
-        )
-    } else {
-        unsupported_operation(
-            DISCORD_SERVE_OPERATION,
-            "discord serve runtime is not implemented yet".to_owned(),
-        )
-    };
-
-    let mut notes = vec![
-        format!("configured_account_id={configured_account_id}"),
-        format!("selection_error={error}"),
-    ];
-    if is_default_account {
-        notes.push("default_account=true".to_owned());
-    }
-    notes.push(format!(
-        "default_account_source={}",
-        default_account_source.as_str()
-    ));
-
-    ChannelStatusSnapshot {
-        id: descriptor.id,
-        configured_account_id: configured_account_id.to_owned(),
-        configured_account_label: configured_account_id.to_owned(),
-        is_default_account,
-        default_account_source,
-        label: descriptor.label,
-        aliases: descriptor.aliases.to_vec(),
-        transport: descriptor.transport,
-        compiled,
-        enabled: false,
-        api_base_url: None,
-        notes,
-        operations: vec![send_operation, serve_operation],
-    }
-}
-
-fn build_invalid_slack_snapshot(
-    descriptor: &ChannelRegistryDescriptor,
-    compiled: bool,
-    configured_account_id: &str,
-    is_default_account: bool,
-    default_account_source: ChannelDefaultAccountSelectionSource,
-    error: String,
-) -> ChannelStatusSnapshot {
-    let send_operation = if !compiled {
-        unsupported_operation(
-            SLACK_SEND_OPERATION,
-            "binary built without feature `channel-slack`".to_owned(),
-        )
-    } else {
-        misconfigured_operation(SLACK_SEND_OPERATION, vec![error.clone()])
-    };
-    let serve_operation = if !compiled {
-        unsupported_operation(
-            SLACK_SERVE_OPERATION,
-            "binary built without feature `channel-slack`".to_owned(),
-        )
-    } else {
-        unsupported_operation(
-            SLACK_SERVE_OPERATION,
-            "slack serve runtime is not implemented yet".to_owned(),
-        )
-    };
-
-    let mut notes = vec![
-        format!("configured_account_id={configured_account_id}"),
-        format!("selection_error={error}"),
-    ];
-    if is_default_account {
-        notes.push("default_account=true".to_owned());
-    }
-    notes.push(format!(
-        "default_account_source={}",
-        default_account_source.as_str()
-    ));
-
-    ChannelStatusSnapshot {
-        id: descriptor.id,
-        configured_account_id: configured_account_id.to_owned(),
-        configured_account_label: configured_account_id.to_owned(),
-        is_default_account,
-        default_account_source,
-        label: descriptor.label,
-        aliases: descriptor.aliases.to_vec(),
-        transport: descriptor.transport,
-        compiled,
-        enabled: false,
-        api_base_url: None,
-        notes,
-        operations: vec![send_operation, serve_operation],
-    }
-}
-
-fn build_invalid_line_snapshot(
-    descriptor: &ChannelRegistryDescriptor,
-    compiled: bool,
-    configured_account_id: &str,
-    is_default_account: bool,
-    default_account_source: ChannelDefaultAccountSelectionSource,
-    error: String,
-) -> ChannelStatusSnapshot {
-    let send_operation = if !compiled {
-        unsupported_operation(
-            LINE_SEND_OPERATION,
-            "binary built without feature `channel-line`".to_owned(),
-        )
-    } else {
-        misconfigured_operation(LINE_SEND_OPERATION, vec![error.clone()])
-    };
-    let serve_operation = if !compiled {
-        unsupported_operation(
-            LINE_SERVE_OPERATION,
-            "binary built without feature `channel-line`".to_owned(),
-        )
-    } else {
-        unsupported_operation(
-            LINE_SERVE_OPERATION,
-            "line serve runtime is not implemented yet".to_owned(),
-        )
-    };
-
-    let mut notes = vec![
-        format!("configured_account_id={configured_account_id}"),
-        format!("selection_error={error}"),
-    ];
-    if is_default_account {
-        notes.push("default_account=true".to_owned());
-    }
-    notes.push(format!(
-        "default_account_source={}",
-        default_account_source.as_str()
-    ));
-
-    ChannelStatusSnapshot {
-        id: descriptor.id,
-        configured_account_id: configured_account_id.to_owned(),
-        configured_account_label: configured_account_id.to_owned(),
-        is_default_account,
-        default_account_source,
-        label: descriptor.label,
-        aliases: descriptor.aliases.to_vec(),
-        transport: descriptor.transport,
-        compiled,
-        enabled: false,
-        api_base_url: None,
-        notes,
-        operations: vec![send_operation, serve_operation],
-    }
-}
-
-fn build_invalid_dingtalk_snapshot(
-    descriptor: &ChannelRegistryDescriptor,
-    compiled: bool,
-    configured_account_id: &str,
-    is_default_account: bool,
-    default_account_source: ChannelDefaultAccountSelectionSource,
-    error: String,
-) -> ChannelStatusSnapshot {
-    let send_operation = if !compiled {
-        unsupported_operation(
-            DINGTALK_SEND_OPERATION,
-            "binary built without feature `channel-dingtalk`".to_owned(),
-        )
-    } else {
-        misconfigured_operation(DINGTALK_SEND_OPERATION, vec![error.clone()])
-    };
-    let serve_operation = if !compiled {
-        unsupported_operation(
-            DINGTALK_SERVE_OPERATION,
-            "binary built without feature `channel-dingtalk`".to_owned(),
-        )
-    } else {
-        unsupported_operation(
-            DINGTALK_SERVE_OPERATION,
-            "dingtalk custom robot surface is outbound-only".to_owned(),
-        )
-    };
-
-    let mut notes = vec![
-        format!("configured_account_id={configured_account_id}"),
-        format!("selection_error={error}"),
-    ];
-    if is_default_account {
-        notes.push("default_account=true".to_owned());
-    }
-    notes.push(format!(
-        "default_account_source={}",
-        default_account_source.as_str()
-    ));
-
-    ChannelStatusSnapshot {
-        id: descriptor.id,
-        configured_account_id: configured_account_id.to_owned(),
-        configured_account_label: configured_account_id.to_owned(),
-        is_default_account,
-        default_account_source,
-        label: descriptor.label,
-        aliases: descriptor.aliases.to_vec(),
-        transport: descriptor.transport,
-        compiled,
-        enabled: false,
-        api_base_url: None,
-        notes,
-        operations: vec![send_operation, serve_operation],
-    }
-}
-
-fn build_invalid_whatsapp_snapshot(
-    descriptor: &ChannelRegistryDescriptor,
-    compiled: bool,
-    configured_account_id: &str,
-    is_default_account: bool,
-    default_account_source: ChannelDefaultAccountSelectionSource,
-    error: String,
-) -> ChannelStatusSnapshot {
-    let send_operation = if !compiled {
-        unsupported_operation(
-            WHATSAPP_SEND_OPERATION,
-            "binary built without feature `channel-whatsapp`".to_owned(),
-        )
-    } else {
-        misconfigured_operation(WHATSAPP_SEND_OPERATION, vec![error.clone()])
-    };
-    let serve_operation = if !compiled {
-        unsupported_operation(
-            WHATSAPP_SERVE_OPERATION,
-            "binary built without feature `channel-whatsapp`".to_owned(),
-        )
-    } else {
-        misconfigured_operation(WHATSAPP_SERVE_OPERATION, vec![error.clone()])
-    };
-
-    let mut notes = vec![
-        format!("configured_account_id={configured_account_id}"),
-        format!("selection_error={error}"),
-    ];
-    if is_default_account {
-        notes.push("default_account=true".to_owned());
-    }
-    notes.push(format!(
-        "default_account_source={}",
-        default_account_source.as_str()
-    ));
-
-    ChannelStatusSnapshot {
-        id: descriptor.id,
-        configured_account_id: configured_account_id.to_owned(),
-        configured_account_label: configured_account_id.to_owned(),
-        is_default_account,
-        default_account_source,
-        label: descriptor.label,
-        aliases: descriptor.aliases.to_vec(),
-        transport: descriptor.transport,
-        compiled,
-        enabled: false,
-        api_base_url: None,
-        notes,
-        operations: vec![send_operation, serve_operation],
-    }
-}
-
-fn build_invalid_email_snapshot(
-    descriptor: &ChannelRegistryDescriptor,
-    compiled: bool,
-    configured_account_id: &str,
-    is_default_account: bool,
-    default_account_source: ChannelDefaultAccountSelectionSource,
-    error: String,
-) -> ChannelStatusSnapshot {
-    let send_operation = if !compiled {
-        unsupported_operation(
-            EMAIL_SEND_OPERATION,
-            "binary built without feature `channel-email`".to_owned(),
-        )
-    } else {
-        misconfigured_operation(EMAIL_SEND_OPERATION, vec![error.clone()])
-    };
-    let serve_operation = if !compiled {
-        unsupported_operation(
-            EMAIL_SERVE_OPERATION,
-            "binary built without feature `channel-email`".to_owned(),
-        )
-    } else {
-        unsupported_operation(
-            EMAIL_SERVE_OPERATION,
-            "email IMAP reply-loop serve runtime is not implemented yet".to_owned(),
-        )
-    };
-
-    let mut notes = vec![
-        format!("configured_account_id={configured_account_id}"),
-        format!("selection_error={error}"),
-    ];
-    if is_default_account {
-        notes.push("default_account=true".to_owned());
-    }
-    notes.push(format!(
-        "default_account_source={}",
-        default_account_source.as_str()
-    ));
-
-    ChannelStatusSnapshot {
-        id: descriptor.id,
-        configured_account_id: configured_account_id.to_owned(),
-        configured_account_label: configured_account_id.to_owned(),
-        is_default_account,
-        default_account_source,
-        label: descriptor.label,
-        aliases: descriptor.aliases.to_vec(),
-        transport: descriptor.transport,
-        compiled,
-        enabled: false,
-        api_base_url: None,
-        notes,
-        operations: vec![send_operation, serve_operation],
-    }
-}
-
-fn build_invalid_webhook_snapshot(
-    descriptor: &ChannelRegistryDescriptor,
-    compiled: bool,
-    configured_account_id: &str,
-    is_default_account: bool,
-    default_account_source: ChannelDefaultAccountSelectionSource,
-    error: String,
-) -> ChannelStatusSnapshot {
-    let send_operation = if !compiled {
-        unsupported_operation(
-            WEBHOOK_SEND_OPERATION,
-            "binary built without feature `channel-webhook`".to_owned(),
-        )
-    } else {
-        misconfigured_operation(WEBHOOK_SEND_OPERATION, vec![error.clone()])
-    };
-    let serve_operation = if !compiled {
-        unsupported_operation(
-            WEBHOOK_SERVE_OPERATION,
-            "binary built without feature `channel-webhook`".to_owned(),
-        )
-    } else {
-        unsupported_operation(
-            WEBHOOK_SERVE_OPERATION,
-            "generic webhook serve runtime is not implemented yet".to_owned(),
-        )
-    };
-
-    let mut notes = vec![
-        format!("configured_account_id={configured_account_id}"),
-        format!("selection_error={error}"),
-    ];
-    if is_default_account {
-        notes.push("default_account=true".to_owned());
-    }
-    notes.push(format!(
-        "default_account_source={}",
-        default_account_source.as_str()
-    ));
-
-    ChannelStatusSnapshot {
-        id: descriptor.id,
-        configured_account_id: configured_account_id.to_owned(),
-        configured_account_label: configured_account_id.to_owned(),
-        is_default_account,
-        default_account_source,
-        label: descriptor.label,
-        aliases: descriptor.aliases.to_vec(),
-        transport: descriptor.transport,
-        compiled,
-        enabled: false,
-        api_base_url: None,
-        notes,
-        operations: vec![send_operation, serve_operation],
-    }
-}
-
-fn build_invalid_google_chat_snapshot(
-    descriptor: &ChannelRegistryDescriptor,
-    compiled: bool,
-    configured_account_id: &str,
-    is_default_account: bool,
-    default_account_source: ChannelDefaultAccountSelectionSource,
-    error: String,
-) -> ChannelStatusSnapshot {
-    let send_operation = if !compiled {
-        unsupported_operation(
-            GOOGLE_CHAT_SEND_OPERATION,
-            "binary built without feature `channel-google-chat`".to_owned(),
-        )
-    } else {
-        misconfigured_operation(GOOGLE_CHAT_SEND_OPERATION, vec![error.clone()])
-    };
-    let serve_operation = if !compiled {
-        unsupported_operation(
-            GOOGLE_CHAT_SERVE_OPERATION,
-            "binary built without feature `channel-google-chat`".to_owned(),
-        )
-    } else {
-        unsupported_operation(
-            GOOGLE_CHAT_SERVE_OPERATION,
-            "google chat incoming webhook surface is outbound-only".to_owned(),
-        )
-    };
-
-    let mut notes = vec![
-        format!("configured_account_id={configured_account_id}"),
-        format!("selection_error={error}"),
-    ];
-    if is_default_account {
-        notes.push("default_account=true".to_owned());
-    }
-    notes.push(format!(
-        "default_account_source={}",
-        default_account_source.as_str()
-    ));
-
-    ChannelStatusSnapshot {
-        id: descriptor.id,
-        configured_account_id: configured_account_id.to_owned(),
-        configured_account_label: configured_account_id.to_owned(),
-        is_default_account,
-        default_account_source,
-        label: descriptor.label,
-        aliases: descriptor.aliases.to_vec(),
-        transport: descriptor.transport,
-        compiled,
-        enabled: false,
-        api_base_url: None,
-        notes,
-        operations: vec![send_operation, serve_operation],
-    }
-}
-
-fn build_invalid_signal_snapshot(
-    descriptor: &ChannelRegistryDescriptor,
-    compiled: bool,
-    configured_account_id: &str,
-    is_default_account: bool,
-    default_account_source: ChannelDefaultAccountSelectionSource,
-    error: String,
-) -> ChannelStatusSnapshot {
-    let send_operation = if !compiled {
-        unsupported_operation(
-            SIGNAL_SEND_OPERATION,
-            "binary built without feature `channel-signal`".to_owned(),
-        )
-    } else {
-        misconfigured_operation(SIGNAL_SEND_OPERATION, vec![error.clone()])
-    };
-    let serve_operation = if !compiled {
-        unsupported_operation(
-            SIGNAL_SERVE_OPERATION,
-            "binary built without feature `channel-signal`".to_owned(),
-        )
-    } else {
-        unsupported_operation(
-            SIGNAL_SERVE_OPERATION,
-            "signal serve runtime is not implemented yet".to_owned(),
-        )
-    };
-
-    let mut notes = vec![
-        format!("configured_account_id={configured_account_id}"),
-        format!("selection_error={error}"),
-    ];
-    if is_default_account {
-        notes.push("default_account=true".to_owned());
-    }
-    notes.push(format!(
-        "default_account_source={}",
-        default_account_source.as_str()
-    ));
-
-    ChannelStatusSnapshot {
-        id: descriptor.id,
-        configured_account_id: configured_account_id.to_owned(),
-        configured_account_label: configured_account_id.to_owned(),
-        is_default_account,
-        default_account_source,
-        label: descriptor.label,
-        aliases: descriptor.aliases.to_vec(),
-        transport: descriptor.transport,
-        compiled,
-        enabled: false,
-        api_base_url: None,
-        notes,
-        operations: vec![send_operation, serve_operation],
-    }
-}
-
-fn build_invalid_irc_snapshot(
-    descriptor: &ChannelRegistryDescriptor,
-    compiled: bool,
-    configured_account_id: &str,
-    is_default_account: bool,
-    default_account_source: ChannelDefaultAccountSelectionSource,
-    error: String,
-) -> ChannelStatusSnapshot {
-    let send_operation = if !compiled {
-        unsupported_operation(
-            IRC_SEND_OPERATION,
-            "binary built without feature `channel-irc`".to_owned(),
-        )
-    } else {
-        misconfigured_operation(IRC_SEND_OPERATION, vec![error.clone()])
-    };
-    let serve_operation = if !compiled {
-        unsupported_operation(
-            IRC_SERVE_OPERATION,
-            "binary built without feature `channel-irc`".to_owned(),
-        )
-    } else {
-        unsupported_operation(
-            IRC_SERVE_OPERATION,
-            "irc relay-loop serve is not implemented yet".to_owned(),
-        )
-    };
-
-    let mut notes = vec![
-        format!("configured_account_id={configured_account_id}"),
-        format!("selection_error={error}"),
-    ];
-    if is_default_account {
-        notes.push("default_account=true".to_owned());
-    }
-    notes.push(format!(
-        "default_account_source={}",
-        default_account_source.as_str()
-    ));
-
-    ChannelStatusSnapshot {
-        id: descriptor.id,
-        configured_account_id: configured_account_id.to_owned(),
-        configured_account_label: configured_account_id.to_owned(),
-        is_default_account,
-        default_account_source,
-        label: descriptor.label,
-        aliases: descriptor.aliases.to_vec(),
-        transport: descriptor.transport,
-        compiled,
-        enabled: false,
-        api_base_url: None,
-        notes,
-        operations: vec![send_operation, serve_operation],
-    }
-}
-
-fn build_invalid_teams_snapshot(
-    descriptor: &ChannelRegistryDescriptor,
-    compiled: bool,
-    configured_account_id: &str,
-    is_default_account: bool,
-    default_account_source: ChannelDefaultAccountSelectionSource,
-    error: String,
-) -> ChannelStatusSnapshot {
-    let send_operation = if !compiled {
-        unsupported_operation(
-            TEAMS_SEND_OPERATION,
-            "binary built without feature `channel-teams`".to_owned(),
-        )
-    } else {
-        misconfigured_operation(TEAMS_SEND_OPERATION, vec![error.clone()])
-    };
-    let serve_operation = if !compiled {
-        unsupported_operation(
-            TEAMS_SERVE_OPERATION,
-            "binary built without feature `channel-teams`".to_owned(),
-        )
-    } else {
-        unsupported_operation(
-            TEAMS_SERVE_OPERATION,
-            "microsoft teams incoming webhook surface is outbound-only today".to_owned(),
-        )
-    };
-
-    let mut notes = vec![
-        format!("configured_account_id={configured_account_id}"),
-        format!("selection_error={error}"),
-    ];
-    if is_default_account {
-        notes.push("default_account=true".to_owned());
-    }
-    notes.push(format!(
-        "default_account_source={}",
-        default_account_source.as_str()
-    ));
-
-    ChannelStatusSnapshot {
-        id: descriptor.id,
-        configured_account_id: configured_account_id.to_owned(),
-        configured_account_label: configured_account_id.to_owned(),
-        is_default_account,
-        default_account_source,
-        label: descriptor.label,
-        aliases: descriptor.aliases.to_vec(),
-        transport: descriptor.transport,
-        compiled,
-        enabled: false,
-        api_base_url: None,
-        notes,
-        operations: vec![send_operation, serve_operation],
-    }
-}
-
-fn build_invalid_imessage_snapshot(
-    descriptor: &ChannelRegistryDescriptor,
-    compiled: bool,
-    configured_account_id: &str,
-    is_default_account: bool,
-    default_account_source: ChannelDefaultAccountSelectionSource,
-    error: String,
-) -> ChannelStatusSnapshot {
-    let send_operation = if !compiled {
-        unsupported_operation(
-            IMESSAGE_SEND_OPERATION,
-            "binary built without feature `channel-imessage`".to_owned(),
-        )
-    } else {
-        misconfigured_operation(IMESSAGE_SEND_OPERATION, vec![error.clone()])
-    };
-    let serve_operation = if !compiled {
-        unsupported_operation(
-            IMESSAGE_SERVE_OPERATION,
-            "binary built without feature `channel-imessage`".to_owned(),
-        )
-    } else {
-        unsupported_operation(
-            IMESSAGE_SERVE_OPERATION,
-            "imessage bridge sync runtime is not implemented yet".to_owned(),
-        )
-    };
-
-    let mut notes = vec![
-        format!("configured_account_id={configured_account_id}"),
-        format!("selection_error={error}"),
-    ];
-    if is_default_account {
-        notes.push("default_account=true".to_owned());
-    }
-    notes.push(format!(
-        "default_account_source={}",
-        default_account_source.as_str()
-    ));
-
-    ChannelStatusSnapshot {
-        id: descriptor.id,
-        configured_account_id: configured_account_id.to_owned(),
-        configured_account_label: configured_account_id.to_owned(),
-        is_default_account,
-        default_account_source,
-        label: descriptor.label,
-        aliases: descriptor.aliases.to_vec(),
-        transport: descriptor.transport,
-        compiled,
-        enabled: false,
-        api_base_url: None,
-        notes,
-        operations: vec![send_operation, serve_operation],
-    }
-}
-
-fn build_invalid_mattermost_snapshot(
-    descriptor: &ChannelRegistryDescriptor,
-    compiled: bool,
-    configured_account_id: &str,
-    is_default_account: bool,
-    default_account_source: ChannelDefaultAccountSelectionSource,
-    error: String,
-) -> ChannelStatusSnapshot {
-    let send_operation = if !compiled {
-        unsupported_operation(
-            MATTERMOST_SEND_OPERATION,
-            "binary built without feature `channel-mattermost`".to_owned(),
-        )
-    } else {
-        misconfigured_operation(MATTERMOST_SEND_OPERATION, vec![error.clone()])
-    };
-    let serve_operation = if !compiled {
-        unsupported_operation(
-            MATTERMOST_SERVE_OPERATION,
-            "binary built without feature `channel-mattermost`".to_owned(),
-        )
-    } else {
-        unsupported_operation(
-            MATTERMOST_SERVE_OPERATION,
-            "mattermost serve runtime is not implemented yet".to_owned(),
-        )
-    };
-
-    let mut notes = vec![
-        format!("configured_account_id={configured_account_id}"),
-        format!("selection_error={error}"),
-    ];
-    if is_default_account {
-        notes.push("default_account=true".to_owned());
-    }
-    notes.push(format!(
-        "default_account_source={}",
-        default_account_source.as_str()
-    ));
-
-    ChannelStatusSnapshot {
-        id: descriptor.id,
-        configured_account_id: configured_account_id.to_owned(),
-        configured_account_label: configured_account_id.to_owned(),
-        is_default_account,
-        default_account_source,
-        label: descriptor.label,
-        aliases: descriptor.aliases.to_vec(),
-        transport: descriptor.transport,
-        compiled,
-        enabled: false,
-        api_base_url: None,
-        notes,
-        operations: vec![send_operation, serve_operation],
-    }
-}
-
-fn build_invalid_nextcloud_talk_snapshot(
-    descriptor: &ChannelRegistryDescriptor,
-    compiled: bool,
-    configured_account_id: &str,
-    is_default_account: bool,
-    default_account_source: ChannelDefaultAccountSelectionSource,
-    error: String,
-) -> ChannelStatusSnapshot {
-    let send_operation = if !compiled {
-        unsupported_operation(
-            NEXTCLOUD_TALK_SEND_OPERATION,
-            "binary built without feature `channel-nextcloud-talk`".to_owned(),
-        )
-    } else {
-        misconfigured_operation(NEXTCLOUD_TALK_SEND_OPERATION, vec![error.clone()])
-    };
-    let serve_operation = if !compiled {
-        unsupported_operation(
-            NEXTCLOUD_TALK_SERVE_OPERATION,
-            "binary built without feature `channel-nextcloud-talk`".to_owned(),
-        )
-    } else {
-        unsupported_operation(
-            NEXTCLOUD_TALK_SERVE_OPERATION,
-            "nextcloud talk bot callback serve is not implemented yet".to_owned(),
-        )
-    };
-
-    let mut notes = vec![
-        format!("configured_account_id={configured_account_id}"),
-        format!("selection_error={error}"),
-    ];
-    if is_default_account {
-        notes.push("default_account=true".to_owned());
-    }
-    notes.push(format!(
-        "default_account_source={}",
-        default_account_source.as_str()
-    ));
-
-    ChannelStatusSnapshot {
-        id: descriptor.id,
-        configured_account_id: configured_account_id.to_owned(),
-        configured_account_label: configured_account_id.to_owned(),
-        is_default_account,
-        default_account_source,
-        label: descriptor.label,
-        aliases: descriptor.aliases.to_vec(),
-        transport: descriptor.transport,
-        compiled,
-        enabled: false,
-        api_base_url: None,
-        notes,
-        operations: vec![send_operation, serve_operation],
-    }
-}
-
-fn build_invalid_synology_chat_snapshot(
-    descriptor: &ChannelRegistryDescriptor,
-    compiled: bool,
-    configured_account_id: &str,
-    is_default_account: bool,
-    default_account_source: ChannelDefaultAccountSelectionSource,
-    error: String,
-) -> ChannelStatusSnapshot {
-    let send_operation = if !compiled {
-        unsupported_operation(
-            SYNOLOGY_CHAT_SEND_OPERATION,
-            "binary built without feature `channel-synology-chat`".to_owned(),
-        )
-    } else {
-        misconfigured_operation(SYNOLOGY_CHAT_SEND_OPERATION, vec![error.clone()])
-    };
-    let serve_operation = if !compiled {
-        unsupported_operation(
-            SYNOLOGY_CHAT_SERVE_OPERATION,
-            "binary built without feature `channel-synology-chat`".to_owned(),
-        )
-    } else {
-        unsupported_operation(
-            SYNOLOGY_CHAT_SERVE_OPERATION,
-            "synology chat outgoing webhook serve is not implemented yet".to_owned(),
-        )
-    };
-
-    let mut notes = vec![
-        format!("configured_account_id={configured_account_id}"),
-        format!("selection_error={error}"),
-    ];
-    if is_default_account {
-        notes.push("default_account=true".to_owned());
-    }
-    notes.push(format!(
-        "default_account_source={}",
-        default_account_source.as_str()
-    ));
-
-    ChannelStatusSnapshot {
-        id: descriptor.id,
-        configured_account_id: configured_account_id.to_owned(),
-        configured_account_label: configured_account_id.to_owned(),
-        is_default_account,
-        default_account_source,
-        label: descriptor.label,
-        aliases: descriptor.aliases.to_vec(),
-        transport: descriptor.transport,
-        compiled,
-        enabled: false,
-        api_base_url: None,
-        notes,
-        operations: vec![send_operation, serve_operation],
-    }
-}
-
-fn ready_operation(operation: ChannelCatalogOperation) -> ChannelOperationStatus {
-    ChannelOperationStatus {
-        id: operation.id,
-        label: operation.label,
-        command: operation.command,
-        health: ChannelOperationHealth::Ready,
-        detail: "ready".to_owned(),
-        issues: Vec::new(),
-        runtime: None,
-    }
-}
-
-fn disabled_operation(
-    operation: ChannelCatalogOperation,
-    detail: String,
-) -> ChannelOperationStatus {
-    ChannelOperationStatus {
-        id: operation.id,
-        label: operation.label,
-        command: operation.command,
-        health: ChannelOperationHealth::Disabled,
-        detail,
-        issues: Vec::new(),
-        runtime: None,
-    }
-}
-
-fn unsupported_operation(
-    operation: ChannelCatalogOperation,
-    detail: String,
-) -> ChannelOperationStatus {
-    ChannelOperationStatus {
-        id: operation.id,
-        label: operation.label,
-        command: operation.command,
-        health: ChannelOperationHealth::Unsupported,
-        detail: detail.clone(),
-        issues: vec![detail],
-        runtime: None,
-    }
-}
-
-fn misconfigured_operation(
-    operation: ChannelCatalogOperation,
-    issues: Vec<String>,
-) -> ChannelOperationStatus {
-    ChannelOperationStatus {
-        id: operation.id,
-        label: operation.label,
-        command: operation.command,
-        health: ChannelOperationHealth::Misconfigured,
-        detail: issues.join("; "),
-        issues,
-        runtime: None,
-    }
-}
-
-fn attach_runtime(
-    platform: ChannelPlatform,
-    operation: ChannelCatalogOperation,
-    mut status: ChannelOperationStatus,
-    account_id: &str,
-    account_label: &str,
-    runtime_dir: &Path,
-    now_ms: u64,
-) -> ChannelOperationStatus {
-    if operation.tracks_runtime {
-        status.runtime = state::load_channel_operation_runtime_for_account_from_dir(
-            runtime_dir,
-            platform,
-            operation.id,
-            account_id,
-            now_ms,
-        )
-        .map(|mut runtime| {
-            if runtime.account_id.is_none() {
-                runtime.account_id = Some(account_id.to_owned());
-            }
-            if runtime.account_label.is_none() {
-                runtime.account_label = Some(account_label.to_owned());
-            }
-            runtime
-        })
-        .or(Some(ChannelOperationRuntime {
-            running: false,
-            stale: false,
-            busy: false,
-            active_runs: 0,
-            last_run_activity_at: None,
-            last_heartbeat_at: None,
-            pid: None,
-            account_id: Some(account_id.to_owned()),
-            account_label: Some(account_label.to_owned()),
-            instance_count: 0,
-            running_instances: 0,
-            stale_instances: 0,
-        }));
-    }
-    status
 }
 
 fn now_ms() -> u64 {
@@ -6494,7 +5775,9 @@ mod tests {
                 .iter()
                 .map(|descriptor| descriptor.id)
                 .collect::<Vec<_>>(),
-            vec!["telegram", "feishu", "matrix", "wecom", "whatsapp"]
+            vec![
+                "telegram", "feishu", "matrix", "wecom", "line", "whatsapp", "webhook"
+            ]
         );
         assert!(
             runtime_backed
@@ -6509,8 +5792,12 @@ mod tests {
             .expect("telegram runtime command descriptor");
         let lark =
             resolve_channel_runtime_command_descriptor("lark").expect("lark runtime descriptor");
+        let line =
+            resolve_channel_runtime_command_descriptor("line").expect("line runtime descriptor");
         let wecom =
             resolve_channel_runtime_command_descriptor("wecom").expect("wecom runtime descriptor");
+        let webhook = resolve_channel_runtime_command_descriptor("webhook")
+            .expect("webhook runtime descriptor");
 
         assert_eq!(telegram.channel_id, "telegram");
         assert_eq!(telegram.platform, ChannelPlatform::Telegram);
@@ -6520,9 +5807,17 @@ mod tests {
         assert_eq!(lark.platform, ChannelPlatform::Feishu);
         assert_eq!(lark.serve_bootstrap_agent_id, "channel-feishu");
 
+        assert_eq!(line.channel_id, "line");
+        assert_eq!(line.platform, ChannelPlatform::Line);
+        assert_eq!(line.serve_bootstrap_agent_id, "channel-line");
+
         assert_eq!(wecom.channel_id, "wecom");
         assert_eq!(wecom.platform, ChannelPlatform::Wecom);
         assert_eq!(wecom.serve_bootstrap_agent_id, "channel-wecom");
+
+        assert_eq!(webhook.channel_id, "webhook");
+        assert_eq!(webhook.platform, ChannelPlatform::Webhook);
+        assert_eq!(webhook.serve_bootstrap_agent_id, "channel-webhook");
     }
 
     #[test]
@@ -6541,9 +5836,9 @@ mod tests {
 
         assert_eq!(matrix.channel_id, "matrix");
         assert_eq!(matrix.send.id, CHANNEL_OPERATION_SEND_ID);
-        assert_eq!(matrix.send.command, "matrix-send");
+        assert_eq!(matrix.send.command, "channels send matrix");
         assert_eq!(matrix.serve.id, CHANNEL_OPERATION_SERVE_ID);
-        assert_eq!(matrix.serve.command, "matrix-serve");
+        assert_eq!(matrix.serve.command, "channels serve matrix");
         assert_eq!(
             matrix.default_send_target_kind,
             ChannelCatalogTargetKind::Conversation
@@ -6557,9 +5852,9 @@ mod tests {
 
         assert_eq!(wecom.channel_id, "wecom");
         assert_eq!(wecom.send.id, CHANNEL_OPERATION_SEND_ID);
-        assert_eq!(wecom.send.command, "wecom-send");
+        assert_eq!(wecom.send.command, "channels send wecom");
         assert_eq!(wecom.serve.id, CHANNEL_OPERATION_SERVE_ID);
-        assert_eq!(wecom.serve.command, "wecom-serve");
+        assert_eq!(wecom.serve.command, "channels serve wecom");
         assert_eq!(
             wecom.default_send_target_kind,
             ChannelCatalogTargetKind::Conversation
@@ -6589,9 +5884,9 @@ mod tests {
         assert_eq!(telegram.runtime.platform, ChannelPlatform::Telegram);
         assert_eq!(telegram.catalog, telegram_catalog);
         assert_eq!(telegram.catalog.send.id, CHANNEL_OPERATION_SEND_ID);
-        assert_eq!(telegram.catalog.send.command, "telegram-send");
+        assert_eq!(telegram.catalog.send.command, "channels send telegram");
         assert_eq!(telegram.catalog.serve.id, CHANNEL_OPERATION_SERVE_ID);
-        assert_eq!(telegram.catalog.serve.command, "telegram-serve");
+        assert_eq!(telegram.catalog.serve.command, "channels serve telegram");
         assert_eq!(
             telegram.catalog.send.default_target_kind(),
             Some(telegram.catalog.default_send_target_kind)
@@ -6600,8 +5895,8 @@ mod tests {
         assert_eq!(lark.runtime.channel_id, "feishu");
         assert_eq!(lark.runtime.platform, ChannelPlatform::Feishu);
         assert_eq!(lark.catalog, lark_catalog);
-        assert_eq!(lark.catalog.send.command, "feishu-send");
-        assert_eq!(lark.catalog.serve.command, "feishu-serve");
+        assert_eq!(lark.catalog.send.command, "feishu send");
+        assert_eq!(lark.catalog.serve.command, "feishu serve");
         assert_eq!(
             lark.catalog.send.default_target_kind(),
             Some(lark.catalog.default_send_target_kind)
@@ -6618,7 +5913,7 @@ mod tests {
     fn resolve_channel_operation_descriptor_combines_catalog_and_doctor_metadata() {
         let lark_serve = resolve_channel_operation_descriptor("lark", CHANNEL_OPERATION_SERVE_ID)
             .expect("lark serve descriptor");
-        assert_eq!(lark_serve.operation.command, "feishu-serve");
+        assert_eq!(lark_serve.operation.command, "feishu serve");
         assert_eq!(
             lark_serve
                 .doctor
@@ -6633,7 +5928,7 @@ mod tests {
         let discord_send =
             resolve_channel_operation_descriptor("discord-bot", CHANNEL_OPERATION_SEND_ID)
                 .expect("discord send descriptor");
-        assert_eq!(discord_send.operation.command, "discord-send");
+        assert_eq!(discord_send.operation.command, "channels send discord");
         assert_eq!(discord_send.doctor, None);
 
         assert_eq!(
@@ -6656,7 +5951,7 @@ mod tests {
             ChannelCatalogImplementationStatus::ConfigBacked
         );
         assert_eq!(discord.transport, "discord_http_api");
-        assert_eq!(discord.operations[0].command, "discord-send");
+        assert_eq!(discord.operations[0].command, "channels send discord");
         assert_eq!(discord.operations[1].command, "discord-serve");
         assert_eq!(
             encoded
@@ -6702,13 +5997,15 @@ mod tests {
             telegram.onboarding.repair_command,
             Some("loong doctor --fix")
         );
-        assert!(telegram.onboarding.setup_hint.contains("loongclaw.toml"));
+        assert!(telegram.onboarding.setup_hint.contains("loong.toml"));
 
         assert_eq!(
             lark.onboarding.strategy,
-            ChannelOnboardingStrategy::ManualConfig
+            ChannelOnboardingStrategy::QrRegistration
         );
         assert_eq!(lark.onboarding.status_command, "loong doctor");
+        assert_eq!(lark.onboarding.repair_command, Some("loong feishu onboard"));
+        assert!(lark.onboarding.setup_hint.contains("QR"));
 
         assert_eq!(
             discord.onboarding.strategy,
@@ -6726,17 +6023,17 @@ mod tests {
         );
 
         assert_eq!(weixin.onboarding.strategy.as_str(), "plugin_bridge");
-        assert_eq!(weixin.onboarding.status_command, "loongclaw doctor");
+        assert_eq!(weixin.onboarding.status_command, "loong doctor");
         assert_eq!(weixin.onboarding.repair_command, None);
         assert!(weixin.onboarding.setup_hint.contains("ClawBot"));
 
         assert_eq!(qqbot.onboarding.strategy.as_str(), "plugin_bridge");
-        assert_eq!(qqbot.onboarding.status_command, "loongclaw doctor");
+        assert_eq!(qqbot.onboarding.status_command, "loong doctor");
         assert_eq!(qqbot.onboarding.repair_command, None);
         assert!(qqbot.onboarding.setup_hint.contains("QQ Bot"));
 
         assert_eq!(onebot.onboarding.strategy.as_str(), "plugin_bridge");
-        assert_eq!(onebot.onboarding.status_command, "loongclaw doctor");
+        assert_eq!(onebot.onboarding.status_command, "loong doctor");
         assert_eq!(onebot.onboarding.repair_command, None);
         assert!(onebot.onboarding.setup_hint.contains("OneBot"));
     }
@@ -6827,10 +6124,16 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             qqbot_serve_checks,
-            vec![(
-                "qqbot bridge serve contract",
-                ChannelDoctorCheckTrigger::PluginBridgeHealth,
-            )]
+            vec![
+                (
+                    "qqbot bridge serve contract",
+                    ChannelDoctorCheckTrigger::PluginBridgeHealth,
+                ),
+                (
+                    "qqbot bridge serve runtime",
+                    ChannelDoctorCheckTrigger::ReadyRuntime,
+                ),
+            ]
         );
 
         let onebot_serve =
@@ -6842,10 +6145,16 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             onebot_serve_checks,
-            vec![(
-                "onebot bridge serve contract",
-                ChannelDoctorCheckTrigger::PluginBridgeHealth,
-            )]
+            vec![
+                (
+                    "onebot bridge serve contract",
+                    ChannelDoctorCheckTrigger::PluginBridgeHealth,
+                ),
+                (
+                    "onebot bridge serve runtime",
+                    ChannelDoctorCheckTrigger::ReadyRuntime,
+                ),
+            ]
         );
     }
 
@@ -6864,8 +6173,8 @@ mod tests {
         );
         assert_eq!(feishu.aliases, vec!["lark"]);
         assert_eq!(feishu.operations.len(), 2);
-        assert_eq!(feishu.operations[0].command, "feishu-send");
-        assert_eq!(feishu.operations[1].command, "feishu-serve");
+        assert_eq!(feishu.operations[0].command, "feishu send");
+        assert_eq!(feishu.operations[1].command, "feishu serve");
         assert_eq!(
             encoded
                 .get("operations")
@@ -6905,8 +6214,8 @@ mod tests {
         let slack_json = serde_json::to_value(slack).expect("serialize slack entry");
 
         assert_eq!(telegram.operations.len(), 2);
-        assert_eq!(telegram.operations[0].command, "telegram-send");
-        assert_eq!(telegram.operations[1].command, "telegram-serve");
+        assert_eq!(telegram.operations[0].command, "channels send telegram");
+        assert_eq!(telegram.operations[1].command, "channels serve telegram");
         assert_eq!(
             matrix.implementation_status,
             ChannelCatalogImplementationStatus::RuntimeBacked
@@ -6914,8 +6223,8 @@ mod tests {
         assert_eq!(matrix.transport, "matrix_client_server_sync");
         assert!(matrix.aliases.is_empty());
         assert_eq!(matrix.operations.len(), 2);
-        assert_eq!(matrix.operations[0].command, "matrix-send");
-        assert_eq!(matrix.operations[1].command, "matrix-serve");
+        assert_eq!(matrix.operations[0].command, "channels send matrix");
+        assert_eq!(matrix.operations[1].command, "channels serve matrix");
         assert_eq!(
             discord.implementation_status,
             ChannelCatalogImplementationStatus::ConfigBacked
@@ -6925,7 +6234,7 @@ mod tests {
         assert_eq!(discord.selection_order, 40);
         assert_eq!(discord.selection_label, "community server bot");
         assert_eq!(discord.operations.len(), 2);
-        assert_eq!(discord.operations[0].command, "discord-send");
+        assert_eq!(discord.operations[0].command, "channels send discord");
         assert_eq!(discord.operations[1].command, "discord-serve");
 
         assert_eq!(
@@ -7047,6 +6356,10 @@ mod tests {
             .iter()
             .find(|entry| entry.id == "imessage")
             .expect("imessage catalog entry");
+        let matrix = catalog
+            .iter()
+            .find(|entry| entry.id == "matrix")
+            .expect("matrix catalog entry");
 
         assert_eq!(
             telegram.operations[0]
@@ -7062,7 +6375,13 @@ mod tests {
                 .iter()
                 .map(|requirement| requirement.id)
                 .collect::<Vec<_>>(),
-            vec!["enabled", "bot_token", "allowed_chat_ids"]
+            vec![
+                "enabled",
+                "bot_token",
+                "allowed_chat_ids",
+                "allowed_sender_ids",
+                "require_mention"
+            ]
         );
         assert_eq!(
             telegram.operations[0].requirements[1].default_env_var,
@@ -7096,17 +6415,34 @@ mod tests {
                 "app_secret",
                 "mode",
                 "allowed_chat_ids",
+                "allowed_sender_ids",
                 "verification_token",
                 "encrypt_key",
             ]
         );
         assert_eq!(
-            feishu.operations[1].requirements[5].default_env_var,
+            feishu.operations[1].requirements[6].default_env_var,
             Some("FEISHU_VERIFICATION_TOKEN")
         );
         assert_eq!(
-            feishu.operations[1].requirements[6].default_env_var,
+            feishu.operations[1].requirements[7].default_env_var,
             Some("FEISHU_ENCRYPT_KEY")
+        );
+        assert_eq!(
+            matrix.operations[1]
+                .requirements
+                .iter()
+                .map(|requirement| requirement.id)
+                .collect::<Vec<_>>(),
+            vec![
+                "enabled",
+                "access_token",
+                "base_url",
+                "allowed_room_ids",
+                "allowed_sender_ids",
+                "require_mention",
+                "user_id",
+            ]
         );
 
         assert_eq!(
@@ -7724,7 +7060,7 @@ mod tests {
         assert_eq!(irc.selection_order, 170);
         assert_eq!(irc.transport, "irc_socket");
         assert_eq!(irc.aliases, Vec::<&str>::new());
-        assert_eq!(irc.operations[0].command, "irc-send");
+        assert_eq!(irc.operations[0].command, "channels send irc");
         assert_eq!(irc.operations[1].command, "irc-serve");
         assert_eq!(
             irc.operations[0]
@@ -7738,7 +7074,7 @@ mod tests {
 
     #[test]
     fn catalog_only_channel_entries_include_stub_surfaces_for_default_config() {
-        let config = LoongClawConfig::default();
+        let config = LoongConfig::default();
         let snapshots = channel_status_snapshots(&config);
         let catalog_only = catalog_only_channel_entries(&snapshots);
         let webchat = catalog_only
@@ -7783,7 +7119,7 @@ mod tests {
 
     #[test]
     fn channel_inventory_combines_runtime_and_catalog_surfaces() {
-        let config = LoongClawConfig::default();
+        let config = LoongConfig::default();
         let inventory = channel_inventory(&config);
 
         assert_eq!(
@@ -7890,7 +7226,7 @@ mod tests {
             dingtalk.supported_target_kinds,
             vec![ChannelCatalogTargetKind::Endpoint]
         );
-        assert_eq!(dingtalk.operations[0].command, "dingtalk-send");
+        assert_eq!(dingtalk.operations[0].command, "channels send dingtalk");
         assert_eq!(dingtalk.operations[1].command, "dingtalk-serve");
         assert_eq!(
             dingtalk.operations[0].availability,
@@ -7912,7 +7248,10 @@ mod tests {
             google_chat.supported_target_kinds,
             vec![ChannelCatalogTargetKind::Endpoint]
         );
-        assert_eq!(google_chat.operations[0].command, "google-chat-send");
+        assert_eq!(
+            google_chat.operations[0].command,
+            "channels send google-chat"
+        );
         assert_eq!(google_chat.operations[1].command, "google-chat-serve");
         assert_eq!(
             google_chat.operations[0].availability,
@@ -7943,7 +7282,7 @@ mod tests {
             email.supported_target_kinds,
             vec![ChannelCatalogTargetKind::Address]
         );
-        assert_eq!(email.operations[0].command, "email-send");
+        assert_eq!(email.operations[0].command, "channels send email");
         assert_eq!(email.operations[1].command, "email-serve");
         assert_eq!(
             email.operations[0].availability,
@@ -7978,7 +7317,10 @@ mod tests {
             nextcloud_talk.supported_target_kinds,
             vec![ChannelCatalogTargetKind::Conversation]
         );
-        assert_eq!(nextcloud_talk.operations[0].command, "nextcloud-talk-send");
+        assert_eq!(
+            nextcloud_talk.operations[0].command,
+            "channels send nextcloud-talk"
+        );
         assert_eq!(nextcloud_talk.operations[1].command, "nextcloud-talk-serve");
         assert_eq!(
             nextcloud_talk.operations[0].availability,
@@ -8003,7 +7345,10 @@ mod tests {
             synology_chat.supported_target_kinds,
             vec![ChannelCatalogTargetKind::Address]
         );
-        assert_eq!(synology_chat.operations[0].command, "synology-chat-send");
+        assert_eq!(
+            synology_chat.operations[0].command,
+            "channels send synology-chat"
+        );
         assert_eq!(synology_chat.operations[1].command, "synology-chat-serve");
         assert_eq!(
             synology_chat.operations[0].availability,
@@ -8017,7 +7362,7 @@ mod tests {
 
     #[test]
     fn channel_status_snapshots_redact_webhook_channel_status_urls() {
-        let config: LoongClawConfig = serde_json::from_value(serde_json::json!({
+        let config: LoongConfig = serde_json::from_value(serde_json::json!({
             "dingtalk": {
                 "enabled": true,
                 "webhook_url": "https://oapi.dingtalk.com/robot/send?access_token=secret-token"
@@ -8075,7 +7420,7 @@ mod tests {
 
     #[test]
     fn channel_status_snapshots_redact_generic_webhook_path_segments() {
-        let config: LoongClawConfig = serde_json::from_value(serde_json::json!({
+        let config: LoongConfig = serde_json::from_value(serde_json::json!({
             "webhook": {
                 "enabled": true,
                 "endpoint_url": "https://hooks.example.test/customer/secret-token/send?trace=secret"
@@ -8096,13 +7441,13 @@ mod tests {
 
     #[test]
     fn email_channel_status_snapshot_reports_smtp_readiness() {
-        let config: LoongClawConfig = serde_json::from_value(serde_json::json!({
+        let config: LoongConfig = serde_json::from_value(serde_json::json!({
             "email": {
                 "enabled": true,
                 "smtp_host": "smtps://smtp.example.test:465?auth=plain",
                 "smtp_username": "mailer@example.test",
                 "smtp_password": "top-secret",
-                "from_address": "LoongClaw <ops@example.test>"
+                "from_address": "Loong <ops@example.test>"
             }
         }))
         .expect("deserialize email channel config");
@@ -8127,7 +7472,7 @@ mod tests {
             email
                 .notes
                 .iter()
-                .any(|note| note == "from_address=LoongClaw <ops@example.test>")
+                .any(|note| note == "from_address=Loong <ops@example.test>")
         );
         assert_eq!(send_operation.health, ChannelOperationHealth::Ready);
         assert_eq!(serve_operation.health, ChannelOperationHealth::Unsupported);
@@ -8135,12 +7480,13 @@ mod tests {
 
     #[test]
     fn webhook_status_snapshot_rejects_invalid_auth_header_values() {
-        let config: LoongClawConfig = serde_json::from_value(serde_json::json!({
+        let config: LoongConfig = serde_json::from_value(serde_json::json!({
             "webhook": {
                 "enabled": true,
                 "endpoint_url": "https://hooks.example.test/send",
                 "auth_token": "token-123",
-                "auth_token_prefix": "Bearer\n"
+                "auth_token_prefix": "Bearer\n",
+                "signing_secret": "signing-secret"
             }
         }))
         .expect("deserialize generic webhook config");
@@ -8152,6 +7498,9 @@ mod tests {
         let send = webhook
             .operation(CHANNEL_OPERATION_SEND_ID)
             .expect("webhook send operation");
+        let serve = webhook
+            .operation(CHANNEL_OPERATION_SERVE_ID)
+            .expect("webhook serve operation");
 
         assert_eq!(send.health, ChannelOperationHealth::Misconfigured);
         assert!(
@@ -8161,11 +7510,41 @@ mod tests {
             "unexpected issues: {:?}",
             send.issues
         );
+        assert_eq!(serve.health, ChannelOperationHealth::Ready);
+    }
+
+    #[test]
+    fn webhook_status_snapshot_requires_signing_secret_for_serve() {
+        let config: LoongConfig = serde_json::from_value(serde_json::json!({
+            "webhook": {
+                "enabled": true,
+                "endpoint_url": "https://hooks.example.test/send"
+            }
+        }))
+        .expect("deserialize generic webhook config");
+
+        let webhook = channel_status_snapshots(&config)
+            .into_iter()
+            .find(|snapshot| snapshot.id == "webhook")
+            .expect("generic webhook snapshot");
+        let serve = webhook
+            .operation(CHANNEL_OPERATION_SERVE_ID)
+            .expect("webhook serve operation");
+
+        assert_eq!(serve.health, ChannelOperationHealth::Misconfigured);
+        assert!(
+            serve
+                .issues
+                .iter()
+                .any(|issue| issue.contains("signing_secret")),
+            "unexpected serve issues: {:?}",
+            serve.issues
+        );
     }
 
     #[test]
     fn wecom_status_rejects_non_websocket_endpoint_schemes() {
-        let config: LoongClawConfig = serde_json::from_value(serde_json::json!({
+        let config: LoongConfig = serde_json::from_value(serde_json::json!({
             "wecom": {
                 "enabled": true,
                 "bot_id": "wx-bot-id",
@@ -8208,7 +7587,7 @@ mod tests {
         let mut env = crate::test_support::ScopedEnv::new();
         env.remove("TELEGRAM_BOT_TOKEN");
 
-        let config = LoongClawConfig::default();
+        let config = LoongConfig::default();
         let inventory = channel_inventory(&config);
 
         assert_eq!(
@@ -8276,6 +7655,16 @@ mod tests {
             Some("default")
         );
         assert_eq!(discord.configured_accounts[0].id, "discord");
+        assert!(
+            inventory
+                .channel_access_policies
+                .iter()
+                .any(|policy| policy.channel_id == "telegram"
+                    && policy.configured_account_id == "default"
+                    && policy.conversation_config_key == "allowed_chat_ids"
+                    && policy.sender_config_key == "allowed_sender_ids"),
+            "channel inventory should expose structured access policy for telegram"
+        );
         let discord_encoded =
             serde_json::to_value(discord).expect("serialize discord channel surface");
         assert!(
@@ -8358,7 +7747,7 @@ mod tests {
             .expect("line surface");
         assert_eq!(
             line.catalog.implementation_status,
-            ChannelCatalogImplementationStatus::ConfigBacked
+            ChannelCatalogImplementationStatus::RuntimeBacked
         );
         assert_eq!(line.configured_accounts.len(), 1);
         assert_eq!(
@@ -8485,7 +7874,7 @@ mod tests {
                     ChannelCatalogOperation {
                         id: "send",
                         label: "direct send",
-                        command: "telegram-send",
+                        command: "channels send telegram",
                         availability: ChannelCatalogOperationAvailability::Implemented,
                         tracks_runtime: false,
                         requirements: &[],
@@ -8495,7 +7884,7 @@ mod tests {
                     ChannelCatalogOperation {
                         id: "serve",
                         label: "reply loop",
-                        command: "telegram-serve",
+                        command: "channels serve telegram",
                         availability: ChannelCatalogOperationAvailability::Implemented,
                         tracks_runtime: true,
                         requirements: &[],
@@ -8521,7 +7910,7 @@ mod tests {
                     ChannelCatalogOperation {
                         id: "send",
                         label: "direct send",
-                        command: "discord-send",
+                        command: "channels send discord",
                         availability: ChannelCatalogOperationAvailability::Implemented,
                         tracks_runtime: false,
                         requirements: &[],
@@ -8554,10 +7943,11 @@ mod tests {
             enabled: false,
             api_base_url: Some("https://api.telegram.org".to_owned()),
             notes: vec![],
+            reserved_runtime_fields: Vec::new(),
             operations: vec![ChannelOperationStatus {
                 id: "serve",
                 label: "reply loop",
-                command: "telegram-serve",
+                command: "channels serve telegram",
                 health: ChannelOperationHealth::Disabled,
                 detail: "disabled".to_owned(),
                 issues: vec![],
@@ -8573,7 +7963,10 @@ mod tests {
             catalog_only[0].implementation_status,
             ChannelCatalogImplementationStatus::ConfigBacked
         );
-        assert_eq!(catalog_only[0].operations[0].command, "discord-send");
+        assert_eq!(
+            catalog_only[0].operations[0].command,
+            "channels send discord"
+        );
     }
 
     #[test]
@@ -8616,9 +8009,9 @@ mod tests {
 
     #[test]
     fn telegram_status_reports_ready_when_token_and_allowlist_are_configured() {
-        let mut config = LoongClawConfig::default();
+        let mut config = LoongConfig::default();
         config.telegram.enabled = true;
-        config.telegram.bot_token = Some(loongclaw_contracts::SecretRef::Inline(
+        config.telegram.bot_token = Some(loong_contracts::SecretRef::Inline(
             "123456:token".to_owned(),
         ));
         config.telegram.allowed_chat_ids = vec![123];
@@ -8643,9 +8036,9 @@ mod tests {
 
     #[test]
     fn telegram_status_splits_direct_send_and_reply_loop_readiness() {
-        let mut config = LoongClawConfig::default();
+        let mut config = LoongConfig::default();
         config.telegram.enabled = true;
-        config.telegram.bot_token = Some(loongclaw_contracts::SecretRef::Inline(
+        config.telegram.bot_token = Some(loong_contracts::SecretRef::Inline(
             "123456:token".to_owned(),
         ));
 
@@ -8681,13 +8074,12 @@ mod tests {
 
     #[test]
     fn feishu_status_splits_direct_send_and_webhook_readiness() {
-        let mut config = LoongClawConfig::default();
+        let mut config = LoongConfig::default();
         config.feishu.enabled = true;
         config.feishu.mode = Some(FeishuChannelServeMode::Webhook);
-        config.feishu.app_id = Some(loongclaw_contracts::SecretRef::Inline("app-id".to_owned()));
-        config.feishu.app_secret = Some(loongclaw_contracts::SecretRef::Inline(
-            "app-secret".to_owned(),
-        ));
+        config.feishu.app_id = Some(loong_contracts::SecretRef::Inline("app-id".to_owned()));
+        config.feishu.app_secret =
+            Some(loong_contracts::SecretRef::Inline("app-secret".to_owned()));
 
         let snapshots = channel_status_snapshots(&config);
         let feishu = snapshots
@@ -8729,9 +8121,9 @@ mod tests {
 
     #[test]
     fn matrix_status_requires_user_id_when_ignoring_self_messages() {
-        let mut config = LoongClawConfig::default();
+        let mut config = LoongConfig::default();
         config.matrix.enabled = true;
-        config.matrix.access_token = Some(loongclaw_contracts::SecretRef::Inline(
+        config.matrix.access_token = Some(loong_contracts::SecretRef::Inline(
             "matrix-token".to_owned(),
         ));
         config.matrix.base_url = Some("https://matrix.example.org".to_owned());
@@ -8758,7 +8150,7 @@ mod tests {
     fn discord_status_splits_config_backed_send_and_stub_serve() {
         let mut env = crate::test_support::ScopedEnv::new();
         env.remove(DISCORD_BOT_TOKEN_ENV);
-        let mut config = LoongClawConfig::default();
+        let mut config = LoongConfig::default();
         config.discord.enabled = true;
         config.discord.bot_token_env = None;
 
@@ -8793,9 +8185,9 @@ mod tests {
 
     #[test]
     fn discord_status_rejects_non_http_api_base_url() {
-        let mut config = LoongClawConfig::default();
+        let mut config = LoongConfig::default();
         config.discord.enabled = true;
-        config.discord.bot_token = Some(loongclaw_contracts::SecretRef::Inline(
+        config.discord.bot_token = Some(loong_contracts::SecretRef::Inline(
             "discord-token".to_owned(),
         ));
         config.discord.api_base_url = Some("file:///tmp/discord-api".to_owned());
@@ -8817,10 +8209,77 @@ mod tests {
     }
 
     #[test]
+    fn discord_status_rejects_api_base_url_with_query_string() {
+        let mut config = LoongConfig::default();
+        config.discord.enabled = true;
+        config.discord.bot_token = Some(loong_contracts::SecretRef::Inline(
+            "discord-token".to_owned(),
+        ));
+        config.discord.api_base_url = Some("https://discord.com/api/v10?debug=1".to_owned());
+
+        let snapshots = channel_status_snapshots(&config);
+        let discord = snapshots
+            .iter()
+            .find(|snapshot| snapshot.id == "discord")
+            .expect("discord snapshot");
+        let send = discord.operation("send").expect("discord send operation");
+
+        assert_eq!(send.health, ChannelOperationHealth::Misconfigured);
+        assert!(
+            send.issues
+                .iter()
+                .any(|issue| issue.contains("must not include a query string")),
+            "send issues should reject discord api base urls with query strings: {send:#?}"
+        );
+    }
+
+    #[test]
+    fn discord_status_notes_reserved_future_runtime_fields_when_present() {
+        let config: LoongConfig = serde_json::from_value(serde_json::json!({
+            "discord": {
+                "enabled": true,
+                "bot_token": "discord-token",
+                "application_id": "discord-application-id",
+                "allowed_guild_ids": ["guild-a", "guild-b"]
+            }
+        }))
+        .expect("deserialize discord config");
+
+        let snapshots = channel_status_snapshots(&config);
+        let discord = snapshots
+            .iter()
+            .find(|snapshot| snapshot.id == "discord")
+            .expect("discord snapshot");
+
+        assert!(
+            discord
+                .notes
+                .iter()
+                .any(|note| note == "reserved_runtime_field=application_id"),
+            "discord status notes should preserve configured future runtime fields: {discord:#?}"
+        );
+        assert!(
+            discord
+                .notes
+                .iter()
+                .any(|note| note == "reserved_runtime_field=allowed_guild_ids:2"),
+            "discord status notes should record allowed_guild_ids count when reserved runtime fields are configured: {discord:#?}"
+        );
+        assert_eq!(
+            discord.reserved_runtime_fields,
+            vec![
+                "application_id".to_owned(),
+                "allowed_guild_ids:2".to_owned()
+            ],
+            "discord status snapshots should expose structured reserved runtime fields alongside operator notes: {discord:#?}"
+        );
+    }
+
+    #[test]
     fn slack_status_reports_ready_send_and_stub_serve() {
-        let mut config = LoongClawConfig::default();
+        let mut config = LoongConfig::default();
         config.slack.enabled = true;
-        config.slack.bot_token = Some(loongclaw_contracts::SecretRef::Inline(
+        config.slack.bot_token = Some(loong_contracts::SecretRef::Inline(
             "xoxb-test-token".to_owned(),
         ));
 
@@ -8840,10 +8299,35 @@ mod tests {
     }
 
     #[test]
+    fn slack_status_rejects_api_base_url_with_fragment() {
+        let mut config = LoongConfig::default();
+        config.slack.enabled = true;
+        config.slack.bot_token = Some(loong_contracts::SecretRef::Inline(
+            "xoxb-test-token".to_owned(),
+        ));
+        config.slack.api_base_url = Some("https://slack.com/api#fragment".to_owned());
+
+        let snapshots = channel_status_snapshots(&config);
+        let slack = snapshots
+            .iter()
+            .find(|snapshot| snapshot.id == "slack")
+            .expect("slack snapshot");
+        let send = slack.operation("send").expect("slack send operation");
+
+        assert_eq!(send.health, ChannelOperationHealth::Misconfigured);
+        assert!(
+            send.issues
+                .iter()
+                .any(|issue| issue.contains("must not include a fragment")),
+            "send issues should reject slack api base urls with fragments: {send:#?}"
+        );
+    }
+
+    #[test]
     fn line_status_reports_ready_send_and_stub_serve() {
-        let mut config = LoongClawConfig::default();
+        let mut config = LoongConfig::default();
         config.line.enabled = true;
-        config.line.channel_access_token = Some(loongclaw_contracts::SecretRef::Inline(
+        config.line.channel_access_token = Some(loong_contracts::SecretRef::Inline(
             "line-access-token".to_owned(),
         ));
 
@@ -8856,22 +8340,30 @@ mod tests {
         let serve = line.operation("serve").expect("line serve operation");
 
         assert_eq!(send.health, ChannelOperationHealth::Ready);
-        assert_eq!(serve.health, ChannelOperationHealth::Unsupported);
+        assert_eq!(serve.health, ChannelOperationHealth::Misconfigured);
+        assert!(
+            serve
+                .issues
+                .iter()
+                .any(|issue| issue == "channel_secret is missing"),
+            "unexpected serve issues: {:?}",
+            serve.issues
+        );
         assert_eq!(
             line.api_base_url.as_deref(),
             Some("https://api.line.me/v2/bot")
         );
         assert!(send.runtime.is_none());
-        assert!(serve.runtime.is_none());
+        assert!(serve.runtime.is_some());
     }
 
     #[test]
     fn irc_status_reports_ready_send_and_planned_serve() {
-        let mut config = LoongClawConfig::default();
+        let mut config = LoongConfig::default();
         config.irc.enabled = true;
         config.irc.server = Some("ircs://irc.example.test:6697".to_owned());
-        config.irc.nickname = Some("loongclaw".to_owned());
-        config.irc.username = Some("loongclaw".to_owned());
+        config.irc.nickname = Some("loong".to_owned());
+        config.irc.username = Some("loong".to_owned());
         config.irc.channel_names = vec!["#ops".to_owned()];
 
         let snapshots = channel_status_snapshots(&config);
@@ -8889,7 +8381,7 @@ mod tests {
             Some("ircs://irc.example.test:6697")
         );
         assert!(
-            irc.notes.iter().any(|note| note == "nickname=loongclaw"),
+            irc.notes.iter().any(|note| note == "nickname=loong"),
             "irc notes should include the resolved nickname"
         );
         assert!(
@@ -8906,10 +8398,10 @@ mod tests {
 
     #[test]
     fn irc_status_formats_ipv6_server_endpoint_with_brackets() {
-        let mut config = LoongClawConfig::default();
+        let mut config = LoongConfig::default();
         config.irc.enabled = true;
         config.irc.server = Some("ircs://[2001:db8::42]:6697".to_owned());
-        config.irc.nickname = Some("loongclaw".to_owned());
+        config.irc.nickname = Some("loong".to_owned());
 
         let snapshots = channel_status_snapshots(&config);
         let irc = snapshots
@@ -8925,9 +8417,9 @@ mod tests {
 
     #[test]
     fn whatsapp_status_reports_ready_send_when_access_token_and_phone_number_id_are_configured() {
-        let mut config = LoongClawConfig::default();
+        let mut config = LoongConfig::default();
         config.whatsapp.enabled = true;
-        config.whatsapp.access_token = Some(loongclaw_contracts::SecretRef::Inline(
+        config.whatsapp.access_token = Some(loong_contracts::SecretRef::Inline(
             "whatsapp-access-token".to_owned(),
         ));
         config.whatsapp.phone_number_id = Some("1234567890".to_owned());
@@ -8975,10 +8467,10 @@ mod tests {
 
     #[test]
     fn mattermost_status_reports_ready_send_and_stub_serve() {
-        let mut config = LoongClawConfig::default();
+        let mut config = LoongConfig::default();
         config.mattermost.enabled = true;
         config.mattermost.server_url = Some("https://mattermost.example.test".to_owned());
-        config.mattermost.bot_token = Some(loongclaw_contracts::SecretRef::Inline(
+        config.mattermost.bot_token = Some(loong_contracts::SecretRef::Inline(
             "mattermost-bot-token".to_owned(),
         ));
 
@@ -9006,12 +8498,11 @@ mod tests {
 
     #[test]
     fn feishu_websocket_status_uses_websocket_requirements() {
-        let mut config = LoongClawConfig::default();
+        let mut config = LoongConfig::default();
         config.feishu.enabled = true;
-        config.feishu.app_id = Some(loongclaw_contracts::SecretRef::Inline("app-id".to_owned()));
-        config.feishu.app_secret = Some(loongclaw_contracts::SecretRef::Inline(
-            "app-secret".to_owned(),
-        ));
+        config.feishu.app_id = Some(loong_contracts::SecretRef::Inline("app-id".to_owned()));
+        config.feishu.app_secret =
+            Some(loong_contracts::SecretRef::Inline("app-secret".to_owned()));
         config.feishu.mode = Some(crate::config::FeishuChannelServeMode::Websocket);
         config.feishu.allowed_chat_ids = vec!["oc_123".to_owned()];
 
@@ -9059,17 +8550,15 @@ mod tests {
 
     #[test]
     fn channel_status_snapshots_merge_runtime_activity_for_serve_operations() {
-        let mut config = LoongClawConfig::default();
+        let mut config = LoongConfig::default();
         config.feishu.enabled = true;
-        config.feishu.app_id = Some(loongclaw_contracts::SecretRef::Inline("app-id".to_owned()));
-        config.feishu.app_secret = Some(loongclaw_contracts::SecretRef::Inline(
-            "app-secret".to_owned(),
-        ));
+        config.feishu.app_id = Some(loong_contracts::SecretRef::Inline("app-id".to_owned()));
+        config.feishu.app_secret =
+            Some(loong_contracts::SecretRef::Inline("app-secret".to_owned()));
         config.feishu.allowed_chat_ids = vec!["oc_123".to_owned()];
         config.feishu.verification_token =
-            Some(loongclaw_contracts::SecretRef::Inline("token".to_owned()));
-        config.feishu.encrypt_key =
-            Some(loongclaw_contracts::SecretRef::Inline("encrypt".to_owned()));
+            Some(loong_contracts::SecretRef::Inline("token".to_owned()));
+        config.feishu.encrypt_key = Some(loong_contracts::SecretRef::Inline("encrypt".to_owned()));
 
         let runtime_dir = temp_runtime_dir("registry-runtime");
         let now = now_ms();
@@ -9103,9 +8592,9 @@ mod tests {
 
     #[test]
     fn channel_status_snapshots_report_resolved_account_identity_in_notes() {
-        let mut config = LoongClawConfig::default();
+        let mut config = LoongConfig::default();
         config.telegram.enabled = true;
-        config.telegram.bot_token = Some(loongclaw_contracts::SecretRef::Inline(
+        config.telegram.bot_token = Some(loong_contracts::SecretRef::Inline(
             "123456:token".to_owned(),
         ));
         config.telegram.allowed_chat_ids = vec![123];
@@ -9127,9 +8616,9 @@ mod tests {
 
     #[test]
     fn channel_status_snapshots_report_telegram_acp_bootstrap_mcp_servers_in_notes() {
-        let mut config = LoongClawConfig::default();
+        let mut config = LoongConfig::default();
         config.telegram.enabled = true;
-        config.telegram.bot_token = Some(loongclaw_contracts::SecretRef::Inline(
+        config.telegram.bot_token = Some(loong_contracts::SecretRef::Inline(
             "123456:token".to_owned(),
         ));
         config.telegram.allowed_chat_ids = vec![123];
@@ -9160,19 +8649,15 @@ mod tests {
 
     #[test]
     fn channel_status_snapshots_report_feishu_acp_bootstrap_mcp_servers_in_notes() {
-        let mut config = LoongClawConfig::default();
+        let mut config = LoongConfig::default();
         config.feishu.enabled = true;
-        config.feishu.app_id = Some(loongclaw_contracts::SecretRef::Inline(
-            "cli_a1b2c3".to_owned(),
-        ));
-        config.feishu.app_secret = Some(loongclaw_contracts::SecretRef::Inline(
-            "app-secret".to_owned(),
-        ));
+        config.feishu.app_id = Some(loong_contracts::SecretRef::Inline("cli_a1b2c3".to_owned()));
+        config.feishu.app_secret =
+            Some(loong_contracts::SecretRef::Inline("app-secret".to_owned()));
         config.feishu.allowed_chat_ids = vec!["oc_123".to_owned()];
         config.feishu.verification_token =
-            Some(loongclaw_contracts::SecretRef::Inline("token".to_owned()));
-        config.feishu.encrypt_key =
-            Some(loongclaw_contracts::SecretRef::Inline("encrypt".to_owned()));
+            Some(loong_contracts::SecretRef::Inline("token".to_owned()));
+        config.feishu.encrypt_key = Some(loong_contracts::SecretRef::Inline("encrypt".to_owned()));
         config.feishu.acp.bootstrap_mcp_servers = vec!["search".to_owned()];
         config.feishu.acp.working_directory = Some("/workspace/feishu".to_owned());
 
@@ -9200,19 +8685,15 @@ mod tests {
 
     #[test]
     fn channel_status_snapshots_attach_account_identity_to_runtime_view() {
-        let mut config = LoongClawConfig::default();
+        let mut config = LoongConfig::default();
         config.feishu.enabled = true;
-        config.feishu.app_id = Some(loongclaw_contracts::SecretRef::Inline(
-            "cli_a1b2c3".to_owned(),
-        ));
-        config.feishu.app_secret = Some(loongclaw_contracts::SecretRef::Inline(
-            "app-secret".to_owned(),
-        ));
+        config.feishu.app_id = Some(loong_contracts::SecretRef::Inline("cli_a1b2c3".to_owned()));
+        config.feishu.app_secret =
+            Some(loong_contracts::SecretRef::Inline("app-secret".to_owned()));
         config.feishu.allowed_chat_ids = vec!["oc_123".to_owned()];
         config.feishu.verification_token =
-            Some(loongclaw_contracts::SecretRef::Inline("token".to_owned()));
-        config.feishu.encrypt_key =
-            Some(loongclaw_contracts::SecretRef::Inline("encrypt".to_owned()));
+            Some(loong_contracts::SecretRef::Inline("token".to_owned()));
+        config.feishu.encrypt_key = Some(loong_contracts::SecretRef::Inline("encrypt".to_owned()));
 
         let runtime_dir = temp_runtime_dir("registry-account-runtime");
         let now = now_ms();
@@ -9245,9 +8726,9 @@ mod tests {
 
     #[test]
     fn channel_status_snapshots_preserve_runtime_instance_counts() {
-        let mut config = LoongClawConfig::default();
+        let mut config = LoongConfig::default();
         config.telegram.enabled = true;
-        config.telegram.bot_token = Some(loongclaw_contracts::SecretRef::Inline(
+        config.telegram.bot_token = Some(loong_contracts::SecretRef::Inline(
             "123456:token".to_owned(),
         ));
         config.telegram.allowed_chat_ids = vec![123];
@@ -9300,7 +8781,7 @@ mod tests {
 
     #[test]
     fn multi_account_registry_emits_one_snapshot_per_configured_account() {
-        let config: LoongClawConfig = serde_json::from_value(serde_json::json!({
+        let config: LoongConfig = serde_json::from_value(serde_json::json!({
             "telegram": {
                 "enabled": true,
                 "default_account": "Work Bot",
@@ -9344,7 +8825,7 @@ mod tests {
 
     #[test]
     fn multi_account_registry_marks_default_configured_account() {
-        let config: LoongClawConfig = serde_json::from_value(serde_json::json!({
+        let config: LoongConfig = serde_json::from_value(serde_json::json!({
             "telegram": {
                 "enabled": true,
                 "default_account": "Work Bot",
@@ -9398,7 +8879,7 @@ mod tests {
 
     #[test]
     fn multi_account_registry_records_fallback_default_account_source() {
-        let config: LoongClawConfig = serde_json::from_value(serde_json::json!({
+        let config: LoongConfig = serde_json::from_value(serde_json::json!({
             "telegram": {
                 "enabled": true,
                 "accounts": {
@@ -9435,7 +8916,7 @@ mod tests {
 
     fn temp_runtime_dir(suffix: &str) -> std::path::PathBuf {
         let unique = format!(
-            "loongclaw-channel-registry-{suffix}-{}",
+            "loong-channel-registry-{suffix}-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("clock")

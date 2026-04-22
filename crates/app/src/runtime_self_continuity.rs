@@ -3,12 +3,13 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::config::{LoongClawConfig, PersonalizationConfig};
+use crate::config::{LoongConfig, PersonalizationConfig};
 use crate::runtime_identity::{self, ResolvedRuntimeIdentity};
 use crate::runtime_self::{self, RuntimeSelfModel};
 #[cfg(feature = "memory-sqlite")]
 use crate::session::repository::{SessionEventRecord, SessionRepository};
 use crate::tools::runtime_config::ToolRuntimeConfig;
+use crate::workspace_guidance::{self, WorkspaceGuidanceModel};
 
 const DURABLE_RECALL_INTRO: &str = concat!(
     "Advisory durable recall exported immediately before context compaction. ",
@@ -42,6 +43,8 @@ const COMPACTION_SUMMARY_SCOPE_NOTE: &str = concat!(
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeSelfContinuity {
+    #[serde(default)]
+    pub workspace_guidance: WorkspaceGuidanceModel,
     pub runtime_self: RuntimeSelfModel,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved_identity: Option<ResolvedRuntimeIdentity>,
@@ -57,7 +60,8 @@ impl RuntimeSelfContinuity {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         let profile_projection = normalize_projection(self.session_profile_projection.as_deref());
-        self.runtime_self.is_empty()
+        self.workspace_guidance.is_empty()
+            && self.runtime_self.is_empty()
             && self.resolved_identity.is_none()
             && profile_projection.is_none()
     }
@@ -65,9 +69,23 @@ impl RuntimeSelfContinuity {
     #[must_use]
     pub fn has_prompt_projection(&self) -> bool {
         let profile_projection = normalize_projection(self.session_profile_projection.as_deref());
-        !self.runtime_self.is_empty()
+        !self.workspace_guidance.is_empty()
+            || !self.runtime_self.is_empty()
             || self.resolved_identity.is_some()
             || profile_projection.is_some()
+    }
+
+    #[must_use]
+    fn normalize_legacy_workspace_guidance(mut self) -> Self {
+        if self.workspace_guidance.is_empty() && !self.runtime_self.standing_instructions.is_empty()
+        {
+            self.workspace_guidance.entries =
+                std::mem::take(&mut self.runtime_self.standing_instructions);
+        } else if !self.runtime_self.standing_instructions.is_empty() {
+            self.runtime_self.standing_instructions.clear();
+        }
+
+        self
     }
 }
 
@@ -76,6 +94,10 @@ pub(crate) fn resolve_runtime_self_continuity(
     profile_note: Option<&str>,
     personalization: Option<&PersonalizationConfig>,
 ) -> Option<RuntimeSelfContinuity> {
+    let workspace_guidance = match workspace_root {
+        Some(workspace_root) => workspace_guidance::load_workspace_guidance_model(workspace_root),
+        None => WorkspaceGuidanceModel::default(),
+    };
     let runtime_self = match workspace_root {
         Some(workspace_root) => runtime_self::load_runtime_self_model(workspace_root),
         None => RuntimeSelfModel::default(),
@@ -85,6 +107,7 @@ pub(crate) fn resolve_runtime_self_continuity(
     let session_profile_projection =
         runtime_identity::render_session_profile_section(profile_note, personalization);
     let continuity = RuntimeSelfContinuity {
+        workspace_guidance,
         runtime_self,
         resolved_identity,
         session_profile_projection,
@@ -94,16 +117,16 @@ pub(crate) fn resolve_runtime_self_continuity(
 }
 
 pub(crate) fn resolve_runtime_self_continuity_for_config(
-    config: &LoongClawConfig,
+    config: &LoongConfig,
 ) -> Option<RuntimeSelfContinuity> {
     resolve_runtime_self_continuity_for_config_with_workspace_root(config, None)
 }
 
 pub(crate) fn resolve_runtime_self_continuity_for_config_with_workspace_root(
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     workspace_root_override: Option<&Path>,
 ) -> Option<RuntimeSelfContinuity> {
-    let tool_runtime_config = ToolRuntimeConfig::from_loongclaw_config(config, None);
+    let tool_runtime_config = ToolRuntimeConfig::from_loong_config(config, None);
     let configured_workspace_root = tool_runtime_config.effective_workspace_root();
     let workspace_root = workspace_root_override.or(configured_workspace_root);
     let profile_note = config.memory.trimmed_profile_note();
@@ -119,7 +142,8 @@ pub(crate) fn runtime_self_continuity_from_event_payload(
     payload: &Value,
 ) -> Option<RuntimeSelfContinuity> {
     let continuity = payload.get("runtime_self_continuity")?.clone();
-    serde_json::from_value(continuity).ok()
+    let continuity: RuntimeSelfContinuity = serde_json::from_value(continuity).ok()?;
+    Some(continuity.normalize_legacy_workspace_guidance())
 }
 
 #[cfg(feature = "memory-sqlite")]
@@ -164,17 +188,18 @@ pub(crate) fn merge_runtime_self_continuity(
     primary: Option<RuntimeSelfContinuity>,
     fallback: Option<&RuntimeSelfContinuity>,
 ) -> Option<RuntimeSelfContinuity> {
+    let primary = primary.map(RuntimeSelfContinuity::normalize_legacy_workspace_guidance);
+    let fallback = fallback.map(|value| value.clone().normalize_legacy_workspace_guidance());
     let Some(fallback) = fallback else {
         return primary;
     };
 
     let Some(mut merged) = primary else {
-        return Some(fallback.clone());
+        return Some(fallback);
     };
 
-    if merged.runtime_self.standing_instructions.is_empty() {
-        merged.runtime_self.standing_instructions =
-            fallback.runtime_self.standing_instructions.clone();
+    if merged.workspace_guidance.is_empty() {
+        merged.workspace_guidance = fallback.workspace_guidance.clone();
     }
     if merged.runtime_self.tool_usage_policy.is_empty() {
         merged.runtime_self.tool_usage_policy = fallback.runtime_self.tool_usage_policy.clone();
@@ -194,7 +219,7 @@ pub(crate) fn merge_runtime_self_continuity(
 
     let merged_projection = normalize_projection(merged.session_profile_projection.as_deref());
     if merged_projection.is_none() {
-        merged.session_profile_projection = fallback.session_profile_projection.clone();
+        merged.session_profile_projection = fallback.session_profile_projection;
     }
 
     Some(merged)
@@ -204,15 +229,18 @@ pub(crate) fn missing_runtime_self_continuity(
     stored: &RuntimeSelfContinuity,
     live: Option<&RuntimeSelfContinuity>,
 ) -> Option<RuntimeSelfContinuity> {
+    let stored = stored.clone().normalize_legacy_workspace_guidance();
+    let live = live
+        .cloned()
+        .map(RuntimeSelfContinuity::normalize_legacy_workspace_guidance);
     let Some(live) = live else {
-        return stored.has_prompt_projection().then_some(stored.clone());
+        return stored.has_prompt_projection().then_some(stored);
     };
 
     let mut missing = RuntimeSelfContinuity::default();
 
-    if live.runtime_self.standing_instructions.is_empty() {
-        missing.runtime_self.standing_instructions =
-            stored.runtime_self.standing_instructions.clone();
+    if live.workspace_guidance.is_empty() {
+        missing.workspace_guidance = stored.workspace_guidance.clone();
     }
     if live.runtime_self.tool_usage_policy.is_empty() {
         missing.runtime_self.tool_usage_policy = stored.runtime_self.tool_usage_policy.clone();
@@ -232,7 +260,7 @@ pub(crate) fn missing_runtime_self_continuity(
 
     let live_projection = normalize_projection(live.session_profile_projection.as_deref());
     if live_projection.is_none() {
-        missing.session_profile_projection = stored.session_profile_projection.clone();
+        missing.session_profile_projection = stored.session_profile_projection;
     }
 
     missing.has_prompt_projection().then_some(missing)
@@ -242,6 +270,7 @@ pub(crate) fn render_runtime_self_continuity_section(
     continuity: &RuntimeSelfContinuity,
     inherited: bool,
 ) -> Option<String> {
+    let continuity = continuity.clone().normalize_legacy_workspace_guidance();
     if !continuity.has_prompt_projection() {
         return None;
     }
@@ -252,6 +281,8 @@ pub(crate) fn render_runtime_self_continuity_section(
         "Rehydrate the preserved runtime self state below when a live lane is missing."
     };
     let continuity_note = "Session-local conversation content must not be promoted into durable self state automatically.";
+    let workspace_guidance_section =
+        workspace_guidance::render_workspace_guidance_section(&continuity.workspace_guidance);
     let runtime_self_section = runtime_self::render_runtime_self_section(&continuity.runtime_self);
     let resolved_identity_section = continuity
         .resolved_identity
@@ -263,6 +294,9 @@ pub(crate) fn render_runtime_self_continuity_section(
     sections.push(continuity_scope.to_owned());
     sections.push(continuity_note.to_owned());
 
+    if let Some(workspace_guidance_section) = workspace_guidance_section {
+        sections.push(workspace_guidance_section);
+    }
     if let Some(runtime_self_section) = runtime_self_section {
         sections.push(runtime_self_section);
     }
@@ -299,46 +333,19 @@ pub(crate) const fn runtime_durable_recall_intro() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::LoongClawConfig;
+    use crate::config::LoongConfig;
+    use crate::test_support::ScopedCurrentDir;
     use serde_json::json;
-    use std::sync::{Mutex, MutexGuard, OnceLock};
     use tempfile::tempdir;
-
-    struct ScopedCurrentDir {
-        _guard: MutexGuard<'static, ()>,
-        original: std::path::PathBuf,
-    }
-
-    impl ScopedCurrentDir {
-        fn lock() -> &'static Mutex<()> {
-            static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-            LOCK.get_or_init(|| Mutex::new(()))
-        }
-
-        fn enter(path: &std::path::Path) -> Self {
-            let guard = Self::lock().lock().expect("lock current dir test");
-            let original = std::env::current_dir().expect("read current dir");
-            std::env::set_current_dir(path).expect("set current dir");
-
-            Self {
-                _guard: guard,
-                original,
-            }
-        }
-    }
-
-    impl Drop for ScopedCurrentDir {
-        fn drop(&mut self) {
-            std::env::set_current_dir(&self.original).expect("restore current dir");
-        }
-    }
 
     #[test]
     fn runtime_self_continuity_from_event_payload_defaults_missing_tool_usage_policy_lane() {
         let payload = json!({
             "runtime_self_continuity": {
+                "workspace_guidance": {
+                    "entries": ["Keep continuity explicit."]
+                },
                 "runtime_self": {
-                    "standing_instructions": ["Keep continuity explicit."],
                     "soul_guidance": ["Prefer rigorous execution."],
                     "identity_context": ["# Identity\n\n- Name: Stored continuity identity"],
                     "user_context": ["The operator prefers concise technical summaries."]
@@ -355,14 +362,38 @@ mod tests {
 
         assert!(continuity.runtime_self.tool_usage_policy.is_empty());
         assert_eq!(
-            continuity.runtime_self.standing_instructions,
+            continuity.workspace_guidance.entries,
             vec!["Keep continuity explicit.".to_owned()]
         );
     }
 
     #[test]
+    fn runtime_self_continuity_from_event_payload_promotes_legacy_standing_instructions() {
+        let payload = json!({
+            "runtime_self_continuity": {
+                "runtime_self": {
+                    "standing_instructions": ["Legacy AGENTS guidance."],
+                    "tool_usage_policy": ["Use the smallest audited tool first."]
+                }
+            }
+        });
+
+        let continuity =
+            runtime_self_continuity_from_event_payload(&payload).expect("deserialize continuity");
+
+        assert_eq!(
+            continuity.workspace_guidance.entries,
+            vec!["Legacy AGENTS guidance.".to_owned()]
+        );
+        assert!(continuity.runtime_self.standing_instructions.is_empty());
+    }
+
+    #[test]
     fn missing_runtime_self_continuity_rehydrates_missing_tool_usage_policy_lane() {
         let stored = RuntimeSelfContinuity {
+            workspace_guidance: WorkspaceGuidanceModel {
+                entries: vec!["Keep continuity explicit.".to_owned()],
+            },
             runtime_self: RuntimeSelfModel {
                 tool_usage_policy: vec![
                     "Search memory before guessing workspace facts.".to_owned(),
@@ -377,6 +408,10 @@ mod tests {
             .expect("missing continuity should preserve tool usage policy");
 
         assert_eq!(
+            missing.workspace_guidance.entries,
+            vec!["Keep continuity explicit.".to_owned()]
+        );
+        assert_eq!(
             missing.runtime_self.tool_usage_policy,
             vec!["Search memory before guessing workspace facts.".to_owned()]
         );
@@ -385,6 +420,9 @@ mod tests {
     #[test]
     fn merge_runtime_self_continuity_rehydrates_missing_tool_usage_policy_lane() {
         let fallback = RuntimeSelfContinuity {
+            workspace_guidance: WorkspaceGuidanceModel {
+                entries: vec!["Keep continuity explicit.".to_owned()],
+            },
             runtime_self: RuntimeSelfModel {
                 tool_usage_policy: vec![
                     "Search memory before guessing workspace facts.".to_owned(),
@@ -399,6 +437,10 @@ mod tests {
             .expect("merged continuity should preserve tool usage policy");
 
         assert_eq!(
+            merged.workspace_guidance.entries,
+            vec!["Keep continuity explicit.".to_owned()]
+        );
+        assert_eq!(
             merged.runtime_self.tool_usage_policy,
             vec!["Search memory before guessing workspace facts.".to_owned()]
         );
@@ -411,7 +453,7 @@ mod tests {
         let decoy_tool_root = temp_dir.path().join("tool-root");
         let agents_path = workspace_root.join("AGENTS.md");
         let agents_text = "Keep runtime self rooted in the active workspace.";
-        let mut config = LoongClawConfig::default();
+        let mut config = LoongConfig::default();
 
         std::fs::create_dir_all(&workspace_root).expect("create workspace root");
         std::fs::create_dir_all(&decoy_tool_root).expect("create decoy tool root");
@@ -425,8 +467,8 @@ mod tests {
 
         assert!(
             continuity
-                .runtime_self
-                .standing_instructions
+                .workspace_guidance
+                .entries
                 .iter()
                 .any(|entry| entry.contains(agents_text))
         );
@@ -455,12 +497,28 @@ mod tests {
     }
 
     #[test]
+    fn render_runtime_self_continuity_section_renders_workspace_guidance() {
+        let continuity = RuntimeSelfContinuity {
+            workspace_guidance: WorkspaceGuidanceModel {
+                entries: vec!["Keep AGENTS guidance inherited.".to_owned()],
+            },
+            ..RuntimeSelfContinuity::default()
+        };
+
+        let rendered = render_runtime_self_continuity_section(&continuity, true)
+            .expect("workspace guidance continuity should render");
+
+        assert!(rendered.contains("## Workspace Guidance"));
+        assert!(rendered.contains("Keep AGENTS guidance inherited."));
+    }
+
+    #[test]
     fn resolve_runtime_self_continuity_for_config_does_not_treat_cwd_as_explicit_workspace_root() {
         let temp_dir = tempdir().expect("tempdir");
         let workspace_root = temp_dir.path();
         let agents_path = workspace_root.join("AGENTS.md");
-        let mut config = LoongClawConfig::default();
-        let _guard = ScopedCurrentDir::enter(workspace_root);
+        let mut config = LoongConfig::default();
+        let _guard = ScopedCurrentDir::new(workspace_root);
 
         std::fs::write(&agents_path, "cwd runtime self should stay advisory-only")
             .expect("write AGENTS");

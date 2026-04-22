@@ -3,8 +3,8 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use loongclaw_app as mvp;
-use loongclaw_spec::CliResult;
+use loong_app as mvp;
+use loong_spec::CliResult;
 use serde::Deserialize;
 
 use crate::provider_credential_policy;
@@ -14,7 +14,7 @@ use super::provider_transport::ImportedProviderTransport;
 use super::types::{
     ChannelCandidate, ChannelImportReadiness, CurrentSetupState, DomainPreview, ImportCandidate,
     ImportSourceKind, ImportSurface, ImportSurfaceLevel, PreviewStatus, SetupDomainKind,
-    WorkspaceGuidanceCandidate, WorkspaceGuidanceKind,
+    WorkspaceGuidanceCandidate,
 };
 
 #[derive(Debug, Deserialize)]
@@ -51,7 +51,7 @@ pub fn classify_current_setup(output_path: &Path) -> CurrentSetupState {
         return CurrentSetupState::Repairable;
     }
 
-    let default_config = mvp::config::LoongClawConfig::default();
+    let default_config = mvp::config::LoongConfig::default();
     let has_only_provider_selection_changes = config.provider.has_only_selection_changes()
         && config.cli.enabled == default_config.cli.enabled
         && config.cli.system_prompt == default_config.cli.system_prompt
@@ -94,7 +94,7 @@ pub fn collect_import_candidates_with_path_list(
     workspace_root: Option<&Path>,
 ) -> CliResult<Vec<ImportCandidate>> {
     let readiness =
-        resolve_channel_import_readiness_from_config(&mvp::config::LoongClawConfig::default());
+        resolve_channel_import_readiness_from_config(&mvp::config::LoongConfig::default());
     collect_import_candidates_with_path_list_and_readiness(
         output_path,
         codex_config_paths,
@@ -139,8 +139,8 @@ pub fn collect_import_candidates_with_path_list_and_readiness(
         match mvp::config::load(Some(path_str)) {
             Ok((_, config)) => {
                 if let Some(candidate) = build_import_candidate(
-                    ImportSourceKind::ExistingLoongClawConfig,
-                    crate::source_presentation::existing_loongclaw_config_source_label(output_path),
+                    ImportSourceKind::ExistingLoongConfig,
+                    crate::source_presentation::existing_loong_config_source_label(output_path),
                     config,
                     resolve_channel_import_readiness_from_config,
                     guidance.clone(),
@@ -191,8 +191,8 @@ pub fn collect_import_candidates_with_path_list_and_readiness(
 pub fn build_import_candidate(
     source_kind: ImportSourceKind,
     source: String,
-    config: mvp::config::LoongClawConfig,
-    readiness: impl Fn(&mvp::config::LoongClawConfig) -> ChannelImportReadiness,
+    config: mvp::config::LoongConfig,
+    readiness: impl Fn(&mvp::config::LoongConfig) -> ChannelImportReadiness,
     workspace_guidance: Vec<WorkspaceGuidanceCandidate>,
 ) -> Option<ImportCandidate> {
     let resolved_readiness = readiness(&config);
@@ -221,44 +221,44 @@ pub fn build_import_candidate(
 
 pub fn detect_import_starting_config_with_channel_readiness(
     readiness: ChannelImportReadiness,
-) -> mvp::config::LoongClawConfig {
-    apply_channel_import_readiness(mvp::config::LoongClawConfig::default(), readiness)
+) -> mvp::config::LoongConfig {
+    apply_channel_import_readiness(mvp::config::LoongConfig::default(), readiness)
 }
 
 fn apply_channel_import_readiness(
-    mut config: mvp::config::LoongClawConfig,
+    mut config: mvp::config::LoongConfig,
     readiness: ChannelImportReadiness,
-) -> mvp::config::LoongClawConfig {
+) -> mvp::config::LoongConfig {
     channels::apply_detected_import_readiness(&mut config, &readiness);
     config
 }
 
 pub fn resolve_channel_import_readiness_from_config(
-    config: &mvp::config::LoongClawConfig,
+    config: &mvp::config::LoongConfig,
 ) -> ChannelImportReadiness {
     channels::resolve_import_readiness(config)
 }
 
 pub fn detect_workspace_guidance(root: &Path) -> Vec<WorkspaceGuidanceCandidate> {
+    let kinds = mvp::workspace_guidance::import_discovery_workspace_guidance_kinds();
+    let scope = mvp::workspace_guidance::WorkspaceGuidanceSearchScope::SingleRoot;
+    let detected_paths =
+        mvp::workspace_guidance::detect_workspace_guidance_paths(root, scope, kinds);
     let mut guidance = Vec::new();
-    for kind in [
-        WorkspaceGuidanceKind::Agents,
-        WorkspaceGuidanceKind::Claude,
-        WorkspaceGuidanceKind::Gemini,
-        WorkspaceGuidanceKind::Opencode,
-    ] {
-        let path = root.join(kind.file_name());
-        if path.is_file() {
-            guidance.push(WorkspaceGuidanceCandidate {
-                kind,
-                path: path.display().to_string(),
-            });
-        }
+
+    for detected_path in detected_paths {
+        let rendered_path = detected_path.path.display().to_string();
+        let candidate = WorkspaceGuidanceCandidate {
+            kind: detected_path.kind,
+            path: rendered_path,
+        };
+        guidance.push(candidate);
     }
+
     guidance
 }
 
-pub fn collect_import_surfaces(config: &mvp::config::LoongClawConfig) -> Vec<ImportSurface> {
+pub fn collect_import_surfaces(config: &mvp::config::LoongConfig) -> Vec<ImportSurface> {
     collect_import_surfaces_with_channel_readiness(
         config,
         &resolve_channel_import_readiness_from_config(config),
@@ -266,7 +266,7 @@ pub fn collect_import_surfaces(config: &mvp::config::LoongClawConfig) -> Vec<Imp
 }
 
 pub fn collect_import_surfaces_with_channel_readiness(
-    config: &mvp::config::LoongClawConfig,
+    config: &mvp::config::LoongConfig,
     readiness: &ChannelImportReadiness,
 ) -> Vec<ImportSurface> {
     let mut surfaces = Vec::new();
@@ -285,7 +285,7 @@ pub fn collect_import_surfaces_with_channel_readiness(
 }
 
 fn collect_channel_candidates(
-    config: &mvp::config::LoongClawConfig,
+    config: &mvp::config::LoongConfig,
     readiness: &ChannelImportReadiness,
     source: &str,
 ) -> Vec<ChannelCandidate> {
@@ -297,7 +297,7 @@ fn collect_channel_candidates(
 
 fn collect_domain_previews(
     source_kind: ImportSourceKind,
-    config: &mvp::config::LoongClawConfig,
+    config: &mvp::config::LoongConfig,
     source: &str,
     channel_candidates: &[ChannelCandidate],
     workspace_guidance: &[WorkspaceGuidanceCandidate],
@@ -337,7 +337,14 @@ fn collect_domain_previews(
         };
         let summary = channel_candidates
             .iter()
-            .map(|channel| format!("{} {}", channel.label, channel.status.label()))
+            .map(|channel| {
+                format!(
+                    "{} {} ({})",
+                    channel.label,
+                    channel.status.label(),
+                    channel_candidate_maturity_label(channel.id)
+                )
+            })
             .collect::<Vec<_>>()
             .join(" · ");
         domains.push(DomainPreview {
@@ -415,6 +422,19 @@ fn collect_domain_previews(
     domains
 }
 
+fn channel_candidate_maturity_label(channel_id: &'static str) -> &'static str {
+    let descriptor = mvp::config::channel_descriptor(channel_id);
+
+    match descriptor.map(|descriptor| descriptor.runtime_kind) {
+        Some(mvp::config::ChannelRuntimeKind::RuntimeBacked) => "runtime-backed",
+        Some(mvp::config::ChannelRuntimeKind::PluginBacked) => "plugin-backed",
+        Some(mvp::config::ChannelRuntimeKind::OutboundOnly) => "outbound-only",
+        Some(mvp::config::ChannelRuntimeKind::CatalogOnly) => "catalog-only",
+        Some(mvp::config::ChannelRuntimeKind::Interactive) => "interactive",
+        None => "channel",
+    }
+}
+
 fn memory_sqlite_path_looks_default(
     sqlite_path: &str,
     default_memory: &mvp::config::MemoryConfig,
@@ -483,7 +503,7 @@ fn load_codex_import_candidate(
         .map_err(|error| format!("failed to read Codex config {}: {error}", path.display()))?;
     let parsed: CodexImportConfig = toml::from_str(&raw)
         .map_err(|error| format!("failed to parse Codex config {}: {error}", path.display()))?;
-    let Some(config) = codex_import_config_to_loongclaw(parsed, readiness.clone())? else {
+    let Some(config) = codex_import_config_to_loong(parsed, readiness.clone())? else {
         return Ok(None);
     };
     Ok(build_import_candidate(
@@ -499,10 +519,10 @@ pub fn default_detected_codex_config_paths() -> Vec<PathBuf> {
     default_codex_config_paths()
 }
 
-fn codex_import_config_to_loongclaw(
+fn codex_import_config_to_loong(
     parsed: CodexImportConfig,
     readiness: ChannelImportReadiness,
-) -> CliResult<Option<mvp::config::LoongClawConfig>> {
+) -> CliResult<Option<mvp::config::LoongConfig>> {
     let Some(model_provider) = parsed.model_provider.as_deref().map(str::trim) else {
         return Ok(None);
     };
@@ -516,8 +536,7 @@ fn codex_import_config_to_loongclaw(
             "unsupported Codex model_provider {model_provider:?}; add a recognized provider id or an OpenAI-compatible provider section with base_url plus wire_api/requires_openai_auth"
         ));
     };
-    let mut config =
-        apply_channel_import_readiness(mvp::config::LoongClawConfig::default(), readiness);
+    let mut config = apply_channel_import_readiness(mvp::config::LoongConfig::default(), readiness);
     config.provider = baseline_codex_import_provider_config(provider_kind);
     if let Some(model) = parsed
         .model
@@ -608,7 +627,7 @@ fn codex_wire_api_looks_openai_compatible(raw: &str) -> bool {
     mvp::config::ProviderWireApi::parse(raw).is_some()
 }
 
-fn provider_import_surface(config: &mvp::config::LoongClawConfig) -> Option<ImportSurface> {
+fn provider_import_surface(config: &mvp::config::LoongConfig) -> Option<ImportSurface> {
     let provider_changed = config.provider.differs_from_default();
     let credentials_ready =
         provider_credential_policy::provider_has_locally_available_credentials(&config.provider);
@@ -627,7 +646,7 @@ fn provider_import_surface(config: &mvp::config::LoongClawConfig) -> Option<Impo
     })
 }
 
-fn cli_import_surface(config: &mvp::config::LoongClawConfig) -> Option<ImportSurface> {
+fn cli_import_surface(config: &mvp::config::LoongConfig) -> Option<ImportSurface> {
     let default_cli = mvp::config::CliChannelConfig::default();
     if config.cli.enabled == default_cli.enabled
         && config.cli.system_prompt == default_cli.system_prompt
@@ -687,11 +706,13 @@ fn memory_behavior_summary(config: &mvp::config::MemoryConfig) -> String {
 
 #[cfg(test)]
 mod tests {
+    use tempfile::tempdir;
+
     use super::*;
 
     #[test]
     fn cli_import_surface_detects_prompt_pack_metadata_changes() {
-        let mut config = mvp::config::LoongClawConfig::default();
+        let mut config = mvp::config::LoongConfig::default();
         config.cli.personality = Some(mvp::prompt::PromptPersonality::Hermit);
 
         let surfaces = collect_import_surfaces(&config);
@@ -708,12 +729,55 @@ mod tests {
     fn provider_import_surface_marks_x_api_key_provider_ready() {
         let mut env = crate::test_support::ScopedEnv::new();
         env.set("ANTHROPIC_API_KEY", "test-anthropic-key");
-        let mut config = mvp::config::LoongClawConfig::default();
+        let mut config = mvp::config::LoongConfig::default();
         config.provider.kind = mvp::config::ProviderKind::Anthropic;
         config.provider.model = "claude-sonnet-4-5".to_owned();
 
         let surface = provider_import_surface(&config).expect("provider surface should exist");
 
         assert_eq!(surface.level, ImportSurfaceLevel::Ready);
+    }
+
+    #[test]
+    fn detect_workspace_guidance_uses_shared_import_taxonomy() {
+        let temp_dir = tempdir().expect("tempdir");
+        let workspace_root = temp_dir.path();
+        let agents_path = workspace_root.join("AGENTS.md");
+
+        std::fs::write(&agents_path, "agents").expect("write AGENTS");
+
+        let guidance = detect_workspace_guidance(workspace_root);
+        let guidance_kinds = guidance
+            .iter()
+            .map(|candidate| candidate.kind)
+            .collect::<Vec<_>>();
+        let guidance_paths = guidance
+            .iter()
+            .map(|candidate| candidate.path.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            guidance_kinds,
+            vec![mvp::workspace_guidance::WorkspaceGuidanceKind::Agents]
+        );
+        assert_eq!(guidance_paths, vec![agents_path.display().to_string()]);
+    }
+
+    #[test]
+    fn detect_workspace_guidance_keeps_single_root_scope_for_import_discovery() {
+        let temp_dir = tempdir().expect("tempdir");
+        let workspace_root = temp_dir.path();
+        let nested_workspace_root = workspace_root.join("workspace");
+        let nested_agents_path = nested_workspace_root.join("AGENTS.md");
+
+        std::fs::create_dir_all(&nested_workspace_root).expect("create nested workspace");
+        std::fs::write(&nested_agents_path, "nested agents").expect("write nested AGENTS");
+
+        let guidance = detect_workspace_guidance(workspace_root);
+
+        assert!(
+            guidance.is_empty(),
+            "single-root import discovery should not scan nested workspace guidance: {guidance:#?}"
+        );
     }
 }

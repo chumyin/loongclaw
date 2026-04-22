@@ -14,8 +14,7 @@ const DETACHED_DELEGATE_CHILD_CONFIG_ARG: &str = "--config-path";
 const DETACHED_DELEGATE_CHILD_PAYLOAD_ARG: &str = "--payload-file";
 const DETACHED_DELEGATE_CHILD_EXECUTABLE_ENV: &str = "CARGO_BIN_EXE_loong";
 const DETACHED_DELEGATE_CHILD_KERNEL_SCOPE: &str = "delegate-child-worker";
-const DETACHED_DELEGATE_CHILD_PASSTHROUGH_ENV_KEYS: &[&str] =
-    &["LOONGCLAW_CONFIG_PATH", "LOONG_HOME", "LOONGCLAW_HOME"];
+const DETACHED_DELEGATE_CHILD_PASSTHROUGH_ENV_KEYS: &[&str] = &["LOONG_CONFIG_PATH", "LOONG_HOME"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -29,6 +28,7 @@ struct DetachedDelegateChildPayload {
     child_session_id: String,
     parent_session_id: String,
     task: String,
+    canonical_task_id: Option<String>,
     label: Option<String>,
     profile: Option<mvp::conversation::DelegateBuiltinProfile>,
     execution: mvp::conversation::ConstrainedSubagentExecution,
@@ -49,6 +49,7 @@ impl DetachedDelegateChildPayload {
             child_session_id: request.child_session_id.clone(),
             parent_session_id: request.parent_session_id.clone(),
             task: request.task.clone(),
+            canonical_task_id: request.canonical_task_id.clone(),
             label: request.label.clone(),
             profile: request.profile,
             execution: request.execution.clone(),
@@ -68,6 +69,7 @@ impl DetachedDelegateChildPayload {
             self.child_session_id,
             self.parent_session_id,
             self.task,
+            self.canonical_task_id,
             self.label,
             self.profile,
             self.execution,
@@ -203,10 +205,10 @@ fn resolve_detached_delegate_child_executable_path() -> CliResult<PathBuf> {
 }
 
 fn resolve_detached_delegate_child_config_path() -> CliResult<PathBuf> {
-    let config_path = std::env::var_os("LOONGCLAW_CONFIG_PATH")
+    let config_path = std::env::var_os("LOONG_CONFIG_PATH")
         .map(PathBuf::from)
         .ok_or_else(|| {
-            "delegate_async_process_spawn_failed: LOONGCLAW_CONFIG_PATH is not set for detached delegate child startup"
+            "delegate_async_process_spawn_failed: LOONG_CONFIG_PATH is not set for detached delegate child startup"
                 .to_owned()
         })?;
 
@@ -217,7 +219,7 @@ fn materialize_detached_delegate_child_payload_file(
     payload: &DetachedDelegateChildPayload,
 ) -> CliResult<PathBuf> {
     let payload_directory = std::env::temp_dir()
-        .join("loongclaw")
+        .join("loong")
         .join("delegate-child-payloads");
     std::fs::create_dir_all(&payload_directory)
         .map_err(|error| format!("create detached delegate payload directory failed: {error}"))?;
@@ -280,7 +282,7 @@ fn propagate_detached_delegate_child_environment(command: &mut std::process::Com
 
 fn owned_binding_from_detached_payload(
     binding: DetachedDelegateChildBinding,
-    config: &mvp::config::LoongClawConfig,
+    config: &mvp::config::LoongConfig,
 ) -> CliResult<mvp::conversation::OwnedConversationRuntimeBinding> {
     match binding {
         DetachedDelegateChildBinding::Kernel => {

@@ -1,13 +1,13 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use loongclaw_contracts::ToolCoreRequest;
+use loong_contracts::ToolCoreRequest;
 use serde_json::{Value, json};
 
 use super::runtime_binding::ProviderRuntimeBinding;
 use crate::CliResult;
 use crate::KernelContext;
-use crate::config::LoongClawConfig;
+use crate::config::LoongConfig;
 use crate::conversation::{
     ContextArtifactDescriptor, ContextArtifactKind, PromptCompiler, PromptFragment, PromptLane,
     PromptRenderPolicy, ToolOutputStreamingPolicy,
@@ -16,6 +16,7 @@ use crate::conversation::{
 use crate::runtime_identity;
 use crate::runtime_self;
 use crate::tools::{self, ToolView};
+use crate::workspace_guidance;
 
 #[cfg(feature = "memory-sqlite")]
 use crate::memory;
@@ -34,16 +35,16 @@ struct BasePromptProjection {
 }
 
 pub(super) fn build_system_message(
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     include_system_prompt: bool,
 ) -> Option<Value> {
-    let runtime_tool_view = tools::runtime_tool_view_from_loongclaw_config(config);
+    let runtime_tool_view = tools::runtime_tool_view_from_loong_config(config);
 
     build_system_message_for_view(config, include_system_prompt, &runtime_tool_view)
 }
 
 pub(super) fn build_system_message_for_view(
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     include_system_prompt: bool,
     tool_view: &ToolView,
 ) -> Option<Value> {
@@ -51,7 +52,7 @@ pub(super) fn build_system_message_for_view(
         config,
         include_system_prompt,
         tool_view,
-        &tools::runtime_config::ToolRuntimeConfig::from_loongclaw_config(config, None),
+        &tools::runtime_config::ToolRuntimeConfig::from_loong_config(config, None),
     );
 
     projection.system_message
@@ -59,7 +60,7 @@ pub(super) fn build_system_message_for_view(
 
 #[cfg(test)]
 pub(super) async fn build_base_messages_with_binding(
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     include_system_prompt: bool,
     binding: ProviderRuntimeBinding<'_>,
 ) -> Vec<Value> {
@@ -67,7 +68,7 @@ pub(super) async fn build_base_messages_with_binding(
         return Vec::new();
     }
 
-    let runtime_tool_view = tools::runtime_tool_view_from_loongclaw_config(config);
+    let runtime_tool_view = tools::runtime_tool_view_from_loong_config(config);
     let projection = build_base_prompt_projection_for_view_with_binding(
         config,
         include_system_prompt,
@@ -80,7 +81,7 @@ pub(super) async fn build_base_messages_with_binding(
 }
 
 async fn build_base_prompt_projection_for_view_with_binding(
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     include_system_prompt: bool,
     tool_view: &ToolView,
     binding: ProviderRuntimeBinding<'_>,
@@ -89,14 +90,14 @@ async fn build_base_prompt_projection_for_view_with_binding(
         config,
         include_system_prompt,
         tool_view,
-        &tools::runtime_config::ToolRuntimeConfig::from_loongclaw_config(config, None),
+        &tools::runtime_config::ToolRuntimeConfig::from_loong_config(config, None),
         binding,
     )
     .await
 }
 
 fn build_base_prompt_projection_with_tool_runtime_config(
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     include_system_prompt: bool,
     tool_view: &ToolView,
     tool_runtime_config: &tools::runtime_config::ToolRuntimeConfig,
@@ -106,15 +107,31 @@ fn build_base_prompt_projection_with_tool_runtime_config(
     }
 
     let workspace_root = tool_runtime_config.effective_workspace_root();
-    let runtime_self_model = workspace_root.map(|workspace_root| {
-        runtime_self::load_runtime_self_model_with_config(workspace_root, tool_runtime_config)
-    });
+    let (workspace_guidance_model, runtime_self_model) = match workspace_root {
+        Some(workspace_root) => {
+            let mut remaining_total_chars = tool_runtime_config.runtime_self.max_total_chars;
+            let workspace_guidance_model =
+                workspace_guidance::load_workspace_guidance_model_with_budget(
+                    workspace_root,
+                    tool_runtime_config,
+                    &mut remaining_total_chars,
+                );
+            let runtime_self_model = runtime_self::load_runtime_self_model_with_budget(
+                workspace_root,
+                tool_runtime_config,
+                &mut remaining_total_chars,
+            );
+            (Some(workspace_guidance_model), Some(runtime_self_model))
+        }
+        None => (None, None),
+    };
 
-    build_base_prompt_projection_from_runtime_self_model(
+    build_base_prompt_projection_from_prompt_sources(
         config,
         include_system_prompt,
         tool_view,
         tool_runtime_config,
+        workspace_guidance_model,
         runtime_self_model,
         None,
     )
@@ -122,7 +139,7 @@ fn build_base_prompt_projection_with_tool_runtime_config(
 
 #[cfg(test)]
 fn build_system_message_with_tool_runtime_config(
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     include_system_prompt: bool,
     tool_view: &ToolView,
     tool_runtime_config: &tools::runtime_config::ToolRuntimeConfig,
@@ -138,7 +155,7 @@ fn build_system_message_with_tool_runtime_config(
 }
 
 async fn build_base_prompt_projection_with_binding_and_tool_runtime_config(
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     include_system_prompt: bool,
     tool_view: &ToolView,
     tool_runtime_config: &tools::runtime_config::ToolRuntimeConfig,
@@ -149,29 +166,45 @@ async fn build_base_prompt_projection_with_binding_and_tool_runtime_config(
     }
 
     let workspace_root = tool_runtime_config.effective_workspace_root();
-    let runtime_self_model = match workspace_root {
-        Some(workspace_root) => Some(
-            load_runtime_self_model_with_binding(workspace_root, tool_runtime_config, binding)
-                .await,
-        ),
-        None => None,
+    let (workspace_guidance_model, runtime_self_model) = match workspace_root {
+        Some(workspace_root) => {
+            let mut remaining_total_chars = tool_runtime_config.runtime_self.max_total_chars;
+            let workspace_guidance_model = load_workspace_guidance_model_with_binding_and_budget(
+                workspace_root,
+                tool_runtime_config,
+                &mut remaining_total_chars,
+                binding,
+            )
+            .await;
+            let runtime_self_model = load_runtime_self_model_with_binding_and_budget(
+                workspace_root,
+                tool_runtime_config,
+                &mut remaining_total_chars,
+                binding,
+            )
+            .await;
+            (Some(workspace_guidance_model), Some(runtime_self_model))
+        }
+        None => (None, None),
     };
 
-    build_base_prompt_projection_from_runtime_self_model(
+    build_base_prompt_projection_from_prompt_sources(
         config,
         include_system_prompt,
         tool_view,
         tool_runtime_config,
+        workspace_guidance_model,
         runtime_self_model,
         Some(render_governed_runtime_binding_section(binding)),
     )
 }
 
-fn build_base_prompt_projection_from_runtime_self_model(
-    config: &LoongClawConfig,
+fn build_base_prompt_projection_from_prompt_sources(
+    config: &LoongConfig,
     include_system_prompt: bool,
     tool_view: &ToolView,
     tool_runtime_config: &tools::runtime_config::ToolRuntimeConfig,
+    workspace_guidance_model: Option<workspace_guidance::WorkspaceGuidanceModel>,
     runtime_self_model: Option<runtime_self::RuntimeSelfModel>,
     extra_section: Option<String>,
 ) -> BasePromptProjection {
@@ -179,10 +212,11 @@ fn build_base_prompt_projection_from_runtime_self_model(
         return BasePromptProjection::default();
     }
 
-    let prompt_fragments = build_prompt_fragments_from_runtime_self_model(
+    let prompt_fragments = build_prompt_fragments_from_prompt_sources(
         config,
         tool_view,
         tool_runtime_config,
+        workspace_guidance_model,
         runtime_self_model,
         extra_section,
     );
@@ -208,10 +242,11 @@ fn build_base_prompt_projection_from_runtime_self_model(
     }
 }
 
-fn build_prompt_fragments_from_runtime_self_model(
-    config: &LoongClawConfig,
+fn build_prompt_fragments_from_prompt_sources(
+    config: &LoongConfig,
     tool_view: &ToolView,
     tool_runtime_config: &tools::runtime_config::ToolRuntimeConfig,
+    workspace_guidance_model: Option<workspace_guidance::WorkspaceGuidanceModel>,
     runtime_self_model: Option<runtime_self::RuntimeSelfModel>,
     extra_section: Option<String>,
 ) -> Vec<PromptFragment> {
@@ -220,6 +255,10 @@ fn build_prompt_fragments_from_runtime_self_model(
     let capability_snapshot =
         tools::capability_snapshot_for_view_with_config(tool_view, tool_runtime_config);
     let deferred_tool_text_workflow = render_deferred_tool_text_workflow_section_if_needed(config);
+    let execution_discipline_section = render_execution_discipline_section();
+    let workspace_guidance_section = workspace_guidance_model
+        .as_ref()
+        .and_then(workspace_guidance::render_workspace_guidance_section);
     let runtime_self_section = runtime_self_model
         .as_ref()
         .and_then(runtime_self::render_runtime_self_section);
@@ -248,6 +287,19 @@ fn build_prompt_fragments_from_runtime_self_model(
         prompt_fragments.push(base_fragment);
     }
 
+    if let Some(section) = workspace_guidance_section {
+        let workspace_guidance_fragment = PromptFragment::new(
+            "workspace-guidance",
+            PromptLane::WorkspaceGuidance,
+            "workspace-guidance",
+            section,
+            ContextArtifactKind::RuntimeContract,
+        )
+        .with_cacheable(true);
+
+        prompt_fragments.push(workspace_guidance_fragment);
+    }
+
     if let Some(section) = runtime_self_section {
         let runtime_self_fragment = PromptFragment::new(
             "runtime-self",
@@ -273,6 +325,17 @@ fn build_prompt_fragments_from_runtime_self_model(
 
         prompt_fragments.push(runtime_identity_fragment);
     }
+
+    let execution_discipline_fragment = PromptFragment::new(
+        "execution-discipline",
+        PromptLane::ExecutionDiscipline,
+        "execution-discipline",
+        execution_discipline_section,
+        ContextArtifactKind::RuntimeContract,
+    )
+    .with_cacheable(true);
+
+    prompt_fragments.push(execution_discipline_fragment);
 
     if let Some(section) = extra_section {
         let binding_fragment = PromptFragment::new(
@@ -314,9 +377,99 @@ fn build_prompt_fragments_from_runtime_self_model(
     prompt_fragments
 }
 
-fn render_deferred_tool_text_workflow_section_if_needed(
-    config: &LoongClawConfig,
-) -> Option<String> {
+fn render_execution_discipline_section() -> String {
+    let lines = [
+        "## Execution Discipline".to_owned(),
+        "<tool_persistence>".to_owned(),
+        "- Use tools whenever they materially improve correctness, completeness, or grounding."
+            .to_owned(),
+        "- Do not stop early when another bounded tool call would likely close an evidence gap."
+            .to_owned(),
+        "- If one retrieval path returns partial or empty results, retry with a different bounded strategy before asking the user."
+            .to_owned(),
+        "</tool_persistence>".to_owned(),
+        "<mandatory_tool_use>".to_owned(),
+        "- Do not answer live system, file-content, git-state, or current-fact questions from memory when runtime retrieval is available."
+            .to_owned(),
+        "- Prefer runtime evidence over recalled assumptions about the environment you are currently executing in."
+            .to_owned(),
+        "</mandatory_tool_use>".to_owned(),
+        "<act_dont_ask>".to_owned(),
+        "- When ambiguity does not change the next tool or runtime action, act on the obvious local interpretation."
+            .to_owned(),
+        "- Ask only when the missing detail changes the required tool, target, or side effect."
+            .to_owned(),
+        "</act_dont_ask>".to_owned(),
+        "<prerequisite_checks>".to_owned(),
+        "- Before a mutating step or a high-confidence claim, check whether discovery, inspection, or preflight lookup is still needed."
+            .to_owned(),
+        "- Treat prerequisite discovery as part of the task rather than optional ceremony."
+            .to_owned(),
+        "</prerequisite_checks>".to_owned(),
+        "<verification>".to_owned(),
+        "- Before finalizing, check correctness, grounding, output shape, and whether a real stop condition has been reached."
+            .to_owned(),
+        "- A reply is not by itself proof that a long-running task is complete."
+            .to_owned(),
+        "</verification>".to_owned(),
+        "<missing_context>".to_owned(),
+        "- If required information is retrievable, retrieve it instead of asking."
+            .to_owned(),
+        "- Ask only when the missing information is not locally or remotely retrievable."
+            .to_owned(),
+        "- If you must proceed under uncertainty, label assumptions explicitly.".to_owned(),
+        "</missing_context>".to_owned(),
+    ];
+
+    lines.join("\n")
+}
+
+async fn load_workspace_guidance_model_with_binding_and_budget(
+    workspace_root: &Path,
+    tool_runtime_config: &tools::runtime_config::ToolRuntimeConfig,
+    remaining_total_chars: &mut usize,
+    binding: ProviderRuntimeBinding<'_>,
+) -> workspace_guidance::WorkspaceGuidanceModel {
+    let Some(kernel_ctx) = binding.kernel_context() else {
+        return workspace_guidance::load_workspace_guidance_model_with_budget(
+            workspace_root,
+            tool_runtime_config,
+            remaining_total_chars,
+        );
+    };
+
+    let source_candidates =
+        workspace_guidance::workspace_guidance_source_candidates(workspace_root);
+    let mut loaded_paths = BTreeSet::new();
+    let mut model = workspace_guidance::WorkspaceGuidanceModel::default();
+
+    for source_path in source_candidates {
+        let maybe_content =
+            read_workspace_guidance_source_via_kernel(workspace_root, &source_path, kernel_ctx)
+                .await;
+        let Some(content) = maybe_content else {
+            continue;
+        };
+
+        let budget_was_exhausted = *remaining_total_chars == 0;
+        let appended_content = workspace_guidance::ingest_workspace_guidance_source(
+            &mut model,
+            &mut loaded_paths,
+            remaining_total_chars,
+            &source_path,
+            content.as_str(),
+            tool_runtime_config,
+        );
+
+        if budget_was_exhausted && appended_content {
+            break;
+        }
+    }
+
+    model
+}
+
+fn render_deferred_tool_text_workflow_section_if_needed(config: &LoongConfig) -> Option<String> {
     let tool_schema_mode = config.provider.resolved_tool_schema_mode_config();
     let tool_schema_disabled =
         tool_schema_mode == crate::config::ProviderToolSchemaModeConfig::Disabled;
@@ -328,37 +481,59 @@ fn render_deferred_tool_text_workflow_section_if_needed(
 }
 
 fn render_deferred_tool_text_workflow_section() -> String {
+    let direct_call_example_lines = [
+        "{",
+        "  \"name\": \"read\",",
+        "  \"arguments\": {",
+        "    \"path\": \"README.md\"",
+        "  }",
+        "}",
+    ];
+    let direct_call_example = direct_call_example_lines.join("\n");
+
     let discovery_call_example_lines = [
         "{",
         "  \"name\": \"tool_search\",",
         "  \"arguments\": {",
-        "    \"query\": \"<natural-language capability description>\",",
+        "    \"query\": \"approval session status\",",
         "    \"limit\": 5",
         "  }",
         "}",
     ];
     let discovery_call_example = discovery_call_example_lines.join("\n");
+
     let invoke_call_example_lines = [
         "{",
         "  \"name\": \"tool_invoke\",",
         "  \"arguments\": {",
-        "    \"tool_id\": \"<tool_id from tool_search>\",",
+        "    \"tool_id\": \"agent\",",
         "    \"lease\": \"<lease from tool_search>\",",
         "    \"arguments\": {",
-        "      \"...\": \"...\"",
+        "      \"operation\": \"session-status\",",
+        "      \"session_id\": \"<session id>\"",
         "    }",
         "  }",
         "}",
     ];
     let invoke_call_example = invoke_call_example_lines.join("\n");
+
     let lines = [
-        "## Deferred Tool Text Workflow".to_owned(),
+        "## Tool Access".to_owned(),
         "Structured provider tool schemas are disabled for this profile.".to_owned(),
+        "Use the smallest tool that fits: `read`, `write`, `exec`, `web`, `browser`, or `memory`. These direct tools are the normal path.".to_owned(),
+        "For `web`, distinguish search-provider mode from ordinary network mode: `web { query }` uses web-search providers, while `web { url }` or low-level request fields are still normal network access.".to_owned(),
+        "Use `tool_search` only when the task needs a hidden surface such as `agent`, `skills`, or `channel`, and keep the query short and capability-focused.".to_owned(),
+        "Use `tool_invoke` only with a fresh lease returned by `tool_search`; do not route normal direct-tool work through leases.".to_owned(),
+        "Grouped hidden surfaces such as `agent`, `skills`, and `channel` are not direct tool calls. If `tool_search` returns one of them, pass it back through `tool_invoke` with the returned lease instead of emitting that grouped name directly.".to_owned(),
+        "When you need a tool, emit the raw JSON call instead of only describing the missing capability.".to_owned(),
+        "Direct tool example:".to_owned(),
+        direct_call_example,
         "In raw JSON tool calls, use the provider tool names `tool_search` and `tool_invoke`.".to_owned(),
-        "When you need a tool, emit a raw JSON tool call instead of only describing the missing capability.".to_owned(),
-        "Discovery example:".to_owned(),
+        "tool_invoke leases are short-lived; after any invalid_tool_lease response, refresh with tool_search before retrying.".to_owned(),
+        "If you already know the tool id, refresh directly with exact_tool_id to fetch a fresh lease card.".to_owned(),
+        "Hidden-tool discovery example:".to_owned(),
         discovery_call_example,
-        "Invocation example:".to_owned(),
+        "Hidden-tool invocation example:".to_owned(),
         invoke_call_example,
     ];
 
@@ -398,22 +573,23 @@ fn build_base_artifacts(messages: &[Value]) -> Vec<ContextArtifactDescriptor> {
     ]
 }
 
-async fn load_runtime_self_model_with_binding(
+async fn load_runtime_self_model_with_binding_and_budget(
     workspace_root: &Path,
     tool_runtime_config: &tools::runtime_config::ToolRuntimeConfig,
+    remaining_total_chars: &mut usize,
     binding: ProviderRuntimeBinding<'_>,
 ) -> runtime_self::RuntimeSelfModel {
     let Some(kernel_ctx) = binding.kernel_context() else {
-        return runtime_self::load_runtime_self_model_with_config(
+        return runtime_self::load_runtime_self_model_with_budget(
             workspace_root,
             tool_runtime_config,
+            remaining_total_chars,
         );
     };
 
     let source_candidates = runtime_self::runtime_self_source_candidates(workspace_root);
     let mut loaded_paths = BTreeSet::new();
     let mut model = runtime_self::RuntimeSelfModel::default();
-    let mut remaining_total_chars = tool_runtime_config.runtime_self.max_total_chars;
 
     for (candidate_path, lane) in source_candidates {
         let Some(content) =
@@ -422,11 +598,11 @@ async fn load_runtime_self_model_with_binding(
             continue;
         };
 
-        let budget_was_exhausted = remaining_total_chars == 0;
+        let budget_was_exhausted = *remaining_total_chars == 0;
         let appended_content = runtime_self::ingest_runtime_self_source(
             &mut model,
             &mut loaded_paths,
-            &mut remaining_total_chars,
+            remaining_total_chars,
             lane,
             &candidate_path,
             content.as_str(),
@@ -446,7 +622,31 @@ async fn read_runtime_self_source_via_kernel(
     path: &Path,
     kernel_ctx: &KernelContext,
 ) -> Option<String> {
-    let request_path = runtime_self::runtime_self_source_request_path(workspace_root, path)?;
+    let request_path = workspace_guidance::workspace_source_request_path(workspace_root, path)?;
+    let request = ToolCoreRequest {
+        tool_name: "file.read".to_owned(),
+        payload: json!({
+            "path": request_path,
+        }),
+    };
+
+    let outcome = tools::execute_tool(request, kernel_ctx).await.ok()?;
+    let payload_content = outcome.payload.get("content")?;
+    let content = payload_content.as_str()?;
+    let trimmed = content.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    Some(trimmed.to_owned())
+}
+
+async fn read_workspace_guidance_source_via_kernel(
+    workspace_root: &Path,
+    path: &Path,
+    kernel_ctx: &KernelContext,
+) -> Option<String> {
+    let request_path = workspace_guidance::workspace_source_request_path(workspace_root, path)?;
     let request = ToolCoreRequest {
         tool_name: "file.read".to_owned(),
         payload: json!({
@@ -479,11 +679,11 @@ pub(super) fn push_history_message(messages: &mut Vec<Value>, role: &str, conten
 }
 
 pub(super) fn build_messages_for_session(
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     session_id: &str,
     include_system_prompt: bool,
 ) -> CliResult<Vec<Value>> {
-    let runtime_tool_view = tools::runtime_tool_view_from_loongclaw_config(config);
+    let runtime_tool_view = tools::runtime_tool_view_from_loong_config(config);
 
     build_projected_context_for_session_in_view(
         config,
@@ -496,11 +696,11 @@ pub(super) fn build_messages_for_session(
 
 #[cfg(test)]
 pub(crate) fn build_projected_context_for_session(
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     session_id: &str,
     include_system_prompt: bool,
 ) -> CliResult<ProjectedMessageContext> {
-    let runtime_tool_view = tools::runtime_tool_view_from_loongclaw_config(config);
+    let runtime_tool_view = tools::runtime_tool_view_from_loong_config(config);
 
     build_projected_context_for_session_in_view(
         config,
@@ -511,12 +711,12 @@ pub(crate) fn build_projected_context_for_session(
 }
 
 pub(crate) async fn build_projected_context_for_session_with_binding(
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     session_id: &str,
     include_system_prompt: bool,
     binding: ProviderRuntimeBinding<'_>,
 ) -> CliResult<ProjectedMessageContext> {
-    let runtime_tool_view = tools::runtime_tool_view_from_loongclaw_config(config);
+    let runtime_tool_view = tools::runtime_tool_view_from_loong_config(config);
 
     build_projected_context_for_session_in_view_with_binding(
         config,
@@ -529,7 +729,7 @@ pub(crate) async fn build_projected_context_for_session_with_binding(
 }
 
 pub(crate) fn build_projected_context_for_session_in_view(
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     session_id: &str,
     include_system_prompt: bool,
     tool_view: &ToolView,
@@ -560,7 +760,7 @@ pub(crate) fn build_projected_context_for_session_in_view(
             config,
             include_system_prompt,
             tool_view,
-            &tools::runtime_config::ToolRuntimeConfig::from_loongclaw_config(config, None),
+            &tools::runtime_config::ToolRuntimeConfig::from_loong_config(config, None),
         );
         let system_message = projection.system_message;
         let prompt_fragments = projection.prompt_fragments;
@@ -574,7 +774,7 @@ pub(crate) fn build_projected_context_for_session_in_view(
 }
 
 pub(crate) async fn build_projected_context_for_session_in_view_with_binding(
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     session_id: &str,
     include_system_prompt: bool,
     tool_view: &ToolView,
@@ -616,16 +816,16 @@ pub(crate) async fn build_projected_context_for_session_in_view_with_binding(
 }
 
 #[cfg(feature = "memory-sqlite")]
-fn resolved_workspace_root(config: &LoongClawConfig) -> Option<std::path::PathBuf> {
+fn resolved_workspace_root(config: &LoongConfig) -> Option<std::path::PathBuf> {
     let tool_runtime_config =
-        tools::runtime_config::ToolRuntimeConfig::from_loongclaw_config(config, None);
+        tools::runtime_config::ToolRuntimeConfig::from_loong_config(config, None);
     let workspace_root = tool_runtime_config.effective_workspace_root()?;
     let workspace_root = workspace_root.to_path_buf();
     Some(workspace_root)
 }
 
 pub(crate) async fn project_hydrated_memory_context_for_view_with_binding(
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     include_system_prompt: bool,
     tool_view: &ToolView,
     binding: ProviderRuntimeBinding<'_>,
@@ -663,7 +863,7 @@ pub(crate) async fn project_hydrated_memory_context_for_view_with_binding(
 }
 
 pub(crate) fn project_hydrated_memory_context_for_view(
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     include_system_prompt: bool,
     tool_view: &ToolView,
     #[cfg(feature = "memory-sqlite")] hydrated: &memory::HydratedMemoryContext,
@@ -672,7 +872,7 @@ pub(crate) fn project_hydrated_memory_context_for_view(
         config,
         include_system_prompt,
         tool_view,
-        &tools::runtime_config::ToolRuntimeConfig::from_loongclaw_config(config, None),
+        &tools::runtime_config::ToolRuntimeConfig::from_loong_config(config, None),
     );
     let system_message = projection.system_message;
     let mut prompt_fragments = projection.prompt_fragments;
@@ -848,6 +1048,9 @@ fn should_skip_history_turn(role: &str, content: &str) -> bool {
     if role != "assistant" {
         return false;
     }
+    if content.trim_start().starts_with("[provider_error] ") {
+        return true;
+    }
     let parsed = match serde_json::from_str::<Value>(content) {
         Ok(value) => value,
         Err(_) => return false,
@@ -869,25 +1072,29 @@ mod tests {
     use crate::test_support::TurnTestHarness;
     use tempfile::tempdir;
 
-    fn runtime_self_system_content(messages: &[Value]) -> &str {
-        let runtime_self_message = messages
+    fn system_prompt_content(messages: &[Value]) -> &str {
+        let system_message = messages
             .iter()
-            .find(|message| {
-                message["role"] == "system"
-                    && message["content"]
-                        .as_str()
-                        .is_some_and(|content| content.contains("## Runtime Self Context"))
-            })
-            .expect("runtime self system message");
+            .find(|message| message["role"] == "system")
+            .expect("system prompt message");
 
-        runtime_self_message["content"]
+        system_message["content"]
             .as_str()
-            .expect("runtime self content")
+            .expect("system prompt content")
+    }
+
+    fn workspace_guidance_system_content(messages: &[Value]) -> &str {
+        let system_content = system_prompt_content(messages);
+        assert!(
+            system_content.contains("## Workspace Guidance"),
+            "workspace guidance section should be present"
+        );
+        system_content
     }
 
     #[test]
     fn build_system_message_returns_none_when_disabled() {
-        let config = LoongClawConfig::default();
+        let config = LoongConfig::default();
         assert_eq!(build_system_message(&config, false), None);
     }
 
@@ -904,7 +1111,7 @@ mod tests {
                         "query": "read note.md",
                         "entries": [
                             {
-                                "tool_id": "file.read",
+                                "tool_id": "read",
                                 "summary": "Read a file."
                             }
                         ]
@@ -931,7 +1138,7 @@ mod tests {
     #[test]
     fn project_hydrated_memory_context_skips_tool_discovery_fragment_when_system_prompt_is_disabled()
      {
-        let config = LoongClawConfig::default();
+        let config = LoongConfig::default();
         let hydrated = hydrated_context_with_tool_discovery_event();
         let projected = project_hydrated_memory_context_for_view(
             &config,
@@ -948,7 +1155,7 @@ mod tests {
     #[tokio::test]
     async fn project_hydrated_memory_context_with_binding_skips_tool_discovery_fragment_when_system_prompt_is_disabled()
      {
-        let config = LoongClawConfig::default();
+        let config = LoongConfig::default();
         let hydrated = hydrated_context_with_tool_discovery_event();
         let projected = project_hydrated_memory_context_for_view_with_binding(
             &config,
@@ -965,7 +1172,7 @@ mod tests {
 
     #[test]
     fn projected_context_exposes_prompt_fragments_for_system_prompt_sources() {
-        let config = LoongClawConfig::default();
+        let config = LoongConfig::default();
         let projected =
             build_projected_context_for_session(&config, "prompt-fragment-session", true)
                 .expect("build projected context");
@@ -989,14 +1196,14 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn build_base_messages_with_binding_skips_runtime_self_reads_when_disabled() {
         let capabilities = std::collections::BTreeSet::from([
-            loongclaw_contracts::Capability::InvokeTool,
-            loongclaw_contracts::Capability::FilesystemRead,
-            loongclaw_contracts::Capability::FilesystemWrite,
+            loong_contracts::Capability::InvokeTool,
+            loong_contracts::Capability::FilesystemRead,
+            loong_contracts::Capability::FilesystemWrite,
         ]);
         let harness = TurnTestHarness::with_capabilities(capabilities);
         let agents_path = harness.temp_dir.join("AGENTS.md");
         let agents_text = "Do not read me when system prompts are disabled.";
-        let mut config = LoongClawConfig::default();
+        let mut config = LoongConfig::default();
 
         std::fs::write(&agents_path, agents_text).expect("write AGENTS");
 
@@ -1014,8 +1221,8 @@ mod tests {
         let has_tool_plane_event = audit_events.iter().any(|event| {
             matches!(
                 &event.kind,
-                loongclaw_kernel::AuditEventKind::PlaneInvoked {
-                    plane: loongclaw_contracts::ExecutionPlane::Tool,
+                loong_kernel::AuditEventKind::PlaneInvoked {
+                    plane: loong_contracts::ExecutionPlane::Tool,
                     ..
                 }
             )
@@ -1030,14 +1237,14 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn build_base_messages_with_binding_reads_only_existing_runtime_self_sources() {
         let capabilities = std::collections::BTreeSet::from([
-            loongclaw_contracts::Capability::InvokeTool,
-            loongclaw_contracts::Capability::FilesystemRead,
-            loongclaw_contracts::Capability::FilesystemWrite,
+            loong_contracts::Capability::InvokeTool,
+            loong_contracts::Capability::FilesystemRead,
+            loong_contracts::Capability::FilesystemWrite,
         ]);
         let harness = TurnTestHarness::with_capabilities(capabilities);
         let agents_path = harness.temp_dir.join("AGENTS.md");
         let agents_text = "Only existing runtime-self files should be read.";
-        let mut config = LoongClawConfig::default();
+        let mut config = LoongConfig::default();
 
         std::fs::write(&agents_path, agents_text).expect("write AGENTS");
 
@@ -1045,7 +1252,7 @@ mod tests {
 
         let binding = ProviderRuntimeBinding::kernel(&harness.kernel_ctx);
         let messages = build_base_messages_with_binding(&config, true, binding).await;
-        let system_content = runtime_self_system_content(&messages);
+        let system_content = workspace_guidance_system_content(&messages);
 
         assert!(system_content.contains(agents_text));
 
@@ -1055,8 +1262,8 @@ mod tests {
             .filter(|event| {
                 matches!(
                     &event.kind,
-                    loongclaw_kernel::AuditEventKind::PlaneInvoked {
-                        plane: loongclaw_contracts::ExecutionPlane::Tool,
+                    loong_kernel::AuditEventKind::PlaneInvoked {
+                        plane: loong_contracts::ExecutionPlane::Tool,
                         ..
                     }
                 )
@@ -1072,15 +1279,15 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn build_base_messages_with_binding_prefers_runtime_workspace_root_over_file_root() {
         let capabilities = std::collections::BTreeSet::from([
-            loongclaw_contracts::Capability::InvokeTool,
-            loongclaw_contracts::Capability::FilesystemRead,
-            loongclaw_contracts::Capability::FilesystemWrite,
+            loong_contracts::Capability::InvokeTool,
+            loong_contracts::Capability::FilesystemRead,
+            loong_contracts::Capability::FilesystemWrite,
         ]);
         let harness = TurnTestHarness::with_capabilities(capabilities);
         let decoy_tool_root = harness.temp_dir.join("tool-root-decoy");
         let agents_path = harness.temp_dir.join("AGENTS.md");
         let agents_text = "Runtime self should follow the runtime workspace root.";
-        let mut config = LoongClawConfig::default();
+        let mut config = LoongConfig::default();
 
         std::fs::create_dir_all(&decoy_tool_root).expect("create decoy tool root");
         std::fs::write(&agents_path, agents_text).expect("write AGENTS");
@@ -1090,7 +1297,7 @@ mod tests {
 
         let binding = ProviderRuntimeBinding::kernel(&harness.kernel_ctx);
         let messages = build_base_messages_with_binding(&config, true, binding).await;
-        let runtime_self_content = runtime_self_system_content(&messages);
+        let runtime_self_content = workspace_guidance_system_content(&messages);
 
         assert!(runtime_self_content.contains(agents_text));
 
@@ -1100,8 +1307,8 @@ mod tests {
             .filter(|event| {
                 matches!(
                     &event.kind,
-                    loongclaw_kernel::AuditEventKind::PlaneInvoked {
-                        plane: loongclaw_contracts::ExecutionPlane::Tool,
+                    loong_kernel::AuditEventKind::PlaneInvoked {
+                        plane: loong_contracts::ExecutionPlane::Tool,
                         ..
                     }
                 )
@@ -1116,16 +1323,19 @@ mod tests {
 
     #[test]
     fn build_system_message_includes_deferred_tool_text_workflow_when_tool_schema_disabled() {
-        let mut config = LoongClawConfig::default();
+        let mut config = LoongConfig::default();
         config.provider.tool_schema_mode = crate::config::ProviderToolSchemaModeConfig::Disabled;
 
         let system_message =
             build_system_message(&config, true).expect("system message when enabled");
         let system_content = system_message["content"].as_str().expect("system content");
 
-        assert!(system_content.contains("## Deferred Tool Text Workflow"));
+        assert!(system_content.contains("## Tool Access"));
+        assert!(system_content.contains("`web { query }` uses web-search providers"));
         assert!(system_content.contains("\"name\": \"tool_search\""));
         assert!(system_content.contains("\"name\": \"tool_invoke\""));
+        assert!(system_content.contains("invalid_tool_lease"));
+        assert!(system_content.contains("exact_tool_id"));
     }
 
     #[test]
@@ -1137,14 +1347,14 @@ mod tests {
         ];
 
         for tool_schema_mode in non_disabled_modes {
-            let mut config = LoongClawConfig::default();
+            let mut config = LoongConfig::default();
             config.provider.tool_schema_mode = tool_schema_mode;
 
             let system_message =
                 build_system_message(&config, true).expect("system message when enabled");
             let system_content = system_message["content"].as_str().expect("system content");
 
-            assert!(!system_content.contains("## Deferred Tool Text Workflow"));
+            assert!(!system_content.contains("## Tool Access"));
         }
     }
 
@@ -1157,7 +1367,7 @@ mod tests {
         let agents_text = "a".repeat(1_024);
         let user_text = "later user context should still surface a truncation notice";
         let total_budget = agents_text.chars().count();
-        let mut config = LoongClawConfig::default();
+        let mut config = LoongConfig::default();
 
         std::fs::write(&agents_path, &agents_text).expect("write AGENTS");
         std::fs::write(&user_path, user_text).expect("write USER");
@@ -1168,12 +1378,17 @@ mod tests {
 
         let binding = ProviderRuntimeBinding::kernel(&harness.kernel_ctx);
         let messages = build_base_messages_with_binding(&config, true, binding).await;
-        let runtime_self_content = runtime_self_system_content(&messages);
+        let system_content = system_prompt_content(&messages);
 
-        assert!(runtime_self_content.contains(&agents_text));
-        assert!(runtime_self_content.contains("runtime self source truncated"));
-        assert!(runtime_self_content.contains("USER.md"));
-        assert!(runtime_self_content.contains("remaining total budget"));
+        assert!(system_content.contains(&agents_text));
+        assert!(
+            system_content.contains("runtime self source truncated"),
+            "expected runtime-self truncation notice, got: {system_content}"
+        );
+        assert!(
+            system_content.contains("remaining total budget"),
+            "expected total-budget wording, got: {system_content}"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1187,7 +1402,7 @@ mod tests {
         let user_text =
             "later user context raw prefix should not leak into compact truncation rendering";
         let total_budget = agents_text.chars().count() + compact_budget;
-        let mut config = LoongClawConfig::default();
+        let mut config = LoongConfig::default();
 
         std::fs::write(&agents_path, &agents_text).expect("write AGENTS");
         std::fs::write(&user_path, user_text).expect("write USER");
@@ -1198,11 +1413,89 @@ mod tests {
 
         let binding = ProviderRuntimeBinding::kernel(&harness.kernel_ctx);
         let messages = build_base_messages_with_binding(&config, true, binding).await;
-        let runtime_self_content = runtime_self_system_content(&messages);
+        let system_content = system_prompt_content(&messages);
 
-        assert!(runtime_self_content.contains(&agents_text));
-        assert!(runtime_self_content.contains("runtime self truncated"));
-        assert!(!runtime_self_content.contains(raw_user_prefix));
+        assert!(system_content.contains(&agents_text));
+        assert!(
+            system_content.contains("runtime self truncated"),
+            "expected compact runtime-self truncation notice, got: {system_content}"
+        );
+        assert!(
+            !system_content.contains(raw_user_prefix),
+            "raw runtime-self prefix should be truncated, got: {system_content}"
+        );
+    }
+
+    #[test]
+    fn build_system_message_shares_total_budget_between_workspace_guidance_and_runtime_self() {
+        let temp_dir = tempdir().expect("tempdir");
+        let workspace_root = temp_dir.path();
+        let agents_path = workspace_root.join("AGENTS.md");
+        let tools_path = workspace_root.join("TOOLS.md");
+        let agents_text = "a".repeat(1_024);
+        let tools_prefix = "TOOLS_PREFIX_SHOULD_NOT_SURVIVE";
+        let tools_tail = "TOOLS_TAIL_SHOULD_NOT_SURVIVE";
+        let tools_text = format!("{tools_prefix}\n{}\n{tools_tail}", "b".repeat(900));
+        let mut config = LoongConfig::default();
+
+        std::fs::write(&agents_path, &agents_text).expect("write AGENTS");
+        std::fs::write(&tools_path, &tools_text).expect("write TOOLS");
+
+        config.tools.file_root = Some(workspace_root.display().to_string());
+        config.tools.runtime_self.max_source_chars = 10_000;
+        config.tools.runtime_self.max_total_chars = agents_text.chars().count();
+
+        let system_message =
+            build_system_message(&config, true).expect("system message when enabled");
+        let system_content = system_message["content"].as_str().expect("system content");
+
+        assert!(system_content.contains(&agents_text));
+        assert!(
+            system_content.contains("runtime self source truncated"),
+            "expected runtime-self truncation notice, got: {system_content}"
+        );
+        assert!(
+            system_content.contains("remaining total budget"),
+            "expected total-budget wording, got: {system_content}"
+        );
+        assert!(!system_content.contains(tools_prefix));
+        assert!(!system_content.contains(tools_tail));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn build_base_messages_with_binding_shares_total_budget_between_workspace_guidance_and_runtime_self()
+     {
+        let harness = TurnTestHarness::new();
+        let agents_path = harness.temp_dir.join("AGENTS.md");
+        let tools_path = harness.temp_dir.join("TOOLS.md");
+        let agents_text = "a".repeat(1_024);
+        let tools_prefix = "BINDING_TOOLS_PREFIX_SHOULD_NOT_SURVIVE";
+        let tools_tail = "BINDING_TOOLS_TAIL_SHOULD_NOT_SURVIVE";
+        let tools_text = format!("{tools_prefix}\n{}\n{tools_tail}", "b".repeat(900));
+        let mut config = LoongConfig::default();
+
+        std::fs::write(&agents_path, &agents_text).expect("write AGENTS");
+        std::fs::write(&tools_path, &tools_text).expect("write TOOLS");
+
+        config.tools.file_root = Some(harness.temp_dir.display().to_string());
+        config.tools.runtime_self.max_source_chars = 10_000;
+        config.tools.runtime_self.max_total_chars = agents_text.chars().count();
+
+        let binding = ProviderRuntimeBinding::kernel(&harness.kernel_ctx);
+        let messages = build_base_messages_with_binding(&config, true, binding).await;
+        let system_content = system_prompt_content(&messages);
+
+        assert!(system_content.contains(&agents_text));
+        assert!(
+            system_content.contains("runtime self source truncated"),
+            "expected runtime-self truncation notice, got: {system_content}"
+        );
+        assert!(
+            system_content.contains("remaining total budget"),
+            "expected total-budget wording, got: {system_content}"
+        );
+        assert!(!system_content.contains(tools_prefix));
+        assert!(!system_content.contains(tools_tail));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1210,7 +1503,7 @@ mod tests {
         let harness = TurnTestHarness::new();
         let agents_path = harness.temp_dir.join("AGENTS.md");
         let agents_text = "runtime self should still load for binding-aware prompts";
-        let mut config = LoongClawConfig::default();
+        let mut config = LoongConfig::default();
 
         std::fs::write(&agents_path, agents_text).expect("write AGENTS");
 
@@ -1218,7 +1511,7 @@ mod tests {
 
         let advisory_messages =
             build_base_messages_with_binding(&config, true, ProviderRuntimeBinding::direct()).await;
-        let advisory_content = runtime_self_system_content(&advisory_messages);
+        let advisory_content = system_prompt_content(&advisory_messages);
         assert!(advisory_content.contains("## Governed Runtime Binding"));
         assert!(advisory_content.contains("session_mode: advisory_only"));
         assert!(advisory_content.contains("kernel_binding: absent"));
@@ -1229,7 +1522,7 @@ mod tests {
             ProviderRuntimeBinding::kernel(&harness.kernel_ctx),
         )
         .await;
-        let mutating_content = runtime_self_system_content(&mutating_messages);
+        let mutating_content = system_prompt_content(&mutating_messages);
         assert!(mutating_content.contains("## Governed Runtime Binding"));
         assert!(mutating_content.contains("session_mode: mutating_capable"));
         assert!(mutating_content.contains("kernel_binding: present"));
@@ -1237,7 +1530,7 @@ mod tests {
 
     #[test]
     fn build_system_message_includes_custom_prompt_and_capability_snapshot() {
-        let mut config = LoongClawConfig::default();
+        let mut config = LoongConfig::default();
         config.cli.prompt_pack_id = None;
         config.cli.personality = None;
         config.cli.system_prompt = "Stay concise and technical.".to_owned();
@@ -1246,6 +1539,62 @@ mod tests {
         let content = system["content"].as_str().expect("system content");
         assert!(content.starts_with("Stay concise and technical."));
         assert!(content.contains("[tool_discovery_runtime]"));
+    }
+
+    #[test]
+    fn build_system_message_includes_execution_discipline_section() {
+        let config = LoongConfig::default();
+
+        let system = build_system_message(&config, true).expect("system message");
+        let content = system["content"].as_str().expect("system content");
+
+        assert!(content.contains("## Execution Discipline"));
+        assert!(content.contains("<tool_persistence>"));
+        assert!(content.contains("<mandatory_tool_use>"));
+        assert!(content.contains("<act_dont_ask>"));
+        assert!(content.contains("<prerequisite_checks>"));
+        assert!(content.contains("<verification>"));
+        assert!(content.contains("<missing_context>"));
+    }
+
+    #[test]
+    fn build_system_message_orders_execution_discipline_before_tool_access() {
+        let mut config = LoongConfig::default();
+        config.provider.tool_schema_mode = crate::config::ProviderToolSchemaModeConfig::Disabled;
+        let temp_dir = tempdir().expect("tempdir");
+        std::fs::write(temp_dir.path().join("AGENTS.md"), "Keep moving.").expect("write AGENTS");
+        let tool_view = tools::runtime_tool_view();
+        let tool_runtime_config = tools::runtime_config::ToolRuntimeConfig {
+            file_root: Some(temp_dir.path().to_path_buf()),
+            ..tools::runtime_config::ToolRuntimeConfig::default()
+        };
+
+        let system = build_system_message_with_tool_runtime_config(
+            &config,
+            true,
+            &tool_view,
+            &tool_runtime_config,
+        )
+        .expect("system message");
+        let content = system["content"].as_str().expect("system content");
+
+        let runtime_contract_index = content
+            .find("## Workspace Guidance")
+            .or_else(|| content.find("## Runtime Self Context"))
+            .expect("workspace guidance or runtime self section");
+        let execution_discipline_index = content
+            .find("## Execution Discipline")
+            .expect("execution discipline section");
+        let tool_access_index = content.find("## Tool Access").expect("tool access section");
+
+        assert!(
+            runtime_contract_index < execution_discipline_index,
+            "workspace guidance/runtime self should come before execution discipline"
+        );
+        assert!(
+            execution_discipline_index < tool_access_index,
+            "execution discipline should come before tool access"
+        );
     }
 
     #[test]
@@ -1268,6 +1617,17 @@ mod tests {
     }
 
     #[test]
+    fn push_history_message_skips_inline_provider_errors() {
+        let mut messages = Vec::new();
+        push_history_message(
+            &mut messages,
+            "assistant",
+            "[provider_error] provider credentials are missing",
+        );
+        assert!(messages.is_empty());
+    }
+
+    #[test]
     fn push_history_message_keeps_normal_assistant_replies() {
         let mut messages = Vec::new();
         push_history_message(&mut messages, "assistant", "plain assistant reply");
@@ -1278,7 +1638,7 @@ mod tests {
 
     #[test]
     fn message_builder_uses_rendered_prompt_from_pack_metadata() {
-        let mut config = LoongClawConfig::default();
+        let mut config = LoongConfig::default();
         config.cli.personality = Some(crate::prompt::PromptPersonality::Hermit);
         config.cli.system_prompt = String::new();
         let session_id = format!(
@@ -1305,7 +1665,7 @@ mod tests {
 
     #[test]
     fn message_builder_keeps_legacy_inline_prompt_when_pack_is_disabled() {
-        let mut config = LoongClawConfig::default();
+        let mut config = LoongConfig::default();
         config.cli.prompt_pack_id = None;
         config.cli.personality = None;
         config.cli.system_prompt = "You are a legacy inline prompt.".to_owned();
@@ -1340,7 +1700,7 @@ mod tests {
         std::fs::write(&identity_path, identity_text).expect("write IDENTITY");
         std::fs::write(&user_path, user_text).expect("write USER");
 
-        let config = LoongClawConfig::default();
+        let config = LoongConfig::default();
         let tool_view = tools::runtime_tool_view();
 
         let tool_runtime_config = tools::runtime_config::ToolRuntimeConfig {
@@ -1357,9 +1717,10 @@ mod tests {
         .expect("system message");
         let system_content = system_message["content"].as_str().expect("system content");
 
-        assert!(system_content.contains("## Runtime Self Context"));
-        assert!(system_content.contains("### Standing Instructions"));
+        assert!(system_content.contains("## Workspace Guidance"));
         assert!(system_content.contains(agents_text));
+        assert!(system_content.contains("## Runtime Self Context"));
+        assert!(!system_content.contains("### Standing Instructions"));
         assert!(system_content.contains("### Tool Usage Policy"));
         assert!(system_content.contains(tools_text));
         assert!(system_content.contains("### Soul Guidance"));
@@ -1380,7 +1741,7 @@ mod tests {
 
         std::fs::write(workspace_root.join("AGENTS.md"), agents_text).expect("write AGENTS");
 
-        let mut config = LoongClawConfig::default();
+        let mut config = LoongConfig::default();
         let legacy_profile_note =
             "## Imported IDENTITY.md\n# Identity\n\n- Name: Legacy build copilot";
         config.memory.profile_note = Some(legacy_profile_note.to_owned());
@@ -1400,7 +1761,7 @@ mod tests {
         .expect("system message");
         let system_content = system_message["content"].as_str().expect("system content");
 
-        assert!(system_content.contains("## Runtime Self Context"));
+        assert!(system_content.contains("## Workspace Guidance"));
         assert!(system_content.contains(agents_text));
         assert!(system_content.contains("## Resolved Runtime Identity"));
         assert!(system_content.contains("Legacy build copilot"));
@@ -1416,7 +1777,7 @@ mod tests {
         let workspace_identity = "# Identity\n\n- Name: Workspace build copilot";
         std::fs::write(&identity_path, workspace_identity).expect("write IDENTITY");
 
-        let mut config = LoongClawConfig::default();
+        let mut config = LoongConfig::default();
         let legacy_profile_note =
             "## Imported IDENTITY.md\n# Identity\n\n- Name: Legacy build copilot";
         config.memory.profile_note = Some(legacy_profile_note.to_owned());
@@ -1452,7 +1813,7 @@ mod tests {
 
         std::fs::write(&soul_path, soul_text).expect("write SOUL");
 
-        let config = LoongClawConfig::default();
+        let config = LoongConfig::default();
         let tool_view = tools::runtime_tool_view();
         let tool_runtime_config = tools::runtime_config::ToolRuntimeConfig {
             file_root: Some(workspace_root.to_path_buf()),
@@ -1477,12 +1838,12 @@ mod tests {
     #[test]
     fn message_builder_includes_summary_block_for_window_plus_summary_profile() {
         let tmp =
-            std::env::temp_dir().join(format!("loongclaw-provider-summary-{}", std::process::id()));
+            std::env::temp_dir().join(format!("loong-provider-summary-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&tmp);
         let db_path = tmp.join("provider-summary.sqlite3");
         let _ = std::fs::remove_file(&db_path);
 
-        let mut config = LoongClawConfig::default();
+        let mut config = LoongConfig::default();
         config.memory.sqlite_path = db_path.display().to_string();
         config.memory.profile = MemoryProfile::WindowPlusSummary;
         config.memory.sliding_window = 2;
@@ -1538,7 +1899,7 @@ mod tests {
         .expect("write daily durable memory");
 
         let db_path = workspace_root.join("provider-durable-recall.sqlite3");
-        let mut config = LoongClawConfig::default();
+        let mut config = LoongConfig::default();
         config.tools.file_root = Some(workspace_root.display().to_string());
         config.memory.sqlite_path = db_path.display().to_string();
 
@@ -1572,7 +1933,7 @@ mod tests {
         let curated_memory_path = workspace_root.join("MEMORY.md");
         let recent_daily_path = memory_dir.join("2026-03-23.md");
         let db_path = temp_dir.path().join("provider-durable-recall-env.sqlite3");
-        let mut config = LoongClawConfig::default();
+        let mut config = LoongConfig::default();
 
         std::fs::create_dir_all(&memory_dir).expect("create memory dir");
         std::fs::create_dir_all(&decoy_tool_root).expect("create decoy tool root");
@@ -1632,7 +1993,7 @@ mod tests {
         .expect("write daily durable memory");
 
         let db_path = workspace_root.join("provider-workspace-recall.sqlite3");
-        let mut config = LoongClawConfig::default();
+        let mut config = LoongConfig::default();
         config.tools.file_root = Some(workspace_root.display().to_string());
         config.memory.system = crate::config::MemorySystemKind::WorkspaceRecall;
         config.memory.profile = crate::config::MemoryProfile::WindowPlusSummary;
@@ -1723,7 +2084,7 @@ mod tests {
         .expect("write identity-like durable memory");
 
         let db_path = workspace_root.join("provider-durable-recall-identity.sqlite3");
-        let mut config = LoongClawConfig::default();
+        let mut config = LoongConfig::default();
         config.tools.file_root = Some(workspace_root.display().to_string());
         config.memory.sqlite_path = db_path.display().to_string();
 
@@ -1781,7 +2142,7 @@ mod tests {
         std::fs::write(&curated_memory_path, memory_text).expect("write curated memory");
 
         let db_path = workspace_root.join("provider-durable-recall-governance.sqlite3");
-        let mut config = LoongClawConfig::default();
+        let mut config = LoongConfig::default();
         config.tools.file_root = Some(workspace_root.display().to_string());
         config.memory.sqlite_path = db_path.display().to_string();
 
@@ -1865,7 +2226,7 @@ mod tests {
         .expect("write curated memory");
 
         let db_path = workspace_root.join("provider-durable-recall-missing-root.sqlite3");
-        let mut config = LoongClawConfig::default();
+        let mut config = LoongConfig::default();
         config.memory.sqlite_path = db_path.display().to_string();
 
         let messages = build_messages_for_session(&config, "durable-recall-without-root", true)
@@ -1893,17 +2254,17 @@ mod tests {
         std::fs::write(&agents_path, oversized_content).expect("write oversized AGENTS");
 
         let db_path = workspace_root.join("provider-runtime-self-budget.sqlite3");
-        let mut config = LoongClawConfig::default();
+        let mut config = LoongConfig::default();
         config.tools.file_root = Some(workspace_root.display().to_string());
         config.memory.sqlite_path = db_path.display().to_string();
 
         let messages = build_messages_for_session(&config, "runtime-self-budget-session", true)
             .expect("build messages");
 
-        let runtime_self_content = runtime_self_system_content(&messages);
+        let system_content = workspace_guidance_system_content(&messages);
 
-        assert!(runtime_self_content.contains(prefix));
-        assert!(runtime_self_content.contains("runtime self source truncated"));
-        assert!(!runtime_self_content.contains(tail_marker));
+        assert!(system_content.contains(prefix));
+        assert!(system_content.contains("workspace guidance source truncated"));
+        assert!(!system_content.contains(tail_marker));
     }
 }

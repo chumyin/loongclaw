@@ -2,9 +2,9 @@
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="./assets/logo/loongclaw-logo-dark.png" />
-    <source media="(prefers-color-scheme: light)" srcset="./assets/logo/loongclaw-logo-light.png" />
-    <img src="./assets/logo/loongclaw-logo-light.png" alt="Loong" width="280" />
+    <source media="(prefers-color-scheme: dark)" srcset="./assets/logo/loong-logo-dark.png" />
+    <source media="(prefers-color-scheme: light)" srcset="./assets/logo/loong-logo-light.png" />
+    <img src="./assets/logo/loong-logo-light.png" alt="Loong" width="280" />
   </picture>
 </p>
 <p align="center"><strong><em>"Originated from the East, here to benefit the world"</em></strong></p>
@@ -47,7 +47,7 @@
 **Because it already has the core capabilities you need to inspect, operate, and extend:**
 
 - **🚀 Rich configuration out of the box**: 42+ built-in providers, 25+ channels — up and running in a few commands.
-- **👀 Transparent and controllable**: `audit`, `tasks`, `skills`, `plugins`, `channels`, `runtime-snapshot`, and gateway control are all exposed as directly usable commands.
+- **👀 Transparent and controllable**: product commands stay short at the root, while `sessions`, `skills`, `channels`, `gateway`, `runtime`, `plugins`, and `feishu` stay grouped under named operator shells instead of one flat command pile.
 - **🛡️ Secure and controllable base**: provider selection, tools, memory, channels, approvals, policy, and audit operate within explicit runtime boundaries.
 
 **Also because whether you are a beginner or a power user, it fits you:**
@@ -81,7 +81,7 @@ Also, if you want the longer public rationale behind this positioning, read
 <a id="quick-start"></a>
 ## Quick Start
 
-> Loong uses `loong` as the primary command. `loongclaw` remains as a compatibility entrypoint.
+> Loong uses `loong` as the only supported command-line entrypoint.
 
 ### Script Install (Recommended)
 
@@ -146,7 +146,17 @@ loong onboard                # Interactive setup — configure provider and mode
 loong ask --message "Summarize this repo in one sentence."  # Single-turn query to verify config
 loong chat                   # Start a multi-turn conversation
 loong doctor --fix           # Check environment and auto-fix common issues
+loong update                 # Replace this install with the latest stable GitHub release
 ```
+
+`loong update` always targets the latest stable GitHub release and never installs a pre-release.
+
+### Canonical CLI Shape
+
+Loong keeps `loong` as the only public binary, but the canonical command story is intentionally grouped:
+
+- product path at root: `onboard`, `ask`, `chat`, `doctor`, `status`, `update`
+- operator shells at root: `sessions`, `skills`, `channels`, `gateway`, `runtime`, `plugins`, `feishu`, `completions`
 
 Running `onboard` is enough for the golden path — it writes a working config to `~/.loong/config.toml` without asking you to hand-edit TOML. The snippets below show what that file looks like on `dev` today, when you want to add another provider or wire up a channel.
 
@@ -172,6 +182,14 @@ model = "auto"
 
 #### Channels — Lark
 
+Recommended first-run setup:
+
+```bash
+loong feishu onboard --domain lark
+```
+
+That flow shows an in-terminal QR code, creates the bot app through the official Lark/Feishu registration API, and writes the generated credentials into `loong.toml`. Manual fallback is still available through `loong feishu onboard --manual --app-id ... --app-secret ...`.
+
 ```toml
 [feishu]
 enabled = true
@@ -187,9 +205,11 @@ Smoke-test before anything else:
 
 ```bash
 loong doctor
-loong feishu-send --receive-id "ou_example_user" --text "hello from loong"
-loong feishu-serve
+loong feishu send --receive-id "ou_example_user" --text "hello from loong"
+loong feishu serve
 ```
+
+Feishu keeps its richer family namespace at `loong feishu ...`. For thinner channel families, the canonical public shape is `loong channels send <surface> ...` and `loong channels serve <surface> ...`.
 
 For the full provider and channel matrices, multi-account setups, and the long-running delivery model, see the [Documentation](#documentation) table below.
 

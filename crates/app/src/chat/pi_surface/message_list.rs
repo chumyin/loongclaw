@@ -1357,74 +1357,243 @@ fn render_section_markdown(section: &TuiSectionSpec) -> String {
 }
 
 fn render_tool_block_lines(
-    title: &str,
+    _title: &str,
     lines: &[String],
-    status: ToolStatus,
+    _status: ToolStatus,
     width: u16,
 ) -> Vec<Line<'static>> {
-    let status_text = match status {
-        ToolStatus::Pending => ("pending", PI_YELLOW),
-        ToolStatus::Success => ("success", PI_GREEN),
-        ToolStatus::Error => ("error", PI_RED),
-    };
     let mut rendered = Vec::new();
-    rendered.push(background_line(width, PI_TOOL_BG));
-    rendered.push(styled_background_line(
-        vec![
-            Span::raw(" "),
-            Span::styled(
-                format!("[{}]", title),
-                Style::default().fg(PI_CYAN).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" "),
-            Span::styled(status_text.0, Style::default().fg(status_text.1)),
-        ],
-        width,
-        PI_TOOL_BG,
-    ));
+    let lines = dedupe_tool_activity_detail_lines(lines);
+    rendered.push(Line::from(""));
+    for line in &lines {
+        rendered.extend(render_tool_detail_lines(line, width));
+    }
+    rendered.push(Line::from(""));
+    rendered
+}
+
+fn dedupe_tool_activity_detail_lines(lines: &[String]) -> Vec<String> {
+    let mut deduped = Vec::with_capacity(lines.len());
+    let mut last_request_preview: Option<String> = None;
+
     for line in lines {
-        let (prefix_style, body_style) = if line.starts_with("stdout:") {
-            (
+        if let Some(preview) = compact_tool_request_preview(line) {
+            last_request_preview = Some(preview);
+            deduped.push(line.clone());
+            continue;
+        }
+
+        if let Some(preview) = compact_tool_args_preview(line)
+            && last_request_preview.as_deref() == Some(preview.as_str())
+        {
+            continue;
+        }
+
+        deduped.push(line.clone());
+    }
+
+    deduped
+}
+
+fn compact_tool_request_preview(line: &str) -> Option<String> {
+    let body = line.trim().strip_prefix("request:")?.trim_start();
+    compact_structured_preview(body, 3)
+}
+
+fn compact_tool_args_preview(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    let body = trimmed
+        .strip_prefix("args ")
+        .or_else(|| trimmed.strip_prefix("↳ args "))?;
+    compact_structured_preview(body, 3)
+}
+
+fn render_tool_detail_lines(line: &str, width: u16) -> Vec<Line<'static>> {
+    let content_width = width.saturating_sub(2).max(1) as usize;
+
+    if let Some(rendered) = render_status_activity_line(line, content_width) {
+        return rendered;
+    }
+
+    if let Some(body) = line.strip_prefix("↳ ") {
+        let prefix = "↳ ";
+        let body = if let Some(args) = body.strip_prefix("args ") {
+            let compacted = compact_structured_preview(args, 3).unwrap_or_else(|| args.to_owned());
+            format!("args {compacted}")
+        } else if let Some(request) = body.strip_prefix("request ") {
+            let compacted =
+                compact_structured_preview(request, 3).unwrap_or_else(|| request.to_owned());
+            format!("request {compacted}")
+        } else {
+            body.to_owned()
+        };
+        let body_width = content_width
+            .saturating_sub(crate::presentation::display_width(prefix))
+            .max(1);
+        let wrapped = crate::presentation::render_wrapped_display_line(&body, body_width);
+        return wrapped
+            .into_iter()
+            .enumerate()
+            .map(|(index, wrapped_line)| {
+                if index == 0 {
+                    Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(prefix, Style::default().fg(PI_ACCENT)),
+                        Span::styled(wrapped_line, Style::default().fg(PI_DARK_GRAY)),
+                    ])
+                } else {
+                    Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(
+                            " ".repeat(crate::presentation::display_width(prefix)),
+                            Style::default().fg(PI_ACCENT),
+                        ),
+                        Span::styled(wrapped_line, Style::default().fg(PI_DARK_GRAY)),
+                    ])
+                }
+            })
+            .collect();
+    }
+
+    if let Some(request) = line.strip_prefix("request:") {
+        return render_tool_detail_lines(&format!("↳ request {}", request.trim_start()), width);
+    }
+
+    if let Some((prefix, body)) = line.split_once(':') {
+        let prefix = format!("{prefix}: ");
+        let (prefix_style, body_style) = match prefix.trim_end() {
+            "stdout:" => (
                 Style::default().fg(PI_GREEN).add_modifier(Modifier::BOLD),
                 Style::default().fg(PI_DARK_GRAY),
-            )
-        } else if line.starts_with("stderr:") {
-            (
+            ),
+            "stderr:" => (
                 Style::default().fg(PI_RED).add_modifier(Modifier::BOLD),
                 Style::default().fg(PI_DARK_GRAY),
-            )
-        } else if line.starts_with("file:") {
-            (
+            ),
+            "file:" => (
                 Style::default().fg(PI_CYAN).add_modifier(Modifier::BOLD),
                 Style::default().fg(PI_DARK_GRAY),
-            )
-        } else if line.starts_with("metrics:") {
-            (
+            ),
+            "metrics:" => (
                 Style::default().fg(PI_ACCENT).add_modifier(Modifier::BOLD),
                 Style::default().fg(PI_DARK_GRAY),
-            )
-        } else {
-            (
+            ),
+            _ => (
                 Style::default().fg(PI_GRAY),
                 Style::default().fg(PI_DARK_GRAY),
-            )
+            ),
         };
-        let (prefix, body) = line
-            .split_once(':')
-            .map(|(prefix, body)| (format!("{prefix}: "), body.trim_start().to_owned()))
-            .unwrap_or_else(|| ("".to_owned(), line.clone()));
-        rendered.push(styled_background_line(
-            vec![
-                Span::raw("  "),
-                Span::styled(prefix, prefix_style),
-                Span::styled(body, body_style),
-            ],
-            width,
-            PI_TOOL_BG,
-        ));
+        let body_width = content_width
+            .saturating_sub(crate::presentation::display_width(&prefix))
+            .max(1);
+        let wrapped =
+            crate::presentation::render_wrapped_display_line(body.trim_start(), body_width);
+        let continuation_prefix = " ".repeat(crate::presentation::display_width(&prefix));
+        return wrapped
+            .into_iter()
+            .enumerate()
+            .map(|(index, wrapped_line)| {
+                let display_prefix = if index == 0 {
+                    prefix.clone()
+                } else {
+                    continuation_prefix.clone()
+                };
+                Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(display_prefix, prefix_style),
+                    Span::styled(wrapped_line, body_style),
+                ])
+            })
+            .collect();
     }
-    rendered.push(background_line(width, PI_TOOL_BG));
-    rendered
+
+    crate::presentation::render_wrapped_display_line(line, content_width)
+        .into_iter()
+        .map(|wrapped_line| {
+            Line::from(vec![
+                Span::raw("  "),
+                Span::styled(wrapped_line, Style::default().fg(PI_DARK_GRAY)),
+            ])
+        })
+        .collect()
+}
+
+fn render_status_activity_line(line: &str, content_width: usize) -> Option<Vec<Line<'static>>> {
+    let trimmed = line.trim();
+    let status = trimmed.strip_prefix('[')?;
+    let (status, rest) = status.split_once("] ")?;
+
+    let (headline_label, headline_style) = match status {
+        "running" | "pending" => (
+            "Called",
+            Style::default().fg(PI_CYAN).add_modifier(Modifier::BOLD),
+        ),
+        "completed" | "failed" | "interrupted" => (
+            "Closed",
+            Style::default().fg(PI_GRAY).add_modifier(Modifier::BOLD),
+        ),
+        "needs_approval" => (
+            "Approval",
+            Style::default().fg(PI_ACCENT).add_modifier(Modifier::BOLD),
+        ),
+        "denied" => (
+            "Denied",
+            Style::default().fg(PI_RED).add_modifier(Modifier::BOLD),
+        ),
+        _ => return None,
+    };
+
+    let (headline_body, detail_suffix) = normalize_activity_target_and_detail(rest);
+    let mut display_body = headline_body;
+    if let Some(detail_suffix) = detail_suffix {
+        display_body.push_str(" · ");
+        display_body.push_str(detail_suffix.as_str());
+    }
+
+    let body_width = content_width
+        .saturating_sub(crate::presentation::display_width(headline_label) + 3)
+        .max(1);
+    let wrapped = crate::presentation::render_wrapped_display_line(&display_body, body_width);
+
+    Some(
+        wrapped
+            .into_iter()
+            .enumerate()
+            .map(|(index, wrapped_line)| {
+                if index == 0 {
+                    Line::from(vec![
+                        Span::styled("• ", Style::default().fg(PI_GRAY)),
+                        Span::styled(format!("{headline_label} "), headline_style),
+                        Span::styled(wrapped_line, Style::default().fg(PI_DARK_GRAY)),
+                    ])
+                } else {
+                    Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(
+                            " ".repeat(crate::presentation::display_width(headline_label) + 1),
+                            headline_style,
+                        ),
+                        Span::styled(wrapped_line, Style::default().fg(PI_DARK_GRAY)),
+                    ])
+                }
+            })
+            .collect(),
+    )
+}
+
+fn normalize_activity_target_and_detail(rest: &str) -> (String, Option<String>) {
+    let (target_with_id, detail_suffix) = rest
+        .split_once(" - ")
+        .map(|(target, detail)| (target.trim(), Some(detail.trim().to_owned())))
+        .unwrap_or((rest.trim(), None));
+
+    let target = if let Some(id_index) = target_with_id.find(" (id=") {
+        target_with_id[..id_index].trim().to_owned()
+    } else {
+        target_with_id.to_owned()
+    };
+
+    (target, detail_suffix.filter(|detail| !detail.is_empty()))
 }
 
 fn render_error_block_lines(
@@ -1666,6 +1835,162 @@ mod tests {
     }
 
     #[test]
+    fn tool_activity_renders_without_background_block() {
+        let mut list = MessageList::new();
+        list.add_assistant_message(
+            "### Tool activity\n> [completed] read_file (id=call-1)\n> stdout: ok".to_owned(),
+        );
+
+        let rendered = list.get_rendered_lines(40);
+        assert!(
+            rendered
+                .iter()
+                .filter(|line| line.spans.iter().any(|span| {
+                    span.content.contains("Closed") || span.content.contains("stdout:")
+                }))
+                .all(|line| dominant_block_bg(line).is_none())
+        );
+    }
+
+    #[test]
+    fn tool_activity_wraps_long_called_lines_cleanly() {
+        let mut list = MessageList::new();
+        list.add_assistant_message(
+            "### Tool activity\n> Called demo_mcp.state_write({\"mode\":\"workflow\",\"current_phase\":\"verification\",\"iteration\":2})".to_owned(),
+        );
+
+        let rendered = list
+            .get_rendered_lines(42)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        assert!(
+            rendered
+                .iter()
+                .all(|line| crate::presentation::display_width(line) <= 42)
+        );
+        assert!(rendered.iter().any(|line| line.contains("Called")));
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line.contains("demo_mcp.state_write"))
+        );
+    }
+
+    #[test]
+    fn tool_activity_wraps_arrow_child_lines_cleanly() {
+        let mut list = MessageList::new();
+        list.add_assistant_message(
+            "### Tool activity\n> Called demo_mcp.search\n> ↳ args {\"path\":\"src/README.md\",\"depth\":2,\"includeHidden\":false}".to_owned(),
+        );
+
+        let rendered = list
+            .get_rendered_lines(44)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        assert!(
+            rendered
+                .iter()
+                .all(|line| crate::presentation::display_width(line) <= 44)
+        );
+        assert!(rendered.iter().any(|line| line.contains("↳ args")));
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line.contains("path=src/README.md"))
+        );
+    }
+
+    #[test]
+    fn tool_activity_compacts_bracket_status_lines_into_called_closed_flow() {
+        let mut list = MessageList::new();
+        list.add_assistant_message(
+            "### Tool activity\n> [completed] read_file (id=call-1) - ok\n> stdout: done"
+                .to_owned(),
+        );
+
+        let rendered = list
+            .get_rendered_lines(48)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line.contains("• Closed read_file · ok"))
+        );
+        assert!(!rendered.iter().any(|line| line.contains("(id=call-1)")));
+    }
+
+    #[test]
+    fn tool_activity_compacts_request_json_into_arrow_child_line() {
+        let mut list = MessageList::new();
+        list.add_assistant_message(
+            "### Tool activity\n> Called demo_mcp.search\n> request: {\"query\":\"rust\",\"limit\":5,\"scope\":\"repo\"}".to_owned(),
+        );
+
+        let rendered = list
+            .get_rendered_lines(52)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        assert!(rendered.iter().any(|line| line.contains("↳ request")));
+        assert!(rendered.iter().any(|line| line.contains("query=rust")));
+        assert!(rendered.iter().any(|line| line.contains("limit=5")));
+    }
+
+    #[test]
+    fn tool_activity_dedupes_args_when_request_and_args_match() {
+        let mut list = MessageList::new();
+        list.add_assistant_message(
+            "### Tool activity\n> Called demo_mcp.search\n> request: {\"query\":\"rust\",\"limit\":5,\"scope\":\"repo\"}\n> args {\"query\":\"rust\",\"limit\":5,\"scope\":\"repo\"}".to_owned(),
+        );
+
+        let rendered = list
+            .get_rendered_lines(60)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        assert!(rendered.iter().any(|line| line.contains("↳ request")));
+        assert!(
+            !rendered
+                .iter()
+                .any(|line| line.contains("↳ args query=rust"))
+        );
+    }
+
+    #[test]
     fn provider_error_promotes_to_structured_error_block() {
         let contents = build_assistant_contents(
             "[provider_error] provider returned status 401 for model `gpt-5.4` on attempt 1/3: {\"code\":\"INVALID_API_KEY\",\"message\":\"Invalid API key\"} | provider_failover={\"reason\":\"auth_rejected\",\"stage\":\"status_failure\",\"model\":\"gpt-5.4\",\"attempt\":1,\"max_attempts\":3,\"status_code\":401}",
@@ -1780,7 +2105,7 @@ mod tests {
             .find_map(|(idx, line)| {
                 line.spans
                     .iter()
-                    .any(|span| span.content.contains("Tool activity"))
+                    .any(|span| span.content.contains("read_file"))
                     .then_some(idx)
             })
             .expect("tool block row");
@@ -1863,7 +2188,7 @@ mod tests {
         let non_empty = rendered
             .iter()
             .filter(|line| !line.trim().is_empty())
-            .cloned()
+            .map(|line| line.trim_end().to_owned())
             .collect::<Vec<_>>();
         assert_eq!(non_empty, vec!["  你好"]);
     }

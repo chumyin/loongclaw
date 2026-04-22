@@ -20,7 +20,7 @@ source readers.
 | --- | --- | --- |
 | read the public summary first | [`../site/reference/roadmap-and-product.mdx`](../site/reference/roadmap-and-product.mdx) | that is the reader-facing product and roadmap summary |
 | review the source-level product direction in the repository | this file | this file holds the repository-native product rationale |
-| edit the user-facing source contract behind the docs site | [`product-specs/index.md`](product-specs/index.md) | product specs carry the field-level source contracts |
+| edit the user-facing source contract behind the docs site | `eastreams/knowledge-base` | product specs now live in the knowledge base, not in this repository |
 | understand the broader repository docs layering | [`README.md`](README.md) | it explains how repo-native docs differ from Mintlify pages |
 
 ## Read This File When
@@ -79,14 +79,14 @@ contract is ready for broad external readers.
 
 ## Source Contract Map
 
-If you need the detailed source contract behind this product reference, start
-with [Product Specs Index](product-specs/index.md).
+If you need the detailed source contract behind this product reference, use the
+product-specs area in `eastreams/knowledge-base`.
 
 | If you need source details about... | Start here |
 | --- | --- |
-| first-run success and repair | [Installation](product-specs/installation.md), [Onboarding](product-specs/onboarding.md), [One-Shot Ask](product-specs/one-shot-ask.md), [Doctor](product-specs/doctor.md) |
-| shipped runtime surfaces | [Channel Setup](product-specs/channel-setup.md), [Tool Surface](product-specs/tool-surface.md), [Browser Automation](product-specs/browser-automation.md) |
-| continuity and day-to-day runtime behavior | [Memory Profiles](product-specs/memory-profiles.md), [Prompt And Personality](product-specs/prompt-and-personality.md), [Shell Completion](product-specs/shell-completion.md) |
+| first-run success and repair | `eastreams/knowledge-base/loong/product-specs/shipped` |
+| shipped runtime surfaces | `eastreams/knowledge-base/loong/product-specs/shipped` |
+| continuity and day-to-day runtime behavior | `eastreams/knowledge-base/loong/product-specs/active` |
 
 ## Public Surface Shape
 
@@ -95,15 +95,16 @@ The current product surface is intentionally legible:
 - first-run path: `onboard`, `ask`, `chat`, `doctor`
 - operator runtime controls: `audit`, `migrate`, and related support commands
 - longer-lived service ownership: `gateway run`, `gateway status`, `gateway stop`
-- shipped service-channel runtimes: `telegram-serve`, `feishu-serve`,
-  `matrix-serve`, `wecom-serve`, `multi-channel-serve`
-- outbound delivery: channel `*-send` commands for the shipped outbound surface
-  inventory
+- shipped service-channel runtimes: `channels serve telegram`,
+  `channels serve matrix`, `channels serve wecom`, and the dedicated
+  provider-owned serve surfaces such as `feishu serve`
+- outbound delivery: grouped `channels send <channel>` commands plus the
+  dedicated provider-owned send surfaces for the shipped outbound inventory
 
 ## Do Not Put Here By Default
 
 - detailed onboarding, recipe, or playbook material that belongs in `site/`
-- source-level setup contracts that belong in `product-specs/`
+- source-level setup contracts that now live in `eastreams/knowledge-base`
 - internal planning bundles, backlog exploration, or private product studies
 - speculative product directions that are not ready to become public contract
   material

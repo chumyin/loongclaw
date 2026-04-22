@@ -41,19 +41,42 @@ These must hold at every commit on every branch:
 Enforced by: CI (`.github/workflows/ci.yml`, surfaced through the aggregate `build` check). The
 optional `scripts/pre-commit` hook mirrors these cargo gates locally.
 
+## Feedback Lanes
+
+- **Quick local loop** — use `task verify:quick` for a faster edit/test cycle, or
+  `task test:packages PACKAGES='-p loong-app -p loong-spec'` when you want a
+  targeted package subset. This lane keeps curated daemon smoke coverage but
+  skips the heaviest integration suite and does not replace CI parity. When you
+  are iterating inside daemon integration tests, `task test:daemon:domains`
+  gives you the optional sharded domain binaries and `task test:daemon:heavy`
+  still runs the canonical full integration binary.
+- **Changed-package loop** — use `task verify:changed` to scope local Rust tests
+  to the packages touched in the current working tree plus reverse dependents.
+  When that closure includes `loong`, the loop still runs the curated daemon
+  integration smoke subset by default and now escalates daemon test-file edits
+  into the matching optional domain shards by reading the shard entry files as
+  the source of truth, with a fallback to the full `integration` binary for
+  broad harness changes.
+- **CI parity** — the `build` check runs workspace fmt/clippy, default workspace
+  tests on Ubuntu and Windows, the all-features workspace test lane on Ubuntu,
+  and explicit feature-delta compile checks for `loong-spec` `test-hooks` plus
+  the browser-without-web.fetch app feature set.
+- **Extended gate** — `task verify:full` adds smoke and benchmark validation on
+  top of the canonical local verification bar.
+
 ## Runtime Stability Guardrails
 
 1. **Wasm trap behavior is platform-aware by default** — on macOS, `signals_based_traps` is disabled to avoid trap-handler abort instability under parallel bridge tests.
-2. **Runtime override is explicit** — set `LOONGCLAW_WASM_SIGNALS_BASED_TRAPS=true|false` to force trap behavior for diagnostics/experiments.
+2. **Runtime override is explicit** — set `LOONG_WASM_SIGNALS_BASED_TRAPS=true|false` to force trap behavior for diagnostics/experiments.
 3. **Daemon stress helper is scriptable** — run `./scripts/stress_daemon_tests.sh 10 default,2,1` for manual repeated daemon test validation across thread modes.
-4. **Trap-mode matrix is available when needed** — set `LOONGCLAW_STRESS_WASM_TRAPS_MODES=auto,false,true` to sweep daemon tests across trap behavior modes during targeted investigation.
+4. **Trap-mode matrix is available when needed** — set `LOONG_STRESS_WASM_TRAPS_MODES=auto,false,true` to sweep daemon tests across trap behavior modes during targeted investigation.
 
 ## Architecture Stability Guardrails
 
-1. **Complexity budgets are locally machine-checkable** — run `./scripts/check_architecture_boundaries.sh` directly, or `task check:architecture` when the optional `task` CLI wrapper is installed, to inspect module line/function budgets for architecture hotspots (`spec_runtime`, `spec_execution`, `provider/mod`, `memory/mod`, `acp/manager`, `acp/acpx`, `channel/registry`, `config/channels`, `chat`, `channel/mod`, `conversation/turn_coordinator`, `tools/mod`, `daemon/lib`, `daemon/onboard_cli`). The generated drift report also classifies each hotspot by `foundation`, `structural_size`, and `operational_density` pressure so release reviews can distinguish large-surface drift from runtime-density risk.
+1. **Complexity budgets are machine-checkable** — run `./scripts/check_architecture_boundaries.sh` directly, or `task check:architecture` when the optional `task` CLI wrapper is installed, to inspect module line/function budgets for architecture hotspots (`spec_runtime`, `spec_execution`, `provider/mod`, `memory/mod`, `acp/manager`, `acp/acpx`, `channel/registry`, `config/channels`, `chat`, `channel/mod`, `conversation/turn_coordinator`, `tools/mod`, `daemon/lib`, `daemon/onboard_cli`). The checker classifies each hotspot by `foundation`, `structural_size`, and `operational_density` pressure so reviews can distinguish large-surface drift from runtime-density risk.
 2. **Memory operation literals are boundary-guarded** — memory core operation strings (`append_turn`, `window`, `clear_session`) must remain centralized in `crates/app/src/memory/*` and never spread into callsites.
 3. **`spec` stays detached from `app`** — the architecture guardrails treat any direct `loong-app` dependency in `crates/spec/Cargo.toml` as a boundary regression, and `./scripts/check_dep_graph.sh` must stay green.
-4. **Strict enforcement is an extended local gate** — use `LOONGCLAW_ARCH_STRICT=true ./scripts/check_architecture_boundaries.sh` directly, or `task check:architecture:strict` when the optional `task` CLI wrapper is installed, to make architecture budget violations fail non-zero. This check is part of `task verify:full`, not the canonical CI-parity gate.
+4. **Strict enforcement is the blocking gate** — use `LOONG_ARCH_STRICT=true ./scripts/check_architecture_boundaries.sh` directly, or `task check:architecture:strict` when the optional `task` CLI wrapper is installed, to make architecture budget violations fail non-zero. This check is part of `task verify`, `task verify:full`, and CI.
 
 ## Kernel Invariants
 

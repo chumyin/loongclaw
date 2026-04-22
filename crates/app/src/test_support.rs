@@ -1,12 +1,15 @@
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
+#[cfg(test)]
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
-use loongclaw_contracts::{Capability, ExecutionRoute, HarnessKind};
-use loongclaw_kernel::{
-    FixedClock, InMemoryAuditSink, LoongClawKernel, StaticPolicyEngine, VerticalPackManifest,
+use loong_contracts::{Capability, ExecutionRoute, HarnessKind};
+use loong_kernel::{
+    FixedClock, InMemoryAuditSink, LoongKernel, StaticPolicyEngine, VerticalPackManifest,
 };
 
 use crate::context::KernelContext;
@@ -27,17 +30,24 @@ fn subprocess_lock() -> &'static Mutex<()> {
 
 pub struct ScopedEnv {
     originals: Vec<(&'static str, Option<OsString>)>,
-    _guard: MutexGuard<'static, ()>,
+    guard: Option<MutexGuard<'static, ()>>,
 }
 
 impl ScopedEnv {
     pub fn new() -> Self {
-        let guard = env_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let depth_before = scoped_env_depth();
+        let guard = if depth_before == 0 {
+            let guard = env_lock()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            Some(guard)
+        } else {
+            None
+        };
+        set_scoped_env_depth(depth_before.saturating_add(1));
         Self {
             originals: Vec::new(),
-            _guard: guard,
+            guard,
         }
     }
 
@@ -57,6 +67,9 @@ impl ScopedEnv {
         if self.originals.iter().any(|(saved, _)| *saved == key) {
             return;
         }
+        if default_loong_home_env_override_key(key) {
+            crate::config::push_default_loong_home_env_override_for_tests();
+        }
         self.originals.push((key, std::env::var_os(key)));
     }
 }
@@ -69,7 +82,84 @@ impl Drop for ScopedEnv {
                 Some(value) => crate::process_env::set_var(key, value),
                 None => crate::process_env::remove_var(key),
             }
+            if default_loong_home_env_override_key(key) {
+                crate::config::pop_default_loong_home_env_override_for_tests();
+            }
         }
+
+        let depth_before = scoped_env_depth();
+        let depth_after = depth_before.saturating_sub(1);
+        set_scoped_env_depth(depth_after);
+
+        if depth_after == 0 {
+            self.guard.take();
+        }
+    }
+}
+
+fn default_loong_home_env_override_key(key: &str) -> bool {
+    matches!(key, "HOME" | "USERPROFILE" | "LOONG_HOME")
+}
+
+thread_local! {
+    static SCOPED_ENV_DEPTH: Cell<usize> = const { Cell::new(0) };
+}
+
+fn scoped_env_depth() -> usize {
+    SCOPED_ENV_DEPTH.with(|depth| depth.get())
+}
+
+fn set_scoped_env_depth(value: usize) {
+    SCOPED_ENV_DEPTH.with(|depth| {
+        depth.set(value);
+    });
+}
+
+#[cfg(test)]
+pub struct ScopedLoongHome {
+    _temp_home: Option<tempfile::TempDir>,
+    path: PathBuf,
+}
+
+#[cfg(test)]
+impl ScopedLoongHome {
+    pub fn new(prefix: &str) -> Self {
+        let temp_home = tempfile::Builder::new()
+            .prefix(prefix)
+            .tempdir()
+            .expect("create scoped loong home");
+        let path = temp_home.path().to_path_buf();
+        crate::config::push_default_loong_home_override_for_tests(path.clone());
+        crate::tools::reset_runtime_home_state_for_tests();
+        Self {
+            _temp_home: Some(temp_home),
+            path,
+        }
+    }
+
+    pub fn from_existing(path: PathBuf) -> Self {
+        crate::config::push_default_loong_home_override_for_tests(path.clone());
+        crate::tools::reset_runtime_home_state_for_tests();
+        Self {
+            _temp_home: None,
+            path,
+        }
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn join(&self, relative: impl AsRef<Path>) -> PathBuf {
+        self.path().join(relative)
+    }
+}
+
+#[cfg(test)]
+impl Drop for ScopedLoongHome {
+    fn drop(&mut self) {
+        crate::tools::reset_runtime_home_state_for_tests();
+        crate::config::pop_default_loong_home_override_for_tests();
     }
 }
 
@@ -90,6 +180,40 @@ pub(crate) fn acquire_subprocess_test_guard() -> MutexGuard<'static, ()> {
     subprocess_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+#[cfg(test)]
+fn current_dir_test_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+#[cfg(test)]
+pub(crate) struct ScopedCurrentDir {
+    original: PathBuf,
+    _lock: MutexGuard<'static, ()>,
+}
+
+#[cfg(test)]
+impl ScopedCurrentDir {
+    pub(crate) fn new(path: &Path) -> Self {
+        let lock = current_dir_test_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let original = std::env::current_dir().expect("read current dir");
+        std::env::set_current_dir(path).expect("set current dir");
+        Self {
+            original,
+            _lock: lock,
+        }
+    }
+}
+
+#[cfg(test)]
+impl Drop for ScopedCurrentDir {
+    fn drop(&mut self) {
+        std::env::set_current_dir(&self.original).expect("restore current dir");
+    }
 }
 
 #[cfg(test)]
@@ -259,20 +383,20 @@ impl TurnTestHarness {
     ) -> Self {
         let id = HARNESS_COUNTER.fetch_add(1, Ordering::SeqCst);
         let temp_dir =
-            std::env::temp_dir().join(format!("loongclaw-integ-{}-{id}", std::process::id()));
+            std::env::temp_dir().join(format!("loong-integ-{}-{id}", std::process::id()));
         std::fs::create_dir_all(&temp_dir).expect("create temp dir");
 
         // Merge the caller's overrides with the unique temp dir as file_root.
         let tool_config = ToolRuntimeConfig {
             file_root: Some(temp_dir.clone()),
-            config_path: Some(temp_dir.join("loongclaw.toml")),
+            config_path: Some(temp_dir.join("loong.toml")),
             ..tool_config_override
         };
 
         let audit = Arc::new(InMemoryAuditSink::default());
         let clock = Arc::new(FixedClock::new(1_700_000_000));
         let mut kernel =
-            LoongClawKernel::with_runtime(StaticPolicyEngine::default(), clock, audit.clone());
+            LoongKernel::with_runtime(StaticPolicyEngine::default(), clock, audit.clone());
 
         let pack = VerticalPackManifest {
             pack_id: "test-pack".to_owned(),
@@ -305,10 +429,8 @@ impl TurnTestHarness {
         #[cfg(feature = "memory-sqlite")]
         {
             use crate::memory::runtime_config::MemoryRuntimeConfig;
-            let memory_config = MemoryRuntimeConfig {
-                sqlite_path: Some(temp_dir.join("memory.sqlite3")),
-                ..MemoryRuntimeConfig::default()
-            };
+            let memory_config =
+                MemoryRuntimeConfig::for_sqlite_path(temp_dir.join("memory.sqlite3"));
             kernel.register_core_memory_adapter(crate::memory::MvpMemoryAdapter::with_config(
                 memory_config,
             ));
@@ -372,9 +494,26 @@ mod tests {
     }
 
     #[test]
+    fn scoped_env_supports_nested_guards_on_one_thread() {
+        let mut outer = ScopedEnv::new();
+        outer.set("LOONG_HOME", "/tmp/outer");
+
+        let mut inner = ScopedEnv::new();
+        inner.set("LOONG_HOME", "/tmp/inner");
+
+        let inner_value = std::env::var_os("LOONG_HOME");
+        assert_eq!(inner_value, Some(std::ffi::OsString::from("/tmp/inner")));
+
+        drop(inner);
+
+        let outer_value = std::env::var_os("LOONG_HOME");
+        assert_eq!(outer_value, Some(std::ffi::OsString::from("/tmp/outer")));
+    }
+
+    #[test]
     fn unique_temp_dir_uses_distinct_paths() {
-        let first = unique_temp_dir("loongclaw-test-support");
-        let second = unique_temp_dir("loongclaw-test-support");
+        let first = unique_temp_dir("loong-test-support");
+        let second = unique_temp_dir("loong-test-support");
 
         assert_ne!(first, second);
     }
@@ -382,7 +521,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn write_executable_script_atomically_preserves_existing_script_when_write_fails() {
-        let root = unique_temp_dir("loongclaw-test-support-script-write-failure");
+        let root = unique_temp_dir("loong-test-support-script-write-failure");
         std::fs::create_dir_all(&root).expect("create temp dir");
         let script_path = root.join("fixture-script");
 

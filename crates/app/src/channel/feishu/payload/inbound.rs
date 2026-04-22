@@ -1,3 +1,4 @@
+#[cfg(test)]
 use std::collections::BTreeSet;
 
 use serde_json::{Map, Value};
@@ -6,7 +7,7 @@ use crate::CliResult;
 use crate::channel::feishu::api::FeishuUserPrincipal;
 use crate::channel::{
     ChannelDeliveryResource, ChannelOutboundTarget, ChannelPlatform, ChannelSession,
-    feishu::feishu_allowlist_allows_chat,
+    access_policy::ChannelInboundAccessPolicy,
 };
 use crate::crypto::timing_safe_eq;
 
@@ -14,6 +15,7 @@ use super::crypto::decrypt_payload_if_needed;
 use super::types::{
     FeishuCardCallbackAction, FeishuCardCallbackContext, FeishuCardCallbackEvent,
     FeishuCardCallbackVersion, FeishuInboundEvent, FeishuWebhookAction,
+    feishu_message_reply_idempotency_key,
 };
 
 const FEISHU_STRUCTURED_ONLY_MESSAGE_TYPES: &[&str] = &[
@@ -82,10 +84,32 @@ impl<'a> FeishuTransportAuth<'a> {
     }
 }
 
+#[cfg(test)]
 pub(in crate::channel::feishu) fn parse_feishu_inbound_payload(
     payload: &Value,
     transport_auth: FeishuTransportAuth<'_>,
     allowed_chat_ids: &BTreeSet<String>,
+    ignore_bot_messages: bool,
+    configured_account_id: &str,
+    account_id: &str,
+) -> CliResult<FeishuWebhookAction> {
+    let normalized_chat_ids = allowed_chat_ids.iter().cloned().collect::<Vec<_>>();
+    let access_policy =
+        ChannelInboundAccessPolicy::from_string_lists(normalized_chat_ids.as_slice(), &[], true);
+    parse_feishu_inbound_payload_with_access_policy(
+        payload,
+        transport_auth,
+        &access_policy,
+        ignore_bot_messages,
+        configured_account_id,
+        account_id,
+    )
+}
+
+pub(in crate::channel::feishu) fn parse_feishu_inbound_payload_with_access_policy(
+    payload: &Value,
+    transport_auth: FeishuTransportAuth<'_>,
+    access_policy: &ChannelInboundAccessPolicy<String>,
     ignore_bot_messages: bool,
     configured_account_id: &str,
     account_id: &str,
@@ -123,7 +147,7 @@ pub(in crate::channel::feishu) fn parse_feishu_inbound_payload(
         }
         return parse_feishu_card_callback_v2(
             payload,
-            allowed_chat_ids,
+            access_policy,
             configured_account_id,
             account_id,
         );
@@ -134,7 +158,7 @@ pub(in crate::channel::feishu) fn parse_feishu_inbound_payload(
         }
         return parse_feishu_card_callback_v1(
             payload,
-            allowed_chat_ids,
+            access_policy,
             configured_account_id,
             account_id,
         );
@@ -180,7 +204,10 @@ pub(in crate::channel::feishu) fn parse_feishu_inbound_payload(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "feishu message event missing message.chat_id".to_owned())?;
-    if !feishu_allowlist_allows_chat(allowed_chat_ids, chat_id) {
+    let principal = parse_sender_principal(event, account_id);
+    let sender_id = principal.as_ref().map(|value| value.open_id.as_str());
+    let allowed = access_policy.allows_str(chat_id, sender_id);
+    if !allowed {
         return Ok(FeishuWebhookAction::Ignore);
     }
 
@@ -191,7 +218,6 @@ pub(in crate::channel::feishu) fn parse_feishu_inbound_payload(
     let thread_id = optional_string_field(message, "thread_id")
         .or_else(|| root_id.clone())
         .or_else(|| parent_id.clone());
-    let principal = parse_sender_principal(event, account_id);
 
     let content = message
         .get("content")
@@ -211,7 +237,11 @@ pub(in crate::channel::feishu) fn parse_feishu_inbound_payload(
         .unwrap_or_else(|| format!("message:{message_id}"));
 
     let mut reply_target = ChannelOutboundTarget::feishu_message_reply(message_id.to_owned())
-        .with_feishu_reply_chat_id(chat_id.to_owned());
+        .with_feishu_reply_chat_id(chat_id.to_owned())
+        .with_idempotency_key(feishu_message_reply_idempotency_key(
+            account_id,
+            message_id.as_str(),
+        ));
     if thread_id.is_some() {
         reply_target = reply_target.with_feishu_reply_in_thread(true);
     }
@@ -243,6 +273,7 @@ pub(in crate::channel::feishu) fn parse_feishu_inbound_payload(
     }))
 }
 
+#[cfg(test)]
 pub(in crate::channel::feishu) fn parse_feishu_webhook_payload(
     payload: &Value,
     verification_token: Option<&str>,
@@ -252,10 +283,33 @@ pub(in crate::channel::feishu) fn parse_feishu_webhook_payload(
     configured_account_id: &str,
     account_id: &str,
 ) -> CliResult<FeishuWebhookAction> {
-    parse_feishu_inbound_payload(
+    let normalized_chat_ids = allowed_chat_ids.iter().cloned().collect::<Vec<_>>();
+    let access_policy =
+        ChannelInboundAccessPolicy::from_string_lists(normalized_chat_ids.as_slice(), &[], true);
+    parse_feishu_webhook_payload_with_access_policy(
+        payload,
+        verification_token,
+        encrypt_key,
+        &access_policy,
+        ignore_bot_messages,
+        configured_account_id,
+        account_id,
+    )
+}
+
+pub(in crate::channel::feishu) fn parse_feishu_webhook_payload_with_access_policy(
+    payload: &Value,
+    verification_token: Option<&str>,
+    encrypt_key: Option<&str>,
+    access_policy: &ChannelInboundAccessPolicy<String>,
+    ignore_bot_messages: bool,
+    configured_account_id: &str,
+    account_id: &str,
+) -> CliResult<FeishuWebhookAction> {
+    parse_feishu_inbound_payload_with_access_policy(
         payload,
         FeishuTransportAuth::webhook(verification_token, encrypt_key),
-        allowed_chat_ids,
+        access_policy,
         ignore_bot_messages,
         configured_account_id,
         account_id,
@@ -314,7 +368,7 @@ fn looks_like_feishu_legacy_card_callback(payload: &Value) -> bool {
 
 fn parse_feishu_card_callback_v2(
     payload: &Value,
-    allowed_chat_ids: &BTreeSet<String>,
+    access_policy: &ChannelInboundAccessPolicy<String>,
     configured_account_id: &str,
     account_id: &str,
 ) -> CliResult<FeishuWebhookAction> {
@@ -324,12 +378,15 @@ fn parse_feishu_card_callback_v2(
         .ok_or_else(|| "feishu card callback payload missing event object".to_owned())?;
     let context = event.get("context").and_then(Value::as_object);
     let open_chat_id = context.and_then(|value| optional_string_field(value, "open_chat_id"));
-    if !is_allowed_feishu_card_callback_chat(open_chat_id.as_deref(), allowed_chat_ids) {
+    let principal = parse_feishu_card_callback_principal_v2(event, account_id);
+    let sender_id = principal.as_ref().map(|value| value.open_id.as_str());
+    let allowed =
+        access_policy.allows_optional_conversation_str(open_chat_id.as_deref(), sender_id);
+    if !allowed {
         return Ok(FeishuWebhookAction::Ignore);
     }
 
     let action = parse_feishu_card_callback_action(event, "action")?;
-    let principal = parse_feishu_card_callback_principal_v2(event, account_id);
     let callback = build_feishu_card_callback_event(
         payload,
         FeishuCardCallbackVersion::V2,
@@ -351,7 +408,7 @@ fn parse_feishu_card_callback_v2(
 
 fn parse_feishu_card_callback_v1(
     payload: &Value,
-    allowed_chat_ids: &BTreeSet<String>,
+    access_policy: &ChannelInboundAccessPolicy<String>,
     configured_account_id: &str,
     account_id: &str,
 ) -> CliResult<FeishuWebhookAction> {
@@ -359,7 +416,11 @@ fn parse_feishu_card_callback_v1(
         .as_object()
         .ok_or_else(|| "feishu legacy card callback payload must be a JSON object".to_owned())?;
     let open_chat_id = optional_string_field(object, "open_chat_id");
-    if !is_allowed_feishu_card_callback_chat(open_chat_id.as_deref(), allowed_chat_ids) {
+    let principal = parse_feishu_card_callback_principal_v1(object, account_id);
+    let sender_id = principal.as_ref().map(|value| value.open_id.as_str());
+    let allowed =
+        access_policy.allows_optional_conversation_str(open_chat_id.as_deref(), sender_id);
+    if !allowed {
         return Ok(FeishuWebhookAction::Ignore);
     }
 
@@ -369,7 +430,7 @@ fn parse_feishu_card_callback_v1(
         FeishuCardCallbackVersion::V1,
         configured_account_id,
         account_id,
-        parse_feishu_card_callback_principal_v1(object, account_id),
+        principal,
         None,
         action,
         FeishuCardCallbackContext {
@@ -432,22 +493,6 @@ fn build_feishu_card_callback_event(
         context,
         text,
     })
-}
-
-fn is_allowed_feishu_card_callback_chat(
-    open_chat_id: Option<&str>,
-    allowed_chat_ids: &BTreeSet<String>,
-) -> bool {
-    if allowed_chat_ids.is_empty() {
-        return true;
-    }
-    let Some(open_chat_id) = open_chat_id
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    else {
-        return false;
-    };
-    feishu_allowlist_allows_chat(allowed_chat_ids, open_chat_id)
 }
 
 fn parse_feishu_card_callback_action(

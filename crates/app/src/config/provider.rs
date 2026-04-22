@@ -1,10 +1,10 @@
 use std::{collections::BTreeMap, env, path::PathBuf};
 
-use loongclaw_contracts::SecretRef;
+use loong_contracts::SecretRef;
 use serde::{Deserialize, Deserializer, Serialize};
 
 use super::shared::{
-    ConfigValidationIssue, EnvPointerValidationHint, default_loongclaw_home, expand_path,
+    ConfigValidationIssue, EnvPointerValidationHint, default_loong_home, expand_path,
     validate_env_pointer_field, validate_secret_ref_env_pointer_field,
 };
 use crate::secrets::{
@@ -72,7 +72,7 @@ impl ProviderProfile {
         let provider_label = self.auth_guidance_provider_label();
         let env_name = self.default_api_key_env.unwrap_or("PROVIDER_API_KEY");
         let hint = format!(
-            "LoongClaw's {provider_label} OpenAI-compatible path uses `provider.api_key` / `{env_name}` and sends `Authorization: Bearer <{env_name}>`; AK/SK request signing is not used on this path"
+            "Loong's {provider_label} OpenAI-compatible path uses `provider.api_key` / `{env_name}` and sends `Authorization: Bearer <{env_name}>`; AK/SK request signing is not used on this path"
         );
         Some(hint)
     }
@@ -832,6 +832,8 @@ pub struct ProviderConfig {
     pub temperature: f64,
     #[serde(default)]
     pub max_tokens: Option<u32>,
+    #[serde(default)]
+    pub stop: Vec<String>,
     #[serde(default = "default_provider_timeout_ms")]
     pub request_timeout_ms: u64,
     #[serde(default = "default_provider_retry_max_attempts")]
@@ -921,6 +923,7 @@ impl Default for ProviderConfig {
             headers: BTreeMap::new(),
             temperature: default_temperature(),
             max_tokens: None,
+            stop: Vec::new(),
             request_timeout_ms: default_provider_timeout_ms(),
             retry_max_attempts: default_provider_retry_max_attempts(),
             retry_initial_backoff_ms: default_provider_retry_initial_backoff_ms(),
@@ -987,6 +990,8 @@ impl<'de> Deserialize<'de> for ProviderConfig {
             temperature: f64,
             #[serde(default)]
             max_tokens: Option<u32>,
+            #[serde(default)]
+            stop: Vec<String>,
             #[serde(default = "default_provider_timeout_ms")]
             request_timeout_ms: u64,
             #[serde(default = "default_provider_retry_max_attempts")]
@@ -1076,6 +1081,7 @@ impl<'de> Deserialize<'de> for ProviderConfig {
             headers: raw.headers,
             temperature: raw.temperature,
             max_tokens: raw.max_tokens,
+            stop: raw.stop,
             request_timeout_ms: raw.request_timeout_ms,
             retry_max_attempts: raw.retry_max_attempts,
             retry_initial_backoff_ms: raw.retry_initial_backoff_ms,
@@ -1663,7 +1669,7 @@ impl ProviderConfig {
                         level: ProviderTransportReadinessLevel::Review,
                         summary: "responses compatibility mode with chat fallback".to_owned(),
                         detail: format!(
-                            "Responses endpoint {} is running in compatibility mode; LoongClaw will retry chat_completions automatically via {} if Responses is rejected",
+                            "Responses endpoint {} is running in compatibility mode; Loong will retry chat_completions automatically via {} if Responses is rejected",
                             request_endpoint, fallback.endpoint
                         ),
                         auto_fallback_to_chat_completions: true,
@@ -1842,7 +1848,7 @@ impl ProviderConfig {
 
     pub fn resolved_profile_state_sqlite_path_with_default(&self) -> PathBuf {
         self.resolved_profile_state_sqlite_path()
-            .unwrap_or_else(|| default_loongclaw_home().join("provider-profile-state.sqlite3"))
+            .unwrap_or_else(|| default_loong_home().join("provider-profile-state.sqlite3"))
     }
 
     pub fn resolved_profile_health_mode_config(&self) -> ProviderProfileHealthModeConfig {
@@ -3594,7 +3600,7 @@ const PROVIDER_PROFILES: [ProviderProfile; 45] = [
         default_headers: &[],
         default_api_key_env: Some("KIMI_CODING_API_KEY"),
         api_key_env_aliases: &[],
-        default_user_agent: Some("KimiCLI/LoongClaw"),
+        default_user_agent: Some("KimiCLI/Loong"),
         default_oauth_access_token_env: None,
         oauth_access_token_env_aliases: &[],
         feature_family: ProviderFeatureFamily::OpenAiCompatible,
@@ -4488,7 +4494,7 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
 
     use crate::test_support::ScopedEnv;
-    use loongclaw_contracts::SecretRef;
+    use loong_contracts::SecretRef;
 
     fn encode_provider_descriptor(descriptor: &ProviderDescriptorDocument) -> Value {
         serde_json::to_value(descriptor).expect("serialize provider descriptor document")

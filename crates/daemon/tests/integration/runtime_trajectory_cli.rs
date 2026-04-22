@@ -17,12 +17,12 @@ fn unique_temp_dir(prefix: &str) -> PathBuf {
 fn write_runtime_trajectory_config(root: &Path) -> PathBuf {
     fs::create_dir_all(root).expect("create fixture root");
 
-    let mut config = mvp::config::LoongClawConfig::default();
+    let mut config = mvp::config::LoongConfig::default();
     let sqlite_path = root.join("memory.sqlite3");
     config.memory.sqlite_path = sqlite_path.display().to_string();
     config.tools.file_root = Some(root.display().to_string());
 
-    let config_path = root.join("loongclaw.toml");
+    let config_path = root.join("loong.toml");
     let config_path_text = config_path.to_string_lossy();
     mvp::config::write(Some(config_path_text.as_ref()), &config, true)
         .expect("write config fixture");
@@ -112,14 +112,16 @@ fn seed_runtime_trajectory_session(config_path: &Path, session_id: &str) {
 
 #[test]
 fn runtime_trajectory_export_writes_bounded_artifact_with_lineage_and_canonical_records() {
-    let root = unique_temp_dir("loongclaw-runtime-trajectory-export");
+    let root = unique_temp_dir("loong-runtime-trajectory-export");
     let config_path = write_runtime_trajectory_config(root.as_path());
     seed_runtime_trajectory_session(config_path.as_path(), "root-session");
 
     let artifact_path = root.join("artifacts").join("root-session.json");
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_loongclaw"))
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_loong"))
         .args([
-            "runtime-trajectory",
+            "runtime",
+            "trajectory",
+            "runtime",
             "export",
             "--config",
             config_path.to_str().expect("config path should be utf-8"),
@@ -162,14 +164,16 @@ fn runtime_trajectory_export_writes_bounded_artifact_with_lineage_and_canonical_
 
 #[test]
 fn runtime_trajectory_show_round_trips_persisted_artifact_in_text_mode() {
-    let root = unique_temp_dir("loongclaw-runtime-trajectory-show");
+    let root = unique_temp_dir("loong-runtime-trajectory-show");
     let config_path = write_runtime_trajectory_config(root.as_path());
     seed_runtime_trajectory_session(config_path.as_path(), "root-session");
 
     let artifact_path = root.join("artifacts").join("root-session.json");
-    let export_status = std::process::Command::new(env!("CARGO_BIN_EXE_loongclaw"))
+    let export_status = std::process::Command::new(env!("CARGO_BIN_EXE_loong"))
         .args([
-            "runtime-trajectory",
+            "runtime",
+            "trajectory",
+            "runtime",
             "export",
             "--config",
             config_path.to_str().expect("config path should be utf-8"),
@@ -185,9 +189,11 @@ fn runtime_trajectory_show_round_trips_persisted_artifact_in_text_mode() {
 
     assert!(export_status.success(), "export should succeed");
 
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_loongclaw"))
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_loong"))
         .args([
-            "runtime-trajectory",
+            "runtime",
+            "trajectory",
+            "runtime",
             "show",
             "--artifact",
             artifact_path
@@ -204,8 +210,8 @@ fn runtime_trajectory_show_round_trips_persisted_artifact_in_text_mode() {
     assert!(
         stdout.lines().any(|line| {
             line.starts_with("artifact_path=")
-                || line.starts_with("LOONGCLAW")
-                || line.contains(" loongclaw ")
+                || line.starts_with("LOONG")
+                || line.contains(" loong ")
         }),
         "runtime trajectory show should print the wrapped operator surface (optionally after artifact_path): {stdout}"
     );
@@ -219,14 +225,16 @@ fn runtime_trajectory_show_round_trips_persisted_artifact_in_text_mode() {
 
 #[test]
 fn runtime_trajectory_export_accepts_bare_output_file_in_current_directory() {
-    let root = unique_temp_dir("loongclaw-runtime-trajectory-bare-output");
+    let root = unique_temp_dir("loong-runtime-trajectory-bare-output");
     let config_path = write_runtime_trajectory_config(root.as_path());
     seed_runtime_trajectory_session(config_path.as_path(), "root-session");
 
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_loongclaw"))
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_loong"))
         .current_dir(root.as_path())
         .args([
-            "runtime-trajectory",
+            "runtime",
+            "trajectory",
+            "runtime",
             "export",
             "--config",
             config_path.to_str().expect("config path should be utf-8"),

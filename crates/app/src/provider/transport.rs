@@ -26,6 +26,7 @@ use crate::CliResult;
 use crate::config::{ProviderAuthScheme, ProviderConfig, ProviderKind, active_cli_command_name};
 
 use super::auth_profile_runtime::ProviderAuthProfile;
+use super::rate_limit::{RateLimitObservation, parse_rate_limit_headers};
 use super::sse::SseEventStream;
 use super::transport_trait::{
     ProviderTransport, TransportError, TransportRequest, TransportResponse, TransportStream,
@@ -129,6 +130,7 @@ impl ProviderTransport for ReqwestTransport {
         .map_err(map_request_execution_error)?;
         let status = response.status();
         let headers = response.headers().clone();
+        let rate_limit = parse_transport_rate_limit(&headers);
         let body = decode_response_body(response)
             .await
             .map_err(TransportError::response_decode)?;
@@ -136,6 +138,7 @@ impl ProviderTransport for ReqwestTransport {
             status,
             headers,
             body,
+            rate_limit,
         })
     }
 
@@ -154,14 +157,16 @@ impl ProviderTransport for ReqwestTransport {
         let status = response.status();
         let headers = response.headers().clone();
         if !status.is_success() {
+            let rate_limit = parse_transport_rate_limit(&headers);
             let body = decode_response_body(response)
                 .await
                 .map_err(TransportError::response_decode)?;
-            return Ok(TransportStream::Response(TransportResponse {
+            return Ok(TransportStream::Response(Box::new(TransportResponse {
                 status,
                 headers,
                 body,
-            }));
+                rate_limit,
+            })));
         }
         let byte_stream = decode_streaming_response(response);
         let _ = status;
@@ -170,6 +175,11 @@ impl ProviderTransport for ReqwestTransport {
             events: Box::pin(SseEventStream::new(Box::pin(byte_stream))),
         })
     }
+}
+
+fn parse_transport_rate_limit(headers: &HeaderMap) -> Option<RateLimitObservation> {
+    let observation = parse_rate_limit_headers(headers);
+    observation.has_signal().then_some(observation)
 }
 
 pub(super) async fn resolve_request_auth_context(
@@ -283,19 +293,34 @@ fn message_looks_like_proxy_route_failure(message: &str) -> bool {
         || message.contains("tun0")
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum TransportRouteHintPhase {
+    BeforeHttpResponse,
+    StreamingResponseBody,
+}
+
 pub(super) fn render_transport_route_hint(
     url: &str,
     error_message: &str,
     is_timeout: bool,
     is_connect: bool,
+    phase: TransportRouteHintPhase,
 ) -> Option<String> {
     let host = request_host_label(url)?;
     let lower = error_message.to_ascii_lowercase();
     let doctor_command = format!("{} doctor", active_cli_command_name());
 
     if is_timeout {
+        let timeout_context = match phase {
+            TransportRouteHintPhase::BeforeHttpResponse => {
+                "the transport timed out before an HTTP response arrived"
+            }
+            TransportRouteHintPhase::StreamingResponseBody => {
+                "the transport timed out while reading the streaming response body after an HTTP response arrived"
+            }
+        };
         return Some(format!(
-            "request host {host}: the transport timed out before an HTTP response arrived. if you're using a proxy/TUN/fake-ip setup, verify that the route stays healthy for longer-lived requests, then run `{doctor_command}` to inspect provider route diagnostics"
+            "request host {host}: {timeout_context}. if you're using a proxy/TUN/fake-ip setup, verify that the route stays healthy for longer-lived requests, then run `{doctor_command}` to inspect provider route diagnostics"
         ));
     }
 
@@ -451,33 +476,29 @@ pub(super) fn append_prompt_cache_headers(
 
     if let Some(session_id) = session_id {
         let hashed_session_id = hash_runtime_identifier(session_id);
-        insert_runtime_header(
-            headers,
-            "x-loongclaw-session-id",
-            hashed_session_id.as_str(),
-        )?;
+        insert_runtime_header(headers, "x-loong-session-id", hashed_session_id.as_str())?;
     }
     if let Some(turn_id) = turn_id {
         let hashed_turn_id = hash_runtime_identifier(turn_id);
-        insert_runtime_header(headers, "x-loongclaw-turn-id", hashed_turn_id.as_str())?;
+        insert_runtime_header(headers, "x-loong-turn-id", hashed_turn_id.as_str())?;
     }
     if let Some(stable_prefix_sha256) = plan.stable_prefix_sha256.as_deref() {
         insert_runtime_header(
             headers,
-            "x-loongclaw-stable-prefix-sha256",
+            "x-loong-stable-prefix-sha256",
             stable_prefix_sha256,
         )?;
     }
     if let Some(cached_prefix_sha256) = plan.cached_prefix_sha256.as_deref() {
         insert_runtime_header(
             headers,
-            "x-loongclaw-cached-prefix-sha256",
+            "x-loong-cached-prefix-sha256",
             cached_prefix_sha256,
         )?;
     }
     insert_runtime_header(
         headers,
-        "x-loongclaw-cache-eligible",
+        "x-loong-cache-eligible",
         if plan.cache_eligible { "true" } else { "false" },
     )?;
 
@@ -807,6 +828,7 @@ fn percent_encode_path_segment(value: &str) -> String {
 mod tests {
     use super::*;
     use crate::provider::sse::{SseLine, SseStreamEvent, parse_sse_line};
+    #[cfg(feature = "provider-bedrock")]
     use crate::test_support::ScopedEnv;
     use std::collections::BTreeMap;
 
@@ -872,24 +894,24 @@ mod tests {
 
         assert_eq!(
             headers
-                .get("x-loongclaw-session-id")
+                .get("x-loong-session-id")
                 .and_then(|value| value.to_str().ok()),
             Some(hash_runtime_identifier("session-1").as_str())
         );
         assert_eq!(
             headers
-                .get("x-loongclaw-turn-id")
+                .get("x-loong-turn-id")
                 .and_then(|value| value.to_str().ok()),
             Some(hash_runtime_identifier("turn-1").as_str())
         );
         assert_eq!(
             headers
-                .get("x-loongclaw-cache-eligible")
+                .get("x-loong-cache-eligible")
                 .and_then(|value| value.to_str().ok()),
             Some("true")
         );
-        assert!(headers.contains_key("x-loongclaw-stable-prefix-sha256"));
-        assert!(headers.contains_key("x-loongclaw-cached-prefix-sha256"));
+        assert!(headers.contains_key("x-loong-stable-prefix-sha256"));
+        assert!(headers.contains_key("x-loong-cached-prefix-sha256"));
     }
 
     #[test]
@@ -899,6 +921,7 @@ mod tests {
             "dns error: failed to lookup address information: nodename nor servname provided, or not known",
             false,
             true,
+            TransportRouteHintPhase::BeforeHttpResponse,
         )
         .expect("dns failure should surface a route hint");
 
@@ -914,6 +937,7 @@ mod tests {
             "operation timed out",
             true,
             false,
+            TransportRouteHintPhase::BeforeHttpResponse,
         )
         .expect("timeouts should surface a route hint");
 
@@ -923,12 +947,29 @@ mod tests {
     }
 
     #[test]
+    fn render_transport_route_hint_distinguishes_streaming_body_timeouts() {
+        let hint = render_transport_route_hint(
+            "https://api.openai.com/v1/chat/completions",
+            "operation timed out",
+            true,
+            false,
+            TransportRouteHintPhase::StreamingResponseBody,
+        )
+        .expect("streaming body timeouts should surface a route hint");
+
+        assert!(hint.contains("api.openai.com:443"));
+        assert!(hint.contains("streaming response body"));
+        assert!(!hint.contains("before an HTTP response arrived"));
+    }
+
+    #[test]
     fn render_transport_route_hint_does_not_treat_tuning_as_proxy_route_failure() {
         let hint = render_transport_route_hint(
             "https://api.openai.com/v1/chat/completions",
             "provider tuning metadata could not be loaded",
             false,
             false,
+            TransportRouteHintPhase::BeforeHttpResponse,
         );
 
         assert!(
@@ -948,7 +989,7 @@ mod tests {
 
         let provider = ProviderConfig {
             kind: ProviderKind::Bedrock,
-            api_key: Some(loongclaw_contracts::SecretRef::Inline(
+            api_key: Some(loong_contracts::SecretRef::Inline(
                 "bedrock-bearer-token".to_owned(),
             )),
             ..ProviderConfig::default()

@@ -200,7 +200,7 @@ pub fn render_tui_screen_spec_ratatui(
     let header_height = block_height(&header_lines);
     render_text_block(
         Rect::new(0, row, area.width, header_height),
-        "loongclaw",
+        "loong",
         &header_lines,
         &mut buffer,
     );
@@ -379,7 +379,7 @@ fn build_screen_section_block(
                     .map(str::trim)
                     .filter(|value| !value.is_empty())
                 {
-                    Some(title) => format!("{} · {title}", tone_label(*tone)),
+                    Some(title) => format!("{}: {title}", tone_label(*tone)),
                     None => tone_label(*tone).to_owned(),
                 },
             ),
@@ -840,10 +840,8 @@ mod tests {
         let lines = render_tui_screen_spec(&spec, 80, false);
 
         assert!(
-            lines
-                .first()
-                .is_some_and(|line| line.starts_with("LOONGCLAW")),
-            "compact header should keep the LOONGCLAW wordmark: {lines:#?}"
+            lines.first().is_some_and(|line| line.starts_with("LOONG")),
+            "compact header should keep the LOONG wordmark: {lines:#?}"
         );
         assert!(
             lines
@@ -907,12 +905,12 @@ mod tests {
         let lines = render_tui_screen_spec_ratatui(&spec, 80, false);
         let rendered = lines.join("\n");
 
-        assert!(rendered.contains(" loongclaw "), "{rendered}");
+        assert!(rendered.contains(" loong "), "{rendered}");
         assert!(rendered.contains(" start here "), "{rendered}");
         assert!(rendered.contains(" preflight "), "{rendered}");
         assert!(rendered.contains(" choices "), "{rendered}");
         assert!(rendered.contains(" next "), "{rendered}");
-        assert!(rendered.contains("LOONGCLAW"), "{rendered}");
+        assert!(rendered.contains("LOONG"), "{rendered}");
         assert!(
             rendered.contains("loong ask --message 'hello'"),
             "{rendered}"
@@ -943,7 +941,7 @@ mod tests {
 
         let rendered = render_onboard_screen_spec(&spec, 80, true).join("\n");
 
-        assert!(rendered.contains("LOONGCLAW"), "{rendered}");
+        assert!(rendered.contains("LOONG"), "{rendered}");
         assert!(
             rendered.contains("attention: what onboarding can do"),
             "{rendered}"

@@ -5,40 +5,52 @@ use crate::KernelContext;
 use crate::context::{DEFAULT_TOKEN_TTL_S, bootstrap_kernel_context_with_config};
 
 #[cfg(any(
+    feature = "channel-plugin-bridge",
     feature = "channel-telegram",
     feature = "channel-feishu",
+    feature = "channel-line",
     feature = "channel-matrix",
     feature = "channel-wecom",
-    feature = "channel-whatsapp"
+    feature = "channel-whatsapp",
+    feature = "channel-webhook"
 ))]
 use super::super::registry::ChannelCommandFamilyDescriptor;
 #[cfg(any(
+    feature = "channel-plugin-bridge",
     feature = "channel-telegram",
     feature = "channel-feishu",
+    feature = "channel-line",
     feature = "channel-matrix",
     feature = "channel-wecom",
-    feature = "channel-whatsapp"
+    feature = "channel-whatsapp",
+    feature = "channel-webhook"
 ))]
 use super::super::runtime::serve::{
     ChannelServeRuntimeSpec, ChannelServeStopHandle, with_channel_serve_runtime_with_stop,
 };
 #[cfg(any(
+    feature = "channel-plugin-bridge",
     feature = "channel-telegram",
     feature = "channel-feishu",
+    feature = "channel-line",
     feature = "channel-matrix",
     feature = "channel-wecom",
-    feature = "channel-whatsapp"
+    feature = "channel-whatsapp",
+    feature = "channel-webhook"
 ))]
 use super::super::runtime::state::ChannelOperationRuntimeTracker;
 use super::super::types::ChannelCommandFuture;
 use super::context::{ChannelCommandContext, ChannelResolvedRuntimeAccount};
 
 #[cfg(any(
+    feature = "channel-plugin-bridge",
     feature = "channel-telegram",
     feature = "channel-feishu",
+    feature = "channel-line",
     feature = "channel-matrix",
     feature = "channel-wecom",
-    feature = "channel-whatsapp"
+    feature = "channel-whatsapp",
+    feature = "channel-webhook"
 ))]
 #[derive(Debug, Clone, Copy)]
 pub(in crate::channel) struct ChannelServeCommandSpec {
@@ -46,12 +58,22 @@ pub(in crate::channel) struct ChannelServeCommandSpec {
 }
 
 #[cfg(any(
+    feature = "channel-plugin-bridge",
     feature = "channel-telegram",
     feature = "channel-feishu",
+    feature = "channel-line",
     feature = "channel-matrix",
     feature = "channel-wecom",
-    feature = "channel-whatsapp"
+    feature = "channel-whatsapp",
+    feature = "channel-webhook"
 ))]
+/// Shared bootstrap for long-running channel `serve` commands.
+///
+/// Account resolution happens before this helper runs. It owns the common
+/// runtime setup that most channel entrypoints share: channel-specific
+/// validation, optional runtime-environment exports, kernel bootstrap, runtime
+/// tracker registration, and stop-handle plumbing before handing control to the
+/// channel-specific serve loop.
 pub(in crate::channel) async fn run_channel_serve_command_with_stop<R, V, F>(
     context: ChannelCommandContext<R>,
     spec: ChannelServeCommandSpec,

@@ -11,13 +11,12 @@ Set-StrictMode -Version Latest
 $Prefix = [IO.Path]::GetFullPath(($Prefix -replace '^~', $HOME))
 $ReleaseBaseUrl = if ($env:LOONG_INSTALL_RELEASE_BASE_URL) {
     $env:LOONG_INSTALL_RELEASE_BASE_URL
-} elseif ($env:LOONGCLAW_INSTALL_RELEASE_BASE_URL) {
-    $env:LOONGCLAW_INSTALL_RELEASE_BASE_URL
+} elseif ($env:LOONG_INSTALL_RELEASE_BASE_URL) {
+    $env:LOONG_INSTALL_RELEASE_BASE_URL
 } else {
     "https://github.com/$Repository/releases"
 }
 $BinName = "loong"
-$LegacyBinName = "loongclaw"
 
 function Write-Usage {
     @"
@@ -96,20 +95,30 @@ function Get-ReleaseChecksumName([string]$PackageName, [string]$Tag, [string]$Ta
     return "$(Get-ReleaseArchiveName -PackageName $PackageName -Tag $Tag -Target $Target).sha256"
 }
 
-function Install-CompatibilityBinaries([string]$SourceBinary) {
+function Install-Binary([string]$SourceBinary) {
     New-Item -ItemType Directory -Force -Path $Prefix | Out-Null
     $primaryBinary = Join-Path $Prefix "$BinName.exe"
-    $legacyBinary = Join-Path $Prefix "$LegacyBinName.exe"
     Copy-Item -Force $SourceBinary $primaryBinary
-    Copy-Item -Force $SourceBinary $legacyBinary
-    return @{
-        Primary = $primaryBinary
-        Legacy = $legacyBinary
+    return $primaryBinary
+}
+
+function Remove-LegacyBinaryIfPresent {
+    $legacyBinaryName = "loongclaw.exe"
+    $legacyBinary = Join-Path $Prefix $legacyBinaryName
+    $legacyBinaryItem = Get-Item -LiteralPath $legacyBinary -Force -ErrorAction SilentlyContinue
+    if ($null -eq $legacyBinaryItem) {
+        return
     }
+    if ($legacyBinaryItem.PSIsContainer) {
+        return
+    }
+
+    Remove-Item -LiteralPath $legacyBinary -Force
+    Write-Host "==> Removed legacy loongclaw compatibility command from $legacyBinary"
 }
 
 function Install-FromSource {
-    $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+    $scriptDir = $PSScriptRoot
     $repoRoot = Resolve-Path (Join-Path $scriptDir "..")
     $cargoToml = Join-Path $repoRoot "Cargo.toml"
     if (-not (Test-Path $cargoToml)) {
@@ -121,16 +130,16 @@ function Install-FromSource {
 
     Write-Host "==> Building loong from source (release)"
     Push-Location $repoRoot
-    $hadReleaseBuild = Test-Path Env:LOONGCLAW_RELEASE_BUILD
-    $previousReleaseBuild = $env:LOONGCLAW_RELEASE_BUILD
+    $hadReleaseBuild = (Test-Path Env:LOONG_RELEASE_BUILD)
+    $previousReleaseBuild = $env:LOONG_RELEASE_BUILD
     try {
-        $env:LOONGCLAW_RELEASE_BUILD = "1"
+        $env:LOONG_RELEASE_BUILD = "1"
         cargo build -p loong --bin $BinName --release --locked | Out-Host
     } finally {
         if ($hadReleaseBuild) {
-            $env:LOONGCLAW_RELEASE_BUILD = $previousReleaseBuild
-        } elseif (Test-Path Env:LOONGCLAW_RELEASE_BUILD) {
-            Remove-Item Env:LOONGCLAW_RELEASE_BUILD
+            $env:LOONG_RELEASE_BUILD = $previousReleaseBuild
+        } elseif (Test-Path Env:LOONG_RELEASE_BUILD) {
+            Remove-Item Env:LOONG_RELEASE_BUILD
         }
         Pop-Location
     }
@@ -140,7 +149,7 @@ function Install-FromSource {
         throw "built binary not found at $sourceBinary"
     }
 
-    return Install-CompatibilityBinaries -SourceBinary $sourceBinary
+    return Install-Binary -SourceBinary $sourceBinary
 }
 
 function Install-FromRelease {
@@ -185,7 +194,7 @@ function Install-FromRelease {
             throw "extracted binary not found at $sourceBinary"
         }
 
-        return Install-CompatibilityBinaries -SourceBinary $sourceBinary
+        return Install-Binary -SourceBinary $sourceBinary
     } finally {
         if (Test-Path $tmpRoot) {
             Remove-Item -Recurse -Force $tmpRoot
@@ -205,10 +214,10 @@ function Resolve-NormalizedPathEntryOrNull([string]$PathEntry) {
     }
 }
 
-$installResult = if ($Source) { Install-FromSource } else { Install-FromRelease }
+$primaryBinary = if ($Source) { Install-FromSource } else { Install-FromRelease }
+Remove-LegacyBinaryIfPresent
 
-Write-Host "==> Installed loong to $($installResult.Primary)"
-Write-Host "==> Installed compatible loong command to $($installResult.Legacy)"
+Write-Host "==> Installed loong to $primaryBinary"
 
 $normalizedPrefix = $Prefix
 $pathItems = ($env:PATH -split [IO.Path]::PathSeparator) |
@@ -243,7 +252,7 @@ if (-not $alreadyInSessionPath) {
 if ($Onboard) {
     Write-Host "==> Running guided onboarding"
     try {
-        & $installResult.Primary onboard | Out-Host
+        & $primaryBinary onboard | Out-Host
         if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) {
             Write-Host "==> Onboarding exited with code $LASTEXITCODE"
             Write-Host "==> You can run 'loong onboard' later to complete setup"

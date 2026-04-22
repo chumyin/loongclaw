@@ -13,7 +13,7 @@ context lives in `docs/`, while the public reader-facing docs surface lives in
 - [Layered Kernel Design](docs/design-docs/layered-kernel-design.md) — layered model and boundary rules
 - [Roadmap](docs/ROADMAP.md) — stage-based milestones and acceptance criteria
 - [Reliability](docs/RELIABILITY.md) — invariants and operating expectations
-- [Product Specs](docs/product-specs/index.md) — user-facing requirements
+- Product specs and implementation plans now live in `eastreams/knowledge-base` (see `docs/README.md` for routing)
 - [Contributing Guide](CONTRIBUTING.md) — contributor workflow and recipes
 
 ## 2. Architecture Contract
@@ -22,8 +22,9 @@ context lives in `docs/`, while the public reader-facing docs surface lives in
 contracts (leaf — zero internal deps)
 ├── kernel → contracts
 ├── protocol (independent leaf)
+├── bridge-runtime → contracts, kernel, protocol
 ├── app → contracts, kernel
-├── spec → contracts, kernel, protocol
+├── spec → contracts, kernel, protocol, bridge-runtime
 ├── bench → contracts, kernel, spec
 └── daemon (binary) → all of the above
 ```
@@ -37,11 +38,11 @@ Current tracked deviations: none.
 If `task` is unavailable, run the underlying `cargo` and `scripts/*` commands
 directly.
 
-- Format check: `cargo fmt --all -- --check`
-- Strict lint: `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+- Format check: `./scripts/cargo-local-toolchain.sh fmt --all -- --check`
+- Strict lint: `./scripts/cargo-local-toolchain.sh clippy --workspace --all-targets --all-features -- -D warnings`
 - Architecture check: `./scripts/check_architecture_boundaries.sh` or `task check:architecture`
 - Convention check: `task check:conventions` (optional wrapper; requires Go + convention-engineering skill)
-- Test all features: `cargo test --workspace --all-features`
+- Test all features: `./scripts/cargo-local-toolchain.sh test --workspace --all-features`
 - Canonical verify: `task verify` (optional wrapper around repo verification steps)
 - Extended verify: `task verify:full` (optional wrapper around the extended local gate)
 
@@ -55,15 +56,15 @@ directly.
 - **Before every commit**, run CI-parity checks. Any manual edit after fmt must be re-checked.
 - Every released version must map to `docs/releases/vX.Y.Z.md` with process log and detail links.
 - Local agent debug context for a release should be recorded in `.docs/releases/vX.Y.Z-debug.md`.
-- Public-repo issues, PRs, and public-doc wording should stay LoongClaw-centric; keep detailed external project comparisons in `loongclaw-ai/knowledge-base` unless naming an external project is strictly necessary.
+- Public-repo issues, PRs, and public-doc wording should stay Loong-centric; keep detailed external project comparisons in `eastreams/knowledge-base` unless naming an external project is strictly necessary.
 
 ## 5. Verification Gates
 
 CI enforces:
-- `cargo fmt --all -- --check`
-- `cargo clippy --workspace --all-targets --all-features -- -D warnings`
-- `cargo test --workspace`
-- `cargo test --workspace --all-features`
+- `./scripts/cargo-local-toolchain.sh fmt --all -- --check`
+- `./scripts/cargo-local-toolchain.sh clippy --workspace --all-targets --all-features -- -D warnings`
+- `./scripts/cargo-local-toolchain.sh test --workspace`
+- `./scripts/cargo-local-toolchain.sh test --workspace --all-features`
 
 ## 6. Pre-Commit Hook
 
@@ -73,7 +74,8 @@ cp scripts/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
 
 Runs CI-parity cargo checks before each commit.
 Use `task verify` when the `task` CLI is installed. Otherwise run the
-underlying `cargo` and `scripts/*` verification commands directly.
+underlying `scripts/cargo-local-toolchain.sh` and `scripts/*` verification
+commands directly.
 
 ## 7. Where to Look Next
 
@@ -90,6 +92,6 @@ underlying `cargo` and `scripts/*` verification commands directly.
 | Security model & gaps | `docs/SECURITY.md` |
 | Product sense & principles | `docs/PRODUCT_SENSE.md` |
 | Release process conventions | `docs/releases/README.md` |
-| Product requirements | `docs/product-specs/` |
+| Product requirements / implementation plans | `eastreams/knowledge-base` |
 | Repository support references | `docs/references/README.md` |
 | Contributing recipes | `CONTRIBUTING.md` |

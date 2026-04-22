@@ -1,6 +1,7 @@
 #[cfg(test)]
-use crate::config::LoongClawConfig;
+use crate::config::LoongConfig;
 
+pub(crate) mod access_policy;
 mod catalog;
 mod commands;
 mod core;
@@ -29,6 +30,8 @@ mod mattermost;
 mod nextcloud_talk;
 #[cfg(feature = "channel-nostr")]
 mod nostr;
+#[cfg(feature = "channel-plugin-bridge")]
+mod plugin_bridge_runtime;
 mod registry;
 mod runtime;
 pub(crate) mod sdk;
@@ -49,13 +52,6 @@ mod tlon;
 mod tlon_command;
 /// Channel API traits for platform-agnostic abstraction
 pub mod traits;
-#[cfg(any(
-    feature = "channel-telegram",
-    feature = "channel-feishu",
-    feature = "channel-matrix",
-    feature = "channel-wecom",
-    feature = "channel-whatsapp"
-))]
 #[cfg(feature = "channel-twitch")]
 mod twitch;
 #[cfg(feature = "channel-twitch")]
@@ -69,34 +65,47 @@ mod whatsapp;
 
 #[cfg(feature = "channel-twitch")]
 pub use self::twitch_command::run_twitch_send;
+#[cfg(feature = "channel-plugin-bridge")]
+pub use plugin_bridge_runtime::{
+    CHANNEL_PLUGIN_BRIDGE_RUNTIME_ACK_INBOUND_OPERATION,
+    CHANNEL_PLUGIN_BRIDGE_RUNTIME_COMPLETE_BATCH_OPERATION,
+    CHANNEL_PLUGIN_BRIDGE_RUNTIME_CONTRACT_V1,
+    CHANNEL_PLUGIN_BRIDGE_RUNTIME_RECEIVE_BATCH_OPERATION,
+    CHANNEL_PLUGIN_BRIDGE_RUNTIME_SEND_MESSAGE_OPERATION, ManagedPluginBridgeRuntimeBinding,
+    resolve_managed_plugin_bridge_runtime_binding,
+};
 pub use registry::{
     CHANNEL_OPERATION_SEND_ID, CHANNEL_OPERATION_SERVE_ID, ChannelCapability,
     ChannelCatalogCommandFamilyDescriptor, ChannelCatalogEntry, ChannelCatalogImplementationStatus,
     ChannelCatalogOperation, ChannelCatalogOperationAvailability,
     ChannelCatalogOperationRequirement, ChannelCommandFamilyDescriptor,
-    ChannelDiscoveredPluginBridge, ChannelDiscoveredPluginBridgeStatus, ChannelDoctorCheckSpec,
-    ChannelDoctorCheckTrigger, ChannelDoctorOperationSpec, ChannelInventory,
-    ChannelOnboardingDescriptor, ChannelOnboardingStrategy, ChannelOperationDescriptor,
-    ChannelOperationHealth, ChannelOperationStatus, ChannelPluginBridgeContract,
-    ChannelPluginBridgeDiscovery, ChannelPluginBridgeDiscoveryAmbiguityStatus,
-    ChannelPluginBridgeDiscoveryStatus, ChannelPluginBridgeManifestStatus,
-    ChannelPluginBridgeManifestValidation, ChannelPluginBridgeSelectionStatus,
-    ChannelPluginBridgeStableTarget, ChannelRuntimeCommandDescriptor, ChannelStatusSnapshot,
-    ChannelSurface, DINGTALK_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
-    DISCORD_CATALOG_COMMAND_FAMILY_DESCRIPTOR, EMAIL_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
-    FEISHU_CATALOG_COMMAND_FAMILY_DESCRIPTOR, FEISHU_COMMAND_FAMILY_DESCRIPTOR,
-    FEISHU_RUNTIME_COMMAND_DESCRIPTOR, GOOGLE_CHAT_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
-    IMESSAGE_CATALOG_COMMAND_FAMILY_DESCRIPTOR, IRC_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
-    LINE_CATALOG_COMMAND_FAMILY_DESCRIPTOR, MATRIX_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
-    MATRIX_COMMAND_FAMILY_DESCRIPTOR, MATRIX_RUNTIME_COMMAND_DESCRIPTOR,
-    MATTERMOST_CATALOG_COMMAND_FAMILY_DESCRIPTOR, NEXTCLOUD_TALK_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
-    NOSTR_CATALOG_COMMAND_FAMILY_DESCRIPTOR, SIGNAL_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
-    SLACK_CATALOG_COMMAND_FAMILY_DESCRIPTOR, SYNOLOGY_CHAT_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
-    TEAMS_CATALOG_COMMAND_FAMILY_DESCRIPTOR, TELEGRAM_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
-    TELEGRAM_COMMAND_FAMILY_DESCRIPTOR, TELEGRAM_RUNTIME_COMMAND_DESCRIPTOR,
-    TLON_CATALOG_COMMAND_FAMILY_DESCRIPTOR, TWITCH_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
-    WEBHOOK_CATALOG_COMMAND_FAMILY_DESCRIPTOR, WECOM_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
-    WECOM_COMMAND_FAMILY_DESCRIPTOR, WECOM_RUNTIME_COMMAND_DESCRIPTOR,
+    ChannelConfiguredAccountAccessPolicy, ChannelDiscoveredPluginBridge,
+    ChannelDiscoveredPluginBridgeStatus, ChannelDoctorCheckSpec, ChannelDoctorCheckTrigger,
+    ChannelDoctorOperationSpec, ChannelInventory, ChannelOnboardingDescriptor,
+    ChannelOnboardingStrategy, ChannelOperationDescriptor, ChannelOperationHealth,
+    ChannelOperationStatus, ChannelPluginBridgeContract, ChannelPluginBridgeDiscovery,
+    ChannelPluginBridgeDiscoveryAmbiguityStatus, ChannelPluginBridgeDiscoveryStatus,
+    ChannelPluginBridgeManifestStatus, ChannelPluginBridgeManifestValidation,
+    ChannelPluginBridgeSelectionStatus, ChannelPluginBridgeStableTarget,
+    ChannelRuntimeCommandDescriptor, ChannelStatusSnapshot, ChannelSurface,
+    DINGTALK_CATALOG_COMMAND_FAMILY_DESCRIPTOR, DISCORD_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
+    EMAIL_CATALOG_COMMAND_FAMILY_DESCRIPTOR, FEISHU_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
+    FEISHU_COMMAND_FAMILY_DESCRIPTOR, FEISHU_RUNTIME_COMMAND_DESCRIPTOR,
+    GOOGLE_CHAT_CATALOG_COMMAND_FAMILY_DESCRIPTOR, IMESSAGE_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
+    IRC_CATALOG_COMMAND_FAMILY_DESCRIPTOR, LINE_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
+    LINE_COMMAND_FAMILY_DESCRIPTOR, LINE_RUNTIME_COMMAND_DESCRIPTOR,
+    MATRIX_CATALOG_COMMAND_FAMILY_DESCRIPTOR, MATRIX_COMMAND_FAMILY_DESCRIPTOR,
+    MATRIX_RUNTIME_COMMAND_DESCRIPTOR, MATTERMOST_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
+    NEXTCLOUD_TALK_CATALOG_COMMAND_FAMILY_DESCRIPTOR, NOSTR_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
+    ONEBOT_CATALOG_COMMAND_FAMILY_DESCRIPTOR, QQBOT_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
+    SIGNAL_CATALOG_COMMAND_FAMILY_DESCRIPTOR, SLACK_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
+    SYNOLOGY_CHAT_CATALOG_COMMAND_FAMILY_DESCRIPTOR, TEAMS_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
+    TELEGRAM_CATALOG_COMMAND_FAMILY_DESCRIPTOR, TELEGRAM_COMMAND_FAMILY_DESCRIPTOR,
+    TELEGRAM_RUNTIME_COMMAND_DESCRIPTOR, TLON_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
+    TWITCH_CATALOG_COMMAND_FAMILY_DESCRIPTOR, WEBHOOK_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
+    WEBHOOK_COMMAND_FAMILY_DESCRIPTOR, WEBHOOK_RUNTIME_COMMAND_DESCRIPTOR,
+    WECOM_CATALOG_COMMAND_FAMILY_DESCRIPTOR, WECOM_COMMAND_FAMILY_DESCRIPTOR,
+    WECOM_RUNTIME_COMMAND_DESCRIPTOR, WEIXIN_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
     WHATSAPP_CATALOG_COMMAND_FAMILY_DESCRIPTOR, WHATSAPP_COMMAND_FAMILY_DESCRIPTOR,
     WHATSAPP_RUNTIME_COMMAND_DESCRIPTOR, catalog_only_channel_entries, channel_inventory,
     channel_status_snapshots, list_channel_catalog, normalize_channel_catalog_id,
@@ -106,41 +115,83 @@ pub use registry::{
     resolve_channel_onboarding_descriptor, resolve_channel_operation_descriptor,
     resolve_channel_runtime_command_descriptor, validate_plugin_channel_bridge_manifest,
 };
-pub use runtime::state::ChannelOperationRuntime;
+pub use runtime::state::{
+    ChannelOperationDuplicateCleanupOutcome, ChannelOperationDuplicateCleanupResult,
+    ChannelOperationRuntime, ChannelOperationRuntimeIncident, ChannelOperationRuntimeIncidentKind,
+    ChannelOperationRuntimeTracker, ChannelOperationStopRequestOutcome,
+    request_channel_operation_duplicate_cleanup, request_channel_operation_stop,
+};
 #[cfg(any(
+    feature = "channel-plugin-bridge",
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-line",
+    feature = "channel-matrix",
+    feature = "channel-wecom",
+    feature = "channel-whatsapp",
+    feature = "channel-webhook"
+))]
+pub use runtime::turn_feedback::ChannelTurnFeedbackPolicy;
+#[cfg(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix",
+    feature = "channel-wecom"
+))]
+pub use runtime::types::{ResolvedKnownChannelSessionTarget, resolve_known_channel_session_target};
+pub use sdk::{
+    ChannelDescriptor, ChannelOperationalModel, ChannelRuntimeKind,
+    background_channel_runtime_descriptors, catalog_only_channel_descriptors, channel_descriptor,
+    gateway_supervised_channel_descriptors, is_background_channel_surface_enabled,
+    outbound_only_channel_descriptors, plugin_backed_channel_descriptors,
+    runtime_backed_channel_descriptors, service_channel_descriptors,
+    standalone_runtime_channel_descriptors,
+};
+pub(crate) use sdk::{collect_channel_validation_issues, enabled_channel_ids};
+pub use tlon_command::run_tlon_send;
+
+mod types;
+pub use access_policy::{ChannelAccessRestrictionMode, ChannelInboundAccessPolicySummary};
+pub use types::ChannelOutboundTargetKind as ChannelCatalogTargetKind;
+#[cfg(any(
+    feature = "channel-plugin-bridge",
     feature = "channel-telegram",
     feature = "channel-feishu",
     feature = "channel-matrix",
     feature = "channel-wecom",
     feature = "channel-whatsapp"
 ))]
-pub use runtime::turn_feedback::ChannelTurnFeedbackPolicy;
-pub use sdk::{
-    ChannelDescriptor, ChannelRuntimeKind, background_channel_runtime_descriptors,
-    channel_descriptor, is_background_channel_surface_enabled, service_channel_descriptors,
-};
-pub(crate) use sdk::{collect_channel_validation_issues, enabled_channel_ids};
-pub use tlon_command::run_tlon_send;
-
-mod types;
-pub use types::ChannelOutboundTargetKind as ChannelCatalogTargetKind;
 pub use types::{
-    ChannelAdapter, ChannelDelivery, ChannelDeliveryFeishuCallback, ChannelDeliveryResource,
-    ChannelInboundMessage, ChannelOutboundDeliveryOptions, ChannelOutboundMessage,
-    ChannelOutboundTarget, ChannelOutboundTargetKind, ChannelPlatform, ChannelSession,
-    ChannelStreamingMode, FeishuChannelSendRequest,
+    ChannelAdapter, ChannelInboundMessage, ChannelOutboundMessage, ChannelStreamingMode,
+    process_channel_batch,
+};
+pub use types::{
+    ChannelDelivery, ChannelDeliveryFeishuCallback, ChannelDeliveryResource,
+    ChannelOutboundDeliveryOptions, ChannelOutboundTarget, ChannelOutboundTargetKind,
+    ChannelPlatform, ChannelSession, FeishuChannelSendRequest,
 };
 
 pub use runtime::serve::ChannelServeStopHandle;
-#[cfg(all(
-    test,
-    any(
-        feature = "channel-telegram",
-        feature = "channel-feishu",
-        feature = "channel-matrix",
-        feature = "channel-wecom",
-        feature = "channel-whatsapp"
-    )
+#[cfg(any(
+    feature = "channel-plugin-bridge",
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix",
+    feature = "channel-wecom",
+    feature = "channel-whatsapp"
+))]
+pub use runtime::serve::{
+    ChannelServeRuntimeSpec, ensure_channel_operation_runtime_slot_available_in_dir,
+    with_channel_serve_runtime, with_channel_serve_runtime_with_stop,
+};
+#[cfg(test)]
+#[cfg(any(
+    feature = "channel-plugin-bridge",
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix",
+    feature = "channel-wecom",
+    feature = "channel-whatsapp"
 ))]
 use runtime::serve::{
     with_channel_serve_runtime_in_dir, with_channel_serve_runtime_with_stop_in_dir,
@@ -154,15 +205,14 @@ use crate::conversation::ConversationIngressPrivateContext;
 #[cfg(test)]
 use commands::context::render_channel_route_notice;
 #[cfg(any(
+    feature = "channel-plugin-bridge",
     feature = "channel-telegram",
     feature = "channel-feishu",
     feature = "channel-matrix",
     feature = "channel-wecom",
     feature = "channel-whatsapp",
 ))]
-pub(crate) use dispatch::process_inbound_with_provider;
-#[cfg(all(test, feature = "config-toml"))]
-use dispatch::reload_channel_turn_config;
+pub use dispatch::process_inbound_with_provider;
 #[cfg(any(
     feature = "channel-telegram",
     feature = "channel-feishu",
@@ -173,6 +223,8 @@ use dispatch::reload_channel_turn_config;
 pub use dispatch::run_channel_serve_runtime_probe_for_test;
 #[cfg(feature = "channel-feishu")]
 pub use dispatch::run_feishu_channel_with_stop;
+#[cfg(feature = "channel-line")]
+pub use dispatch::run_line_channel_with_stop;
 #[cfg(feature = "channel-matrix")]
 pub use dispatch::run_matrix_channel_with_stop;
 #[cfg(feature = "channel-telegram")]
@@ -182,62 +234,43 @@ pub use dispatch::run_wecom_channel_with_stop;
 #[cfg(feature = "channel-whatsapp")]
 pub use dispatch::run_whatsapp_channel_with_stop;
 pub(crate) use dispatch::send_text_to_known_session;
-#[cfg(all(test, feature = "channel-matrix"))]
+#[cfg(test)]
+#[cfg(feature = "channel-matrix")]
 use dispatch::validate_matrix_security_config;
-#[cfg(all(test, feature = "channel-feishu"))]
+#[cfg(test)]
+#[cfg(feature = "channel-feishu")]
 use dispatch::{build_feishu_command_context, validate_feishu_security_config};
-#[cfg(all(test, feature = "channel-telegram"))]
+#[cfg(test)]
+#[cfg(feature = "channel-telegram")]
 use dispatch::{build_telegram_command_context, validate_telegram_security_config};
-#[cfg(all(
-    test,
-    any(
-        feature = "channel-telegram",
-        feature = "channel-feishu",
-        feature = "channel-matrix",
-        feature = "channel-wecom",
-        feature = "channel-whatsapp"
-    )
+#[cfg(test)]
+#[cfg(any(
+    feature = "channel-plugin-bridge",
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix",
+    feature = "channel-wecom",
+    feature = "channel-whatsapp"
 ))]
-use dispatch::{channel_message_ingress_context, process_inbound_with_runtime_and_feedback};
+use dispatch::{
+    channel_message_ingress_context, process_inbound_with_runtime_and_feedback,
+    reload_channel_turn_config,
+};
 pub use dispatch::{
     load_channel_operation_runtime_for_account_from_dir_for_test, run_background_channel_with_stop,
     run_dingtalk_send, run_discord_send, run_email_send, run_feishu_channel, run_feishu_send,
-    run_google_chat_send, run_imessage_send, run_irc_send, run_line_send, run_matrix_channel,
-    run_matrix_send, run_mattermost_send, run_nextcloud_talk_send, run_nostr_send, run_signal_send,
-    run_slack_send, run_synology_chat_send, run_teams_send, run_telegram_channel,
-    run_telegram_send, run_webhook_send, run_wecom_channel, run_wecom_send, run_whatsapp_channel,
-    run_whatsapp_send,
+    run_google_chat_send, run_imessage_send, run_irc_send, run_line_channel, run_line_send,
+    run_matrix_channel, run_matrix_send, run_mattermost_send, run_nextcloud_talk_send,
+    run_nostr_send, run_signal_send, run_slack_send, run_synology_chat_send, run_teams_send,
+    run_telegram_channel, run_telegram_send, run_webhook_channel, run_webhook_send,
+    run_wecom_channel, run_wecom_send, run_whatsapp_channel, run_whatsapp_send,
 };
-#[cfg(all(
-    test,
-    any(
-        feature = "channel-telegram",
-        feature = "channel-feishu",
-        feature = "channel-matrix",
-        feature = "channel-wecom",
-        feature = "channel-whatsapp"
-    )
-))]
-use runtime::serve::ChannelServeRuntimeSpec;
-#[cfg(all(
-    test,
-    any(
-        feature = "channel-telegram",
-        feature = "channel-feishu",
-        feature = "channel-matrix",
-        feature = "channel-wecom",
-        feature = "channel-whatsapp"
-    )
-))]
-use types::process_channel_batch;
-#[cfg(all(
-    test,
-    any(
-        feature = "channel-telegram",
-        feature = "channel-feishu",
-        feature = "channel-matrix",
-        feature = "channel-wecom"
-    )
+#[cfg(test)]
+#[cfg(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix",
+    feature = "channel-wecom"
 ))]
 use types::{KnownChannelSessionSendTarget, parse_known_channel_session_send_target};
 
@@ -254,7 +287,7 @@ mod tests {
 
     fn temp_runtime_dir(suffix: &str) -> PathBuf {
         let unique = format!(
-            "loongclaw-channel-mod-{suffix}-{}",
+            "loong-channel-mod-{suffix}-{}",
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .expect("clock")
@@ -290,7 +323,7 @@ mod tests {
     impl crate::conversation::ConversationRuntime for ChannelTraceRuntime {
         async fn build_messages(
             &self,
-            _config: &LoongClawConfig,
+            _config: &LoongConfig,
             _session_id: &str,
             include_system_prompt: bool,
             _tool_view: &crate::tools::ToolView,
@@ -317,7 +350,7 @@ mod tests {
 
         async fn request_completion(
             &self,
-            _config: &LoongClawConfig,
+            _config: &LoongConfig,
             _messages: &[Value],
             _binding: crate::conversation::ConversationRuntimeBinding<'_>,
         ) -> CliResult<String> {
@@ -326,7 +359,7 @@ mod tests {
 
         async fn request_turn(
             &self,
-            _config: &LoongClawConfig,
+            _config: &LoongConfig,
             _session_id: &str,
             _turn_id: &str,
             _messages: &[Value],
@@ -373,7 +406,7 @@ mod tests {
 
         async fn request_turn_streaming(
             &self,
-            config: &LoongClawConfig,
+            config: &LoongConfig,
             session_id: &str,
             turn_id: &str,
             messages: &[Value],
@@ -563,7 +596,7 @@ mod tests {
     ))]
     #[tokio::test]
     async fn process_inbound_with_runtime_and_feedback_appends_significant_trace() {
-        let mut config = LoongClawConfig::default();
+        let mut config = LoongConfig::default();
         config.provider.kind = crate::config::ProviderKind::Openai;
         config.telegram = serde_json::from_value(serde_json::json!({
             "default_account": "Work Bot",
@@ -631,7 +664,7 @@ mod tests {
     ))]
     #[tokio::test]
     async fn process_inbound_with_runtime_and_feedback_can_disable_trace_rendering() {
-        let mut config = LoongClawConfig::default();
+        let mut config = LoongConfig::default();
         config.provider.kind = crate::config::ProviderKind::Openai;
         config.telegram = serde_json::from_value(serde_json::json!({
             "default_account": "Work Bot",
@@ -720,7 +753,7 @@ mod tests {
     #[cfg(feature = "config-toml")]
     fn reload_channel_turn_config_refreshes_provider_state_without_mutating_channel_settings() {
         let path = std::env::temp_dir().join(format!(
-            "loongclaw-channel-provider-reload-{}.toml",
+            "loong-channel-provider-reload-{}.toml",
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .expect("clock")
@@ -728,7 +761,7 @@ mod tests {
         ));
         let path_string = path.display().to_string();
 
-        let mut in_memory = LoongClawConfig::default();
+        let mut in_memory = LoongConfig::default();
         in_memory.telegram.enabled = true;
         in_memory.telegram.allowed_chat_ids = vec![1001];
         let mut openai =
@@ -1097,7 +1130,7 @@ mod tests {
     #[cfg(feature = "channel-telegram")]
     #[test]
     fn telegram_command_context_preserves_route_metadata() {
-        let config: LoongClawConfig = serde_json::from_value(serde_json::json!({
+        let config: LoongConfig = serde_json::from_value(serde_json::json!({
             "telegram": {
                 "enabled": true,
                 "accounts": {
@@ -1115,10 +1148,10 @@ mod tests {
         .expect("deserialize telegram context config");
 
         let context =
-            build_telegram_command_context(PathBuf::from("/tmp/loongclaw.toml"), config, None)
+            build_telegram_command_context(PathBuf::from("/tmp/loong.toml"), config, None)
                 .expect("build telegram command context");
 
-        assert_eq!(context.resolved_path, PathBuf::from("/tmp/loongclaw.toml"));
+        assert_eq!(context.resolved_path, PathBuf::from("/tmp/loong.toml"));
         assert_eq!(context.resolved.configured_account_id, "alerts");
         assert!(context.route.selected_by_default());
         assert!(context.route.uses_implicit_fallback_default());
@@ -1127,7 +1160,7 @@ mod tests {
     #[cfg(feature = "channel-feishu")]
     #[test]
     fn feishu_command_context_rejects_disabled_resolved_account() {
-        let config: LoongClawConfig = serde_json::from_value(serde_json::json!({
+        let config: LoongConfig = serde_json::from_value(serde_json::json!({
             "feishu": {
                 "enabled": true,
                 "accounts": {
@@ -1141,12 +1174,9 @@ mod tests {
         }))
         .expect("deserialize feishu context config");
 
-        let error = build_feishu_command_context(
-            PathBuf::from("/tmp/loongclaw.toml"),
-            config,
-            Some("Primary"),
-        )
-        .expect_err("disabled feishu account should fail");
+        let error =
+            build_feishu_command_context(PathBuf::from("/tmp/loong.toml"), config, Some("Primary"))
+                .expect_err("disabled feishu account should fail");
 
         assert!(error.contains("disabled"));
         assert!(error.contains("primary"));
@@ -1155,7 +1185,7 @@ mod tests {
     #[cfg(feature = "channel-feishu")]
     #[test]
     fn feishu_command_context_accepts_unique_runtime_account_alias() {
-        let config: LoongClawConfig = serde_json::from_value(serde_json::json!({
+        let config: LoongConfig = serde_json::from_value(serde_json::json!({
             "feishu": {
                 "enabled": true,
                 "accounts": {
@@ -1170,7 +1200,7 @@ mod tests {
         .expect("deserialize feishu context config");
 
         let context = build_feishu_command_context(
-            PathBuf::from("/tmp/loongclaw.toml"),
+            PathBuf::from("/tmp/loong.toml"),
             config,
             Some("feishu_shared"),
         )
@@ -1188,7 +1218,7 @@ mod tests {
     #[cfg(feature = "channel-feishu")]
     #[test]
     fn feishu_command_context_reports_ambiguous_runtime_account_alias() {
-        let config: LoongClawConfig = serde_json::from_value(serde_json::json!({
+        let config: LoongConfig = serde_json::from_value(serde_json::json!({
             "feishu": {
                 "enabled": true,
                 "accounts": {
@@ -1208,7 +1238,7 @@ mod tests {
         .expect("deserialize feishu context config");
 
         let error = build_feishu_command_context(
-            PathBuf::from("/tmp/loongclaw.toml"),
+            PathBuf::from("/tmp/loong.toml"),
             config,
             Some("feishu_shared"),
         )
@@ -1515,7 +1545,7 @@ mod tests {
     #[cfg(feature = "channel-telegram")]
     #[test]
     fn telegram_security_validation_requires_allowlist() {
-        let config = LoongClawConfig::default();
+        let config = LoongConfig::default();
         let resolved = config
             .telegram
             .resolve_account(None)
@@ -1528,7 +1558,7 @@ mod tests {
     #[cfg(feature = "channel-telegram")]
     #[test]
     fn telegram_security_validation_accepts_configured_allowlist() {
-        let mut config = LoongClawConfig::default();
+        let mut config = LoongConfig::default();
         config.telegram.allowed_chat_ids = vec![123_i64];
         let resolved = config
             .telegram
@@ -1540,7 +1570,7 @@ mod tests {
     #[cfg(feature = "channel-feishu")]
     #[test]
     fn feishu_security_validation_requires_secrets_and_allowlist() {
-        let config = LoongClawConfig::default();
+        let config = LoongConfig::default();
         let resolved = config
             .feishu
             .resolve_account(None)
@@ -1553,13 +1583,12 @@ mod tests {
     #[cfg(feature = "channel-feishu")]
     #[test]
     fn feishu_security_validation_accepts_complete_configuration() {
-        let mut config = LoongClawConfig::default();
+        let mut config = LoongConfig::default();
         config.feishu.allowed_chat_ids = vec!["oc_123".to_owned()];
-        config.feishu.verification_token = Some(loongclaw_contracts::SecretRef::Inline(
-            "token-123".to_owned(),
-        ));
+        config.feishu.verification_token =
+            Some(loong_contracts::SecretRef::Inline("token-123".to_owned()));
         config.feishu.verification_token_env = None;
-        config.feishu.encrypt_key = Some(loongclaw_contracts::SecretRef::Inline(
+        config.feishu.encrypt_key = Some(loong_contracts::SecretRef::Inline(
             "encrypt-key-123".to_owned(),
         ));
         config.feishu.encrypt_key_env = None;
@@ -1574,7 +1603,7 @@ mod tests {
     #[cfg(feature = "channel-feishu")]
     #[test]
     fn feishu_security_validation_accepts_websocket_mode_without_webhook_secrets() {
-        let mut config = LoongClawConfig::default();
+        let mut config = LoongConfig::default();
         config.feishu.allowed_chat_ids = vec!["oc_123".to_owned()];
         config.feishu.mode = Some(crate::config::FeishuChannelServeMode::Websocket);
 
@@ -1605,7 +1634,7 @@ mod tests {
     #[cfg(feature = "channel-matrix")]
     #[test]
     fn parse_known_channel_session_send_target_decodes_matrix_route_segments() {
-        let config: LoongClawConfig = serde_json::from_value(serde_json::json!({
+        let config: LoongConfig = serde_json::from_value(serde_json::json!({
             "matrix": {
                 "enabled": true,
                 "accounts": {
@@ -1646,7 +1675,7 @@ mod tests {
     #[cfg(feature = "channel-matrix")]
     #[test]
     fn parse_known_channel_session_send_target_accepts_legacy_matrix_account_aliases() {
-        let config: LoongClawConfig = serde_json::from_value(serde_json::json!({
+        let config: LoongConfig = serde_json::from_value(serde_json::json!({
             "matrix": {
                 "enabled": true,
                 "accounts": {
@@ -1679,7 +1708,7 @@ mod tests {
     #[cfg(feature = "channel-telegram")]
     #[test]
     fn parse_known_channel_session_send_target_matches_normalized_runtime_account_identity() {
-        let config: LoongClawConfig = serde_json::from_value(serde_json::json!({
+        let config: LoongConfig = serde_json::from_value(serde_json::json!({
             "telegram": {
                 "enabled": true,
                 "accounts": {
@@ -1709,7 +1738,7 @@ mod tests {
     #[cfg(feature = "channel-telegram")]
     #[test]
     fn parse_known_channel_session_send_target_treats_single_segment_telegram_scope_as_chat_id() {
-        let config: LoongClawConfig = serde_json::from_value(serde_json::json!({
+        let config: LoongConfig = serde_json::from_value(serde_json::json!({
             "telegram": {
                 "enabled": true,
                 "bot_token": "123456:telegram-test-token",
@@ -1734,7 +1763,7 @@ mod tests {
     #[cfg(feature = "channel-telegram")]
     #[test]
     fn parse_known_channel_session_send_target_honors_configured_account_marker() {
-        let config: LoongClawConfig = serde_json::from_value(serde_json::json!({
+        let config: LoongConfig = serde_json::from_value(serde_json::json!({
             "telegram": {
                 "enabled": true,
                 "default_account": "work",
@@ -1766,10 +1795,261 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "channel-telegram")]
+    #[test]
+    fn resolve_known_channel_session_target_describes_telegram_thread_shape() {
+        let config: LoongConfig = serde_json::from_value(serde_json::json!({
+            "telegram": {
+                "enabled": true,
+                "accounts": {
+                    "ops": {
+                        "account_id": "Ops-Bot",
+                        "bot_token": "123456:telegram-test-token",
+                        "allowed_chat_ids": [123]
+                    }
+                }
+            }
+        }))
+        .expect("deserialize telegram config");
+
+        let resolved = resolve_known_channel_session_target(&config, "telegram:Ops-Bot:123:42")
+            .expect("resolve telegram known session");
+
+        assert_eq!(resolved.channel_id, "telegram");
+        assert_eq!(resolved.account_id.as_deref(), Some("ops-bot"));
+        assert_eq!(resolved.session_shape, "telegram_thread");
+        assert_eq!(
+            resolved.target_kind,
+            ChannelOutboundTargetKind::Conversation
+        );
+        assert_eq!(resolved.target_id, "123:42");
+        assert_eq!(resolved.conversation_id.as_deref(), Some("123"));
+        assert_eq!(resolved.thread_id.as_deref(), Some("42"));
+        assert!(resolved.participant_id.is_none());
+    }
+
+    #[cfg(feature = "channel-feishu")]
+    #[test]
+    fn parse_known_channel_session_send_target_keeps_feishu_participant_and_thread_as_context() {
+        let config: LoongConfig = serde_json::from_value(serde_json::json!({
+            "feishu": {
+                "enabled": true,
+                "accounts": {
+                    "work": {
+                        "account_id": "lark_cli_a1b2c3",
+                        "app_id": "cli_app",
+                        "app_secret": "cli_secret",
+                        "allowed_chat_ids": ["oc_123"]
+                    }
+                }
+            }
+        }))
+        .expect("deserialize feishu config");
+
+        let session_id =
+            ChannelSession::with_account(ChannelPlatform::Feishu, "lark_cli_a1b2c3", "oc_123")
+                .with_participant_id("ou_sender_1")
+                .with_thread_id("om_root_1")
+                .session_key();
+
+        let parsed = parse_known_channel_session_send_target(&config, session_id.as_str())
+            .expect("parse feishu session send target");
+
+        assert_eq!(
+            parsed,
+            KnownChannelSessionSendTarget::Feishu {
+                account_id: Some("lark_cli_a1b2c3".to_owned()),
+                conversation_id: "oc_123".to_owned(),
+                reply_message_id: None,
+            }
+        );
+    }
+
+    #[cfg(feature = "channel-feishu")]
+    #[test]
+    fn parse_known_channel_session_send_target_keeps_feishu_thread_as_context() {
+        let config: LoongConfig = serde_json::from_value(serde_json::json!({
+            "feishu": {
+                "enabled": true,
+                "accounts": {
+                    "work": {
+                        "account_id": "lark_cli_a1b2c3",
+                        "app_id": "cli_app",
+                        "app_secret": "cli_secret",
+                        "allowed_chat_ids": ["oc_123"]
+                    }
+                }
+            }
+        }))
+        .expect("deserialize feishu config");
+
+        let session_id = ChannelSession::with_account_and_thread(
+            ChannelPlatform::Feishu,
+            "lark_cli_a1b2c3",
+            "oc_123",
+            "om_root_1",
+        )
+        .session_key();
+
+        let parsed = parse_known_channel_session_send_target(&config, session_id.as_str())
+            .expect("parse feishu session send target");
+
+        assert_eq!(
+            parsed,
+            KnownChannelSessionSendTarget::Feishu {
+                account_id: Some("lark_cli_a1b2c3".to_owned()),
+                conversation_id: "oc_123".to_owned(),
+                reply_message_id: None,
+            }
+        );
+    }
+
+    #[cfg(feature = "channel-whatsapp")]
+    #[test]
+    fn parse_known_channel_session_send_target_decodes_whatsapp_route_segments() {
+        let config: LoongConfig = serde_json::from_value(serde_json::json!({
+            "whatsapp": {
+                "enabled": true,
+                "accounts": {
+                    "business": {
+                        "account_id": "wa-business",
+                        "access_token": "whatsapp-access-token",
+                        "phone_number_id": "123456789",
+                        "verify_token": "whatsapp-verify-token",
+                        "app_secret": "whatsapp-app-secret"
+                    }
+                }
+            }
+        }))
+        .expect("deserialize whatsapp config");
+        let resolved = config
+            .whatsapp
+            .resolve_account(None)
+            .expect("resolve default whatsapp account");
+        let account_id = resolved.account.id;
+        let session_id = ChannelSession::with_account(
+            ChannelPlatform::WhatsApp,
+            account_id.as_str(),
+            "+15551234567",
+        )
+        .session_key();
+
+        let parsed = parse_known_channel_session_send_target(&config, session_id.as_str())
+            .expect("parse whatsapp session send target");
+
+        assert_eq!(
+            parsed,
+            KnownChannelSessionSendTarget::WhatsApp {
+                account_id: Some(account_id),
+                address: "+15551234567".to_owned(),
+            }
+        );
+    }
+
+    #[cfg(feature = "channel-feishu")]
+    #[test]
+    fn resolve_known_channel_session_target_describes_feishu_participant_scope() {
+        let config: LoongConfig = serde_json::from_value(serde_json::json!({
+            "feishu": {
+                "enabled": true,
+                "app_id": "cli_a1b2c3",
+                "app_secret": "secret",
+                "allowed_chat_ids": ["oc_123"]
+            }
+        }))
+        .expect("deserialize feishu config");
+
+        let resolved = resolve_known_channel_session_target(
+            &config,
+            "feishu:feishu_cli_a1b2c3:oc_123:ou_sender_1:om_thread_1",
+        )
+        .expect("resolve feishu known session");
+
+        assert_eq!(resolved.channel_id, "feishu");
+        assert_eq!(resolved.session_shape, "feishu_chat");
+        assert_eq!(resolved.target_kind, ChannelOutboundTargetKind::ReceiveId);
+        assert_eq!(resolved.target_id, "oc_123");
+        assert_eq!(resolved.account_id.as_deref(), Some("feishu_cli_a1b2c3"));
+        assert_eq!(resolved.conversation_id.as_deref(), Some("oc_123"));
+        assert_eq!(resolved.participant_id.as_deref(), Some("ou_sender_1"));
+        assert_eq!(resolved.thread_id.as_deref(), Some("om_thread_1"));
+        assert!(resolved.reply_message_id.is_none());
+    }
+
+    #[cfg(feature = "channel-feishu")]
+    #[test]
+    fn resolve_known_channel_session_target_describes_feishu_thread_scope_without_reply_target() {
+        let config: LoongConfig = serde_json::from_value(serde_json::json!({
+            "feishu": {
+                "enabled": true,
+                "app_id": "cli_a1b2c3",
+                "app_secret": "secret",
+                "allowed_chat_ids": ["oc_123"]
+            }
+        }))
+        .expect("deserialize feishu config");
+
+        let resolved = resolve_known_channel_session_target(
+            &config,
+            "feishu:feishu_cli_a1b2c3:oc_123:om_thread_1",
+        )
+        .expect("resolve feishu known session");
+
+        assert_eq!(resolved.channel_id, "feishu");
+        assert_eq!(resolved.session_shape, "feishu_chat");
+        assert_eq!(resolved.target_kind, ChannelOutboundTargetKind::ReceiveId);
+        assert_eq!(resolved.target_id, "oc_123");
+        assert_eq!(resolved.account_id.as_deref(), Some("feishu_cli_a1b2c3"));
+        assert_eq!(resolved.conversation_id.as_deref(), Some("oc_123"));
+        assert!(resolved.participant_id.is_none());
+        assert_eq!(resolved.thread_id.as_deref(), Some("om_thread_1"));
+        assert!(resolved.reply_message_id.is_none());
+    }
+
+    #[cfg(feature = "channel-line")]
+    #[test]
+    fn parse_known_channel_session_send_target_decodes_line_route_segments() {
+        let config: LoongConfig = serde_json::from_value(serde_json::json!({
+            "line": {
+                "enabled": true,
+                "accounts": {
+                    "marketing": {
+                        "account_id": "line-marketing",
+                        "channel_access_token": "line-access-token",
+                        "channel_secret": "line-channel-secret"
+                    }
+                }
+            }
+        }))
+        .expect("deserialize line config");
+        let resolved = config
+            .line
+            .resolve_account(None)
+            .expect("resolve default line account");
+        let account_id = resolved.account.id;
+        let session_id = ChannelSession::with_account(
+            ChannelPlatform::Line,
+            account_id.as_str(),
+            "U0123456789abcdef",
+        )
+        .session_key();
+
+        let parsed = parse_known_channel_session_send_target(&config, session_id.as_str())
+            .expect("parse line session send target");
+
+        assert_eq!(
+            parsed,
+            KnownChannelSessionSendTarget::Line {
+                account_id: Some(account_id),
+                address: "U0123456789abcdef".to_owned(),
+            }
+        );
+    }
+
     #[cfg(feature = "channel-matrix")]
     #[test]
     fn matrix_security_validation_requires_room_allowlist_and_transport() {
-        let config = LoongClawConfig::default();
+        let config = LoongConfig::default();
         let resolved = config
             .matrix
             .resolve_account(None)
@@ -1778,7 +2058,7 @@ mod tests {
             validate_matrix_security_config(&resolved).expect_err("empty config must be rejected");
         assert!(error.contains("allowed_room_ids"));
 
-        let mut config = LoongClawConfig::default();
+        let mut config = LoongConfig::default();
         config.matrix.allowed_room_ids = vec!["!ops:example.org".to_owned()];
         let resolved = config
             .matrix
@@ -1792,10 +2072,10 @@ mod tests {
     #[cfg(feature = "channel-matrix")]
     #[test]
     fn matrix_security_validation_rejects_invalid_base_url() {
-        let mut config = LoongClawConfig::default();
+        let mut config = LoongConfig::default();
         config.matrix.allowed_room_ids = vec!["!ops:example.org".to_owned()];
         config.matrix.user_id = Some("@ops-bot:example.org".to_owned());
-        config.matrix.access_token = Some(loongclaw_contracts::SecretRef::Inline(
+        config.matrix.access_token = Some(loong_contracts::SecretRef::Inline(
             "matrix-token".to_owned(),
         ));
         config.matrix.base_url = Some("not a url".to_owned());
@@ -1812,9 +2092,9 @@ mod tests {
     #[cfg(feature = "channel-matrix")]
     #[test]
     fn matrix_security_validation_requires_user_id_when_ignoring_self_messages() {
-        let mut config = LoongClawConfig::default();
+        let mut config = LoongConfig::default();
         config.matrix.allowed_room_ids = vec!["!ops:example.org".to_owned()];
-        config.matrix.access_token = Some(loongclaw_contracts::SecretRef::Inline(
+        config.matrix.access_token = Some(loong_contracts::SecretRef::Inline(
             "matrix-token".to_owned(),
         ));
         config.matrix.base_url = Some("https://matrix.example.org".to_owned());

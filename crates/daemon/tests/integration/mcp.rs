@@ -2,11 +2,19 @@ use super::*;
 
 #[test]
 fn list_mcp_servers_cli_parses_json_flag() {
-    let cli = try_parse_cli(["loongclaw", "list-mcp-servers", "--json"])
-        .expect("`list-mcp-servers --json` should parse");
+    let cli = try_parse_cli(["loong", "runtime", "mcp", "list", "--json"])
+        .expect("`runtime mcp list --json` should parse");
 
     match cli.command {
-        Some(Commands::ListMcpServers { config, json }) => {
+        Some(Commands::Runtime {
+            command:
+                loong_daemon::runtime_cli::RuntimeCommands::Mcp {
+                    command:
+                        loong_daemon::runtime_cli::RuntimeMcpCommands::List(
+                            loong_daemon::runtime_cli::RuntimeReadArgs { config, json },
+                        ),
+                },
+        }) => {
             assert_eq!(config, None);
             assert!(json);
         }
@@ -16,11 +24,25 @@ fn list_mcp_servers_cli_parses_json_flag() {
 
 #[test]
 fn show_mcp_server_cli_parses_name_and_json_flag() {
-    let cli = try_parse_cli(["loongclaw", "show-mcp-server", "--name", "docs", "--json"])
-        .expect("`show-mcp-server --name docs --json` should parse");
+    let cli = try_parse_cli([
+        "loong", "runtime", "mcp", "show", "--name", "docs", "--json",
+    ])
+    .expect("`runtime mcp show --name docs --json` should parse");
 
     match cli.command {
-        Some(Commands::ShowMcpServer { config, name, json }) => {
+        Some(Commands::Runtime {
+            command:
+                loong_daemon::runtime_cli::RuntimeCommands::Mcp {
+                    command:
+                        loong_daemon::runtime_cli::RuntimeMcpCommands::Show(
+                            loong_daemon::runtime_cli::RuntimeShowMcpServerArgs {
+                                config,
+                                name,
+                                json,
+                            },
+                        ),
+                },
+        }) => {
             assert_eq!(config, None);
             assert_eq!(name, "docs");
             assert!(json);
@@ -66,9 +88,9 @@ fn build_mcp_servers_cli_json_payload_includes_server_status_and_missing_selecti
         missing_selected_servers: vec!["missing".to_owned()],
     };
 
-    let payload = build_mcp_servers_cli_json_payload("/tmp/loongclaw.toml", &snapshot);
+    let payload = build_mcp_servers_cli_json_payload("/tmp/loong.toml", &snapshot);
 
-    assert_eq!(payload["config"], "/tmp/loongclaw.toml");
+    assert_eq!(payload["config"], "/tmp/loong.toml");
     assert_eq!(payload["server_count"], 1);
     assert_eq!(payload["missing_selected_servers"][0], "missing");
     assert_eq!(payload["servers"][0]["name"], "docs");
@@ -113,9 +135,9 @@ fn build_mcp_server_detail_cli_json_payload_wraps_single_server() {
         tool_timeout_ms: Some(120_000),
     };
 
-    let payload = build_mcp_server_detail_cli_json_payload("/tmp/loongclaw.toml", &server);
+    let payload = build_mcp_server_detail_cli_json_payload("/tmp/loong.toml", &server);
 
-    assert_eq!(payload["config"], "/tmp/loongclaw.toml");
+    assert_eq!(payload["config"], "/tmp/loong.toml");
     assert_eq!(payload["server"]["name"], "docs");
     assert_eq!(payload["server"]["status"]["kind"], "pending");
     assert_eq!(payload["server"]["transport"]["transport"], "stdio");

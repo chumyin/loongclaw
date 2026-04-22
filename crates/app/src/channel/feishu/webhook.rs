@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeSet, VecDeque},
+    collections::VecDeque,
     convert::Infallible,
     path::PathBuf,
     pin::Pin,
@@ -18,16 +18,19 @@ use http_body::{Body as HttpBody, Frame, SizeHint};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, mpsc, oneshot};
 
 use crate::CliResult;
 use crate::KernelContext;
+use crate::channel::dispatch::process_inbound_with_provider_and_error_mode_and_retry_progress;
 use crate::channel::feishu::api::{FeishuClient, resources::cards};
+use crate::channel::traits::messaging::{MessageContent, MessageEditApi, MessageSendApi};
 use crate::channel::{
     ChannelInboundMessage, ChannelOutboundTarget, ChannelTurnFeedbackPolicy,
-    process_inbound_with_provider, runtime::state::ChannelOperationRuntimeTracker,
+    access_policy::ChannelInboundAccessPolicy, process_inbound_with_provider,
+    runtime::state::ChannelOperationRuntimeTracker,
 };
-use crate::config::{LoongClawConfig, ResolvedFeishuChannelConfig};
+use crate::config::{LoongConfig, ResolvedFeishuChannelConfig};
 use crate::crypto::timing_safe_eq;
 
 use super::adapter::{FeishuAdapter, outbound_reply_message_from_text};
@@ -35,17 +38,18 @@ use super::payload::{FeishuCardCallbackEvent, FeishuWebhookAction};
 use super::send::send_channel_message_via_message_send_api;
 
 const FEISHU_CALLBACK_RESPONSE_MARKER: &str = "[feishu_callback_response]";
+const PROVIDER_ERROR_REPLY_PREFIX: &str = "[provider_error] ";
 
 #[derive(Clone)]
 pub(super) struct FeishuWebhookState {
-    config: LoongClawConfig,
+    config: LoongConfig,
     resolved_path: Option<PathBuf>,
     adapter: Arc<Mutex<FeishuAdapter>>,
     configured_account_id: String,
     account_id: String,
     verification_token: Option<String>,
     encrypt_key: Option<String>,
-    allowed_chat_ids: BTreeSet<String>,
+    access_policy: ChannelInboundAccessPolicy<String>,
     ack_reactions: bool,
     ignore_bot_messages: bool,
     seen_events: Arc<Mutex<RecentIdCache>>,
@@ -57,7 +61,7 @@ pub(super) struct FeishuWebhookState {
 impl FeishuWebhookState {
     #[cfg(test)]
     pub(super) fn new(
-        config: LoongClawConfig,
+        config: LoongConfig,
         resolved: &ResolvedFeishuChannelConfig,
         adapter: FeishuAdapter,
         kernel_ctx: KernelContext,
@@ -67,7 +71,7 @@ impl FeishuWebhookState {
     }
 
     pub(super) fn new_with_resolved_path(
-        config: LoongClawConfig,
+        config: LoongConfig,
         resolved_path: PathBuf,
         resolved: &ResolvedFeishuChannelConfig,
         adapter: FeishuAdapter,
@@ -85,24 +89,25 @@ impl FeishuWebhookState {
     }
 
     fn new_with_optional_resolved_path(
-        config: LoongClawConfig,
+        config: LoongConfig,
         resolved_path: Option<PathBuf>,
         resolved: &ResolvedFeishuChannelConfig,
         adapter: FeishuAdapter,
         kernel_ctx: KernelContext,
         runtime: Arc<ChannelOperationRuntimeTracker>,
     ) -> Self {
+        let access_policy = ChannelInboundAccessPolicy::from_string_lists(
+            resolved.allowed_chat_ids.as_slice(),
+            resolved.allowed_sender_ids.as_slice(),
+            true,
+        );
+
         Self {
             configured_account_id: resolved.configured_account_id.clone(),
             account_id: resolved.account.id.clone(),
             verification_token: resolved.verification_token(),
             encrypt_key: resolved.encrypt_key(),
-            allowed_chat_ids: resolved
-                .allowed_chat_ids
-                .iter()
-                .map(|value| value.trim().to_owned())
-                .filter(|value| !value.is_empty())
-                .collect(),
+            access_policy,
             ack_reactions: resolved.ack_reactions,
             ignore_bot_messages: resolved.ignore_bot_messages,
             config,
@@ -119,10 +124,10 @@ impl FeishuWebhookState {
         &self,
         payload: &Value,
     ) -> CliResult<FeishuWebhookAction> {
-        super::payload::parse_feishu_inbound_payload(
+        super::payload::parse_feishu_inbound_payload_with_access_policy(
             payload,
             super::payload::FeishuTransportAuth::websocket(),
-            &self.allowed_chat_ids,
+            &self.access_policy,
             self.ignore_bot_messages,
             self.configured_account_id.as_str(),
             self.account_id.as_str(),
@@ -134,6 +139,14 @@ impl FeishuWebhookState {
         updates: Vec<crate::tools::DeferredFeishuCardUpdate>,
     ) {
         dispatch_deferred_feishu_card_updates(self.config.clone(), updates);
+    }
+
+    pub(super) fn configured_account_id(&self) -> &str {
+        self.configured_account_id.as_str()
+    }
+
+    pub(super) fn account_id(&self) -> &str {
+        self.account_id.as_str()
     }
 }
 
@@ -208,8 +221,30 @@ struct FeishuWebhookSuccessResponse {
 
 #[derive(Debug)]
 struct FeishuWebhookPostResponseDispatch {
-    config: LoongClawConfig,
+    config: LoongConfig,
     deferred_updates: Vec<crate::tools::DeferredFeishuCardUpdate>,
+}
+
+struct FeishuRetryStatusHandle {
+    tx: mpsc::UnboundedSender<FeishuRetryStatusCommand>,
+}
+
+enum FeishuRetryStatusCommand {
+    Retry(crate::provider::ProviderRetryProgress),
+    FinalSuccess {
+        ack: oneshot::Sender<()>,
+    },
+    FinalFailure {
+        message: String,
+        ack: oneshot::Sender<bool>,
+    },
+}
+
+#[derive(Default)]
+struct FeishuRetryStatusState {
+    message_id: Option<String>,
+    latest_attempt: Option<usize>,
+    finalized: bool,
 }
 
 struct FeishuPostResponseJsonBody {
@@ -246,7 +281,7 @@ impl FeishuCallbackResponse {
 }
 
 impl FeishuWebhookSuccessResponse {
-    fn from_parsed_response(response: FeishuParsedActionResponse, config: LoongClawConfig) -> Self {
+    fn from_parsed_response(response: FeishuParsedActionResponse, config: LoongConfig) -> Self {
         Self {
             body: response.body,
             post_response_dispatch: (!response.deferred_updates.is_empty()).then_some(
@@ -281,6 +316,127 @@ impl FeishuParsedActionResponse {
             websocket_body: Some(body.clone()),
             body,
             deferred_updates,
+        }
+    }
+}
+
+impl FeishuRetryStatusHandle {
+    fn new(adapter: Arc<Mutex<FeishuAdapter>>, reply_target: ChannelOutboundTarget) -> Self {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            let mut state = FeishuRetryStatusState::default();
+            while let Some(command) = rx.recv().await {
+                match command {
+                    FeishuRetryStatusCommand::Retry(progress) => {
+                        if state.finalized || state.latest_attempt == Some(progress.next_attempt) {
+                            continue;
+                        }
+                        if upsert_feishu_retry_status_message(
+                            &adapter,
+                            &reply_target,
+                            &mut state,
+                            render_feishu_retry_progress_message(&progress),
+                        )
+                        .await
+                        {
+                            state.latest_attempt = Some(progress.next_attempt);
+                        }
+                    }
+                    FeishuRetryStatusCommand::FinalSuccess { ack } => {
+                        state.finalized = true;
+                        if state.message_id.is_some() {
+                            upsert_feishu_retry_status_message(
+                                &adapter,
+                                &reply_target,
+                                &mut state,
+                                "Recovered after retrying. Final answer below.".to_owned(),
+                            )
+                            .await;
+                            let _ = ack.send(());
+                        } else {
+                            let _ = ack.send(());
+                        }
+                    }
+                    FeishuRetryStatusCommand::FinalFailure { message, ack } => {
+                        state.finalized = true;
+                        let handled = if state.message_id.is_some() {
+                            upsert_feishu_retry_status_message(
+                                &adapter,
+                                &reply_target,
+                                &mut state,
+                                message,
+                            )
+                            .await
+                        } else {
+                            false
+                        };
+                        let _ = ack.send(handled);
+                    }
+                }
+            }
+        });
+        Self { tx }
+    }
+
+    fn callback(&self) -> crate::provider::ProviderRetryProgressCallback {
+        let tx = self.tx.clone();
+        Some(Arc::new(move |progress| {
+            if tx.send(FeishuRetryStatusCommand::Retry(progress)).is_err() {
+                tracing::debug!(
+                    target: "loong.channel.feishu",
+                    "feishu retry status worker already stopped before retry progress could be delivered"
+                );
+            }
+        }))
+    }
+
+    async fn finalize_success(&self) {
+        self.send_with_ack(
+            |ack| FeishuRetryStatusCommand::FinalSuccess { ack },
+            (),
+            "final success",
+        )
+        .await;
+    }
+
+    async fn finalize_failure(&self, message: String) -> bool {
+        self.send_with_ack(
+            |ack| FeishuRetryStatusCommand::FinalFailure { message, ack },
+            false,
+            "final failure",
+        )
+        .await
+    }
+
+    async fn send_with_ack<T>(
+        &self,
+        command: impl FnOnce(oneshot::Sender<T>) -> FeishuRetryStatusCommand,
+        fallback: T,
+        label: &'static str,
+    ) -> T
+    where
+        T: Send + 'static,
+    {
+        let (ack_tx, ack_rx) = oneshot::channel();
+        if self.tx.send(command(ack_tx)).is_err() {
+            tracing::debug!(
+                target: "loong.channel.feishu",
+                phase = label,
+                "feishu retry status worker already stopped before finalization command could be delivered"
+            );
+            return fallback;
+        }
+
+        match ack_rx.await {
+            Ok(value) => value,
+            Err(_error) => {
+                tracing::debug!(
+                    target: "loong.channel.feishu",
+                    phase = label,
+                    "feishu retry status worker stopped before sending finalization acknowledgement"
+                );
+                fallback
+            }
         }
     }
 }
@@ -412,6 +568,15 @@ pub(super) async fn feishu_webhook_handler(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
+    tracing::debug!(
+        target: "loong.channel.feishu",
+        transport = "webhook",
+        configured_account_id = %state.configured_account_id,
+        content_length = body.len(),
+        has_signature = headers.contains_key("X-Lark-Signature"),
+        "received feishu webhook request"
+    );
+
     let body_text = match std::str::from_utf8(&body) {
         Ok(value) => value,
         Err(error) => {
@@ -460,11 +625,11 @@ async fn handle_feishu_webhook_payload(
 ) -> Result<FeishuWebhookSuccessResponse, (StatusCode, String)> {
     verify_feishu_signature(headers, raw_body, &payload, state.encrypt_key.as_deref())?;
 
-    let parsed = super::payload::parse_feishu_webhook_payload(
+    let parsed = super::payload::parse_feishu_webhook_payload_with_access_policy(
         &payload,
         state.verification_token.as_deref(),
         state.encrypt_key.as_deref(),
-        &state.allowed_chat_ids,
+        &state.access_policy,
         state.ignore_bot_messages,
         state.configured_account_id.as_str(),
         state.account_id.as_str(),
@@ -483,19 +648,46 @@ pub(super) async fn handle_feishu_parsed_action(
     parsed: FeishuWebhookAction,
 ) -> Result<FeishuParsedActionResponse, (StatusCode, String)> {
     match parsed {
-        FeishuWebhookAction::UrlVerification { challenge } => Ok(
-            FeishuParsedActionResponse::immediate(json!({ "challenge": challenge })),
-        ),
+        FeishuWebhookAction::UrlVerification { challenge } => {
+            tracing::debug!(
+                target: "loong.channel.feishu",
+                transport = "webhook",
+                configured_account_id = %state.configured_account_id,
+                "accepted feishu url verification request"
+            );
+            Ok(FeishuParsedActionResponse::immediate(
+                json!({ "challenge": challenge }),
+            ))
+        }
         FeishuWebhookAction::Ignore => Ok(FeishuParsedActionResponse::immediate(
             json!({"code": 0, "msg": "ignored"}),
         )),
         FeishuWebhookAction::CardCallback(event) => {
+            tracing::info!(
+                target: "loong.channel.feishu",
+                transport = "webhook",
+                action = "card_callback",
+                configured_account_id = %state.configured_account_id,
+                event_id = %event.event_id,
+                conversation_id = %event.session.conversation_id,
+                has_open_message_id = event.context.open_message_id.is_some(),
+                has_open_chat_id = event.context.open_chat_id.is_some(),
+                has_principal = event.principal.is_some(),
+                "accepted feishu card callback event"
+            );
             {
                 let mut dedupe = state.seen_events.lock().await;
-                if !matches!(
-                    dedupe.begin_processing(&event.event_id),
-                    RecentIdReservation::Accepted
-                ) {
+                let reservation = dedupe.begin_processing(event.delivery_dedupe_key());
+                if !matches!(reservation, RecentIdReservation::Accepted) {
+                    tracing::debug!(
+                        target: "loong.channel.feishu",
+                        transport = "webhook",
+                        action = "card_callback",
+                        configured_account_id = %state.configured_account_id,
+                        event_id = %event.event_id,
+                        reservation = ?reservation,
+                        "deduplicated feishu card callback event"
+                    );
                     return Ok(FeishuParsedActionResponse::immediate(
                         FeishuCallbackResponse::Noop.as_json(),
                     ));
@@ -513,27 +705,49 @@ pub(super) async fn handle_feishu_parsed_action(
             Ok(response)
         }
         FeishuWebhookAction::Inbound(event) => {
+            tracing::info!(
+                target: "loong.channel.feishu",
+                transport = "webhook",
+                action = "inbound",
+                configured_account_id = %state.configured_account_id,
+                event_id = %event.event_id,
+                message_id = %event.message_id,
+                conversation_id = %event.session.conversation_id,
+                has_thread = event.session.thread_id.is_some(),
+                has_principal = event.principal.is_some(),
+                resource_count = event.resources.len(),
+                "accepted feishu inbound event"
+            );
             {
                 let mut dedupe = state.seen_events.lock().await;
-                if !matches!(
-                    dedupe.begin_processing(&event.event_id),
-                    RecentIdReservation::Accepted
-                ) {
+                let reservation = dedupe.begin_processing(event.delivery_dedupe_key());
+                if !matches!(reservation, RecentIdReservation::Accepted) {
+                    tracing::debug!(
+                        target: "loong.channel.feishu",
+                        transport = "webhook",
+                        action = "inbound",
+                        configured_account_id = %state.configured_account_id,
+                        event_id = %event.event_id,
+                        message_id = %event.message_id,
+                        dedupe_key = %event.delivery_dedupe_key(),
+                        reservation = ?reservation,
+                        "deduplicated feishu inbound event"
+                    );
                     return Ok(FeishuParsedActionResponse::immediate(
                         json!({"code": 0, "msg": "duplicate_event"}),
                     ));
                 }
             }
 
-            let event_id = event.event_id.clone();
+            let delivery_dedupe_key = event.delivery_dedupe_key().to_owned();
             let result = handle_feishu_inbound_event(state, event).await;
 
             {
                 let mut dedupe = state.seen_events.lock().await;
                 if result.is_ok() {
-                    dedupe.mark_completed(&event_id);
+                    dedupe.mark_completed(&delivery_dedupe_key);
                 } else {
-                    dedupe.release(&event_id);
+                    dedupe.release(&delivery_dedupe_key);
                 }
             }
 
@@ -582,12 +796,16 @@ async fn handle_feishu_inbound_event(
     state: &FeishuWebhookState,
     event: super::payload::FeishuInboundEvent,
 ) -> Result<FeishuParsedActionResponse, (StatusCode, String)> {
-    state.runtime.mark_run_start().await.map_err(|error| {
-        (
+    let inbound_event_id = event.event_id.clone();
+    let inbound_message_id = event.message_id.clone();
+    let inbound_conversation_id = event.session.conversation_id.clone();
+
+    if let Err(error) = state.runtime.mark_run_start().await {
+        return Err((
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("channel runtime start failed: {error}"),
-        )
-    })?;
+        ));
+    }
 
     let result = async {
         let inbound_message_id = event.message_id.clone();
@@ -606,12 +824,17 @@ async fn handle_feishu_inbound_event(
                 feishu_callback: None,
             },
         };
-        let reply = process_inbound_with_provider(
+        let reply_target = &channel_message.reply_target;
+        let retry_status =
+            FeishuRetryStatusHandle::new(state.adapter.clone(), reply_target.clone());
+        let reply = process_inbound_with_provider_and_error_mode_and_retry_progress(
             &state.config,
             state.resolved_path.as_deref(),
             &channel_message,
             state.kernel_ctx.as_ref(),
             ChannelTurnFeedbackPolicy::final_trace_significant(),
+            crate::conversation::ProviderErrorMode::InlineMessage,
+            retry_status.callback(),
         )
         .await
         .map_err(|error| {
@@ -620,42 +843,226 @@ async fn handle_feishu_inbound_event(
                 format!("provider processing failed: {error}"),
             )
         })?;
-        let reply_target = channel_message.reply_target.clone();
-        let outbound = outbound_reply_message_from_text(reply);
-
-        let mut adapter = state.adapter.lock().await;
-        if let Err(first_error) =
-            send_channel_message_via_message_send_api(&*adapter, &reply_target, outbound.clone())
-                .await
-        {
-            adapter.refresh_tenant_token().await.map_err(|error| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!(
-                        "feishu token refresh failed after send error `{first_error}`: {error}"
-                    ),
+        if let Some(error) = provider_error_reply_body(reply.as_str()) {
+            let rendered_error = render_feishu_user_facing_provider_error(error);
+            if retry_status.finalize_failure(rendered_error.clone()).await {
+                return Ok(FeishuParsedActionResponse::immediate(
+                    json!({"code": 0, "msg": "ok"}),
+                ));
+            }
+            {
+                let outbound = outbound_reply_message_from_text(rendered_error);
+                let mut adapter = state.adapter.lock().await;
+                if let Err(first_error) = send_channel_message_via_message_send_api(
+                    &*adapter,
+                    reply_target,
+                    outbound.clone(),
                 )
-            })?;
-            send_channel_message_via_message_send_api(&*adapter, &reply_target, outbound)
                 .await
-                .map_err(|error| {
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("feishu reply failed after token refresh: {error}"),
-                    )
-                })?;
+                {
+                    if let Err(error) = adapter.refresh_tenant_token().await {
+                        return Err((
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            format!(
+                                "feishu token refresh failed after send error `{first_error}`: {error}"
+                            ),
+                        ));
+                    }
+                    send_channel_message_via_message_send_api(&*adapter, reply_target, outbound)
+                        .await
+                        .map_err(|error| {
+                            (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                format!("feishu reply failed after token refresh: {error}"),
+                            )
+                        })?;
+                }
+            }
+            return Ok(FeishuParsedActionResponse::immediate(
+                json!({"code": 0, "msg": "ok"}),
+            ));
         }
+
+        {
+            let outbound = outbound_reply_message_from_text(render_feishu_user_facing_reply(reply));
+            let mut adapter = state.adapter.lock().await;
+            if let Err(first_error) =
+                send_channel_message_via_message_send_api(&*adapter, reply_target, outbound.clone())
+                    .await
+            {
+                if let Err(error) = adapter.refresh_tenant_token().await {
+                    return Err((
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!(
+                            "feishu token refresh failed after send error `{first_error}`: {error}"
+                        ),
+                    ));
+                }
+                send_channel_message_via_message_send_api(&*adapter, reply_target, outbound)
+                    .await
+                    .map_err(|error| {
+                        (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            format!("feishu reply failed after token refresh: {error}"),
+                        )
+                    })?;
+            }
+        }
+        retry_status.finalize_success().await;
         Ok(FeishuParsedActionResponse::immediate(
             json!({"code": 0, "msg": "ok"}),
         ))
     }
     .await;
 
+    if result.is_ok() {
+        tracing::info!(
+            target: "loong.channel.feishu",
+            transport = "webhook",
+            action = "inbound",
+            configured_account_id = %state.configured_account_id,
+            event_id = %inbound_event_id,
+            message_id = %inbound_message_id,
+            conversation_id = %inbound_conversation_id,
+            "feishu inbound event processed successfully"
+        );
+    }
+
     if let Err(error) = state.runtime.mark_run_end().await {
         log_feishu_inbound_warning("runtime end failed", &error);
     }
 
     result
+}
+
+fn render_feishu_user_facing_reply(reply: String) -> String {
+    let Some(error) = provider_error_reply_body(reply.as_str()) else {
+        return reply;
+    };
+    render_feishu_user_facing_provider_error(error)
+}
+
+fn provider_error_reply_body(reply: &str) -> Option<&str> {
+    reply.strip_prefix(PROVIDER_ERROR_REPLY_PREFIX)
+}
+
+fn render_feishu_user_facing_provider_error(error: &str) -> String {
+    if provider_error_mentions_timeout(error) {
+        return "Sorry, I couldn't finish this request because the model timed out before a full reply was produced. Please try again in a moment.".to_owned();
+    }
+
+    let summary = summarize_feishu_user_facing_provider_error(error);
+    if summary.is_empty() {
+        return "Sorry, I couldn't finish this request. Please try again in a moment.".to_owned();
+    }
+
+    format!("Sorry, I couldn't finish this request.\n\nReason: {summary}")
+}
+
+fn summarize_feishu_user_facing_provider_error(error: &str) -> String {
+    const MAX_LEN: usize = 220;
+    let summary = error
+        .split(" | provider_failover=")
+        .next()
+        .unwrap_or(error)
+        .split(" if you're using a proxy/TUN/fake-ip setup")
+        .next()
+        .unwrap_or(error)
+        .trim();
+    if summary.is_empty() {
+        return String::new();
+    }
+    if summary.chars().count() <= MAX_LEN {
+        return summary.to_owned();
+    }
+    let truncated = summary.chars().take(MAX_LEN).collect::<String>();
+    format!("{truncated}...")
+}
+
+fn provider_error_mentions_timeout(error: &str) -> bool {
+    error.contains("timed out") || error.contains("timeout")
+}
+
+fn render_feishu_retry_progress_message(
+    progress: &crate::provider::ProviderRetryProgress,
+) -> String {
+    let attempt_label = format!(
+        "attempt {}/{}",
+        progress.next_attempt, progress.max_attempts
+    );
+    let delay_suffix = render_retry_delay_suffix(progress.delay_ms);
+
+    if progress.timeout {
+        return format!("Model connection timed out. Retrying {attempt_label}{delay_suffix}...");
+    }
+    if progress.connect {
+        return format!(
+            "Connection to the model failed. Retrying {attempt_label}{delay_suffix}..."
+        );
+    }
+    if let Some(status_code) = progress.status_code {
+        if status_code == 429 {
+            return format!(
+                "The model provider is rate limiting requests. Retrying {attempt_label}{delay_suffix}..."
+            );
+        }
+        return format!(
+            "The model provider returned a transient HTTP {status_code} error. Retrying {attempt_label}{delay_suffix}..."
+        );
+    }
+
+    format!("A transient model error occurred. Retrying {attempt_label}{delay_suffix}...")
+}
+
+fn render_retry_delay_suffix(delay_ms: u64) -> String {
+    if delay_ms < 1_000 {
+        return String::new();
+    }
+    let delay_s = delay_ms / 1_000;
+    format!(" in {delay_s}s")
+}
+
+async fn upsert_feishu_retry_status_message(
+    adapter: &Arc<Mutex<FeishuAdapter>>,
+    reply_target: &ChannelOutboundTarget,
+    state: &mut FeishuRetryStatusState,
+    text: String,
+) -> bool {
+    let content = MessageContent::Text { text };
+
+    if let Some(message_id) = state.message_id.as_deref() {
+        let adapter = adapter.lock().await;
+        match adapter.edit_message(message_id, &content).await {
+            Ok(_) => return true,
+            Err(error) => {
+                tracing::warn!(
+                    target: "loong.channel.feishu",
+                    error = %error,
+                    message_id = %message_id,
+                    "failed to update feishu retry status message"
+                );
+                return false;
+            }
+        }
+    }
+
+    {
+        let adapter = adapter.lock().await;
+        match adapter.reply(reply_target, &content, None).await {
+            Ok(message) => {
+                state.message_id = Some(message.id);
+                true
+            }
+            Err(error) => {
+                tracing::warn!(
+                    target: "loong.channel.feishu",
+                    error = %error,
+                    "failed to create feishu retry status message"
+                );
+                false
+            }
+        }
+    }
 }
 
 async fn maybe_send_feishu_ack_reaction_nonblocking(state: &FeishuWebhookState, message_id: &str) {
@@ -806,7 +1213,7 @@ fn build_feishu_card_callback_inbound_message(
 }
 
 fn dispatch_deferred_feishu_card_updates(
-    config: LoongClawConfig,
+    config: LoongConfig,
     updates: Vec<crate::tools::DeferredFeishuCardUpdate>,
 ) {
     if updates.is_empty() {
@@ -824,7 +1231,7 @@ fn dispatch_deferred_feishu_card_updates(
 }
 
 async fn execute_deferred_feishu_card_update(
-    config: LoongClawConfig,
+    config: LoongConfig,
     update: crate::tools::DeferredFeishuCardUpdate,
 ) -> crate::CliResult<()> {
     let resolved = config
@@ -937,18 +1344,19 @@ mod tests {
     use super::*;
     use crate::channel::ChannelPlatform;
     use crate::channel::runtime::state::start_channel_operation_runtime_tracker_for_test;
-    use crate::config::{LoongClawConfig, ProviderConfig};
+    use crate::config::{LoongConfig, ProviderConfig};
     use crate::context::{DEFAULT_TOKEN_TTL_S, KernelContext, bootstrap_test_kernel_context};
     use crate::tools::runtime_config::ToolRuntimeConfig;
     use axum::{
         Json, Router,
         body::to_bytes,
         extract::{Request, State},
-        routing::post,
+        response::IntoResponse,
+        routing::{post, put},
     };
-    use loongclaw_contracts::Capability;
-    use loongclaw_kernel::{
-        ExecutionRoute, HarnessKind, InMemoryAuditSink, LoongClawKernel, StaticPolicyEngine,
+    use loong_contracts::Capability;
+    use loong_kernel::{
+        ExecutionRoute, HarnessKind, InMemoryAuditSink, LoongKernel, StaticPolicyEngine,
         SystemClock, VerticalPackManifest,
     };
     use serde_json::json;
@@ -977,7 +1385,7 @@ mod tests {
 
     fn temp_webhook_test_dir(label: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!(
-            "loongclaw-feishu-webhook-{label}-{}",
+            "loong-feishu-webhook-{label}-{}",
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .expect("clock")
@@ -1007,16 +1415,16 @@ mod tests {
         }
     }
 
-    fn webhook_tool_runtime_config(config: &LoongClawConfig) -> ToolRuntimeConfig {
-        ToolRuntimeConfig::from_loongclaw_config(config, None)
+    fn webhook_tool_runtime_config(config: &LoongConfig) -> ToolRuntimeConfig {
+        ToolRuntimeConfig::from_loong_config(config, None)
     }
 
     fn bootstrap_webhook_kernel_context(
         agent_id: &str,
         ttl_s: u64,
-        config: &LoongClawConfig,
+        config: &LoongConfig,
     ) -> Result<KernelContext, String> {
-        let mut kernel = LoongClawKernel::with_runtime(
+        let mut kernel = LoongKernel::with_runtime(
             StaticPolicyEngine::default(),
             Arc::new(SystemClock),
             Arc::new(InMemoryAuditSink::default()),
@@ -1084,11 +1492,12 @@ mod tests {
         (format!("http://{address}"), handle)
     }
 
-    async fn record_request(State(state): State<MockServerState>, request: Request) {
+    async fn record_request(State(state): State<MockServerState>, request: Request) -> String {
         let (parts, body) = request.into_parts();
         let body = to_bytes(body, usize::MAX)
             .await
             .expect("read mock request body");
+        let body_text = String::from_utf8(body.to_vec()).expect("mock request body utf8");
         state.requests.lock().await.push(MockRequest {
             path: parts.uri.path().to_owned(),
             query: parts.uri.query().map(ToOwned::to_owned),
@@ -1097,8 +1506,59 @@ mod tests {
                 .get(axum::http::header::AUTHORIZATION)
                 .and_then(|value| value.to_str().ok())
                 .map(ToOwned::to_owned),
-            body: String::from_utf8(body.to_vec()).expect("mock request body utf8"),
+            body: body_text.clone(),
         });
+        body_text
+    }
+
+    fn mock_provider_stream_enabled(body: &str) -> bool {
+        serde_json::from_str::<Value>(body)
+            .ok()
+            .and_then(|payload| payload.get("stream").and_then(Value::as_bool))
+            .unwrap_or(false)
+    }
+
+    fn mock_provider_stream_response_body(response_text: &str) -> String {
+        format!(
+            "data: {}\n\n\
+data: {}\n\n\
+data: [DONE]\n\n",
+            json!({
+                "choices": [{
+                    "delta": {
+                        "content": response_text
+                    }
+                }]
+            }),
+            json!({
+                "choices": [{
+                    "delta": {},
+                    "finish_reason": "stop"
+                }]
+            }),
+        )
+    }
+
+    fn mock_provider_success_response(
+        request_body: &str,
+        response_text: &str,
+    ) -> axum::response::Response {
+        if mock_provider_stream_enabled(request_body) {
+            return (
+                [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+                mock_provider_stream_response_body(response_text),
+            )
+                .into_response();
+        }
+
+        Json(json!({
+            "choices": [{
+                "message": {
+                    "content": response_text
+                }
+            }]
+        }))
+        .into_response()
     }
 
     async fn wait_for_request_count(
@@ -1126,14 +1586,11 @@ mod tests {
                 move |request| {
                     let state = state.clone();
                     async move {
-                        record_request(State(state), request).await;
-                        Json(json!({
-                            "choices": [{
-                                "message": {
-                                    "content": MOCK_PROVIDER_MARKDOWN_REPLY
-                                }
-                            }]
-                        }))
+                        let request_body = record_request(State(state), request).await;
+                        mock_provider_success_response(
+                            request_body.as_str(),
+                            MOCK_PROVIDER_MARKDOWN_REPLY,
+                        )
                     }
                 }
             }),
@@ -1153,14 +1610,8 @@ mod tests {
                 move |request| {
                     let state = state.clone();
                     async move {
-                        record_request(State(state), request).await;
-                        Json(json!({
-                            "choices": [{
-                                "message": {
-                                    "content": response_text
-                                }
-                            }]
-                        }))
+                        let request_body = record_request(State(state), request).await;
+                        mock_provider_success_response(request_body.as_str(), response_text)
                     }
                 }
             }),
@@ -1207,15 +1658,12 @@ mod tests {
                 move |request| {
                     let state = state.clone();
                     async move {
-                        record_request(State(state), request).await;
+                        let request_body = record_request(State(state), request).await;
                         tokio::time::sleep(delay).await;
-                        Json(json!({
-                            "choices": [{
-                                "message": {
-                                    "content": MOCK_PROVIDER_MARKDOWN_REPLY
-                                }
-                            }]
-                        }))
+                        mock_provider_success_response(
+                            request_body.as_str(),
+                            MOCK_PROVIDER_MARKDOWN_REPLY,
+                        )
                     }
                 }
             }),
@@ -1276,14 +1724,13 @@ mod tests {
                             // tool_invoke with the lease obtained from tool_search.
                             // Extract the lease from the tool_search result in the
                             // request body.
-                            let lease = extract_lease_from_provider_request_body(
-                                &body_text,
-                                "feishu.card.update",
-                            );
+                            let lease =
+                                extract_lease_from_provider_request_body(&body_text, "channel");
                             let arguments = json!({
-                                "tool_id": "feishu.card.update",
+                                "tool_id": "channel",
                                 "lease": lease,
                                 "arguments": {
+                                    "operation": "card.update",
                                     "card": {
                                         "config": {"wide_screen_mode": true},
                                         "elements": [{"tag": "markdown", "content": "callback updated"}]
@@ -1370,9 +1817,9 @@ mod tests {
         let payload_summary = serde_json::to_string(&json!({
             "query": "feishu card update callback token markdown",
             "results": [{
-                "tool_id": "feishu.card.update",
-                "summary": "Update a Feishu interactive card after a card callback.",
-                "argument_hint": "callback_token?:string,card?:object,markdown?:string",
+                "tool_id": "channel",
+                "summary": "Operate channel-specific capabilities such as Feishu through one separate addon tool.",
+                "argument_hint": "operation:string,account_id?:string,open_id?:string,receive_id?:string,message_id?:string,url?:string,query?:string",
                 "lease": "lease-feishu-card-update"
             }]
         }))
@@ -1396,7 +1843,7 @@ mod tests {
         .expect("encode provider request body");
 
         assert_eq!(
-            extract_lease_from_provider_request_body(body.as_str(), "feishu.card.update"),
+            extract_lease_from_provider_request_body(body.as_str(), "channel"),
             "lease-feishu-card-update"
         );
     }
@@ -1405,7 +1852,7 @@ mod tests {
     fn extract_lease_from_provider_request_body_ignores_non_search_envelopes() {
         let misleading_summary = serde_json::to_string(&json!({
             "results": [{
-                "tool_id": "feishu.card.update",
+                "tool_id": "channel",
                 "lease": "lease-from-non-search"
             }]
         }))
@@ -1413,9 +1860,9 @@ mod tests {
         let search_summary = serde_json::to_string(&json!({
             "query": "feishu card update callback token markdown",
             "results": [{
-                "tool_id": "feishu.card.update",
-                "summary": "Update a Feishu interactive card after a card callback.",
-                "argument_hint": "callback_token?:string,card?:object,markdown?:string",
+                "tool_id": "channel",
+                "summary": "Operate channel-specific capabilities such as Feishu through one separate addon tool.",
+                "argument_hint": "operation:string,account_id?:string,open_id?:string,receive_id?:string,message_id?:string,url?:string,query?:string",
                 "lease": "lease-from-search"
             }]
         }))
@@ -1447,7 +1894,7 @@ mod tests {
         .expect("encode provider request body");
 
         assert_eq!(
-            extract_lease_from_provider_request_body(body.as_str(), "feishu.card.update"),
+            extract_lease_from_provider_request_body(body.as_str(), "channel"),
             "lease-from-search"
         );
     }
@@ -1521,6 +1968,24 @@ mod tests {
                                 "code": 0,
                                 "data": {
                                     "reaction_id": "reaction_webhook_1"
+                                }
+                            }))
+                        }
+                    }
+                }),
+            )
+            .route(
+                "/open-apis/im/v1/messages/{message_id}",
+                put({
+                    let state = state.clone();
+                    move |axum::extract::Path(message_id): axum::extract::Path<String>, request| {
+                        let state = state.clone();
+                        async move {
+                            record_request(State(state), request).await;
+                            Json(json!({
+                                "code": 0,
+                                "data": {
+                                    "message_id": message_id
                                 }
                             }))
                         }
@@ -1602,44 +2067,58 @@ mod tests {
                         }
                     }
                 }),
+            )
+            .route(
+                "/open-apis/im/v1/messages/{message_id}",
+                put({
+                    let state = state.clone();
+                    move |axum::extract::Path(message_id): axum::extract::Path<String>, request| {
+                        let state = state.clone();
+                        async move {
+                            record_request(State(state), request).await;
+                            Json(json!({
+                                "code": 0,
+                                "data": {
+                                    "message_id": message_id
+                                }
+                            }))
+                        }
+                    }
+                }),
             );
         spawn_mock_server(router).await
     }
 
-    fn test_webhook_config(provider_base_url: &str, feishu_base_url: &str) -> LoongClawConfig {
+    fn test_webhook_config(provider_base_url: &str, feishu_base_url: &str) -> LoongConfig {
         let temp_dir = temp_webhook_test_dir("runtime");
         std::fs::create_dir_all(&temp_dir).expect("create webhook temp dir");
 
-        let mut config = LoongClawConfig {
+        let mut config = LoongConfig {
             provider: ProviderConfig {
                 base_url: provider_base_url.to_owned(),
-                api_key: Some(loongclaw_contracts::SecretRef::Inline(
+                api_key: Some(loong_contracts::SecretRef::Inline(
                     "test-provider-key".to_owned(),
                 )),
                 model: "test-model".to_owned(),
                 ..ProviderConfig::default()
             },
-            ..LoongClawConfig::default()
+            ..LoongConfig::default()
         };
         config.memory.sqlite_path = temp_dir.join("memory.sqlite3").display().to_string();
         config.tools.file_root = Some(temp_dir.join("tool-root").display().to_string());
         config.feishu.enabled = true;
         config.feishu.account_id = Some("feishu_main".to_owned());
-        config.feishu.app_id = Some(loongclaw_contracts::SecretRef::Inline(
-            "cli_a1b2c3".to_owned(),
-        ));
-        config.feishu.app_secret = Some(loongclaw_contracts::SecretRef::Inline(
-            "secret-123".to_owned(),
-        ));
+        config.feishu.app_id = Some(loong_contracts::SecretRef::Inline("cli_a1b2c3".to_owned()));
+        config.feishu.app_secret =
+            Some(loong_contracts::SecretRef::Inline("secret-123".to_owned()));
         config.feishu.base_url = Some(feishu_base_url.to_owned());
         config.feishu.receive_id_type = "chat_id".to_owned();
         config.feishu.allowed_chat_ids = vec!["oc_demo".to_owned()];
-        config.feishu.verification_token = Some(loongclaw_contracts::SecretRef::Inline(
+        config.feishu.verification_token = Some(loong_contracts::SecretRef::Inline(
             "verify-token".to_owned(),
         ));
-        config.feishu.encrypt_key = Some(loongclaw_contracts::SecretRef::Inline(
-            "encrypt-key".to_owned(),
-        ));
+        config.feishu.encrypt_key =
+            Some(loong_contracts::SecretRef::Inline("encrypt-key".to_owned()));
         config
     }
 
@@ -1854,6 +2333,7 @@ mod tests {
         assert_eq!(provider_requests[0].path, "/v1/chat/completions");
         let provider_body =
             serde_json::from_str::<Value>(&provider_requests[0].body).expect("provider body json");
+        assert_eq!(provider_body["stream"], json!(true));
         let provider_user_content = provider_body
             .get("messages")
             .and_then(Value::as_array)
@@ -1995,8 +2475,7 @@ mod tests {
 
         assert_eq!(response.body(), &json!({"code": 0, "msg": "ok"}));
 
-        let feishu_requests = wait_for_request_count(&feishu_requests, 2).await;
-        assert_eq!(feishu_requests.len(), 2);
+        let feishu_requests = wait_for_request_count(&feishu_requests, 1).await;
         assert!(
             feishu_requests
                 .iter()
@@ -2072,30 +2551,30 @@ mod tests {
         });
         let raw_body = serde_json::to_string(&payload).expect("serialize payload");
         let headers = signed_headers(&raw_body, "encrypt-key");
-        let error = handle_feishu_webhook_payload(
+        let response = handle_feishu_webhook_payload(
             state.clone(),
             &headers,
             raw_body.as_str(),
             serde_json::from_str(raw_body.as_str()).expect("payload value"),
         )
         .await
-        .expect_err("webhook should surface provider failure");
+        .expect("webhook should return a safe success body while the provider failure is handled inline");
+        assert_eq!(response.body(), &json!({"code": 0, "msg": "ok"}));
 
-        assert_eq!(error.0, StatusCode::INTERNAL_SERVER_ERROR);
-        assert!(error.1.contains("provider processing failed"));
-
-        let error_retry = handle_feishu_webhook_payload(
+        let response_retry = handle_feishu_webhook_payload(
             state,
             &headers,
             raw_body.as_str(),
             serde_json::from_str(raw_body.as_str()).expect("payload value"),
         )
         .await
-        .expect_err("webhook retry should still surface provider failure");
-        assert_eq!(error_retry.0, StatusCode::INTERNAL_SERVER_ERROR);
+        .expect("webhook retry should still return a safe success body");
+        assert_eq!(
+            response_retry.body(),
+            &json!({"code": 0, "msg": "duplicate_event"})
+        );
 
-        let feishu_requests = wait_for_request_count(&feishu_requests, 2).await;
-        assert_eq!(feishu_requests.len(), 2);
+        let feishu_requests = wait_for_request_count(&feishu_requests, 1).await;
         assert_eq!(
             feishu_requests
                 .iter()
@@ -2103,12 +2582,16 @@ mod tests {
                     == "/open-apis/im/v1/messages/om_inbound_failure_no_ack_1/reactions")
                 .count(),
             1,
-            "retrying a failed inbound turn must not duplicate ack reactions"
+            "retrying an inline-failed inbound turn must not duplicate ack reactions"
         );
         assert!(
-            feishu_requests.iter().all(|request| request.path
-                != "/open-apis/im/v1/messages/om_inbound_failure_no_ack_1/reply"),
-            "failed inbound handling must not send a reply"
+            feishu_requests
+                .iter()
+                .filter(|request| request.path
+                    == "/open-apis/im/v1/messages/om_inbound_failure_no_ack_1/reply")
+                .count()
+                <= 1,
+            "inline provider failure handling should send at most one user-facing reply across retries"
         );
 
         provider_server.abort();
@@ -2212,6 +2695,206 @@ mod tests {
     }
 
     #[test]
+    fn feishu_webhook_provider_timeout_acknowledges_after_retry_budget_exhaustion() {
+        run_feishu_webhook_test_on_large_stack(
+            "feishu-webhook-provider-timeout-terminal",
+            || async move {
+                feishu_webhook_provider_timeout_acknowledges_after_retry_budget_exhaustion_impl()
+                    .await;
+            },
+        );
+    }
+
+    async fn feishu_webhook_provider_timeout_acknowledges_after_retry_budget_exhaustion_impl() {
+        let feishu_requests = Arc::new(Mutex::new(Vec::<MockRequest>::new()));
+        let (feishu_base_url, feishu_server) =
+            spawn_mock_feishu_api_server(feishu_requests.clone(), "om_reply_unused").await;
+
+        let mut config = test_webhook_config("http://127.0.0.1:9", &feishu_base_url);
+        config.provider.request_timeout_ms = 50;
+        config.provider.retry_max_attempts = 2;
+        config.provider.retry_initial_backoff_ms = 50;
+        config.provider.retry_max_backoff_ms = 50;
+        let resolved = config
+            .feishu
+            .resolve_account(None)
+            .expect("resolve feishu account");
+        let mut adapter = FeishuAdapter::new(&resolved).expect("build feishu adapter");
+        adapter
+            .refresh_tenant_token()
+            .await
+            .expect("refresh tenant token before webhook test");
+        let kernel_ctx =
+            bootstrap_test_kernel_context("feishu-webhook-provider-timeout", DEFAULT_TOKEN_TTL_S)
+                .expect("bootstrap kernel context");
+        let runtime = Arc::new(
+            ChannelOperationRuntimeTracker::start(
+                ChannelPlatform::Feishu,
+                "serve",
+                resolved.account.id.as_str(),
+                resolved.account.label.as_str(),
+            )
+            .await
+            .expect("start runtime tracker"),
+        );
+        let state = FeishuWebhookState::new(config, &resolved, adapter, kernel_ctx, runtime);
+
+        let payload = json!({
+            "token": "verify-token",
+            "header": {
+                "event_id": "evt_provider_timeout_terminal",
+                "event_type": "im.message.receive_v1"
+            },
+            "event": {
+                "sender": {
+                    "sender_type": "user",
+                    "sender_id": {
+                        "open_id": "ou_sender_provider_timeout"
+                    }
+                },
+                "message": {
+                    "chat_id": "oc_demo",
+                    "message_id": "om_inbound_timeout_terminal_1",
+                    "message_type": "text",
+                    "content": "{\"text\":\"provider timeout should stop feishu redelivery\"}"
+                }
+            }
+        });
+        let raw_body = serde_json::to_string(&payload).expect("serialize payload");
+        let headers = signed_headers(&raw_body, "encrypt-key");
+        let response = handle_feishu_webhook_payload(
+            state.clone(),
+            &headers,
+            raw_body.as_str(),
+            serde_json::from_str(raw_body.as_str()).expect("payload value"),
+        )
+        .await
+        .expect("webhook timeout should reply inline after provider retries");
+
+        assert_eq!(response.body()["code"], json!(0));
+        assert_eq!(response.body()["msg"], json!("ok"));
+
+        let response_retry = handle_feishu_webhook_payload(
+            state,
+            &headers,
+            raw_body.as_str(),
+            serde_json::from_str(raw_body.as_str()).expect("payload value"),
+        )
+        .await
+        .expect("completed timeout event should stay acknowledged on duplicate delivery");
+        assert_eq!(
+            response_retry.body(),
+            &json!({"code": 0, "msg": "duplicate_event"})
+        );
+
+        let feishu_requests = wait_for_request_count(&feishu_requests, 4).await;
+        assert_eq!(
+            feishu_requests
+                .iter()
+                .filter(|request| request.path
+                    == "/open-apis/im/v1/messages/om_inbound_timeout_terminal_1/reactions")
+                .count(),
+            1,
+            "inline timeout reply must not duplicate ack reactions"
+        );
+        assert!(
+            feishu_requests.iter().any(|request| {
+                request.path == "/open-apis/im/v1/messages/om_inbound_timeout_terminal_1/reply"
+                    && request.body.contains("attempt 2/2")
+                    && !request.body.contains("[provider_error]")
+            }),
+            "the first retry should create a dedicated Feishu status message"
+        );
+        assert!(
+            feishu_requests.iter().any(|request| {
+                (request.path == "/open-apis/im/v1/messages/om_reply_unused"
+                    || request.path
+                        == "/open-apis/im/v1/messages/om_inbound_timeout_terminal_1/reply")
+                    && request
+                        .body
+                        .contains("Sorry, I couldn't finish this request")
+                    && !request.body.contains("[provider_error]")
+            }),
+            "final failure should deliver a user-facing error back to the Feishu conversation"
+        );
+
+        feishu_server.abort();
+    }
+
+    #[test]
+    fn feishu_retry_status_handle_creates_and_updates_single_status_message() {
+        run_feishu_webhook_test_on_large_stack(
+            "feishu-webhook-retry-status-handle",
+            || async move {
+                feishu_retry_status_handle_creates_and_updates_single_status_message_impl().await;
+            },
+        );
+    }
+
+    async fn feishu_retry_status_handle_creates_and_updates_single_status_message_impl() {
+        let feishu_requests = Arc::new(Mutex::new(Vec::<MockRequest>::new()));
+        let (feishu_base_url, feishu_server) =
+            spawn_mock_feishu_api_server(feishu_requests.clone(), "om_retry_status").await;
+
+        let config = test_webhook_config("http://127.0.0.1:9", &feishu_base_url);
+        let resolved = config
+            .feishu
+            .resolve_account(None)
+            .expect("resolve feishu account");
+        let mut adapter = FeishuAdapter::new(&resolved).expect("build feishu adapter");
+        adapter
+            .refresh_tenant_token()
+            .await
+            .expect("refresh tenant token before retry status test");
+        let retry_target = ChannelOutboundTarget::feishu_message_reply("om_source_retry_status")
+            .with_feishu_reply_chat_id("oc_demo")
+            .with_feishu_reply_in_thread(true);
+        let handle = FeishuRetryStatusHandle::new(Arc::new(Mutex::new(adapter)), retry_target);
+
+        let callback = handle.callback().expect("retry callback should exist");
+        callback(crate::provider::ProviderRetryProgress {
+            model: "glm-5".to_owned(),
+            next_attempt: 2,
+            max_attempts: 3,
+            delay_ms: 1_000,
+            status_code: None,
+            timeout: true,
+            connect: false,
+        });
+
+        let handled = handle
+            .finalize_failure(
+                "Sorry, I couldn't finish this request because the model timed out before a full reply was produced. Please try again in a moment."
+                    .to_owned(),
+            )
+            .await;
+        assert!(
+            handled,
+            "final failure should update the existing status message"
+        );
+
+        let feishu_requests = wait_for_request_count(&feishu_requests, 3).await;
+        assert!(
+            feishu_requests.iter().any(|request| {
+                request.path == "/open-apis/im/v1/messages/om_source_retry_status/reply"
+                    && request.body.contains("Retrying attempt 2/3 in 1s")
+            }),
+            "retry progress should create a dedicated Feishu status reply"
+        );
+        assert!(
+            feishu_requests.iter().any(|request| {
+                request.path == "/open-apis/im/v1/messages/om_retry_status"
+                    && request.body.contains(
+                        "Sorry, I couldn't finish this request because the model timed out before a full reply was produced. Please try again in a moment.",
+                    )
+            }),
+            "final failure should update the single status message instead of sending a second reply"
+        );
+
+        feishu_server.abort();
+    }
+
+    #[test]
     fn feishu_webhook_inbound_reply_stays_successful_when_runtime_end_write_fails() {
         run_feishu_webhook_test_on_large_stack("feishu-webhook-runtime-end", || async move {
             feishu_webhook_inbound_reply_stays_successful_when_runtime_end_write_fails_impl().await;
@@ -2306,6 +2989,9 @@ mod tests {
 
         let provider_requests = provider_requests.lock().await.clone();
         assert_eq!(provider_requests.len(), 1);
+        let provider_body =
+            serde_json::from_str::<Value>(&provider_requests[0].body).expect("provider body json");
+        assert_eq!(provider_body["stream"], json!(true));
 
         let feishu_requests = wait_for_request_count(&feishu_requests, 3).await;
         assert_eq!(feishu_requests.len(), 3);

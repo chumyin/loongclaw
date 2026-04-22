@@ -523,7 +523,7 @@ jobs:
       pull-requests: write
     steps:
       - name: Ensure managed labels exist
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
         with:
           script: |
 {indent(script_sync, " " * 12)}
@@ -548,7 +548,7 @@ jobs:
           sync-labels: true
 
       - name: Apply size label
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
         with:
           script: |
             const issueNumber = context.payload.pull_request.number;
@@ -604,7 +604,7 @@ jobs:
       issues: write
     steps:
       - name: Sync issue surface label from form
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
         with:
           script: |
 {indent(script_issue, " " * 12)}
@@ -739,7 +739,7 @@ body:
         enabled = true
 
         Env overrides:
-        LOONGCLAW_CONTEXT_ENGINE=legacy
+        LOONG_CONTEXT_ENGINE=legacy
 
   - type: textarea
     id: logs
@@ -1026,6 +1026,11 @@ GitHub automation. Normal contributors should usually start with
 
 - `CI`, `CodeQL`, and `Security` validate pull requests and pushes for `dev`, `main`, `release`,
   and `release/*`.
+- Those required workflows also validate `merge_group` events so merge queues and rulesets can
+  receive the same checks as ordinary pull requests.
+- Expensive jobs inside those workflows may self-skip on irrelevant path sets. The workflows still
+  publish stable required checks, which avoids the pending-status trap of workflow-level path
+  filters on required workflows.
 - `perf-lint` uses the same branch set but stays path-scoped to workflow and benchmark-sensitive
   files.
 - `enforce-dev-to-main` closes promotion pull requests into `main` when the source is not the
@@ -1042,7 +1047,7 @@ GitHub automation. Normal contributors should usually start with
 | New capability or behavior change | Feature request form | Captures problem statement, acceptance criteria, rollout notes, and scope boundaries. |
 | Missing, wrong, or confusing docs | Documentation improvement form | Captures branch-model drift, workflow gaps, and concrete doc references. |
 | Setup question or general troubleshooting | GitHub Discussions, Discord, Telegram, or the community spaces you already use such as Feishu and WeChat | Keeps support traffic out of the issue queue and lets people ask where they already participate. |
-| Direct contributor introduction or “where could I help?” conversation | [contact@loongclaw.ai](mailto:contact@loongclaw.ai) | Works well for async introductions, timezone context, and matching contributors to work that fits their strengths. |
+| Direct contributor introduction or “where could I help?” conversation | [contact@loong.ai](mailto:contact@loong.ai) | Works well for async introductions, timezone context, and matching contributors to work that fits their strengths. |
 | Security vulnerability | Private security advisory | Avoids publishing sensitive details in public issues. |
 
 ## Managed Labels

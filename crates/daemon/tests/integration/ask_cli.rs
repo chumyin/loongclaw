@@ -1,6 +1,6 @@
 use super::latest_selector_process_support::LatestSelectorCliFixture;
-use loongclaw_app::config::ProviderKind;
-use loongclaw_contracts::SecretRef;
+use loong_app::config::ProviderKind;
+use loong_contracts::SecretRef;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::mpsc;
@@ -14,6 +14,31 @@ fn render_output(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
+fn header_end_offset(bytes: &[u8]) -> Option<usize> {
+    let marker = b"\r\n\r\n";
+    let position = bytes
+        .windows(marker.len())
+        .position(|window| window == marker)?;
+    Some(position + marker.len())
+}
+
+fn parse_content_length(bytes: &[u8]) -> Option<usize> {
+    let header_text = String::from_utf8_lossy(bytes);
+    for line in header_text.lines() {
+        let lower_line = line.to_ascii_lowercase();
+        if !lower_line.starts_with("content-length:") {
+            continue;
+        }
+
+        let (_, value) = line.split_once(':')?;
+        let trimmed_value = value.trim();
+        let parsed_value = trimmed_value.parse::<usize>().ok()?;
+        return Some(parsed_value);
+    }
+
+    None
+}
+
 fn read_provider_request(stream: &mut TcpStream) -> String {
     stream
         .set_nonblocking(false)
@@ -21,14 +46,41 @@ fn read_provider_request(stream: &mut TcpStream) -> String {
     stream
         .set_read_timeout(Some(MOCK_PROVIDER_STREAM_READ_TIMEOUT))
         .expect("set provider stream read timeout");
-    let mut request_buffer = [0_u8; 8192];
-    let request_len = stream
-        .read(&mut request_buffer)
-        .expect("read provider request");
-    let request_bytes = request_buffer
-        .get(..request_len)
-        .expect("provider request length should fit within the read buffer");
-    String::from_utf8_lossy(request_bytes).into_owned()
+    let mut request_bytes = Vec::new();
+    let mut read_buffer = [0_u8; 4096];
+    let mut expected_total_length = None::<usize>;
+
+    loop {
+        let read_len = stream
+            .read(&mut read_buffer)
+            .expect("read provider request");
+        if read_len == 0 {
+            break;
+        }
+
+        let chunk = read_buffer
+            .get(..read_len)
+            .expect("provider request length should fit within the read buffer");
+        request_bytes.extend_from_slice(chunk);
+
+        if expected_total_length.is_none()
+            && let Some(header_end) = header_end_offset(request_bytes.as_slice())
+        {
+            let header_bytes = request_bytes
+                .get(..header_end)
+                .expect("header_end should be within request bytes");
+            let content_length = parse_content_length(header_bytes).unwrap_or(0);
+            expected_total_length = Some(header_end + content_length);
+        }
+
+        if let Some(expected_total_length) = expected_total_length
+            && request_bytes.len() >= expected_total_length
+        {
+            break;
+        }
+    }
+
+    String::from_utf8_lossy(request_bytes.as_slice()).into_owned()
 }
 
 enum MockProviderServerControl {

@@ -65,6 +65,19 @@ fn safe_lane_route_policy_denied_failure_is_terminal() {
 }
 
 #[test]
+fn safe_lane_route_discovery_recovery_tool_not_found_replans() {
+    let failure = TurnFailure::policy_denied_with_discovery_recovery(
+        "tool_not_found",
+        "tool_not_found: requested tool is not available",
+    );
+    let route = SafeLaneFailureRoute::from_failure(&failure, SafeLaneReplanBudget::new(2));
+
+    assert_eq!(route.decision, SafeLaneFailureRouteDecision::Replan);
+    assert_eq!(route.reason, SafeLaneFailureRouteReason::RetryableFailure);
+    assert_eq!(route.source, SafeLaneFailureRouteSource::BaseRouting);
+}
+
+#[test]
 fn safe_lane_route_non_retryable_failure_is_terminal() {
     let failure = TurnFailure::non_retryable("safe_lane_plan_node_non_retryable_error", "bad");
     let route = SafeLaneFailureRoute::from_failure(&failure, SafeLaneReplanBudget::new(3));
@@ -152,7 +165,7 @@ fn turn_failure_from_plan_failure_static_failure_mapping_is_stable() {
 
 #[test]
 fn safe_lane_event_sampling_keeps_critical_events() {
-    let mut config = LoongClawConfig::default();
+    let mut config = LoongConfig::default();
     config.conversation.safe_lane_emit_runtime_events = true;
     config.conversation.safe_lane_event_sample_every = 3;
 
@@ -168,7 +181,7 @@ fn safe_lane_event_sampling_keeps_critical_events() {
 
 #[test]
 fn safe_lane_event_sampling_skips_non_critical_rounds() {
-    let mut config = LoongClawConfig::default();
+    let mut config = LoongConfig::default();
     config.conversation.safe_lane_emit_runtime_events = true;
     config.conversation.safe_lane_event_sample_every = 2;
     config.conversation.safe_lane_event_adaptive_sampling = false;
@@ -194,7 +207,7 @@ fn safe_lane_event_sampling_skips_non_critical_rounds() {
 
 #[test]
 fn safe_lane_event_sampling_adaptive_mode_keeps_failure_pressure_events() {
-    let mut config = LoongClawConfig::default();
+    let mut config = LoongConfig::default();
     config.conversation.safe_lane_emit_runtime_events = true;
     config.conversation.safe_lane_event_sample_every = 4;
     config.conversation.safe_lane_event_adaptive_sampling = true;
@@ -228,7 +241,7 @@ fn safe_lane_event_sampling_adaptive_mode_keeps_failure_pressure_events() {
 
 #[test]
 fn safe_lane_event_sampling_adaptive_mode_can_be_disabled() {
-    let mut config = LoongClawConfig::default();
+    let mut config = LoongConfig::default();
     config.conversation.safe_lane_emit_runtime_events = true;
     config.conversation.safe_lane_event_sample_every = 4;
     config.conversation.safe_lane_event_adaptive_sampling = false;
@@ -312,7 +325,7 @@ fn safe_lane_tool_output_stats_handles_mixed_multiline_blocks() {
 
 #[test]
 fn runtime_health_signal_marks_warn_on_truncation_pressure() {
-    let mut config = LoongClawConfig::default();
+    let mut config = LoongConfig::default();
     config
         .conversation
         .safe_lane_health_truncation_warn_threshold = 0.20;
@@ -338,7 +351,7 @@ fn runtime_health_signal_marks_warn_on_truncation_pressure() {
 
 #[test]
 fn runtime_health_signal_marks_critical_on_terminal_instability() {
-    let config = LoongClawConfig::default();
+    let config = LoongConfig::default();
     let metrics = SafeLaneExecutionMetrics {
         rounds_started: 2,
         verify_failures: 1,
@@ -365,7 +378,7 @@ fn runtime_health_signal_marks_critical_on_terminal_instability() {
 
 #[test]
 fn verify_anchor_policy_escalates_after_configured_failures() {
-    let mut config = LoongClawConfig::default();
+    let mut config = LoongConfig::default();
     config
         .conversation
         .safe_lane_verify_adaptive_anchor_escalation = true;
@@ -384,7 +397,7 @@ fn verify_anchor_policy_escalates_after_configured_failures() {
 
 #[test]
 fn verify_anchor_policy_escalation_can_be_disabled() {
-    let mut config = LoongClawConfig::default();
+    let mut config = LoongConfig::default();
     config
         .conversation
         .safe_lane_verify_adaptive_anchor_escalation = false;
@@ -400,7 +413,7 @@ fn verify_anchor_policy_escalation_can_be_disabled() {
 
 #[test]
 fn backpressure_guard_blocks_replan_when_attempt_budget_exhausted() {
-    let mut config = LoongClawConfig::default();
+    let mut config = LoongConfig::default();
     config.conversation.safe_lane_backpressure_guard_enabled = true;
     config
         .conversation
@@ -430,7 +443,7 @@ fn backpressure_guard_blocks_replan_when_attempt_budget_exhausted() {
 
 #[test]
 fn backpressure_guard_blocks_replan_when_replan_budget_exhausted() {
-    let mut config = LoongClawConfig::default();
+    let mut config = LoongConfig::default();
     config.conversation.safe_lane_backpressure_guard_enabled = true;
     config
         .conversation
@@ -483,7 +496,7 @@ fn safe_lane_backpressure_budget_detects_attempt_exhaustion() {
 
 #[test]
 fn decide_safe_lane_failure_route_applies_backpressure_after_retryable_base_route() {
-    let mut config = LoongClawConfig::default();
+    let mut config = LoongConfig::default();
     config.conversation.safe_lane_backpressure_guard_enabled = true;
     config
         .conversation
@@ -511,7 +524,7 @@ fn decide_safe_lane_failure_route_applies_backpressure_after_retryable_base_rout
 
 #[test]
 fn decide_safe_lane_failure_route_applies_session_governor_override_to_exhausted_budget() {
-    let config = LoongClawConfig::default();
+    let config = LoongConfig::default();
     let route = decide_safe_lane_failure_route(
         &config,
         &TurnFailure::retryable("safe_lane_plan_node_retryable_error", "transient"),
@@ -564,7 +577,7 @@ fn summarize_governor_history_signals_ignores_unknown_backpressure_like_strings(
 
 #[test]
 fn session_governor_engages_on_failed_final_status_threshold() {
-    let mut config = LoongClawConfig::default();
+    let mut config = LoongConfig::default();
     config.conversation.safe_lane_session_governor_enabled = true;
     config
         .conversation
@@ -593,7 +606,7 @@ fn session_governor_engages_on_failed_final_status_threshold() {
 
 #[test]
 fn session_governor_engages_on_backpressure_threshold() {
-    let mut config = LoongClawConfig::default();
+    let mut config = LoongConfig::default();
     config.conversation.safe_lane_session_governor_enabled = true;
     config
         .conversation
@@ -625,7 +638,7 @@ fn session_governor_engages_on_backpressure_threshold() {
 
 #[test]
 fn session_governor_stays_disabled_when_thresholds_not_reached() {
-    let mut config = LoongClawConfig::default();
+    let mut config = LoongConfig::default();
     config.conversation.safe_lane_session_governor_enabled = true;
     config
         .conversation
@@ -649,7 +662,7 @@ fn session_governor_stays_disabled_when_thresholds_not_reached() {
 
 #[test]
 fn session_governor_engages_on_trend_threshold_when_counts_are_low() {
-    let mut config = LoongClawConfig::default();
+    let mut config = LoongConfig::default();
     config.conversation.safe_lane_session_governor_enabled = true;
     config
         .conversation
@@ -696,7 +709,7 @@ fn session_governor_engages_on_trend_threshold_when_counts_are_low() {
 
 #[test]
 fn session_governor_recovery_threshold_can_suppress_engagement() {
-    let mut config = LoongClawConfig::default();
+    let mut config = LoongConfig::default();
     config.conversation.safe_lane_session_governor_enabled = true;
     config
         .conversation

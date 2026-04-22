@@ -1,6 +1,6 @@
 use super::*;
-use loongclaw_daemon::work_unit_cli as daemon_work_unit_cli;
-use loongclaw_daemon::work_unit_cli as work_unit_runtime;
+use loong_daemon::work_unit_cli as daemon_work_unit_cli;
+use loong_daemon::work_unit_cli as work_unit_runtime;
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -24,10 +24,10 @@ fn write_work_unit_config(root: &Path) -> PathBuf {
     fs::create_dir_all(root).expect("create fixture root");
 
     let sqlite_path = root.join("memory.sqlite3");
-    let mut config = mvp::config::LoongClawConfig::default();
+    let mut config = mvp::config::LoongConfig::default();
     config.memory.sqlite_path = sqlite_path.display().to_string();
 
-    let config_path = root.join("loongclaw.toml");
+    let config_path = root.join("loong.toml");
     mvp::config::write(Some(config_path.to_string_lossy().as_ref()), &config, true)
         .expect("write config fixture");
     config_path
@@ -48,7 +48,7 @@ fn render_output(bytes: &[u8]) -> String {
 }
 
 fn run_work_unit_cli_process(args: Vec<String>, context: &str) {
-    let output = Command::new(env!("CARGO_BIN_EXE_loongclaw"))
+    let output = Command::new(env!("CARGO_BIN_EXE_loong"))
         .args(args)
         .output()
         .expect(context);
@@ -66,7 +66,7 @@ fn run_work_unit_cli_process(args: Vec<String>, context: &str) {
 
 #[test]
 fn cli_work_unit_help_mentions_durable_runtime_commands() {
-    let help = render_cli_help(["work-unit"]);
+    let help = render_cli_help(["runtime", "work-unit"]);
 
     assert!(
         help.contains("Create one durable work unit record"),
@@ -93,11 +93,12 @@ fn cli_work_unit_help_mentions_durable_runtime_commands() {
 #[test]
 fn cli_work_unit_parse_accepts_full_complete_command_shape() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
+        "runtime",
         "work-unit",
         "complete",
         "--config",
-        "/tmp/loongclaw.toml",
+        "/tmp/loong.toml",
         "--id",
         "wu-demo",
         "--owner",
@@ -119,7 +120,10 @@ fn cli_work_unit_parse_accepts_full_complete_command_shape() {
     .expect("work-unit complete CLI should parse");
 
     let command = cli.command.expect("CLI should parse a subcommand");
-    let Commands::WorkUnit { command } = command else {
+    let Commands::Runtime {
+        command: loong_daemon::runtime_cli::RuntimeCommands::WorkUnit { command },
+    } = command
+    else {
         panic!("unexpected CLI parse result: {command:?}");
     };
     let work_unit_runtime::WorkUnitCommands::Complete(options) = command else {
@@ -141,11 +145,12 @@ fn cli_work_unit_parse_accepts_full_complete_command_shape() {
 #[test]
 fn cli_work_unit_parse_accepts_update_command_shape() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
+        "runtime",
         "work-unit",
         "update",
         "--config",
-        "/tmp/loongclaw.toml",
+        "/tmp/loong.toml",
         "--id",
         "wu-demo",
         "--title",
@@ -169,7 +174,10 @@ fn cli_work_unit_parse_accepts_update_command_shape() {
     .expect("work-unit update CLI should parse");
 
     let command = cli.command.expect("CLI should parse a subcommand");
-    let Commands::WorkUnit { command } = command else {
+    let Commands::Runtime {
+        command: loong_daemon::runtime_cli::RuntimeCommands::WorkUnit { command },
+    } = command
+    else {
         panic!("unexpected CLI parse result: {command:?}");
     };
     let work_unit_runtime::WorkUnitCommands::Update(options) = command else {
@@ -197,7 +205,7 @@ fn cli_work_unit_parse_accepts_update_command_shape() {
 #[test]
 fn work_unit_cli_create_claim_complete_and_archive_round_trip() {
     let _env_lock = super::lock_daemon_test_environment();
-    let root = unique_temp_dir("loongclaw-work-unit-cli");
+    let root = unique_temp_dir("loong-work-unit-cli");
     let config_path = write_work_unit_config(&root);
     let config_path_string = config_path.display().to_string();
     let scenario_id = root
@@ -209,6 +217,7 @@ fn work_unit_cli_create_claim_complete_and_archive_round_trip() {
 
     run_work_unit_cli_process(
         vec![
+            "runtime".to_owned(),
             "work-unit".to_owned(),
             "create".to_owned(),
             "--config".to_owned(),
@@ -238,7 +247,7 @@ fn work_unit_cli_create_claim_complete_and_archive_round_trip() {
             "--source-kind".to_owned(),
             "discord".to_owned(),
             "--project-id".to_owned(),
-            "loongclaw-ai/server".to_owned(),
+            "loong-ai/server".to_owned(),
             "--channel-id".to_owned(),
             "feature".to_owned(),
             "--thread-id".to_owned(),
@@ -254,6 +263,7 @@ fn work_unit_cli_create_claim_complete_and_archive_round_trip() {
 
     run_work_unit_cli_process(
         vec![
+            "runtime".to_owned(),
             "work-unit".to_owned(),
             "assign".to_owned(),
             "--config".to_owned(),
@@ -273,6 +283,7 @@ fn work_unit_cli_create_claim_complete_and_archive_round_trip() {
 
     run_work_unit_cli_process(
         vec![
+            "runtime".to_owned(),
             "work-unit".to_owned(),
             "update".to_owned(),
             "--config".to_owned(),
@@ -302,6 +313,7 @@ fn work_unit_cli_create_claim_complete_and_archive_round_trip() {
 
     run_work_unit_cli_process(
         vec![
+            "runtime".to_owned(),
             "work-unit".to_owned(),
             "note".to_owned(),
             "--config".to_owned(),
@@ -321,6 +333,7 @@ fn work_unit_cli_create_claim_complete_and_archive_round_trip() {
 
     run_work_unit_cli_process(
         vec![
+            "runtime".to_owned(),
             "work-unit".to_owned(),
             "claim".to_owned(),
             "--config".to_owned(),
@@ -346,7 +359,7 @@ fn work_unit_cli_create_claim_complete_and_archive_round_trip() {
     assert_eq!(updated_snapshot.work_unit.title, "Durable runtime slice v2");
     assert_eq!(
         updated_snapshot.work_unit.status,
-        loongclaw_contracts::WorkUnitStatus::WaitingReview
+        loong_contracts::WorkUnitStatus::WaitingReview
     );
     assert_eq!(
         updated_snapshot.work_unit.blocking_reason.as_deref(),
@@ -364,6 +377,7 @@ fn work_unit_cli_create_claim_complete_and_archive_round_trip() {
 
     run_work_unit_cli_process(
         vec![
+            "runtime".to_owned(),
             "work-unit".to_owned(),
             "update".to_owned(),
             "--config".to_owned(),
@@ -413,7 +427,7 @@ fn work_unit_cli_create_claim_complete_and_archive_round_trip() {
         .expect("running work unit snapshot");
     assert_eq!(
         running_snapshot.work_unit.status,
-        loongclaw_contracts::WorkUnitStatus::Running
+        loong_contracts::WorkUnitStatus::Running
     );
 
     let completed_snapshot = repository
@@ -431,7 +445,7 @@ fn work_unit_cli_create_claim_complete_and_archive_round_trip() {
         .expect("completed work unit snapshot");
     assert_eq!(
         completed_snapshot.work_unit.status,
-        loongclaw_contracts::WorkUnitStatus::Completed
+        loong_contracts::WorkUnitStatus::Completed
     );
 
     let archived_snapshot = repository
@@ -444,7 +458,7 @@ fn work_unit_cli_create_claim_complete_and_archive_round_trip() {
         .expect("archived work unit snapshot");
     assert_eq!(
         archived_snapshot.work_unit.status,
-        loongclaw_contracts::WorkUnitStatus::Archived
+        loong_contracts::WorkUnitStatus::Archived
     );
 
     let snapshot = repository
@@ -457,7 +471,7 @@ fn work_unit_cli_create_claim_complete_and_archive_round_trip() {
 
     assert_eq!(
         snapshot.work_unit.status,
-        loongclaw_contracts::WorkUnitStatus::Archived
+        loong_contracts::WorkUnitStatus::Archived
     );
     assert_eq!(
         snapshot.work_unit.result_payload_json,
@@ -500,16 +514,16 @@ fn work_unit_cli_create_claim_complete_and_archive_round_trip() {
 #[test]
 fn work_unit_cli_update_text_output_uses_snake_case_status_labels() {
     let _env_lock = super::lock_daemon_test_environment();
-    let root = unique_temp_dir("loongclaw-work-unit-cli-text");
+    let root = unique_temp_dir("loong-work-unit-cli-text");
     let config_path = write_work_unit_config(&root);
     let repository = load_work_unit_repository(&config_path);
-    let retry_policy = loongclaw_contracts::WorkUnitRetryPolicy {
+    let retry_policy = loong_contracts::WorkUnitRetryPolicy {
         max_attempts: 2,
         initial_backoff_ms: 1_000,
         max_backoff_ms: 8_000,
     };
-    let source_ref = loongclaw_contracts::WorkUnitSourceRef {
-        source_kind: loongclaw_contracts::WorkSourceKind::Manual,
+    let source_ref = loong_contracts::WorkUnitSourceRef {
+        source_kind: loong_contracts::WorkSourceKind::Manual,
         project_id: None,
         channel_id: None,
         thread_id: None,
@@ -519,12 +533,12 @@ fn work_unit_cli_update_text_output_uses_snake_case_status_labels() {
     };
     let new_work_unit = mvp::work::repository::NewWorkUnitRecord {
         work_unit_id: Some("wu-text".to_owned()),
-        kind: loongclaw_contracts::WorkUnitKind::Feature,
+        kind: loong_contracts::WorkUnitKind::Feature,
         title: "text renderer".to_owned(),
         description: "verify non-json output".to_owned(),
         source_ref,
-        status: loongclaw_contracts::WorkUnitStatus::Ready,
-        priority: loongclaw_contracts::WorkUnitPriority::Normal,
+        status: loong_contracts::WorkUnitStatus::Ready,
+        priority: loong_contracts::WorkUnitPriority::Normal,
         retry_policy,
         parent_work_unit_id: None,
         next_run_at_ms: Some(1_000),
@@ -534,8 +548,9 @@ fn work_unit_cli_update_text_output_uses_snake_case_status_labels() {
         .expect("create work unit fixture");
 
     let config_path_string = config_path.display().to_string();
-    let output = Command::new(env!("CARGO_BIN_EXE_loongclaw"))
+    let output = Command::new(env!("CARGO_BIN_EXE_loong"))
         .args([
+            "runtime",
             "work-unit",
             "update",
             "--config",

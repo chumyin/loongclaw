@@ -1,13 +1,9 @@
 use std::collections::BTreeMap;
 
-use loongclaw_contracts::SecretRef;
+use loong_contracts::SecretRef;
 use serde::{Deserialize, Serialize};
 
 use crate::CliResult;
-use crate::prompt::{
-    DEFAULT_PROMPT_PACK_ID, PromptPersonality, PromptRenderInput, render_default_system_prompt,
-    render_system_prompt,
-};
 
 use super::irc::{
     IRC_NICKNAME_ENV, IRC_PASSWORD_ENV, IRC_SERVER_ENV, default_irc_nickname_env,
@@ -32,14 +28,24 @@ mod twitch;
 
 #[allow(unused_imports)]
 pub use self::twitch::{ResolvedTwitchChannelConfig, TwitchAccountConfig, TwitchChannelConfig};
+#[path = "channels_account_resolution.rs"]
+mod account_resolution;
 #[path = "channels_defaults.rs"]
 mod defaults;
+#[path = "channels_email_support.rs"]
+mod email_support;
+#[path = "channels_shared_types.rs"]
+mod shared_types;
 
 use self::defaults::*;
+pub(crate) use self::email_support::parse_email_smtp_endpoint;
+use self::email_support::*;
+use account_resolution::*;
 #[path = "channels_validation.rs"]
 mod validation_support;
 
 use self::validation_support::*;
+pub(crate) use account_resolution::normalize_channel_account_id;
 #[allow(unused_imports)]
 pub use bridge::{
     OnebotAccountConfig, OnebotChannelConfig, QqbotAccountConfig, QqbotChannelConfig,
@@ -48,127 +54,33 @@ pub use bridge::{
 };
 pub use nostr_impl::{NostrAccountConfig, NostrChannelConfig, ResolvedNostrChannelConfig};
 pub(crate) use nostr_impl::{parse_nostr_private_key_hex, parse_nostr_public_key_hex};
+pub use shared_types::{
+    ChannelAccountIdentity, ChannelAccountIdentitySource, ChannelAcpConfig,
+    ChannelDefaultAccountSelection, ChannelDefaultAccountSelectionSource,
+    ChannelResolvedAccountRoute, CliChannelConfig, FeishuDomain, TelegramStreamingMode,
+    WebhookPayloadFormat,
+};
+pub(crate) use shared_types::{
+    DINGTALK_SECRET_ENV, DINGTALK_WEBHOOK_URL_ENV, DISCORD_APPLICATION_ID_ENV,
+    DISCORD_BOT_TOKEN_ENV, EMAIL_IMAP_PASSWORD_ENV, EMAIL_IMAP_USERNAME_ENV,
+    EMAIL_SMTP_PASSWORD_ENV, EMAIL_SMTP_USERNAME_ENV, EmailSmtpEndpoint, FEISHU_APP_ID_ENV,
+    FEISHU_APP_SECRET_ENV, FEISHU_ENCRYPT_KEY_ENV, FEISHU_VERIFICATION_TOKEN_ENV,
+    GOOGLE_CHAT_WEBHOOK_URL_ENV, IMESSAGE_BRIDGE_TOKEN_ENV, IMESSAGE_BRIDGE_URL_ENV,
+    LINE_CHANNEL_ACCESS_TOKEN_ENV, LINE_CHANNEL_SECRET_ENV, MATRIX_ACCESS_TOKEN_ENV,
+    MATTERMOST_BOT_TOKEN_ENV, MATTERMOST_SERVER_URL_ENV, NEXTCLOUD_TALK_SERVER_URL_ENV,
+    NEXTCLOUD_TALK_SHARED_SECRET_ENV, NOSTR_PRIVATE_KEY_ENV, NOSTR_RELAY_URLS_ENV,
+    ONEBOT_ACCESS_TOKEN_ENV, ONEBOT_WEBSOCKET_URL_ENV, QQBOT_APP_ID_ENV, QQBOT_CLIENT_SECRET_ENV,
+    SIGNAL_ACCOUNT_ENV, SIGNAL_SERVICE_URL_ENV, SLACK_BOT_TOKEN_ENV,
+    SYNOLOGY_CHAT_INCOMING_URL_ENV, SYNOLOGY_CHAT_TOKEN_ENV, TEAMS_APP_ID_ENV,
+    TEAMS_APP_PASSWORD_ENV, TEAMS_TENANT_ID_ENV, TEAMS_WEBHOOK_URL_ENV, TELEGRAM_BOT_TOKEN_ENV,
+    TLON_CODE_ENV, TLON_SHIP_ENV, TLON_URL_ENV, TWITCH_ACCESS_TOKEN_ENV, WEBHOOK_AUTH_TOKEN_ENV,
+    WEBHOOK_ENDPOINT_URL_ENV, WEBHOOK_SIGNING_SECRET_ENV, WECOM_BOT_ID_ENV, WECOM_SECRET_ENV,
+    WEIXIN_BRIDGE_ACCESS_TOKEN_ENV, WEIXIN_BRIDGE_URL_ENV, WHATSAPP_ACCESS_TOKEN_ENV,
+    WHATSAPP_APP_SECRET_ENV, WHATSAPP_PHONE_NUMBER_ID_ENV, WHATSAPP_VERIFY_TOKEN_ENV,
+};
 use signal_impl::{
     default_signal_account_env, default_signal_service_url, default_signal_service_url_env,
 };
-
-pub(crate) const TELEGRAM_BOT_TOKEN_ENV: &str = "TELEGRAM_BOT_TOKEN";
-pub(crate) const DISCORD_BOT_TOKEN_ENV: &str = "DISCORD_BOT_TOKEN";
-pub(crate) const DINGTALK_WEBHOOK_URL_ENV: &str = "DINGTALK_WEBHOOK_URL";
-pub(crate) const DINGTALK_SECRET_ENV: &str = "DINGTALK_SECRET";
-pub(crate) const EMAIL_SMTP_USERNAME_ENV: &str = "EMAIL_SMTP_USERNAME";
-pub(crate) const EMAIL_SMTP_PASSWORD_ENV: &str = "EMAIL_SMTP_PASSWORD";
-pub(crate) const EMAIL_IMAP_USERNAME_ENV: &str = "EMAIL_IMAP_USERNAME";
-pub(crate) const EMAIL_IMAP_PASSWORD_ENV: &str = "EMAIL_IMAP_PASSWORD";
-pub(crate) const FEISHU_APP_ID_ENV: &str = "FEISHU_APP_ID";
-pub(crate) const FEISHU_APP_SECRET_ENV: &str = "FEISHU_APP_SECRET";
-pub(crate) const FEISHU_VERIFICATION_TOKEN_ENV: &str = "FEISHU_VERIFICATION_TOKEN";
-pub(crate) const FEISHU_ENCRYPT_KEY_ENV: &str = "FEISHU_ENCRYPT_KEY";
-pub(crate) const GOOGLE_CHAT_WEBHOOK_URL_ENV: &str = "GOOGLE_CHAT_WEBHOOK_URL";
-pub(crate) const LINE_CHANNEL_ACCESS_TOKEN_ENV: &str = "LINE_CHANNEL_ACCESS_TOKEN";
-pub(crate) const LINE_CHANNEL_SECRET_ENV: &str = "LINE_CHANNEL_SECRET";
-pub(crate) const MATRIX_ACCESS_TOKEN_ENV: &str = "MATRIX_ACCESS_TOKEN";
-pub(crate) const MATTERMOST_SERVER_URL_ENV: &str = "MATTERMOST_SERVER_URL";
-pub(crate) const MATTERMOST_BOT_TOKEN_ENV: &str = "MATTERMOST_BOT_TOKEN";
-pub(crate) const NEXTCLOUD_TALK_SERVER_URL_ENV: &str = "NEXTCLOUD_TALK_SERVER_URL";
-pub(crate) const NEXTCLOUD_TALK_SHARED_SECRET_ENV: &str = "NEXTCLOUD_TALK_SHARED_SECRET";
-pub(crate) const SYNOLOGY_CHAT_TOKEN_ENV: &str = "SYNOLOGY_CHAT_TOKEN";
-pub(crate) const SYNOLOGY_CHAT_INCOMING_URL_ENV: &str = "SYNOLOGY_CHAT_INCOMING_URL";
-pub(crate) const SIGNAL_SERVICE_URL_ENV: &str = "SIGNAL_SERVICE_URL";
-pub(crate) const SIGNAL_ACCOUNT_ENV: &str = "SIGNAL_ACCOUNT";
-pub(crate) const TWITCH_ACCESS_TOKEN_ENV: &str = "TWITCH_ACCESS_TOKEN";
-pub(crate) const SLACK_BOT_TOKEN_ENV: &str = "SLACK_BOT_TOKEN";
-pub(crate) const TEAMS_APP_ID_ENV: &str = "TEAMS_APP_ID";
-pub(crate) const TEAMS_APP_PASSWORD_ENV: &str = "TEAMS_APP_PASSWORD";
-pub(crate) const TEAMS_TENANT_ID_ENV: &str = "TEAMS_TENANT_ID";
-pub(crate) const TEAMS_WEBHOOK_URL_ENV: &str = "TEAMS_WEBHOOK_URL";
-pub(crate) const IMESSAGE_BRIDGE_URL_ENV: &str = "IMESSAGE_BRIDGE_URL";
-pub(crate) const IMESSAGE_BRIDGE_TOKEN_ENV: &str = "IMESSAGE_BRIDGE_TOKEN";
-pub(crate) const NOSTR_RELAY_URLS_ENV: &str = "NOSTR_RELAY_URLS";
-pub(crate) const NOSTR_PRIVATE_KEY_ENV: &str = "NOSTR_PRIVATE_KEY";
-pub(crate) const TLON_SHIP_ENV: &str = "TLON_SHIP";
-pub(crate) const TLON_URL_ENV: &str = "TLON_URL";
-pub(crate) const TLON_CODE_ENV: &str = "TLON_CODE";
-pub(crate) const WEIXIN_BRIDGE_URL_ENV: &str = "WEIXIN_BRIDGE_URL";
-pub(crate) const WEIXIN_BRIDGE_ACCESS_TOKEN_ENV: &str = "WEIXIN_BRIDGE_ACCESS_TOKEN";
-pub(crate) const QQBOT_APP_ID_ENV: &str = "QQBOT_APP_ID";
-pub(crate) const QQBOT_CLIENT_SECRET_ENV: &str = "QQBOT_CLIENT_SECRET";
-pub(crate) const ONEBOT_WEBSOCKET_URL_ENV: &str = "ONEBOT_WEBSOCKET_URL";
-pub(crate) const ONEBOT_ACCESS_TOKEN_ENV: &str = "ONEBOT_ACCESS_TOKEN";
-pub(crate) const WHATSAPP_ACCESS_TOKEN_ENV: &str = "WHATSAPP_ACCESS_TOKEN";
-pub(crate) const WHATSAPP_PHONE_NUMBER_ID_ENV: &str = "WHATSAPP_PHONE_NUMBER_ID";
-pub(crate) const WHATSAPP_VERIFY_TOKEN_ENV: &str = "WHATSAPP_VERIFY_TOKEN";
-pub(crate) const WHATSAPP_APP_SECRET_ENV: &str = "WHATSAPP_APP_SECRET";
-pub(crate) const WECOM_BOT_ID_ENV: &str = "WECOM_BOT_ID";
-pub(crate) const WECOM_SECRET_ENV: &str = "WECOM_SECRET";
-pub(crate) const WEBHOOK_ENDPOINT_URL_ENV: &str = "WEBHOOK_ENDPOINT_URL";
-pub(crate) const WEBHOOK_AUTH_TOKEN_ENV: &str = "WEBHOOK_AUTH_TOKEN";
-pub(crate) const WEBHOOK_SIGNING_SECRET_ENV: &str = "WEBHOOK_SIGNING_SECRET";
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TelegramStreamingMode {
-    #[default]
-    Off,
-    Draft,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WebhookPayloadFormat {
-    #[default]
-    JsonText,
-    PlainText,
-}
-
-impl WebhookPayloadFormat {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::JsonText => "json_text",
-            Self::PlainText => "plain_text",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum EmailSmtpEndpoint {
-    RelayHost(String),
-    ConnectionUrl(String),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CliChannelConfig {
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    #[serde(default = "default_system_prompt")]
-    pub system_prompt: String,
-    #[serde(default = "default_prompt_pack_id")]
-    pub prompt_pack_id: Option<String>,
-    #[serde(default = "default_prompt_personality")]
-    pub personality: Option<PromptPersonality>,
-    #[serde(default)]
-    pub system_prompt_addendum: Option<String>,
-    #[serde(default = "default_exit_commands")]
-    pub exit_commands: Vec<String>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ChannelAcpConfig {
-    #[serde(default)]
-    pub bootstrap_mcp_servers: Vec<String>,
-    #[serde(default)]
-    pub working_directory: Option<String>,
-}
-
-impl ChannelAcpConfig {
-    pub fn resolved_working_directory(&self) -> Option<std::path::PathBuf> {
-        self.working_directory
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(std::path::PathBuf::from)
-    }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TelegramChannelConfig {
@@ -189,6 +101,10 @@ pub struct TelegramChannelConfig {
     #[serde(default)]
     pub allowed_chat_ids: Vec<i64>,
     #[serde(default)]
+    pub allowed_sender_ids: Vec<i64>,
+    #[serde(default)]
+    pub require_mention: bool,
+    #[serde(default)]
     pub acp: ChannelAcpConfig,
     #[serde(default)]
     pub streaming_mode: TelegramStreamingMode,
@@ -196,91 +112,6 @@ pub struct TelegramChannelConfig {
     pub ack_reactions: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub accounts: BTreeMap<String, TelegramAccountConfig>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum FeishuDomain {
-    #[default]
-    Feishu,
-    Lark,
-}
-
-impl FeishuDomain {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Feishu => "feishu",
-            Self::Lark => "lark",
-        }
-    }
-
-    pub fn default_base_url(self) -> &'static str {
-        match self {
-            Self::Feishu => "https://open.feishu.cn",
-            Self::Lark => "https://open.larksuite.com",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ChannelAccountIdentitySource {
-    Configured,
-    DerivedCredential,
-    Default,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ChannelDefaultAccountSelectionSource {
-    ExplicitDefault,
-    MappedDefault,
-    Fallback,
-    RuntimeIdentity,
-}
-
-impl ChannelDefaultAccountSelectionSource {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::ExplicitDefault => "explicit_default",
-            Self::MappedDefault => "mapped_default",
-            Self::Fallback => "fallback",
-            Self::RuntimeIdentity => "runtime_identity",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct ChannelAccountIdentity {
-    pub id: String,
-    pub label: String,
-    pub source: ChannelAccountIdentitySource,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct ChannelDefaultAccountSelection {
-    pub id: String,
-    pub source: ChannelDefaultAccountSelectionSource,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct ChannelResolvedAccountRoute {
-    pub requested_account_id: Option<String>,
-    pub configured_account_count: usize,
-    pub selected_configured_account_id: String,
-    pub default_account_source: ChannelDefaultAccountSelectionSource,
-}
-
-impl ChannelResolvedAccountRoute {
-    pub fn selected_by_default(&self) -> bool {
-        self.requested_account_id.is_none()
-    }
-
-    pub fn uses_implicit_fallback_default(&self) -> bool {
-        self.selected_by_default()
-            && self.configured_account_count > 1
-            && self.default_account_source == ChannelDefaultAccountSelectionSource::Fallback
-    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -300,6 +131,10 @@ pub struct TelegramAccountConfig {
     #[serde(default)]
     pub allowed_chat_ids: Option<Vec<i64>>,
     #[serde(default)]
+    pub allowed_sender_ids: Option<Vec<i64>>,
+    #[serde(default)]
+    pub require_mention: Option<bool>,
+    #[serde(default)]
     pub acp: Option<ChannelAcpConfig>,
     #[serde(default)]
     pub streaming_mode: Option<TelegramStreamingMode>,
@@ -318,6 +153,8 @@ pub struct ResolvedTelegramChannelConfig {
     pub base_url: String,
     pub polling_timeout_s: u64,
     pub allowed_chat_ids: Vec<i64>,
+    pub allowed_sender_ids: Vec<i64>,
+    pub require_mention: bool,
     pub acp: ChannelAcpConfig,
     pub streaming_mode: TelegramStreamingMode,
     pub ack_reactions: bool,
@@ -366,6 +203,8 @@ pub struct FeishuAccountConfig {
     #[serde(default)]
     pub allowed_chat_ids: Option<Vec<String>>,
     #[serde(default)]
+    pub allowed_sender_ids: Option<Vec<String>>,
+    #[serde(default)]
     pub ack_reactions: Option<bool>,
     #[serde(default)]
     pub ignore_bot_messages: Option<bool>,
@@ -411,6 +250,7 @@ pub struct ResolvedFeishuChannelConfig {
     pub encrypt_key: Option<SecretRef>,
     pub encrypt_key_env: Option<String>,
     pub allowed_chat_ids: Vec<String>,
+    pub allowed_sender_ids: Vec<String>,
     pub ack_reactions: bool,
     pub ignore_bot_messages: bool,
     pub acp: ChannelAcpConfig,
@@ -465,6 +305,10 @@ pub struct MatrixAccountConfig {
     #[serde(default)]
     pub allowed_room_ids: Option<Vec<String>>,
     #[serde(default)]
+    pub allowed_sender_ids: Option<Vec<String>>,
+    #[serde(default)]
+    pub require_mention: Option<bool>,
+    #[serde(default)]
     pub ignore_self_messages: Option<bool>,
     #[serde(default)]
     pub acp: Option<ChannelAcpConfig>,
@@ -482,6 +326,8 @@ pub struct ResolvedMatrixChannelConfig {
     pub base_url: Option<String>,
     pub sync_timeout_s: u64,
     pub allowed_room_ids: Vec<String>,
+    pub allowed_sender_ids: Vec<String>,
+    pub require_mention: bool,
     pub ignore_self_messages: bool,
     pub acp: ChannelAcpConfig,
 }
@@ -523,6 +369,8 @@ pub struct WecomAccountConfig {
     #[serde(default)]
     pub allowed_conversation_ids: Option<Vec<String>>,
     #[serde(default)]
+    pub allowed_sender_ids: Option<Vec<String>>,
+    #[serde(default)]
     pub acp: Option<ChannelAcpConfig>,
 }
 
@@ -540,6 +388,7 @@ pub struct ResolvedWecomChannelConfig {
     pub ping_interval_s: u64,
     pub reconnect_interval_s: u64,
     pub allowed_conversation_ids: Vec<String>,
+    pub allowed_sender_ids: Vec<String>,
     pub acp: ChannelAcpConfig,
 }
 
@@ -600,6 +449,8 @@ pub struct FeishuChannelConfig {
     pub encrypt_key_env: Option<String>,
     #[serde(default)]
     pub allowed_chat_ids: Vec<String>,
+    #[serde(default)]
+    pub allowed_sender_ids: Vec<String>,
     #[serde(default = "default_true")]
     pub ack_reactions: bool,
     #[serde(default = "default_true")]
@@ -630,6 +481,10 @@ pub struct MatrixChannelConfig {
     pub sync_timeout_s: u64,
     #[serde(default)]
     pub allowed_room_ids: Vec<String>,
+    #[serde(default)]
+    pub allowed_sender_ids: Vec<String>,
+    #[serde(default)]
+    pub require_mention: bool,
     #[serde(default = "default_true")]
     pub ignore_self_messages: bool,
     #[serde(default)]
@@ -662,6 +517,8 @@ pub struct WecomChannelConfig {
     pub reconnect_interval_s: u64,
     #[serde(default)]
     pub allowed_conversation_ids: Vec<String>,
+    #[serde(default)]
+    pub allowed_sender_ids: Vec<String>,
     #[serde(default)]
     pub acp: ChannelAcpConfig,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -942,6 +799,12 @@ pub struct DiscordAccountConfig {
     #[serde(default)]
     pub bot_token_env: Option<String>,
     #[serde(default)]
+    pub application_id: Option<String>,
+    #[serde(default)]
+    pub application_id_env: Option<String>,
+    #[serde(default)]
+    pub allowed_guild_ids: Option<Vec<String>>,
+    #[serde(default)]
     pub api_base_url: Option<String>,
 }
 
@@ -953,6 +816,9 @@ pub struct ResolvedDiscordChannelConfig {
     pub enabled: bool,
     pub bot_token: Option<SecretRef>,
     pub bot_token_env: Option<String>,
+    pub application_id: Option<String>,
+    pub application_id_env: Option<String>,
+    pub allowed_guild_ids: Vec<String>,
     pub api_base_url: Option<String>,
 }
 
@@ -968,6 +834,13 @@ impl ResolvedDiscordChannelConfig {
             .filter(|value| !value.is_empty())
             .map(str::to_owned)
             .unwrap_or_else(default_discord_api_base_url)
+    }
+
+    pub fn application_id(&self) -> Option<String> {
+        resolve_string_with_legacy_env(
+            self.application_id.as_deref(),
+            self.application_id_env.as_deref(),
+        )
     }
 }
 
@@ -1508,6 +1381,12 @@ pub struct DiscordChannelConfig {
     #[serde(default = "default_discord_bot_token_env")]
     pub bot_token_env: Option<String>,
     #[serde(default)]
+    pub application_id: Option<String>,
+    #[serde(default)]
+    pub application_id_env: Option<String>,
+    #[serde(default)]
+    pub allowed_guild_ids: Vec<String>,
+    #[serde(default)]
     pub api_base_url: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub accounts: BTreeMap<String, DiscordAccountConfig>,
@@ -1894,62 +1773,6 @@ pub struct TlonChannelConfig {
     pub accounts: BTreeMap<String, TlonAccountConfig>,
 }
 
-impl Default for CliChannelConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            system_prompt: default_system_prompt(),
-            prompt_pack_id: default_prompt_pack_id(),
-            personality: default_prompt_personality(),
-            system_prompt_addendum: None,
-            exit_commands: default_exit_commands(),
-        }
-    }
-}
-
-impl CliChannelConfig {
-    pub fn uses_native_prompt_pack(&self) -> bool {
-        self.prompt_pack_id().is_some_and(|value| !value.is_empty())
-    }
-
-    pub fn prompt_pack_id(&self) -> Option<&str> {
-        self.prompt_pack_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-    }
-
-    pub fn resolved_personality(&self) -> PromptPersonality {
-        self.personality.unwrap_or_default()
-    }
-
-    pub fn rendered_native_system_prompt(&self) -> String {
-        render_system_prompt(PromptRenderInput {
-            personality: self.resolved_personality(),
-            addendum: self.system_prompt_addendum.clone(),
-        })
-    }
-
-    pub fn resolved_system_prompt(&self) -> String {
-        if self.uses_native_prompt_pack() {
-            return self.rendered_native_system_prompt();
-        }
-
-        let inline = self.system_prompt.trim();
-        if !inline.is_empty() {
-            return inline.to_owned();
-        }
-
-        render_default_system_prompt()
-    }
-
-    pub fn refresh_native_system_prompt(&mut self) {
-        if self.uses_native_prompt_pack() {
-            self.system_prompt = self.rendered_native_system_prompt();
-        }
-    }
-}
-
 impl Default for TelegramChannelConfig {
     fn default() -> Self {
         Self {
@@ -1961,6 +1784,8 @@ impl Default for TelegramChannelConfig {
             base_url: default_telegram_base_url(),
             polling_timeout_s: default_telegram_timeout_seconds(),
             allowed_chat_ids: Vec::new(),
+            allowed_sender_ids: Vec::new(),
+            require_mention: false,
             acp: ChannelAcpConfig::default(),
             streaming_mode: TelegramStreamingMode::default(),
             ack_reactions: true,
@@ -2080,6 +1905,12 @@ impl TelegramChannelConfig {
             allowed_chat_ids: account_override
                 .and_then(|account| account.allowed_chat_ids.clone())
                 .unwrap_or_else(|| self.allowed_chat_ids.clone()),
+            allowed_sender_ids: account_override
+                .and_then(|account| account.allowed_sender_ids.clone())
+                .unwrap_or_else(|| self.allowed_sender_ids.clone()),
+            require_mention: account_override
+                .and_then(|account| account.require_mention)
+                .unwrap_or(self.require_mention),
             acp: resolve_channel_acp_config(
                 &self.acp,
                 account_override.and_then(|account| account.acp.as_ref()),
@@ -2104,6 +1935,8 @@ impl TelegramChannelConfig {
             base_url: merged.base_url,
             polling_timeout_s: merged.polling_timeout_s,
             allowed_chat_ids: merged.allowed_chat_ids,
+            allowed_sender_ids: merged.allowed_sender_ids,
+            require_mention: merged.require_mention,
             acp: merged.acp,
             streaming_mode: merged.streaming_mode,
             ack_reactions: merged.ack_reactions,
@@ -2181,6 +2014,7 @@ impl Default for FeishuChannelConfig {
             encrypt_key: None,
             encrypt_key_env: Some(FEISHU_ENCRYPT_KEY_ENV.to_owned()),
             allowed_chat_ids: Vec::new(),
+            allowed_sender_ids: Vec::new(),
             ack_reactions: true,
             ignore_bot_messages: true,
             acp: ChannelAcpConfig::default(),
@@ -2201,6 +2035,8 @@ impl Default for MatrixChannelConfig {
             base_url: None,
             sync_timeout_s: default_matrix_sync_timeout_seconds(),
             allowed_room_ids: Vec::new(),
+            allowed_sender_ids: Vec::new(),
+            require_mention: false,
             ignore_self_messages: true,
             acp: ChannelAcpConfig::default(),
             accounts: BTreeMap::new(),
@@ -2222,6 +2058,7 @@ impl Default for WecomChannelConfig {
             ping_interval_s: default_wecom_ping_interval_seconds(),
             reconnect_interval_s: default_wecom_reconnect_interval_seconds(),
             allowed_conversation_ids: Vec::new(),
+            allowed_sender_ids: Vec::new(),
             acp: ChannelAcpConfig::default(),
             accounts: BTreeMap::new(),
         }
@@ -2287,6 +2124,9 @@ impl Default for DiscordChannelConfig {
             default_account: None,
             bot_token: None,
             bot_token_env: Some(DISCORD_BOT_TOKEN_ENV.to_owned()),
+            application_id: None,
+            application_id_env: None,
+            allowed_guild_ids: Vec::new(),
             api_base_url: None,
             accounts: BTreeMap::new(),
         }
@@ -2752,6 +2592,9 @@ impl FeishuChannelConfig {
             allowed_chat_ids: account_override
                 .and_then(|account| account.allowed_chat_ids.clone())
                 .unwrap_or_else(|| self.allowed_chat_ids.clone()),
+            allowed_sender_ids: account_override
+                .and_then(|account| account.allowed_sender_ids.clone())
+                .unwrap_or_else(|| self.allowed_sender_ids.clone()),
             ack_reactions: account_override
                 .and_then(|account| account.ack_reactions)
                 .unwrap_or(self.ack_reactions),
@@ -2786,6 +2629,7 @@ impl FeishuChannelConfig {
             encrypt_key: merged.encrypt_key,
             encrypt_key_env: merged.encrypt_key_env,
             allowed_chat_ids: merged.allowed_chat_ids,
+            allowed_sender_ids: merged.allowed_sender_ids,
             ack_reactions: merged.ack_reactions,
             ignore_bot_messages: merged.ignore_bot_messages,
             acp: merged.acp,
@@ -2969,6 +2813,12 @@ impl MatrixChannelConfig {
             allowed_room_ids: account_override
                 .and_then(|account| account.allowed_room_ids.clone())
                 .unwrap_or_else(|| self.allowed_room_ids.clone()),
+            allowed_sender_ids: account_override
+                .and_then(|account| account.allowed_sender_ids.clone())
+                .unwrap_or_else(|| self.allowed_sender_ids.clone()),
+            require_mention: account_override
+                .and_then(|account| account.require_mention)
+                .unwrap_or(self.require_mention),
             ignore_self_messages: account_override
                 .and_then(|account| account.ignore_self_messages)
                 .unwrap_or(self.ignore_self_messages),
@@ -2991,6 +2841,8 @@ impl MatrixChannelConfig {
             base_url: merged.base_url,
             sync_timeout_s: merged.sync_timeout_s,
             allowed_room_ids: merged.allowed_room_ids,
+            allowed_sender_ids: merged.allowed_sender_ids,
+            require_mention: merged.require_mention,
             ignore_self_messages: merged.ignore_self_messages,
             acp: merged.acp,
         })
@@ -3180,6 +3032,9 @@ impl WecomChannelConfig {
             allowed_conversation_ids: account_override
                 .and_then(|account| account.allowed_conversation_ids.clone())
                 .unwrap_or_else(|| self.allowed_conversation_ids.clone()),
+            allowed_sender_ids: account_override
+                .and_then(|account| account.allowed_sender_ids.clone())
+                .unwrap_or_else(|| self.allowed_sender_ids.clone()),
             acp: resolve_channel_acp_config(
                 &self.acp,
                 account_override.and_then(|account| account.acp.as_ref()),
@@ -3201,6 +3056,7 @@ impl WecomChannelConfig {
             ping_interval_s: merged.ping_interval_s.clamp(1, 300),
             reconnect_interval_s: merged.reconnect_interval_s.clamp(1, 300),
             allowed_conversation_ids: merged.allowed_conversation_ids,
+            allowed_sender_ids: merged.allowed_sender_ids,
             acp: merged.acp,
         })
     }
@@ -3981,7 +3837,7 @@ impl EmailChannelConfig {
                 let issue = build_email_invalid_value_issue(
                     "email.from_address",
                     "mailbox parse failed",
-                    "Use a valid RFC 5322 mailbox like `ops@example.com` or `LoongClaw <ops@example.com>`.",
+                    "Use a valid RFC 5322 mailbox like `ops@example.com` or `Loong <ops@example.com>`.",
                 );
                 issues.push(issue);
             }
@@ -4078,7 +3934,7 @@ impl EmailChannelConfig {
                     let issue = build_email_invalid_value_issue(
                         field_path.as_str(),
                         "mailbox parse failed",
-                        "Use a valid RFC 5322 mailbox like `ops@example.com` or `LoongClaw <ops@example.com>`.",
+                        "Use a valid RFC 5322 mailbox like `ops@example.com` or `Loong <ops@example.com>`.",
                     );
                     issues.push(issue);
                 }
@@ -4302,6 +4158,12 @@ impl DiscordChannelConfig {
             self.bot_token_env.as_deref(),
             "discord.bot_token",
         );
+        validate_discord_env_pointer(
+            &mut issues,
+            "discord.application_id_env",
+            self.application_id_env.as_deref(),
+            "discord.application_id",
+        );
         validate_discord_secret_ref_env_pointer(
             &mut issues,
             "discord.bot_token",
@@ -4316,6 +4178,14 @@ impl DiscordChannelConfig {
                 bot_token_env_field_path.as_str(),
                 account.bot_token_env.as_deref(),
                 bot_token_field_path.as_str(),
+            );
+            let application_id_field_path = format!("discord.accounts.{account_id}.application_id");
+            let application_id_env_field_path = format!("{application_id_field_path}_env");
+            validate_discord_env_pointer(
+                &mut issues,
+                application_id_env_field_path.as_str(),
+                account.application_id_env.as_deref(),
+                application_id_field_path.as_str(),
             );
             validate_discord_secret_ref_env_pointer(
                 &mut issues,
@@ -4389,6 +4259,15 @@ impl DiscordChannelConfig {
             bot_token_env: account_override
                 .and_then(|account| account.bot_token_env.clone())
                 .or_else(|| self.bot_token_env.clone()),
+            application_id: account_override
+                .and_then(|account| account.application_id.clone())
+                .or_else(|| self.application_id.clone()),
+            application_id_env: account_override
+                .and_then(|account| account.application_id_env.clone())
+                .or_else(|| self.application_id_env.clone()),
+            allowed_guild_ids: account_override
+                .and_then(|account| account.allowed_guild_ids.clone())
+                .unwrap_or_else(|| self.allowed_guild_ids.clone()),
             api_base_url: account_override
                 .and_then(|account| account.api_base_url.clone())
                 .or_else(|| self.api_base_url.clone()),
@@ -4403,6 +4282,9 @@ impl DiscordChannelConfig {
             enabled: merged.enabled,
             bot_token: merged.bot_token,
             bot_token_env: merged.bot_token_env,
+            application_id: merged.application_id,
+            application_id_env: merged.application_id_env,
+            allowed_guild_ids: merged.allowed_guild_ids,
             api_base_url: merged.api_base_url,
         })
     }
@@ -6468,433 +6350,6 @@ impl TlonChannelConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ResolvedConfiguredAccount {
-    id: String,
-    label: String,
-    account_key: Option<String>,
-}
-
-fn default_channel_account_identity() -> ChannelAccountIdentity {
-    ChannelAccountIdentity {
-        id: "default".to_owned(),
-        label: "default".to_owned(),
-        source: ChannelAccountIdentitySource::Default,
-    }
-}
-
-fn resolve_configured_account_identity(raw: Option<&str>) -> Option<(String, String)> {
-    let label = raw.map(str::trim).filter(|value| !value.is_empty())?;
-    if !label.chars().any(|value| value.is_ascii_alphanumeric()) {
-        return None;
-    }
-    Some((normalize_channel_account_id(label), label.to_owned()))
-}
-
-fn resolve_telegram_bot_id_from_token(token: &str) -> Option<&str> {
-    let bot_id = token.split(':').next()?.trim();
-    if bot_id.is_empty() || !bot_id.chars().all(|value| value.is_ascii_digit()) {
-        return None;
-    }
-    Some(bot_id)
-}
-
-fn resolve_string_with_legacy_env(raw: Option<&str>, env_key: Option<&str>) -> Option<String> {
-    let inline = raw
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned);
-    if inline.is_some() {
-        return inline;
-    }
-
-    let env_name = env_key.map(str::trim).filter(|value| !value.is_empty())?;
-    let env_value = std::env::var(env_name).ok()?;
-    let trimmed_value = env_value.trim();
-    if trimmed_value.is_empty() {
-        return None;
-    }
-    Some(trimmed_value.to_owned())
-}
-
-fn resolve_string_list_with_legacy_env(
-    raw: Option<&[String]>,
-    env_key: Option<&str>,
-) -> Vec<String> {
-    let inline = raw.map(normalize_inline_string_list).unwrap_or_default();
-    if !inline.is_empty() {
-        return inline;
-    }
-
-    let env_name = env_key.map(str::trim).filter(|value| !value.is_empty());
-    let Some(env_name) = env_name else {
-        return Vec::new();
-    };
-    let env_value = std::env::var(env_name).ok();
-    let Some(env_value) = env_value else {
-        return Vec::new();
-    };
-    parse_env_string_list(env_value.as_str())
-}
-
-fn normalize_inline_string_list(values: &[String]) -> Vec<String> {
-    values
-        .iter()
-        .map(String::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned)
-        .collect()
-}
-
-fn parse_env_string_list(raw: &str) -> Vec<String> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return Vec::new();
-    }
-
-    trimmed
-        .split([',', '\n'])
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned)
-        .collect()
-}
-
-pub(crate) fn parse_email_smtp_endpoint(raw: &str) -> CliResult<EmailSmtpEndpoint> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return Err("email smtp_host is empty".to_owned());
-    }
-
-    if trimmed.contains("://") {
-        let parsed_url = reqwest::Url::parse(trimmed)
-            .map_err(|error| format!("email smtp_host url is invalid: {error}"))?;
-        let scheme = parsed_url.scheme();
-        if scheme != "smtp" && scheme != "smtps" {
-            return Err(format!(
-                "email smtp_host url must use smtp:// or smtps://, got {scheme}://"
-            ));
-        }
-
-        let host = parsed_url
-            .host_str()
-            .map(str::trim)
-            .filter(|value| !value.is_empty());
-        if host.is_none() {
-            return Err("email smtp_host url is missing a host".to_owned());
-        }
-
-        return Ok(EmailSmtpEndpoint::ConnectionUrl(trimmed.to_owned()));
-    }
-
-    if trimmed.chars().any(char::is_whitespace) {
-        return Err("email smtp_host must not contain whitespace".to_owned());
-    }
-    if trimmed.contains('/') || trimmed.contains('?') || trimmed.contains('#') {
-        return Err(
-            "email smtp_host must be a bare host or a full smtp:// or smtps:// URL".to_owned(),
-        );
-    }
-    if trimmed.contains(':') {
-        return Err(
-            "email smtp_host with an explicit port must use a full smtp:// or smtps:// URL"
-                .to_owned(),
-        );
-    }
-
-    Ok(EmailSmtpEndpoint::RelayHost(trimmed.to_owned()))
-}
-
-pub(crate) fn normalize_channel_account_id(raw: &str) -> String {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return "default".to_owned();
-    }
-
-    let mut normalized = String::with_capacity(trimmed.len());
-    let mut last_was_separator = false;
-    for value in trimmed.chars() {
-        if value.is_ascii_alphanumeric() {
-            normalized.push(value.to_ascii_lowercase());
-            last_was_separator = false;
-            continue;
-        }
-        if matches!(value, '_' | '-') {
-            if !normalized.is_empty() && !last_was_separator {
-                normalized.push(value);
-                last_was_separator = true;
-            }
-            continue;
-        }
-        if !normalized.is_empty() && !last_was_separator {
-            normalized.push('-');
-            last_was_separator = true;
-        }
-    }
-
-    while matches!(normalized.chars().last(), Some('-' | '_')) {
-        normalized.pop();
-    }
-
-    if normalized.is_empty() {
-        "default".to_owned()
-    } else {
-        normalized
-    }
-}
-
-fn validate_email_env_pointer(
-    issues: &mut Vec<ConfigValidationIssue>,
-    field_path: &str,
-    env_key: Option<&str>,
-    inline_field_path: &str,
-) {
-    let example_env_name = if field_path.ends_with("imap_username_env") {
-        EMAIL_IMAP_USERNAME_ENV
-    } else if field_path.ends_with("imap_password_env") {
-        EMAIL_IMAP_PASSWORD_ENV
-    } else if field_path.ends_with("smtp_password_env") {
-        EMAIL_SMTP_PASSWORD_ENV
-    } else {
-        EMAIL_SMTP_USERNAME_ENV
-    };
-    if let Err(issue) = validate_env_pointer_field(
-        field_path,
-        env_key,
-        EnvPointerValidationHint {
-            inline_field_path,
-            example_env_name,
-            detect_telegram_token_shape: false,
-        },
-    ) {
-        issues.push(*issue);
-    }
-}
-
-fn validate_email_secret_ref_env_pointer(
-    issues: &mut Vec<ConfigValidationIssue>,
-    field_path: &str,
-    secret_ref: Option<&SecretRef>,
-) {
-    let example_env_name = if field_path.ends_with("imap_username") {
-        EMAIL_IMAP_USERNAME_ENV
-    } else if field_path.ends_with("imap_password") {
-        EMAIL_IMAP_PASSWORD_ENV
-    } else if field_path.ends_with("smtp_password") {
-        EMAIL_SMTP_PASSWORD_ENV
-    } else {
-        EMAIL_SMTP_USERNAME_ENV
-    };
-    if let Err(issue) = validate_secret_ref_env_pointer_field(
-        field_path,
-        secret_ref,
-        EnvPointerValidationHint {
-            inline_field_path: field_path,
-            example_env_name,
-            detect_telegram_token_shape: false,
-        },
-    ) {
-        issues.push(*issue);
-    }
-}
-
-fn configured_account_ids<'a, I>(keys: I) -> Vec<String>
-where
-    I: IntoIterator<Item = &'a String>,
-{
-    let mut ids = keys
-        .into_iter()
-        .map(|value| normalize_channel_account_id(value))
-        .collect::<Vec<_>>();
-    ids.sort();
-    ids.dedup();
-    ids
-}
-
-fn normalize_optional_account_id(raw: Option<&str>) -> Option<String> {
-    raw.map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(normalize_channel_account_id)
-}
-
-fn resolve_default_configured_account_selection_from_ids(
-    ids: &[String],
-    preferred: Option<&str>,
-    fallback: &str,
-) -> ChannelDefaultAccountSelection {
-    if let Some(preferred) = normalize_optional_account_id(preferred)
-        && !ids.is_empty()
-        && ids.iter().any(|value| value == &preferred)
-    {
-        return ChannelDefaultAccountSelection {
-            id: preferred,
-            source: ChannelDefaultAccountSelectionSource::ExplicitDefault,
-        };
-    }
-    if ids.is_empty() {
-        return ChannelDefaultAccountSelection {
-            id: normalize_channel_account_id(fallback),
-            source: ChannelDefaultAccountSelectionSource::RuntimeIdentity,
-        };
-    }
-    if ids.iter().any(|value| value == "default") {
-        return ChannelDefaultAccountSelection {
-            id: "default".to_owned(),
-            source: ChannelDefaultAccountSelectionSource::MappedDefault,
-        };
-    }
-    ChannelDefaultAccountSelection {
-        id: ids
-            .first()
-            .cloned()
-            .unwrap_or_else(|| normalize_channel_account_id(fallback)),
-        source: ChannelDefaultAccountSelectionSource::Fallback,
-    }
-}
-
-fn resolve_default_configured_account_selection<'a, I>(
-    keys: I,
-    preferred: Option<&str>,
-    fallback: &str,
-) -> ChannelDefaultAccountSelection
-where
-    I: IntoIterator<Item = &'a String>,
-{
-    let ids = configured_account_ids(keys);
-    resolve_default_configured_account_selection_from_ids(ids.as_slice(), preferred, fallback)
-}
-
-fn resolve_channel_account_route<'a, I>(
-    keys: I,
-    preferred: Option<&str>,
-    fallback: &str,
-    requested_account_id: Option<&str>,
-    selected_configured_account_id: &str,
-) -> ChannelResolvedAccountRoute
-where
-    I: IntoIterator<Item = &'a String>,
-{
-    let ids = configured_account_ids(keys);
-    let default_selection =
-        resolve_default_configured_account_selection_from_ids(ids.as_slice(), preferred, fallback);
-    ChannelResolvedAccountRoute {
-        requested_account_id: normalize_optional_account_id(requested_account_id),
-        configured_account_count: ids.len(),
-        selected_configured_account_id: normalize_channel_account_id(
-            selected_configured_account_id,
-        ),
-        default_account_source: default_selection.source,
-    }
-}
-
-fn resolve_channel_acp_config(
-    base: &ChannelAcpConfig,
-    account_override: Option<&ChannelAcpConfig>,
-) -> ChannelAcpConfig {
-    account_override.cloned().unwrap_or_else(|| base.clone())
-}
-
-fn resolve_account_for_session_account_id<R>(
-    session_account_id: Option<&str>,
-    resolve_direct: impl FnOnce() -> CliResult<R>,
-    configured_ids: impl FnOnce() -> Vec<String>,
-    resolve_configured: impl Fn(&str) -> CliResult<R>,
-    runtime_account_id: impl Fn(&R) -> &str,
-) -> CliResult<R> {
-    let Some(requested) = normalize_optional_account_id(session_account_id) else {
-        return resolve_direct();
-    };
-
-    match resolve_direct() {
-        Ok(resolved) => Ok(resolved),
-        Err(original_error) => {
-            for configured_id in configured_ids() {
-                let resolved = resolve_configured(configured_id.as_str())?;
-                if normalize_channel_account_id(runtime_account_id(&resolved)) == requested {
-                    return Ok(resolved);
-                }
-            }
-            Err(original_error)
-        }
-    }
-}
-
-fn resolve_configured_account_selection<'a, I>(
-    keys: I,
-    requested_account_id: Option<&str>,
-    preferred_default_account_id: Option<&str>,
-    fallback_id: &str,
-) -> CliResult<ResolvedConfiguredAccount>
-where
-    I: IntoIterator<Item = &'a String>,
-{
-    let entries = keys
-        .into_iter()
-        .filter_map(|value| {
-            let raw_key = value.to_owned();
-            let label = value.trim();
-            if label.is_empty() {
-                return None;
-            }
-            Some((
-                normalize_channel_account_id(label),
-                label.to_owned(),
-                raw_key,
-            ))
-        })
-        .collect::<Vec<_>>();
-    let configured_ids = entries
-        .iter()
-        .map(|(id, _, _)| id.clone())
-        .collect::<Vec<_>>();
-
-    if let Some(requested) = requested_account_id
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(normalize_channel_account_id)
-    {
-        if entries.is_empty() {
-            return Ok(ResolvedConfiguredAccount {
-                label: requested.clone(),
-                id: requested,
-                account_key: None,
-            });
-        }
-        let Some((id, label, raw_key)) = entries.iter().find(|(id, _, _)| *id == requested) else {
-            return Err(format!(
-                "requested account `{requested}` is not configured (configured accounts: {})",
-                configured_ids.join(", ")
-            ));
-        };
-        return Ok(ResolvedConfiguredAccount {
-            id: id.clone(),
-            label: label.clone(),
-            account_key: Some(raw_key.clone()),
-        });
-    }
-
-    let default_id = resolve_default_configured_account_selection(
-        entries.iter().map(|(_, _, raw_key)| raw_key),
-        preferred_default_account_id,
-        fallback_id,
-    )
-    .id;
-    if let Some((id, label, raw_key)) = entries.iter().find(|(id, _, _)| *id == default_id) {
-        return Ok(ResolvedConfiguredAccount {
-            id: id.clone(),
-            label: label.clone(),
-            account_key: Some(raw_key.clone()),
-        });
-    }
-
-    Ok(ResolvedConfiguredAccount {
-        id: default_id.clone(),
-        label: default_id,
-        account_key: None,
-    })
-}
-
 mod tlon_support;
 
 #[cfg(test)]
@@ -6927,7 +6382,7 @@ mod tests {
     #[test]
     fn telegram_account_identity_derives_from_bot_token_prefix() {
         let config = TelegramChannelConfig {
-            bot_token: Some(loongclaw_contracts::SecretRef::Inline(
+            bot_token: Some(loong_contracts::SecretRef::Inline(
                 "987654:token-value".to_owned(),
             )),
             bot_token_env: None,
@@ -6956,9 +6411,7 @@ mod tests {
     #[test]
     fn feishu_account_identity_derives_from_domain_and_app_id() {
         let config = FeishuChannelConfig {
-            app_id: Some(loongclaw_contracts::SecretRef::Inline(
-                "cli_a1b2c3".to_owned(),
-            )),
+            app_id: Some(loong_contracts::SecretRef::Inline("cli_a1b2c3".to_owned())),
             app_id_env: None,
             domain: FeishuDomain::Lark,
             ..FeishuChannelConfig::default()
@@ -6981,6 +6434,8 @@ mod tests {
             "bot_token_env": "BASE_TELEGRAM_TOKEN",
             "polling_timeout_s": 25,
             "allowed_chat_ids": [1001],
+            "allowed_sender_ids": [7],
+            "require_mention": true,
             "acp": {
                 "bootstrap_mcp_servers": ["filesystem"],
                 "working_directory": " /workspace/base "
@@ -6991,6 +6446,8 @@ mod tests {
                     "account_id": "Ops-Bot",
                     "bot_token_env": "WORK_TELEGRAM_TOKEN",
                     "allowed_chat_ids": [2002],
+                    "allowed_sender_ids": [8],
+                    "require_mention": false,
                     "acp": {
                         "bootstrap_mcp_servers": ["search"],
                         "working_directory": "/workspace/work-bot"
@@ -7021,6 +6478,8 @@ mod tests {
             Some("WORK_TELEGRAM_TOKEN")
         );
         assert_eq!(resolved.allowed_chat_ids, vec![2002]);
+        assert_eq!(resolved.allowed_sender_ids, vec![8]);
+        assert!(!resolved.require_mention);
         assert_eq!(
             resolved.acp.bootstrap_mcp_servers,
             vec!["search".to_owned()]
@@ -7037,6 +6496,8 @@ mod tests {
         assert_eq!(disabled.configured_account_id, "personal");
         assert!(!disabled.enabled);
         assert_eq!(disabled.allowed_chat_ids, vec![1001]);
+        assert_eq!(disabled.allowed_sender_ids, vec![7]);
+        assert!(disabled.require_mention);
         assert_eq!(
             disabled.acp.bootstrap_mcp_servers,
             vec!["filesystem".to_owned()]
@@ -7226,6 +6687,54 @@ mod tests {
     }
 
     #[test]
+    fn discord_multi_account_resolution_merges_reserved_runtime_fields() {
+        let config: DiscordChannelConfig = serde_json::from_value(json!({
+            "enabled": true,
+            "account_id": "discord-shared",
+            "application_id": "base-application-id",
+            "allowed_guild_ids": ["guild-base"],
+            "default_account": "Ops",
+            "accounts": {
+                "Ops": {
+                    "account_id": "discord-ops",
+                    "bot_token_env": "DISCORD_OPS_TOKEN",
+                    "application_id_env": "DISCORD_OPS_APPLICATION_ID",
+                    "allowed_guild_ids": ["guild-ops", "guild-backup"]
+                },
+                "Backup": {
+                    "enabled": false,
+                    "bot_token_env": "DISCORD_BACKUP_TOKEN"
+                }
+            }
+        }))
+        .expect("deserialize discord config");
+
+        let ops = config
+            .resolve_account(None)
+            .expect("resolve default discord account");
+        assert_eq!(ops.configured_account_id, "ops");
+        assert_eq!(ops.account.id, "discord-ops");
+        assert_eq!(ops.account.label, "discord-ops");
+        assert_eq!(
+            ops.application_id_env.as_deref(),
+            Some("DISCORD_OPS_APPLICATION_ID")
+        );
+        assert_eq!(ops.allowed_guild_ids, vec!["guild-ops", "guild-backup"]);
+
+        let backup = config
+            .resolve_account(Some("Backup"))
+            .expect("resolve backup discord account");
+        assert_eq!(backup.configured_account_id, "backup");
+        assert!(!backup.enabled);
+        assert_eq!(backup.account.id, "discord-shared");
+        assert_eq!(
+            backup.application_id.as_deref(),
+            Some("base-application-id")
+        );
+        assert_eq!(backup.allowed_guild_ids, vec!["guild-base"]);
+    }
+
+    #[test]
     fn feishu_multi_account_resolution_allows_websocket_mode_override() {
         let config: FeishuChannelConfig = serde_json::from_value(json!({
             "enabled": true,
@@ -7317,6 +6826,56 @@ mod tests {
     }
 
     #[test]
+    fn matrix_multi_account_resolution_merges_sender_allowlist_overrides() {
+        let config: MatrixChannelConfig = serde_json::from_value(json!({
+            "enabled": true,
+            "access_token_env": "BASE_MATRIX_ACCESS_TOKEN",
+            "base_url": "https://matrix.example.org",
+            "allowed_room_ids": ["!ops:example.org"],
+            "allowed_sender_ids": ["@alice:example.org"],
+            "require_mention": true,
+            "accounts": {
+                "Ops": {
+                    "account_id": "Ops-Bot",
+                    "access_token": "ops-token",
+                    "allowed_room_ids": ["!ops-room:example.org"],
+                    "allowed_sender_ids": ["@ops-user:example.org"],
+                    "require_mention": false
+                },
+                "Backup": {
+                    "enabled": false,
+                    "access_token": "backup-token"
+                }
+            },
+            "default_account": "Ops"
+        }))
+        .expect("deserialize matrix multi-account config");
+
+        let resolved = config
+            .resolve_account(None)
+            .expect("resolve default matrix account");
+        assert_eq!(
+            resolved.allowed_room_ids,
+            vec!["!ops-room:example.org".to_owned()]
+        );
+        assert_eq!(
+            resolved.allowed_sender_ids,
+            vec!["@ops-user:example.org".to_owned()]
+        );
+        assert!(!resolved.require_mention);
+
+        let backup = config
+            .resolve_account(Some("Backup"))
+            .expect("resolve backup matrix account");
+        assert_eq!(backup.allowed_room_ids, vec!["!ops:example.org".to_owned()]);
+        assert_eq!(
+            backup.allowed_sender_ids,
+            vec!["@alice:example.org".to_owned()]
+        );
+        assert!(backup.require_mention);
+    }
+
+    #[test]
     fn wecom_account_identity_prefers_explicit_account_id() {
         let config: WecomChannelConfig = serde_json::from_value(json!({
             "account_id": "Ops-Bot",
@@ -7332,7 +6891,7 @@ mod tests {
     #[test]
     fn wecom_account_identity_derives_from_bot_id() {
         let config = WecomChannelConfig {
-            bot_id: Some(loongclaw_contracts::SecretRef::Inline("bot_123".to_owned())),
+            bot_id: Some(loong_contracts::SecretRef::Inline("bot_123".to_owned())),
             bot_id_env: None,
             ..WecomChannelConfig::default()
         };
@@ -7351,6 +6910,7 @@ mod tests {
             "ping_interval_s": 45,
             "reconnect_interval_s": 12,
             "allowed_conversation_ids": ["group_base"],
+            "allowed_sender_ids": ["user_base"],
             "acp": {
                 "bootstrap_mcp_servers": ["filesystem"],
                 "working_directory": " /workspace/base "
@@ -7362,6 +6922,7 @@ mod tests {
                     "bot_id": "bot_work",
                     "secret": "secret-work",
                     "allowed_conversation_ids": ["group_work"],
+                    "allowed_sender_ids": ["user_work"],
                     "acp": {
                         "bootstrap_mcp_servers": ["search"],
                         "working_directory": "/workspace/work-bot"
@@ -7389,6 +6950,7 @@ mod tests {
             resolved.allowed_conversation_ids,
             vec!["group_work".to_owned()]
         );
+        assert_eq!(resolved.allowed_sender_ids, vec!["user_work".to_owned()]);
         assert_eq!(resolved.ping_interval_s, 45);
         assert_eq!(resolved.reconnect_interval_s, 12);
         assert_eq!(
@@ -7413,6 +6975,7 @@ mod tests {
             disabled.allowed_conversation_ids,
             vec!["group_base".to_owned()]
         );
+        assert_eq!(disabled.allowed_sender_ids, vec!["user_base".to_owned()]);
         assert_eq!(
             disabled.acp.bootstrap_mcp_servers,
             vec!["filesystem".to_owned()]
@@ -7692,7 +7255,7 @@ mod tests {
             "account_id": "Webhook-Shared",
             "endpoint_url": "https://hooks.example.test/base",
             "auth_token": "base-token",
-            "auth_header_name": "X-LoongClaw-Token",
+            "auth_header_name": "X-Loong-Token",
             "auth_token_prefix": "Token ",
             "payload_format": "json_text",
             "payload_text_field": "message",
@@ -7735,7 +7298,7 @@ mod tests {
         );
         assert_eq!(ops_auth_token.as_deref(), Some("base-token"));
         assert_eq!(ops_signing_secret.as_deref(), Some("base-signing-secret"));
-        assert_eq!(ops.auth_header_name, "X-LoongClaw-Token");
+        assert_eq!(ops.auth_header_name, "X-Loong-Token");
         assert_eq!(ops.auth_token_prefix, "Token ");
         assert_eq!(ops.payload_format, WebhookPayloadFormat::PlainText);
         assert_eq!(ops.payload_text_field, "message");

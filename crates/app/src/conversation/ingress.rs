@@ -1,7 +1,7 @@
 use serde_json::{Map, Value, json};
 
-const LOONGCLAW_INTERNAL_TOOL_INGRESS_KEY: &str = "ingress";
-const LOONGCLAW_INTERNAL_TOOL_FEISHU_CALLBACK_KEY: &str = "feishu_callback";
+const LOONG_INTERNAL_TOOL_INGRESS_KEY: &str = "ingress";
+const LOONG_INTERNAL_TOOL_FEISHU_CALLBACK_KEY: &str = "feishu_callback";
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct InjectedToolPayload {
@@ -108,14 +108,12 @@ pub(crate) fn inject_internal_tool_ingress(
     };
     let canonical_name = crate::tools::canonical_tool_name(tool_name);
 
-    // When tool.invoke wraps a feishu.* tool, inject internal context into
-    // the nested `arguments` object rather than the top-level payload.
+    // When tool.invoke wraps a Feishu tool directly or through the grouped
+    // `channel` facade, inject internal context into the nested `arguments`
+    // object rather than the top-level payload.
     if canonical_name == "tool.invoke" {
-        let inner_is_feishu = payload
-            .get("tool_id")
-            .and_then(Value::as_str)
-            .map(crate::tools::canonical_tool_name)
-            .is_some_and(|name| name.starts_with("feishu."));
+        let inner_is_feishu = crate::tools::invoked_discoverable_tool_request(&payload)
+            .is_some_and(|(name, _arguments)| name.starts_with("feishu."));
         if inner_is_feishu {
             let Value::Object(mut outer) = payload else {
                 return InjectedToolPayload {
@@ -162,7 +160,7 @@ fn inject_feishu_internal_context(
     let mut internal = Map::new();
     if ingress.has_contextual_hints() {
         internal.insert(
-            LOONGCLAW_INTERNAL_TOOL_INGRESS_KEY.to_owned(),
+            LOONG_INTERNAL_TOOL_INGRESS_KEY.to_owned(),
             ingress.as_event_payload(),
         );
     }
@@ -172,10 +170,7 @@ fn inject_feishu_internal_context(
         .as_ref()
         .and_then(|value| value.as_json())
     {
-        internal.insert(
-            LOONGCLAW_INTERNAL_TOOL_FEISHU_CALLBACK_KEY.to_owned(),
-            callback,
-        );
+        internal.insert(LOONG_INTERNAL_TOOL_FEISHU_CALLBACK_KEY.to_owned(), callback);
     }
     if internal.is_empty() {
         return InjectedToolPayload {
@@ -184,7 +179,7 @@ fn inject_feishu_internal_context(
         };
     }
     body.insert(
-        crate::tools::LOONGCLAW_INTERNAL_TOOL_CONTEXT_KEY.to_owned(),
+        crate::tools::LOONG_INTERNAL_TOOL_CONTEXT_KEY.to_owned(),
         Value::Object(internal),
     );
     InjectedToolPayload {
@@ -427,28 +422,55 @@ mod tests {
             json!({"text": "hello"}),
             Some(&ingress),
         );
+        let grouped_invoke = inject_internal_tool_ingress(
+            "tool.invoke",
+            json!({
+                "tool_id": "channel",
+                "arguments": {
+                    "operation": "messages.reply",
+                    "text": "hello"
+                }
+            }),
+            Some(&ingress),
+        );
         let untouched =
             inject_internal_tool_ingress("shell.exec", json!({"cmd": "pwd"}), Some(&ingress));
 
         assert!(injected.trusted_internal_context);
         assert_eq!(
-            injected.payload["_loongclaw"]["feishu_callback"]["callback_token"],
+            injected.payload[crate::tools::LOONG_INTERNAL_TOOL_CONTEXT_KEY]["feishu_callback"]["callback_token"],
             "callback-secret-1"
         );
         assert_eq!(
-            injected.payload["_loongclaw"]["feishu_callback"]["operator_open_id"],
+            injected.payload[crate::tools::LOONG_INTERNAL_TOOL_CONTEXT_KEY]["feishu_callback"]["operator_open_id"],
             "ou_operator"
         );
         assert_eq!(
-            injected.payload["_loongclaw"]["feishu_callback"]["deferred_context_id"],
+            injected.payload[crate::tools::LOONG_INTERNAL_TOOL_CONTEXT_KEY]["feishu_callback"]["deferred_context_id"],
             "evt_callback_1"
         );
         assert_eq!(
-            injected.payload["_loongclaw"]["ingress"]["channel"]["conversation_id"],
+            injected.payload[crate::tools::LOONG_INTERNAL_TOOL_CONTEXT_KEY]["ingress"]["channel"]["conversation_id"],
+            "oc_callback"
+        );
+        assert!(grouped_invoke.trusted_internal_context);
+        assert_eq!(
+            grouped_invoke.payload["arguments"][crate::tools::LOONG_INTERNAL_TOOL_CONTEXT_KEY]["feishu_callback"]
+                ["callback_token"],
+            "callback-secret-1"
+        );
+        assert_eq!(
+            grouped_invoke.payload["arguments"][crate::tools::LOONG_INTERNAL_TOOL_CONTEXT_KEY]["ingress"]
+                ["channel"]["conversation_id"],
             "oc_callback"
         );
         assert!(!untouched.trusted_internal_context);
-        assert!(untouched.payload.get("_loongclaw").is_none());
+        assert!(
+            untouched
+                .payload
+                .get(crate::tools::LOONG_INTERNAL_TOOL_CONTEXT_KEY)
+                .is_none()
+        );
     }
 
     #[test]
@@ -457,7 +479,7 @@ mod tests {
             "feishu.messages.reply",
             json!({
                 "text": "hello",
-                "_loongclaw": {
+                "_loong": {
                     "ingress": {
                         "channel": {
                             "platform": "feishu",
@@ -471,7 +493,7 @@ mod tests {
 
         assert!(!injected.trusted_internal_context);
         assert_eq!(
-            injected.payload["_loongclaw"]["ingress"]["channel"]["conversation_id"],
+            injected.payload["_loong"]["ingress"]["channel"]["conversation_id"],
             "oc_forged"
         );
     }

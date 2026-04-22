@@ -2,14 +2,14 @@
 use std::collections::BTreeSet;
 
 #[cfg(feature = "memory-sqlite")]
-use loongclaw_contracts::Capability;
+use loong_contracts::Capability;
 #[cfg(feature = "memory-sqlite")]
 use serde_json::json;
 
 use crate::CliResult;
 use crate::acp::resolve_acp_backend_selection;
 use crate::config;
-use crate::config::LoongClawConfig;
+use crate::config::LoongConfig;
 #[cfg(any(test, feature = "memory-sqlite"))]
 use crate::conversation::ContextCompactionReport;
 use crate::conversation::ConversationRuntimeBinding;
@@ -18,10 +18,10 @@ use crate::conversation::collect_context_engine_runtime_snapshot;
 use crate::conversation::resolve_context_engine_selection;
 #[cfg(any(test, feature = "memory-sqlite"))]
 use crate::memory;
-#[cfg(feature = "memory-sqlite")]
-use crate::memory::runtime_config::MemoryRuntimeConfig;
 #[cfg(any(test, feature = "memory-sqlite"))]
 use crate::runtime_self_continuity;
+#[cfg(feature = "memory-sqlite")]
+use crate::session::store::SessionStoreConfig;
 use crate::tui_surface::TuiActionSpec;
 use crate::tui_surface::TuiCalloutTone;
 use crate::tui_surface::TuiChoiceSpec;
@@ -154,7 +154,7 @@ pub(super) async fn print_turn_checkpoint_startup_health(runtime: &CliTurnRuntim
         .load_production_turn_checkpoint_diagnostics(
             &runtime.config,
             &runtime.session_id,
-            crate::conversation::ConversationRuntimeBinding::kernel(&runtime.kernel_ctx),
+            runtime.conversation_binding(),
         )
         .await
     {
@@ -204,7 +204,7 @@ async fn print_turn_checkpoint_status_health(runtime: &CliTurnRuntime) {
         .load_production_turn_checkpoint_diagnostics(
             &runtime.config,
             &runtime.session_id,
-            crate::conversation::ConversationRuntimeBinding::kernel(&runtime.kernel_ctx),
+            runtime.conversation_binding(),
         )
         .await
     {
@@ -614,6 +614,11 @@ fn build_cli_chat_help_message_spec() -> TuiMessageSpec {
             value: "repair durable turn finalization tail when safe".to_owned(),
         },
         TuiKeyValueSpec::Plain {
+            key: "$skill-name <request>".to_owned(),
+            value: "explicitly activate a visible external skill before handling the request"
+                .to_owned(),
+        },
+        TuiKeyValueSpec::Plain {
             key: "/exit".to_owned(),
             value: "quit chat".to_owned(),
         },
@@ -654,6 +659,8 @@ fn build_cli_chat_help_message_spec() -> TuiMessageSpec {
                 .to_owned(),
             "Use /history to inspect the active memory window when a reply feels off.".to_owned(),
             "Use /compact to checkpoint the active session before the next turn.".to_owned(),
+            "Prefix a prompt with $skill-name to force explicit activation of a visible external skill."
+                .to_owned(),
         ],
     };
     let command_section = TuiSectionSpec::KeyValues {
@@ -789,7 +796,7 @@ pub(super) fn print_help() {
 pub(super) async fn print_manual_compaction(runtime: &CliTurnRuntime) -> CliResult<()> {
     #[cfg(feature = "memory-sqlite")]
     {
-        let binding = ConversationRuntimeBinding::kernel(&runtime.kernel_ctx);
+        let binding = runtime.conversation_binding();
         let result = load_manual_compaction_result(
             &runtime.config,
             &runtime.session_id,
@@ -823,7 +830,7 @@ pub(super) async fn print_history(
     session_id: &str,
     limit: usize,
     binding: ConversationRuntimeBinding<'_>,
-    #[cfg(feature = "memory-sqlite")] memory_config: &MemoryRuntimeConfig,
+    #[cfg(feature = "memory-sqlite")] memory_config: &SessionStoreConfig,
 ) -> CliResult<()> {
     #[cfg(feature = "memory-sqlite")]
     {
@@ -856,7 +863,7 @@ pub(super) async fn print_history(
 
 #[cfg(feature = "memory-sqlite")]
 pub(super) async fn load_manual_compaction_result(
-    config: &LoongClawConfig,
+    config: &LoongConfig,
     session_id: &str,
     turn_coordinator: &ConversationTurnCoordinator,
     binding: ConversationRuntimeBinding<'_>,
@@ -894,7 +901,7 @@ async fn load_manual_compaction_window_snapshot(
         .kernel_context()
         .ok_or_else(|| "manual compaction requires a kernel-bound session".to_owned())?;
     let caps = BTreeSet::from([Capability::MemoryRead]);
-    let request = loongclaw_contracts::MemoryCoreRequest {
+    let request = loong_contracts::MemoryCoreRequest {
         operation: memory::MEMORY_OP_WINDOW.to_owned(),
         payload: json!({
             "session_id": session_id,
@@ -1055,7 +1062,7 @@ pub(super) async fn load_history_lines(
     session_id: &str,
     limit: usize,
     binding: ConversationRuntimeBinding<'_>,
-    memory_config: &MemoryRuntimeConfig,
+    memory_config: &SessionStoreConfig,
 ) -> CliResult<Vec<String>> {
     if let Some(ctx) = binding.kernel_context() {
         let request = memory::build_window_request(session_id, limit);

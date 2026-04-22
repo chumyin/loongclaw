@@ -88,10 +88,17 @@ Use Track A for:
 Required checks:
 
 ```bash
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace --all-features
+./scripts/cargo-local-toolchain.sh fmt --all -- --check
+./scripts/cargo-local-toolchain.sh clippy --workspace --all-targets --all-features -- -D warnings
+./scripts/cargo-local-toolchain.sh test --workspace --all-features
 ```
+
+The helper script resolves the concrete `rustc` / `rustdoc` binaries from the
+active rustup toolchain before invoking Cargo. For `cargo test`, it also seeds
+an isolated writable `LOONG_HOME` under `target/test-loong-home` unless you set
+one explicitly. Use it when local rustup proxy shims would otherwise try to
+sync channels or install targets in the middle of verification, or when test
+defaults would otherwise write under your real home directory.
 
 Optional convenience wrapper:
 
@@ -99,14 +106,36 @@ Optional convenience wrapper:
 task verify
 ```
 
+For shorter local iteration loops, prefer the lighter wrappers first:
+
+```bash
+task verify:quick
+task verify:changed
+task test:packages PACKAGES='-p loong-app -p loong-spec'
+task test:daemon:smoke
+task test:daemon:domains
+task test:daemon:heavy
+```
+
+`verify:quick` keeps daemon smoke coverage but skips the heaviest integration
+matrix. `verify:changed` narrows testing to Rust packages touched in the current
+working tree plus reverse dependents. When that closure includes `loong`, the
+script still runs `loong` library and binary coverage, keeps the curated daemon
+smoke suite as the default floor, and now routes daemon test-file changes into
+matching optional daemon domain shards (`test:daemon:cli`, `:gateway`,
+`:onboard`, `:channels`, `:runtime`) by reading the shard entry files as the
+source of truth, with a fallback to the full `integration` binary for broad
+harness edits. These fast loops **do not** replace the Track A required checks
+or CI parity.
+
 If `task` or its transitive dependencies are unavailable locally, run at least
 CI parity plus architecture/dep-graph checks directly:
 
 ```bash
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace
-cargo test --workspace --all-features
+./scripts/cargo-local-toolchain.sh fmt --all -- --check
+./scripts/cargo-local-toolchain.sh clippy --workspace --all-targets --all-features -- -D warnings
+./scripts/cargo-local-toolchain.sh test --workspace
+./scripts/cargo-local-toolchain.sh test --workspace --all-features
 scripts/check_architecture_boundaries.sh
 scripts/check_dep_graph.sh
 ```
@@ -150,6 +179,15 @@ If you are unsure which track applies, open an issue and ask maintainers for tri
 
 - `CI`, `CodeQL`, and `Security` run for pull requests and pushes targeting `dev`, `main`,
   `release`, and `release/*`.
+- Those required workflows also trigger on `merge_group` so merge-queue validation can report the
+  same stable checks as ordinary pull requests.
+- Inside those workflows, expensive jobs may skip themselves when the changed paths are unrelated.
+  This keeps required checks reportable without relying on workflow-level path filters that can
+  leave required statuses pending.
+- The Rust lane keeps `cargo test --workspace --locked` cross-platform on Ubuntu and Windows, runs
+  `cargo test --workspace --all-features --locked` on Ubuntu, and complements that with explicit
+  feature-delta compile checks (`loong-spec` `test-hooks` and the browser-without-web.fetch app
+  feature set).
 - `perf-lint` follows the same branch set but only when workflow, benchmark, daemon, spec, kernel,
   or app paths change.
 - The aggregate required check for promotion branches is `build`, emitted by
@@ -252,16 +290,19 @@ for the shorter public contributor docs entrypoint.
 
 ```bash
 # All tests
-cargo test --workspace
+./scripts/cargo-local-toolchain.sh test --workspace
 
 # Just the mvp crate
-cargo test -p loongclaw-app
+./scripts/cargo-local-toolchain.sh test -p loong-app
 
 # Just kernel tests
-cargo test -p loongclaw-kernel
+./scripts/cargo-local-toolchain.sh test -p loong-kernel
 
 # With all features (CI gate)
-cargo test --workspace --all-features
+./scripts/cargo-local-toolchain.sh test --workspace --all-features
+
+# Cargo-deny with a repo-local writable advisory DB/cache
+./scripts/cargo-deny-local.sh check advisories bans licenses sources
 ```
 
 ### Recipe: Add a Provider
@@ -339,17 +380,17 @@ findings, start from the built-in observability surfaces instead of external
 skill setup:
 
 ```bash
-loong doctor --config ~/.loongclaw/config.toml
-loong doctor --config ~/.loongclaw/config.toml --json
-loong audit recent --config ~/.loongclaw/config.toml
-loong audit summary --config ~/.loongclaw/config.toml
-loong audit recent --config ~/.loongclaw/config.toml --json
-if [ -f ~/.loongclaw/audit/events.jsonl ]; then tail -n 20 ~/.loongclaw/audit/events.jsonl; else echo "audit journal is created on first audit write"; fi
+loong doctor --config ~/.loong/config.toml
+loong doctor --config ~/.loong/config.toml --json
+loong audit recent --config ~/.loong/config.toml
+loong audit summary --config ~/.loong/config.toml
+loong audit recent --config ~/.loong/config.toml --json
+if [ -f ~/.loong/audit/events.jsonl ]; then tail -n 20 ~/.loong/audit/events.jsonl; else echo "audit journal is created on first audit write"; fi
 ```
 
 The app runtime defaults to durable audit retention with
 `[audit].mode = "fanout"`, so security-critical audit events persist across
-restarts under `~/.loongclaw/audit/events.jsonl`. Use `doctor --fix` if you
+restarts under `~/.loong/audit/events.jsonl`. Use `doctor --fix` if you
 want Loong to pre-create the audit journal directory before a debugging
 session. Reach for `audit recent` when you need the latest bounded event window
 and `audit summary` when you need a quick rollup before diving into raw JSONL.

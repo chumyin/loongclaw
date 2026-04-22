@@ -1,138 +1,27 @@
 #![allow(clippy::wildcard_enum_match_arm)]
 
 use super::*;
-pub use clap::{CommandFactory, Parser};
-use std::ffi::OsString;
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
-
-const CLI_STACK_SIZE_BYTES: usize = 16 * 1024 * 1024;
-static INTEGRATION_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-fn with_cli_stack<T, F>(thread_name: &str, operation: F) -> T
-where
-    T: Send + 'static,
-    F: FnOnce() -> T + Send + 'static,
-{
-    let thread_builder = std::thread::Builder::new();
-    let thread_builder = thread_builder.name(thread_name.to_owned());
-    let thread_builder = thread_builder.stack_size(CLI_STACK_SIZE_BYTES);
-    let join_handle = thread_builder
-        .spawn(operation)
-        .expect("spawn CLI stack thread");
-    match join_handle.join() {
-        Ok(value) => value,
-        Err(panic) => std::panic::resume_unwind(panic),
-    }
-}
-
-fn try_parse_cli<const N: usize>(args: [&str; N]) -> Result<Cli, clap::Error> {
-    let owned_args = args
-        .into_iter()
-        .map(OsString::from)
-        .collect::<Vec<OsString>>();
-    with_cli_stack("integration-cli-parse", move || {
-        Cli::try_parse_from(owned_args)
-    })
-}
-
-fn cli_command_name() -> String {
-    with_cli_stack("integration-cli-command-name", || {
-        let command = Cli::command();
-        command.get_name().to_owned()
-    })
-}
-
-fn active_cli_command_name() -> &'static str {
-    mvp::config::active_cli_command_name()
-}
-
-fn unique_temp_dir(label: &str) -> PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system time before unix epoch")
-        .as_nanos();
-    let counter = INTEGRATION_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let temp_dir = std::env::temp_dir();
-    let canonical_temp_dir = dunce::canonicalize(&temp_dir).unwrap_or(temp_dir);
-    let process_id = std::process::id();
-    let directory_name = format!("loongclaw-integration-{label}-{process_id}-{nanos}-{counter}");
-
-    canonical_temp_dir.join(directory_name)
-}
-
-#[cfg(unix)]
-fn integration_permission_test_running_as_root() -> bool {
-    let status = std::fs::read_to_string("/proc/self/status");
-    let Ok(status) = status else {
-        return false;
-    };
-
-    let uid_line = status.lines().find(|line| line.starts_with("Uid:"));
-    let Some(uid_line) = uid_line else {
-        return false;
-    };
-
-    uid_line
-        .split_whitespace()
-        .nth(1)
-        .is_some_and(|uid| uid == "0")
-}
-
-fn render_cli_help<const N: usize>(subcommand_path: [&str; N]) -> String {
-    let owned_path = subcommand_path
-        .into_iter()
-        .map(str::to_owned)
-        .collect::<Vec<String>>();
-    with_cli_stack("integration-cli-help", move || {
-        let mut command = Cli::command();
-        let mut current = &mut command;
-        for subcommand in owned_path {
-            current = current
-                .find_subcommand_mut(subcommand.as_str())
-                .unwrap_or_else(|| panic!("missing CLI subcommand `{subcommand}`"));
-        }
-        let mut rendered = Vec::new();
-        current
-            .write_long_help(&mut rendered)
-            .expect("render CLI help");
-        String::from_utf8(rendered).expect("help should be utf8")
-    })
-}
-
-fn validation_diagnostic_with_severity(
-    severity: &str,
-    code: &str,
-) -> mvp::config::ConfigValidationDiagnostic {
-    mvp::config::ConfigValidationDiagnostic {
-        severity: severity.to_owned(),
-        code: code.to_owned(),
-        problem_type: format!("urn:loongclaw:problem:{code}"),
-        title_key: format!("{code}.title"),
-        title: code.to_owned(),
-        message_key: code.to_owned(),
-        message_locale: "en".to_owned(),
-        message_variables: BTreeMap::new(),
-        field_path: "active_provider".to_owned(),
-        inline_field_path: "providers".to_owned(),
-        example_env_name: String::new(),
-        suggested_env_name: None,
-        message: code.to_owned(),
-    }
-}
 
 mod acp;
 mod architecture;
+mod ask_and_spec_cli_root;
 mod ask_cli;
+mod audit_cli_root;
+mod channel_catalog_json;
+mod channel_catalog_text;
+mod channel_plugin_bridge_json;
+mod channel_plugin_bridge_text;
 mod chat_cli;
 mod cli_tests;
 mod doctor_feishu;
 mod feishu_cli;
+mod feishu_test_fixtures;
 mod gateway_api_acp;
 mod gateway_api_events;
 mod gateway_api_health;
+mod gateway_api_pairing;
 mod gateway_api_turn;
+mod gateway_nodes;
 mod gateway_owner_state;
 mod gateway_read_models;
 mod import_cli;
@@ -142,6 +31,7 @@ mod managed_bridge_fixtures;
 mod managed_bridge_parity;
 mod mcp;
 mod memory_context_benchmark_cli;
+mod memory_surfaces;
 mod migrate_cli;
 mod migration;
 mod multi_channel_serve_cli;
@@ -161,8 +51,10 @@ mod spec_runtime;
 mod spec_runtime_bridge;
 mod status_cli;
 mod tasks_cli;
+pub(crate) use feishu_test_fixtures::*;
 pub(crate) use managed_bridge_fixtures::*;
 mod trajectory_export_cli;
+mod validate_config_root;
 mod work_unit_cli;
 
 #[test]
@@ -266,22 +158,22 @@ fn cli_ask_help_mentions_one_shot_assistant_usage() {
 
 #[test]
 fn cli_runtime_restore_help_mentions_dry_run_default() {
-    let help = render_cli_help(["runtime-restore"]);
+    let help = render_cli_help(["runtime", "restore"]);
 
     assert!(
         help.contains("Dry-run by default"),
-        "runtime-restore help should explain the default dry-run behavior: {help}"
+        "runtime restore help should explain the default dry-run behavior: {help}"
     );
     assert!(
         help.contains("--apply"),
-        "runtime-restore help should explain how to perform mutations: {help}"
+        "runtime restore help should explain how to perform mutations: {help}"
     );
 }
 
 #[test]
 fn ask_cli_accepts_message_session_and_acp_flags() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         "ask",
         "--message",
         "Summarize this repository",
@@ -320,7 +212,7 @@ fn ask_cli_accepts_message_session_and_acp_flags() {
 #[test]
 fn ask_cli_accepts_latest_session_selector() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         "ask",
         "--message",
         "Summarize this repository",
@@ -343,7 +235,7 @@ fn ask_cli_accepts_latest_session_selector() {
 #[test]
 fn init_spec_cli_accepts_plugin_trust_guard_preset() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         "init-spec",
         "--output",
         "/tmp/plugin-trust-guard.json",
@@ -364,7 +256,7 @@ fn init_spec_cli_accepts_plugin_trust_guard_preset() {
 #[test]
 fn run_spec_cli_accepts_render_summary_flag() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         "run-spec",
         "--spec",
         "/tmp/tool-search-trusted.json",
@@ -389,7 +281,7 @@ fn run_spec_cli_accepts_render_summary_flag() {
 
 #[test]
 fn ask_cli_requires_message_flag() {
-    let error = try_parse_cli(["loongclaw", "ask"]).expect_err("ask without --message should fail");
+    let error = try_parse_cli(["loong", "ask"]).expect_err("ask without --message should fail");
     let rendered = error.to_string();
 
     assert!(
@@ -401,11 +293,11 @@ fn ask_cli_requires_message_flag() {
 #[test]
 fn audit_cli_recent_parses_global_flags_after_subcommand() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         "audit",
         "recent",
         "--config",
-        "/tmp/loongclaw.toml",
+        "/tmp/loong.toml",
         "--limit",
         "25",
         "--json",
@@ -418,10 +310,10 @@ fn audit_cli_recent_parses_global_flags_after_subcommand() {
             json,
             command,
         }) => {
-            assert_eq!(config.as_deref(), Some("/tmp/loongclaw.toml"));
+            assert_eq!(config.as_deref(), Some("/tmp/loong.toml"));
             assert!(json);
             match command {
-                loongclaw_daemon::audit_cli::AuditCommands::Recent {
+                loong_daemon::audit_cli::AuditCommands::Recent {
                     limit,
                     since_epoch_s,
                     until_epoch_s,
@@ -455,7 +347,7 @@ fn audit_cli_recent_parses_global_flags_after_subcommand() {
 
 #[test]
 fn audit_cli_summary_parses_limit_without_json() {
-    let cli = try_parse_cli(["loongclaw", "audit", "summary", "--limit", "10"])
+    let cli = try_parse_cli(["loong", "audit", "summary", "--limit", "10"])
         .expect("audit summary CLI should parse");
 
     match cli.command {
@@ -467,7 +359,7 @@ fn audit_cli_summary_parses_limit_without_json() {
             assert_eq!(config, None);
             assert!(!json);
             match command {
-                loongclaw_daemon::audit_cli::AuditCommands::Summary {
+                loong_daemon::audit_cli::AuditCommands::Summary {
                     limit,
                     since_epoch_s,
                     until_epoch_s,
@@ -500,7 +392,7 @@ fn audit_cli_summary_parses_limit_without_json() {
 #[test]
 fn audit_cli_recent_parses_kind_and_triage_filters() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         "audit",
         "recent",
         "--limit",
@@ -514,7 +406,7 @@ fn audit_cli_recent_parses_kind_and_triage_filters() {
 
     match cli.command {
         Some(Commands::Audit { command, .. }) => match command {
-            loongclaw_daemon::audit_cli::AuditCommands::Recent {
+            loong_daemon::audit_cli::AuditCommands::Recent {
                 limit,
                 since_epoch_s,
                 until_epoch_s,
@@ -548,7 +440,7 @@ fn audit_cli_recent_parses_kind_and_triage_filters() {
 #[test]
 fn audit_cli_recent_parses_tool_search_filters() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         "audit",
         "recent",
         "--query-contains",
@@ -562,7 +454,7 @@ fn audit_cli_recent_parses_tool_search_filters() {
 
     match cli.command {
         Some(Commands::Audit { command, .. }) => match command {
-            loongclaw_daemon::audit_cli::AuditCommands::Recent {
+            loong_daemon::audit_cli::AuditCommands::Recent {
                 kind,
                 query_contains,
                 trust_tier,
@@ -580,18 +472,12 @@ fn audit_cli_recent_parses_tool_search_filters() {
 
 #[test]
 fn audit_cli_summary_parses_kind_filter_in_canonical_form() {
-    let cli = try_parse_cli([
-        "loongclaw",
-        "audit",
-        "summary",
-        "--kind",
-        "ToolSearchEvaluated",
-    ])
-    .expect("audit summary CLI should parse canonical event kind filter");
+    let cli = try_parse_cli(["loong", "audit", "summary", "--kind", "ToolSearchEvaluated"])
+        .expect("audit summary CLI should parse canonical event kind filter");
 
     match cli.command {
         Some(Commands::Audit { command, .. }) => match command {
-            loongclaw_daemon::audit_cli::AuditCommands::Summary {
+            loong_daemon::audit_cli::AuditCommands::Summary {
                 limit,
                 since_epoch_s,
                 until_epoch_s,
@@ -622,12 +508,12 @@ fn audit_cli_summary_parses_kind_filter_in_canonical_form() {
 
 #[test]
 fn audit_cli_summary_parses_group_by_alias() {
-    let cli = try_parse_cli(["loongclaw", "audit", "summary", "--group-by", "token-id"])
+    let cli = try_parse_cli(["loong", "audit", "summary", "--group-by", "token-id"])
         .expect("audit summary CLI should parse group-by alias");
 
     match cli.command {
         Some(Commands::Audit { command, .. }) => match command {
-            loongclaw_daemon::audit_cli::AuditCommands::Summary { group_by, .. } => {
+            loong_daemon::audit_cli::AuditCommands::Summary { group_by, .. } => {
                 assert_eq!(group_by.as_deref(), Some("token"));
             }
             other => panic!("unexpected audit subcommand parsed: {other:?}"),
@@ -639,7 +525,7 @@ fn audit_cli_summary_parses_group_by_alias() {
 #[test]
 fn audit_cli_discovery_parses_trust_filters_and_aliases() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         "audit",
         "discovery",
         "--limit",
@@ -655,7 +541,7 @@ fn audit_cli_discovery_parses_trust_filters_and_aliases() {
 
     match cli.command {
         Some(Commands::Audit { command, .. }) => match command {
-            loongclaw_daemon::audit_cli::AuditCommands::Discovery {
+            loong_daemon::audit_cli::AuditCommands::Discovery {
                 limit,
                 since_epoch_s,
                 until_epoch_s,
@@ -688,12 +574,12 @@ fn audit_cli_discovery_parses_trust_filters_and_aliases() {
 
 #[test]
 fn audit_cli_discovery_parses_group_by_alias() {
-    let cli = try_parse_cli(["loongclaw", "audit", "discovery", "--group-by", "agent-id"])
+    let cli = try_parse_cli(["loong", "audit", "discovery", "--group-by", "agent-id"])
         .expect("audit discovery CLI should parse group-by alias");
 
     match cli.command {
         Some(Commands::Audit { command, .. }) => match command {
-            loongclaw_daemon::audit_cli::AuditCommands::Discovery { group_by, .. } => {
+            loong_daemon::audit_cli::AuditCommands::Discovery { group_by, .. } => {
                 assert_eq!(group_by.as_deref(), Some("agent"));
             }
             other => panic!("unexpected audit subcommand parsed: {other:?}"),
@@ -705,7 +591,7 @@ fn audit_cli_discovery_parses_group_by_alias() {
 #[test]
 fn audit_cli_recent_parses_time_window_filters() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         "audit",
         "recent",
         "--since-epoch-s",
@@ -719,7 +605,7 @@ fn audit_cli_recent_parses_time_window_filters() {
 
     match cli.command {
         Some(Commands::Audit { command, .. }) => match command {
-            loongclaw_daemon::audit_cli::AuditCommands::Recent {
+            loong_daemon::audit_cli::AuditCommands::Recent {
                 limit,
                 since_epoch_s,
                 until_epoch_s,
@@ -753,7 +639,7 @@ fn audit_cli_recent_parses_time_window_filters() {
 #[test]
 fn audit_cli_discovery_parses_pack_and_agent_filters() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         "audit",
         "discovery",
         "--pack-id",
@@ -767,7 +653,7 @@ fn audit_cli_discovery_parses_pack_and_agent_filters() {
 
     match cli.command {
         Some(Commands::Audit { command, .. }) => match command {
-            loongclaw_daemon::audit_cli::AuditCommands::Discovery {
+            loong_daemon::audit_cli::AuditCommands::Discovery {
                 limit,
                 since_epoch_s,
                 until_epoch_s,
@@ -801,7 +687,7 @@ fn audit_cli_discovery_parses_pack_and_agent_filters() {
 #[test]
 fn audit_cli_recent_parses_event_and_token_filters() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         "audit",
         "recent",
         "--event-id",
@@ -813,7 +699,7 @@ fn audit_cli_recent_parses_event_and_token_filters() {
 
     match cli.command {
         Some(Commands::Audit { command, .. }) => match command {
-            loongclaw_daemon::audit_cli::AuditCommands::Recent {
+            loong_daemon::audit_cli::AuditCommands::Recent {
                 limit,
                 since_epoch_s,
                 until_epoch_s,
@@ -847,7 +733,7 @@ fn audit_cli_recent_parses_event_and_token_filters() {
 #[test]
 fn audit_cli_token_trail_parses_required_token_and_identity_filters() {
     let cli = try_parse_cli([
-        "loongclaw",
+        "loong",
         "audit",
         "token-trail",
         "--token-id",
@@ -867,7 +753,7 @@ fn audit_cli_token_trail_parses_required_token_and_identity_filters() {
 
     match cli.command {
         Some(Commands::Audit { command, .. }) => match command {
-            loongclaw_daemon::audit_cli::AuditCommands::TokenTrail {
+            loong_daemon::audit_cli::AuditCommands::TokenTrail {
                 token_id,
                 limit,
                 since_epoch_s,
@@ -940,40 +826,32 @@ fn validation_summary_counts_error_and_warning_diagnostics_separately() {
 
 #[test]
 fn render_channel_surfaces_text_reports_aliases_and_operation_health() {
-    let mut config = mvp::config::LoongClawConfig::default();
+    let mut config = mvp::config::LoongConfig::default();
     config.telegram.enabled = true;
-    config.telegram.bot_token = Some(loongclaw_contracts::SecretRef::Inline(
+    config.telegram.bot_token = Some(loong_contracts::SecretRef::Inline(
         "123456:telegram-token".to_owned(),
     ));
     config.telegram.allowed_chat_ids = vec![1001];
     config.feishu.enabled = true;
-    config.feishu.app_id = Some(loongclaw_contracts::SecretRef::Inline(
-        "cli_a1b2c3".to_owned(),
-    ));
-    config.feishu.app_secret = Some(loongclaw_contracts::SecretRef::Inline(
-        "app-secret".to_owned(),
-    ));
+    config.feishu.app_id = Some(loong_contracts::SecretRef::Inline("cli_a1b2c3".to_owned()));
+    config.feishu.app_secret = Some(loong_contracts::SecretRef::Inline("app-secret".to_owned()));
     config.wecom.enabled = true;
-    config.wecom.bot_id = Some(loongclaw_contracts::SecretRef::Inline(
-        "bot_test".to_owned(),
-    ));
-    config.wecom.secret = Some(loongclaw_contracts::SecretRef::Inline(
-        "secret_test".to_owned(),
-    ));
+    config.wecom.bot_id = Some(loong_contracts::SecretRef::Inline("bot_test".to_owned()));
+    config.wecom.secret = Some(loong_contracts::SecretRef::Inline("secret_test".to_owned()));
     config.wecom.allowed_conversation_ids = vec!["group_demo".to_owned()];
 
     let inventory = mvp::channel::channel_inventory(&config);
-    let rendered = render_channel_surfaces_text("/tmp/loongclaw.toml", &inventory);
+    let rendered = render_channel_surfaces_text("/tmp/loong.toml", &inventory);
 
     assert!(
         rendered
             .lines()
             .next()
-            .is_some_and(|line| line.starts_with("LOONGCLAW")),
+            .is_some_and(|line| line.starts_with("LOONG")),
         "channel surface text should now use the shared compact header: {rendered}"
     );
     assert!(rendered.contains("channels"));
-    assert!(rendered.contains("config=/tmp/loongclaw.toml"));
+    assert!(rendered.contains("config=/tmp/loong.toml"));
     assert!(rendered.contains("Telegram [telegram]"));
     assert!(
         rendered.contains("capabilities=runtime_backed,multi_account,send,serve,runtime_tracking")
@@ -995,22 +873,33 @@ fn render_channel_surfaces_text_reports_aliases_and_operation_health() {
     assert!(rendered.contains("configured_accounts=1"));
     assert!(rendered.contains("aliases=lark"));
     assert!(rendered.contains("account=feishu:cli_a1b2c3"));
+    let feishu_section = rendered
+        .split("Feishu/Lark [feishu]")
+        .nth(1)
+        .expect("feishu section should render");
+    assert!(feishu_section.contains("policy conversation_key=allowed_chat_ids"));
+    assert!(feishu_section.contains("sender_key=allowed_sender_ids"));
+    assert!(feishu_section.contains("mention_required=false"));
+    assert!(feishu_section.contains("senders=-"));
     assert!(rendered.contains(&format!(
         "op send ({}) ready: ready target_kinds=receive_id,message_reply requirements=enabled,app_id,app_secret",
         channel_send_command("feishu")
     )));
     assert!(rendered.contains(&format!(
-        "op serve ({}) misconfigured: allowed_chat_ids is empty target_kinds=message_reply requirements=enabled,app_id,app_secret,mode,allowed_chat_ids,verification_token,encrypt_key",
+        "op serve ({}) misconfigured: allowed_chat_ids is empty target_kinds=message_reply requirements=enabled,app_id,app_secret,mode,allowed_chat_ids,allowed_sender_ids,verification_token,encrypt_key",
         channel_serve_command("feishu")
     )));
     assert!(rendered.contains("WeCom [wecom]"));
     assert!(rendered.contains("account=wecom:bot_test"));
+    assert!(rendered.contains(
+        "policy conversation_key=allowed_conversation_ids conversation_mode=exact_allowlist sender_key=allowed_sender_ids sender_mode=open mention_required=false conversations=group_demo senders=-"
+    ));
     assert!(rendered.contains(&format!(
         "op send ({}) ready: ready target_kinds=conversation requirements=enabled,bot_id,secret,websocket_url",
         channel_send_command("wecom")
     )));
     assert!(rendered.contains(&format!(
-        "op serve ({}) ready: ready target_kinds=conversation requirements=enabled,bot_id,secret,allowed_conversation_ids,websocket_url,ping_interval_s",
+        "op serve ({}) ready: ready target_kinds=conversation requirements=enabled,bot_id,secret,allowed_conversation_ids,allowed_sender_ids,websocket_url,ping_interval_s",
         channel_serve_command("wecom")
     )));
     assert!(rendered.contains("running=false"));
@@ -1018,7 +907,7 @@ fn render_channel_surfaces_text_reports_aliases_and_operation_health() {
 
 #[test]
 fn render_channel_surfaces_text_reports_configured_accounts_for_multi_account_channels() {
-    let config: mvp::config::LoongClawConfig = serde_json::from_value(serde_json::json!({
+    let config: mvp::config::LoongConfig = serde_json::from_value(serde_json::json!({
         "telegram": {
             "enabled": true,
             "default_account": "Work Bot",
@@ -1039,7 +928,7 @@ fn render_channel_surfaces_text_reports_configured_accounts_for_multi_account_ch
     .expect("deserialize multi-account config");
 
     let inventory = mvp::channel::channel_inventory(&config);
-    let rendered = render_channel_surfaces_text("/tmp/loongclaw.toml", &inventory);
+    let rendered = render_channel_surfaces_text("/tmp/loong.toml", &inventory);
 
     assert!(rendered.contains("configured_accounts=2"));
     assert!(rendered.contains("default_configured_account=work-bot"));
@@ -1049,7 +938,7 @@ fn render_channel_surfaces_text_reports_configured_accounts_for_multi_account_ch
 
 #[test]
 fn render_channel_surfaces_text_reports_default_account_marker() {
-    let config: mvp::config::LoongClawConfig = serde_json::from_value(serde_json::json!({
+    let config: mvp::config::LoongConfig = serde_json::from_value(serde_json::json!({
         "telegram": {
             "enabled": true,
             "default_account": "Work Bot",
@@ -1070,7 +959,7 @@ fn render_channel_surfaces_text_reports_default_account_marker() {
     .expect("deserialize multi-account config");
 
     let inventory = mvp::channel::channel_inventory(&config);
-    let rendered = render_channel_surfaces_text("/tmp/loongclaw.toml", &inventory);
+    let rendered = render_channel_surfaces_text("/tmp/loong.toml", &inventory);
 
     assert!(rendered.contains("configured_account=work-bot"));
     assert!(rendered.contains("default_account=true"));
@@ -1079,10 +968,50 @@ fn render_channel_surfaces_text_reports_default_account_marker() {
 
 #[test]
 fn render_channel_surfaces_text_reports_catalog_only_channels() {
-    let config = mvp::config::LoongClawConfig::default();
+    let config = mvp::config::LoongConfig::default();
     let inventory = mvp::channel::channel_inventory(&config);
-    let rendered = render_channel_surfaces_text("/tmp/loongclaw.toml", &inventory);
+    let rendered = render_channel_surfaces_text("/tmp/loong.toml", &inventory);
+    let expected_summary = format!(
+        "summary total_surfaces={} runtime_backed={} config_backed={} plugin_backed={} catalog_only={}",
+        inventory.channel_surfaces.len(),
+        inventory
+            .channel_surfaces
+            .iter()
+            .filter(|surface| {
+                surface.catalog.implementation_status
+                    == mvp::channel::ChannelCatalogImplementationStatus::RuntimeBacked
+            })
+            .count(),
+        inventory
+            .channel_surfaces
+            .iter()
+            .filter(|surface| {
+                surface.catalog.implementation_status
+                    == mvp::channel::ChannelCatalogImplementationStatus::ConfigBacked
+            })
+            .count(),
+        inventory
+            .channel_surfaces
+            .iter()
+            .filter(|surface| {
+                surface.catalog.implementation_status
+                    == mvp::channel::ChannelCatalogImplementationStatus::PluginBacked
+            })
+            .count(),
+        inventory
+            .channel_surfaces
+            .iter()
+            .filter(|surface| {
+                surface.catalog.implementation_status
+                    == mvp::channel::ChannelCatalogImplementationStatus::Stub
+            })
+            .count()
+    );
 
+    assert!(rendered.contains(expected_summary.as_str()));
+    assert!(rendered.contains("runtime-backed channels:"));
+    assert!(rendered.contains("config-backed channels:"));
+    assert!(rendered.contains("plugin-backed channels:"));
     assert!(rendered.contains("catalog-only channels:"));
     assert!(rendered.contains(
         "Discord [discord] implementation_status=config_backed selection_order=40 selection_label=\"community server bot\" capabilities=multi_account,send aliases=discord-bot transport=discord_http_api target_kinds=conversation configured_accounts=1 default_configured_account=default"
@@ -1121,7 +1050,7 @@ fn render_channel_surfaces_text_reports_catalog_only_channels() {
         channel_serve_command("whatsapp")
     )));
     assert!(rendered.contains(
-        "LINE [line] implementation_status=config_backed selection_order=60 selection_label=\"consumer messaging bot\" capabilities=multi_account,send aliases=line-bot transport=line_messaging_api target_kinds=address configured_accounts=1 default_configured_account=default"
+        "LINE [line] implementation_status=runtime_backed selection_order=60 selection_label=\"consumer messaging bot\" capabilities=runtime_backed,multi_account,send,serve,runtime_tracking aliases=line-bot transport=line_messaging_api target_kinds=address configured_accounts=1 default_configured_account=default"
     ));
     assert!(rendered.contains(
         "DingTalk [dingtalk] implementation_status=config_backed selection_order=80 selection_label=\"group webhook bot\" capabilities=multi_account,send aliases=ding,ding-bot transport=dingtalk_custom_robot_webhook target_kinds=endpoint configured_accounts=1 default_configured_account=default"
@@ -1129,85 +1058,129 @@ fn render_channel_surfaces_text_reports_catalog_only_channels() {
     assert!(rendered.contains(
         "Google Chat [google-chat] implementation_status=config_backed selection_order=120 selection_label=\"workspace space webhook\" capabilities=multi_account,send aliases=gchat,googlechat transport=google_chat_incoming_webhook target_kinds=endpoint configured_accounts=1 default_configured_account=default"
     ));
-    assert!(rendered.contains(
-        "op send (dingtalk-send) disabled: disabled by dingtalk account configuration target_kinds=endpoint requirements=enabled,webhook_url"
-    ));
-    assert!(rendered.contains(
-        "op send (google-chat-send) disabled: disabled by google_chat account configuration target_kinds=endpoint requirements=enabled,webhook_url"
-    ));
-    assert!(rendered.contains(
-        "op serve (google-chat-serve) unsupported: google chat incoming webhook surface is outbound-only target_kinds=endpoint requirements=enabled,webhook_url"
-    ));
+    assert!(rendered.contains(&format!(
+        "op send ({}) disabled: disabled by dingtalk account configuration target_kinds=endpoint requirements=enabled,webhook_url",
+        channel_send_command("dingtalk")
+    )));
+    assert!(rendered.contains(&format!(
+        "op send ({}) disabled: disabled by google_chat account configuration target_kinds=endpoint requirements=enabled,webhook_url",
+        channel_send_command("google-chat")
+    )));
+    assert!(rendered.contains(&format!(
+        "op serve ({}) unsupported: google chat incoming webhook surface is outbound-only target_kinds=endpoint requirements=enabled,webhook_url",
+        channel_serve_command("google-chat")
+    )));
     assert!(rendered.contains(
         "Signal [signal] implementation_status=config_backed selection_order=130 selection_label=\"private messenger bridge\" capabilities=multi_account,send aliases=signal-cli transport=signal_cli_rest_api target_kinds=address configured_accounts=1 default_configured_account=default"
     ));
-    assert!(rendered.contains(
-        "op send (signal-send) disabled: disabled by signal account configuration target_kinds=address requirements=enabled,service_url,account"
-    ));
-    assert!(rendered.contains(
-        "op serve (signal-serve) unsupported: signal serve runtime is not implemented yet target_kinds=address requirements=enabled,service_url,account"
-    ));
+    assert!(rendered.contains(&format!(
+        "op send ({}) disabled: disabled by signal account configuration target_kinds=address requirements=enabled,service_url,account",
+        channel_send_command("signal")
+    )));
+    assert!(rendered.contains(&format!(
+        "op serve ({}) unsupported: signal serve runtime is not implemented yet target_kinds=address requirements=enabled,service_url,account",
+        channel_serve_command("signal")
+    )));
     assert!(rendered.contains(
         "Microsoft Teams [teams] implementation_status=config_backed selection_order=140 selection_label=\"workspace webhook bot\" capabilities=multi_account,send aliases=msteams,ms-teams transport=microsoft_teams_incoming_webhook target_kinds=endpoint,conversation configured_accounts=1 default_configured_account=default"
     ));
-    assert!(rendered.contains(
-        "op send (teams-send) disabled: disabled by teams account configuration target_kinds=endpoint requirements=enabled,webhook_url"
-    ));
-    assert!(rendered.contains(
-        "op serve (teams-serve) unsupported: microsoft teams incoming webhook surface is outbound-only today target_kinds=conversation requirements=enabled,app_id,app_password,tenant_id,allowed_conversation_ids"
-    ));
+    assert!(rendered.contains(&format!(
+        "op send ({}) disabled: disabled by teams account configuration target_kinds=endpoint requirements=enabled,webhook_url",
+        channel_send_command("teams")
+    )));
+    assert!(rendered.contains(&format!(
+        "op serve ({}) unsupported: microsoft teams incoming webhook surface is outbound-only today target_kinds=conversation requirements=enabled,app_id,app_password,tenant_id,allowed_conversation_ids",
+        channel_serve_command("teams")
+    )));
     assert!(rendered.contains(
         "Nextcloud Talk [nextcloud-talk] implementation_status=config_backed selection_order=160 selection_label=\"self-hosted room bot\" capabilities=multi_account,send aliases=nextcloud,nextcloudtalk transport=nextcloud_talk_bot_api target_kinds=conversation configured_accounts=1 default_configured_account=default"
     ));
-    assert!(rendered.contains(
-        "op send (nextcloud-talk-send) disabled: disabled by nextcloud_talk account configuration target_kinds=conversation requirements=enabled,server_url,shared_secret"
-    ));
-    assert!(rendered.contains(
-        "op serve (nextcloud-talk-serve) unsupported: nextcloud talk bot callback serve is not implemented yet target_kinds=conversation requirements=enabled,server_url,shared_secret"
-    ));
+    assert!(rendered.contains(&format!(
+        "op send ({}) disabled: disabled by nextcloud_talk account configuration target_kinds=conversation requirements=enabled,server_url,shared_secret",
+        channel_send_command("nextcloud-talk")
+    )));
+    assert!(rendered.contains(&format!(
+        "op serve ({}) unsupported: nextcloud talk bot callback serve is not implemented yet target_kinds=conversation requirements=enabled,server_url,shared_secret",
+        channel_serve_command("nextcloud-talk")
+    )));
     assert!(rendered.contains(
         "Synology Chat [synology-chat] implementation_status=config_backed selection_order=165 selection_label=\"nas webhook bot\" capabilities=multi_account,send aliases=synologychat,synochat transport=synology_chat_outgoing_incoming_webhooks target_kinds=address configured_accounts=1 default_configured_account=default"
     ));
-    assert!(rendered.contains(
-        "op send (synology-chat-send) disabled: disabled by synology_chat account configuration target_kinds=address requirements=enabled,incoming_url"
-    ));
-    assert!(rendered.contains(
-        "op serve (synology-chat-serve) unsupported: synology chat outgoing webhook serve is not implemented yet target_kinds=address requirements=enabled,token,incoming_url,allowed_user_ids"
-    ));
+    assert!(rendered.contains(&format!(
+        "op send ({}) disabled: disabled by synology_chat account configuration target_kinds=address requirements=enabled,incoming_url",
+        channel_send_command("synology-chat")
+    )));
+    assert!(rendered.contains(&format!(
+        "op serve ({}) unsupported: synology chat outgoing webhook serve is not implemented yet target_kinds=address requirements=enabled,token,incoming_url,allowed_user_ids",
+        channel_serve_command("synology-chat")
+    )));
     assert!(rendered.contains(
         "iMessage [imessage] implementation_status=config_backed selection_order=180 selection_label=\"apple message bridge\" capabilities=multi_account,send aliases=bluebubbles,blue-bubbles transport=imessage_bridge_api target_kinds=conversation configured_accounts=1 default_configured_account=default"
     ));
+    assert!(rendered.contains(&format!(
+        "op send ({}) disabled: disabled by imessage account configuration target_kinds=conversation requirements=enabled,bridge_url,bridge_token",
+        channel_send_command("imessage")
+    )));
+    assert!(rendered.contains(&format!(
+        "op serve ({}) unsupported: imessage bridge sync runtime is not implemented yet target_kinds=conversation requirements=enabled,bridge_url,bridge_token,allowed_chat_ids",
+        channel_serve_command("imessage")
+    )));
     assert!(rendered.contains(
-        "op send (imessage-send) disabled: disabled by imessage account configuration target_kinds=conversation requirements=enabled,bridge_url,bridge_token"
-    ));
-    assert!(rendered.contains(
-        "op serve (imessage-serve) unsupported: imessage bridge sync runtime is not implemented yet target_kinds=conversation requirements=enabled,bridge_url,bridge_token,allowed_chat_ids"
-    ));
-    assert!(rendered.contains(
-        "Webhook [webhook] implementation_status=config_backed selection_order=110 selection_label=\"generic http integration\" capabilities=multi_account,send aliases=http-webhook transport=generic_webhook target_kinds=endpoint configured_accounts=1 default_configured_account=default"
+        "Webhook [webhook] implementation_status=runtime_backed selection_order=110 selection_label=\"generic http integration\" capabilities=runtime_backed,multi_account,send,serve,runtime_tracking aliases=http-webhook transport=generic_webhook target_kinds=endpoint configured_accounts=1 default_configured_account=default"
     ));
     assert!(rendered.contains(
         "WebChat [webchat] implementation_status=stub selection_order=230 selection_label=\"embedded web inbox\""
     ));
-    assert!(rendered.contains(
-        "op send (webhook-send) disabled: disabled by webhook account configuration target_kinds=endpoint requirements=enabled,endpoint_url"
-    ));
-    assert!(rendered.contains(
-        "op serve (webhook-serve) unsupported: generic webhook serve runtime is not implemented yet target_kinds=endpoint requirements=enabled,public_base_url,signing_secret"
-    ));
+    assert!(rendered.contains(&format!(
+        "op send ({}) disabled: disabled by webhook account configuration target_kinds=endpoint requirements=enabled,endpoint_url",
+        channel_send_command("webhook")
+    )));
+    assert!(rendered.contains(&format!(
+        "op serve ({}) disabled: disabled by webhook account configuration target_kinds=endpoint requirements=enabled,signing_secret",
+        channel_serve_command("webhook")
+    )));
     assert!(rendered.contains(
         "onboarding strategy=manual_config status_command=\"loong doctor\" repair_command=\"loong doctor --fix\""
     ));
     assert!(rendered.contains(
-        "setup_hint=\"configure discord bot credentials in loongclaw.toml under discord or discord.accounts.<account>; outbound direct send is shipped, while gateway-based serve support remains planned\""
+        "setup_hint=\"configure discord bot credentials in loong.toml under discord or discord.accounts.<account>; outbound direct send is shipped, while gateway-based serve support remains planned\""
     ));
 }
 
 #[test]
-fn render_channel_surfaces_text_reports_managed_plugin_bridge_discovery() {
-    let config = mvp::config::LoongClawConfig::default();
+fn render_channel_surfaces_text_groups_plugin_backed_channels_into_their_own_section() {
+    let config = mvp::config::LoongConfig::default();
     let inventory = mvp::channel::channel_inventory(&config);
-    let rendered = render_channel_surfaces_text("/tmp/loongclaw.toml", &inventory);
+    let rendered = render_channel_surfaces_text("/tmp/loong.toml", &inventory);
+
+    let plugin_section = rendered
+        .split("plugin-backed channels:")
+        .nth(1)
+        .expect("plugin-backed channels section should exist");
+    let plugin_section = plugin_section
+        .split("catalog-only channels:")
+        .next()
+        .expect("plugin-backed section should precede catalog-only section");
+
+    assert!(
+        plugin_section.contains("Weixin [weixin]"),
+        "plugin-backed section should include weixin: {plugin_section}"
+    );
+    assert!(
+        plugin_section.contains("QQ Bot [qqbot]"),
+        "plugin-backed section should include qqbot: {plugin_section}"
+    );
+    assert!(
+        plugin_section.contains("OneBot [onebot]"),
+        "plugin-backed section should include onebot: {plugin_section}"
+    );
+}
+
+#[test]
+fn render_channel_surfaces_text_reports_managed_plugin_bridge_discovery() {
+    let config = mvp::config::LoongConfig::default();
+    let inventory = mvp::channel::channel_inventory(&config);
+    let rendered = render_channel_surfaces_text("/tmp/loong.toml", &inventory);
 
     assert!(
         rendered.contains("Weixin [weixin]"),
@@ -1223,10 +1196,16 @@ fn render_channel_surfaces_text_reports_managed_plugin_bridge_discovery() {
 
 #[test]
 fn render_channel_surfaces_text_reports_plugin_backed_stable_targets() {
-    let config = mvp::config::LoongClawConfig::default();
+    let config = mvp::config::LoongConfig::default();
     let inventory = mvp::channel::channel_inventory(&config);
-    let rendered = render_channel_surfaces_text("/tmp/loongclaw.toml", &inventory);
+    let rendered = render_channel_surfaces_text("/tmp/loong.toml", &inventory);
 
+    assert!(
+        rendered.contains(
+            "plugin_bridge_contract required_setup_surface=channel runtime_owner=external_plugin supported_operations=\"send,serve\""
+        ),
+        "rendered channel surfaces should expose plugin bridge contract ownership: {rendered}"
+    );
     assert!(
         rendered.contains(
             "stable_targets=\"weixin:<account>:contact:<id>[conversation]:direct contact conversation,weixin:<account>:room:<id>[conversation]:group room conversation\""
@@ -1248,7 +1227,7 @@ fn render_channel_surfaces_text_reports_plugin_backed_stable_targets() {
 
 #[test]
 fn render_channel_surfaces_text_reports_managed_plugin_bridge_ambiguity_and_setup_guidance() {
-    let config = mvp::config::LoongClawConfig::default();
+    let config = mvp::config::LoongConfig::default();
     let mut inventory = mvp::channel::channel_inventory(&config);
     let weixin_surface = inventory
         .channel_surfaces
@@ -1274,14 +1253,19 @@ fn render_channel_surfaces_text_reports_managed_plugin_bridge_ambiguity_and_setu
     discovery.incompatible_plugins = 0;
     discovery.plugins = vec![mvp::channel::ChannelDiscoveredPluginBridge {
         plugin_id: "weixin-bridge-a".to_owned(),
-        source_path: "/tmp/weixin-bridge-a/loongclaw.plugin.json".to_owned(),
+        source_path: "/tmp/weixin-bridge-a/loong.plugin.json".to_owned(),
         package_root: "/tmp/weixin-bridge-a".to_owned(),
-        package_manifest_path: Some("/tmp/weixin-bridge-a/loongclaw.plugin.json".to_owned()),
+        package_manifest_path: Some("/tmp/weixin-bridge-a/loong.plugin.json".to_owned()),
         bridge_kind: "managed_connector".to_owned(),
         adapter_family: "channel-bridge".to_owned(),
         transport_family: Some("wechat_clawbot_ilink_bridge".to_owned()),
         target_contract: Some("weixin_reply_loop".to_owned()),
         account_scope: Some("shared".to_owned()),
+        runtime_contract: Some("loong_channel_bridge_v1".to_owned()),
+        runtime_operations: vec![
+            "send_message".to_owned(),
+            "receive_batch".to_owned(),
+        ],
         status: mvp::channel::ChannelDiscoveredPluginBridgeStatus::CompatibleIncompleteContract,
         issues: vec!["example issue".to_owned()],
         missing_fields: vec!["metadata.transport_family".to_owned()],
@@ -1295,7 +1279,7 @@ fn render_channel_surfaces_text_reports_managed_plugin_bridge_ambiguity_and_setu
         ),
     }];
 
-    let rendered = render_channel_surfaces_text("/tmp/loongclaw.toml", &inventory);
+    let rendered = render_channel_surfaces_text("/tmp/loong.toml", &inventory);
 
     assert!(
         rendered.contains("ambiguity_status=multiple_compatible_plugins"),
@@ -1331,7 +1315,7 @@ fn render_channel_surfaces_text_reports_plugin_bridge_account_summary_for_mixed_
     config.external_skills.install_root = Some(install_root.display().to_string());
 
     let inventory = mvp::channel::channel_inventory(&config);
-    let rendered = render_channel_surfaces_text("/tmp/loongclaw.toml", &inventory);
+    let rendered = render_channel_surfaces_text("/tmp/loong.toml", &inventory);
 
     assert!(
         rendered.contains("selected_plugin_id=weixin-managed-bridge"),
@@ -1361,7 +1345,7 @@ fn render_channel_surfaces_text_reports_plugin_bridge_account_summary_for_mixed_
 
 #[test]
 fn render_channel_surfaces_text_escapes_untrusted_managed_bridge_values() {
-    let config = mvp::config::LoongClawConfig::default();
+    let config = mvp::config::LoongConfig::default();
     let mut inventory = mvp::channel::channel_inventory(&config);
     let weixin_surface = inventory
         .channel_surfaces
@@ -1387,6 +1371,8 @@ fn render_channel_surfaces_text_escapes_untrusted_managed_bridge_values() {
         transport_family: Some("wechat clawbot".to_owned()),
         target_contract: Some("weixin\nreply".to_owned()),
         account_scope: Some("shared scope".to_owned()),
+        runtime_contract: Some("loong_channel_bridge_v1".to_owned()),
+        runtime_operations: vec!["send_message".to_owned(), "receive_batch".to_owned()],
         status: mvp::channel::ChannelDiscoveredPluginBridgeStatus::CompatibleIncompleteContract,
         issues: vec!["missing\nfield".to_owned()],
         missing_fields: vec!["metadata.transport family".to_owned()],
@@ -1398,8 +1384,7 @@ fn render_channel_surfaces_text_escapes_untrusted_managed_bridge_values() {
         setup_remediation: Some("fix bridge\nthen retry".to_owned()),
     }];
 
-    let rendered =
-        loongclaw_daemon::render_channel_surfaces_text("/tmp/loongclaw.toml", &inventory);
+    let rendered = loong_daemon::render_channel_surfaces_text("/tmp/loong.toml", &inventory);
 
     assert!(
         rendered.contains("managed_install_root=\"/tmp/managed bridge\""),
@@ -1467,21 +1452,21 @@ fn memory_system_metadata_json_includes_stage_families_summary_and_source() {
 
 #[test]
 fn build_memory_systems_cli_json_payload_includes_runtime_policy() {
-    let config = mvp::config::LoongClawConfig {
+    let config = mvp::config::LoongConfig {
         memory: mvp::config::MemoryConfig {
             profile: mvp::config::MemoryProfile::WindowPlusSummary,
             fail_open: false,
             ingest_mode: mvp::config::MemoryIngestMode::AsyncBackground,
             ..mvp::config::MemoryConfig::default()
         },
-        ..mvp::config::LoongClawConfig::default()
+        ..mvp::config::LoongConfig::default()
     };
     let snapshot =
         mvp::memory::collect_memory_system_runtime_snapshot(&config).expect("runtime snapshot");
 
-    let payload = build_memory_systems_cli_json_payload("/tmp/loongclaw.toml", &snapshot);
+    let payload = build_memory_systems_cli_json_payload("/tmp/loong.toml", &snapshot);
 
-    assert_eq!(payload["config"], "/tmp/loongclaw.toml");
+    assert_eq!(payload["config"], "/tmp/loong.toml");
     assert_eq!(payload["selected"]["id"], "builtin");
     assert_eq!(payload["selected"]["source"], "default");
     assert_eq!(
@@ -1523,35 +1508,35 @@ fn build_memory_systems_cli_json_payload_includes_runtime_policy() {
 
 #[test]
 fn render_memory_system_snapshot_text_reports_fail_open_policy() {
-    let mut env = loongclaw_daemon::test_support::ScopedEnv::new();
+    let mut env = loong_daemon::test_support::ScopedEnv::new();
     for key in [
-        "LOONGCLAW_MEMORY_BACKEND",
-        "LOONGCLAW_MEMORY_SYSTEM",
-        "LOONGCLAW_MEMORY_PROFILE",
-        "LOONGCLAW_MEMORY_FAIL_OPEN",
-        "LOONGCLAW_MEMORY_INGEST_MODE",
-        "LOONGCLAW_SQLITE_PATH",
-        "LOONGCLAW_SLIDING_WINDOW",
-        "LOONGCLAW_MEMORY_SUMMARY_MAX_CHARS",
-        "LOONGCLAW_MEMORY_PROFILE_NOTE",
+        "LOONG_MEMORY_BACKEND",
+        "LOONG_MEMORY_SYSTEM",
+        "LOONG_MEMORY_PROFILE",
+        "LOONG_MEMORY_FAIL_OPEN",
+        "LOONG_MEMORY_INGEST_MODE",
+        "LOONG_SQLITE_PATH",
+        "LOONG_SLIDING_WINDOW",
+        "LOONG_MEMORY_SUMMARY_MAX_CHARS",
+        "LOONG_MEMORY_PROFILE_NOTE",
     ] {
         env.remove(key);
     }
-    let config = mvp::config::LoongClawConfig {
+    let config = mvp::config::LoongConfig {
         memory: mvp::config::MemoryConfig {
             profile: mvp::config::MemoryProfile::WindowPlusSummary,
             fail_open: false,
             ingest_mode: mvp::config::MemoryIngestMode::AsyncBackground,
             ..mvp::config::MemoryConfig::default()
         },
-        ..mvp::config::LoongClawConfig::default()
+        ..mvp::config::LoongConfig::default()
     };
     let snapshot =
         mvp::memory::collect_memory_system_runtime_snapshot(&config).expect("runtime snapshot");
 
-    let rendered = render_memory_system_snapshot_text("/tmp/loongclaw.toml", &snapshot);
+    let rendered = render_memory_system_snapshot_text("/tmp/loong.toml", &snapshot);
 
-    assert!(rendered.contains("config=/tmp/loongclaw.toml"));
+    assert!(rendered.contains("config=/tmp/loong.toml"));
     assert!(rendered.contains(
         "selected=builtin source=default api_version=1 capabilities=canonical_store,deterministic_summary,profile_note_projection,prompt_hydration,retrieval_provenance runtime_fallback_kind=metadata_only stages=derive,retrieve,rank,compact pre_assembly_stages=derive,retrieve,rank recall_modes=prompt_assembly,operator_inspection core_operations=append_turn,window,clear_session,replace_turns,read_context,read_stage_envelope"
     ));
@@ -1566,9 +1551,9 @@ fn render_memory_system_snapshot_text_reports_fail_open_policy() {
 
 #[test]
 fn build_channels_cli_json_payload_includes_operation_requirement_metadata() {
-    let config = mvp::config::LoongClawConfig::default();
+    let config = mvp::config::LoongConfig::default();
     let inventory = mvp::channel::channel_inventory(&config);
-    let payload = build_channels_cli_json_payload("/tmp/loongclaw.toml", &inventory);
+    let payload = build_channels_cli_json_payload("/tmp/loong.toml", &inventory);
     let encoded = serde_json::to_value(&payload).expect("serialize payload");
     let surfaces = encoded["channel_surfaces"]
         .as_array()
@@ -1624,6 +1609,7 @@ fn build_channels_cli_json_payload_includes_operation_requirement_metadata() {
                     "app_secret",
                     "mode",
                     "allowed_chat_ids",
+                    "allowed_sender_ids",
                     "verification_token",
                     "encrypt_key",
                 ])
@@ -1631,10 +1617,49 @@ fn build_channels_cli_json_payload_includes_operation_requirement_metadata() {
 }
 
 #[test]
-fn build_channels_cli_json_payload_includes_onboarding_metadata() {
-    let config = mvp::config::LoongClawConfig::default();
+fn build_channels_cli_json_payload_includes_structured_channel_access_policy_summaries() {
+    let mut config = mvp::config::LoongConfig::default();
+    config.matrix.enabled = true;
+    config.matrix.access_token = Some(loong_contracts::SecretRef::Inline(
+        "matrix-token".to_owned(),
+    ));
+    config.matrix.base_url = Some("https://matrix.example.org".to_owned());
+    config.matrix.allowed_room_ids = vec!["!ops:example.org".to_owned()];
+    config.matrix.allowed_sender_ids = vec!["@alice:example.org".to_owned()];
+
     let inventory = mvp::channel::channel_inventory(&config);
-    let payload = build_channels_cli_json_payload("/tmp/loongclaw.toml", &inventory);
+    let payload = build_channels_cli_json_payload("/tmp/loong.toml", &inventory);
+    let encoded = serde_json::to_value(&payload).expect("serialize payload");
+    let access_policies = encoded["channel_access_policies"]
+        .as_array()
+        .expect("channel access policies array");
+
+    assert!(access_policies.iter().any(|policy| {
+        policy.get("channel_id").and_then(serde_json::Value::as_str) == Some("matrix")
+            && policy
+                .get("conversation_config_key")
+                .and_then(serde_json::Value::as_str)
+                == Some("allowed_room_ids")
+            && policy
+                .get("sender_config_key")
+                .and_then(serde_json::Value::as_str)
+                == Some("allowed_sender_ids")
+            && policy
+                .get("conversation_mode")
+                .and_then(serde_json::Value::as_str)
+                == Some("exact_allowlist")
+            && policy
+                .get("sender_mode")
+                .and_then(serde_json::Value::as_str)
+                == Some("exact_allowlist")
+    }));
+}
+
+#[test]
+fn build_channels_cli_json_payload_includes_onboarding_metadata() {
+    let config = mvp::config::LoongConfig::default();
+    let inventory = mvp::channel::channel_inventory(&config);
+    let payload = build_channels_cli_json_payload("/tmp/loong.toml", &inventory);
     let encoded = serde_json::to_value(&payload).expect("serialize payload");
 
     assert!(
@@ -1697,9 +1722,9 @@ fn build_channels_cli_json_payload_includes_onboarding_metadata() {
 
 #[test]
 fn build_channels_cli_json_payload_includes_plugin_bridge_contracts() {
-    let config = mvp::config::LoongClawConfig::default();
+    let config = mvp::config::LoongConfig::default();
     let inventory = mvp::channel::channel_inventory(&config);
-    let payload = build_channels_cli_json_payload("/tmp/loongclaw.toml", &inventory);
+    let payload = build_channels_cli_json_payload("/tmp/loong.toml", &inventory);
     let encoded = serde_json::to_value(&payload).expect("serialize payload");
 
     assert!(
@@ -1709,6 +1734,17 @@ fn build_channels_cli_json_payload_includes_plugin_bridge_contracts() {
             .iter()
             .any(|entry| {
                 entry.get("id").and_then(serde_json::Value::as_str) == Some("weixin")
+                    && entry
+                        .get("operations")
+                        .and_then(serde_json::Value::as_array)
+                        .map(|operations| {
+                            operations
+                                .iter()
+                                .filter_map(|operation| operation.get("availability"))
+                                .filter_map(serde_json::Value::as_str)
+                                .collect::<Vec<_>>()
+                        })
+                        == Some(vec!["managed_bridge", "managed_bridge"])
                     && entry
                         .get("plugin_bridge_contract")
                         .and_then(|contract| contract.get("manifest_channel_id"))
@@ -1756,9 +1792,9 @@ fn build_channels_cli_json_payload_includes_plugin_bridge_contracts() {
 
 #[test]
 fn build_channels_cli_json_payload_includes_plugin_bridge_stable_targets() {
-    let config = mvp::config::LoongClawConfig::default();
+    let config = mvp::config::LoongConfig::default();
     let inventory = mvp::channel::channel_inventory(&config);
-    let payload = build_channels_cli_json_payload("/tmp/loongclaw.toml", &inventory);
+    let payload = build_channels_cli_json_payload("/tmp/loong.toml", &inventory);
     let encoded = serde_json::to_value(&payload).expect("serialize payload");
 
     assert!(
@@ -1833,9 +1869,9 @@ fn build_channels_cli_json_payload_includes_plugin_bridge_stable_targets() {
 
 #[test]
 fn build_channels_cli_json_payload_includes_managed_plugin_bridge_discovery() {
-    let config = mvp::config::LoongClawConfig::default();
+    let config = mvp::config::LoongConfig::default();
     let inventory = mvp::channel::channel_inventory(&config);
-    let payload = build_channels_cli_json_payload("/tmp/loongclaw.toml", &inventory);
+    let payload = build_channels_cli_json_payload("/tmp/loong.toml", &inventory);
     let encoded = serde_json::to_value(&payload).expect("serialize payload");
 
     assert!(
@@ -1865,7 +1901,7 @@ fn build_channels_cli_json_payload_includes_managed_plugin_bridge_discovery() {
 
 #[test]
 fn build_channels_cli_json_payload_includes_managed_plugin_bridge_guidance_fields() {
-    let config = mvp::config::LoongClawConfig::default();
+    let config = mvp::config::LoongConfig::default();
     let mut inventory = mvp::channel::channel_inventory(&config);
     let weixin_surface = inventory
         .channel_surfaces
@@ -1889,14 +1925,16 @@ fn build_channels_cli_json_payload_includes_managed_plugin_bridge_guidance_field
         vec!["weixin-bridge-a".to_owned(), "weixin-bridge-b".to_owned()];
     discovery.plugins = vec![mvp::channel::ChannelDiscoveredPluginBridge {
         plugin_id: "weixin-bridge-a".to_owned(),
-        source_path: "/tmp/weixin-bridge-a/loongclaw.plugin.json".to_owned(),
+        source_path: "/tmp/weixin-bridge-a/loong.plugin.json".to_owned(),
         package_root: "/tmp/weixin-bridge-a".to_owned(),
-        package_manifest_path: Some("/tmp/weixin-bridge-a/loongclaw.plugin.json".to_owned()),
+        package_manifest_path: Some("/tmp/weixin-bridge-a/loong.plugin.json".to_owned()),
         bridge_kind: "managed_connector".to_owned(),
         adapter_family: "channel-bridge".to_owned(),
         transport_family: Some("wechat_clawbot_ilink_bridge".to_owned()),
         target_contract: Some("weixin_reply_loop".to_owned()),
         account_scope: Some("shared".to_owned()),
+        runtime_contract: Some("loong_channel_bridge_v1".to_owned()),
+        runtime_operations: vec!["send_message".to_owned(), "receive_batch".to_owned()],
         status: mvp::channel::ChannelDiscoveredPluginBridgeStatus::CompatibleReady,
         issues: Vec::new(),
         missing_fields: Vec::new(),
@@ -1910,7 +1948,7 @@ fn build_channels_cli_json_payload_includes_managed_plugin_bridge_guidance_field
         ),
     }];
 
-    let payload = build_channels_cli_json_payload("/tmp/loongclaw.toml", &inventory);
+    let payload = build_channels_cli_json_payload("/tmp/loong.toml", &inventory);
     let encoded = serde_json::to_value(&payload).expect("serialize payload");
     let surfaces = encoded["channel_surfaces"]
         .as_array()
@@ -1954,8 +1992,105 @@ fn build_channels_cli_json_payload_includes_managed_plugin_bridge_guidance_field
 }
 
 #[test]
+fn build_channels_cli_json_payload_includes_runtime_retry_metadata() {
+    let config = mvp::config::LoongConfig::default();
+    let mut inventory = mvp::channel::channel_inventory(&config);
+    let weixin = inventory
+        .channels
+        .iter_mut()
+        .find(|snapshot| snapshot.id == "weixin")
+        .expect("weixin snapshot");
+    let serve = weixin
+        .operations
+        .iter_mut()
+        .find(|operation| operation.id == "serve")
+        .expect("weixin serve operation");
+
+    serve.detail = "managed bridge runtime ready via plugin weixin-managed-runtime; runtime retrying after transient failures".to_owned();
+    serve.issues = vec![
+        "runtime retrying after transient failures; consecutive_failures=2; last_error=temporary bridge timeout".to_owned(),
+    ];
+    serve.runtime = Some(mvp::channel::ChannelOperationRuntime {
+        running: true,
+        stale: false,
+        busy: false,
+        active_runs: 0,
+        consecutive_failures: 2,
+        last_run_activity_at: Some(1_700_000_000_000),
+        last_heartbeat_at: Some(1_700_000_005_000),
+        last_failure_at: Some(1_700_000_006_000),
+        last_recovery_at: None,
+        last_error: Some("temporary bridge timeout".to_owned()),
+        last_duplicate_reclaim_at: None,
+        pid: Some(5151),
+        account_id: Some("default".to_owned()),
+        account_label: Some("default".to_owned()),
+        instance_count: 1,
+        running_instances: 1,
+        stale_instances: 0,
+        duplicate_owner_pids: Vec::new(),
+        last_duplicate_reclaim_cleanup_owner_pids: Vec::new(),
+        recent_incidents: Vec::new(),
+    });
+
+    let payload = build_channels_cli_json_payload("/tmp/loong.toml", &inventory);
+    let encoded = serde_json::to_value(&payload).expect("serialize payload");
+
+    assert!(
+        encoded["channels"]
+            .as_array()
+            .expect("channels array")
+            .iter()
+            .any(|snapshot| {
+                snapshot.get("id").and_then(serde_json::Value::as_str) == Some("weixin")
+                    && snapshot
+                        .get("operations")
+                        .and_then(serde_json::Value::as_array)
+                        .map(|operations| {
+                            operations.iter().any(|operation| {
+                                operation.get("id").and_then(serde_json::Value::as_str)
+                                    == Some("serve")
+                                    && operation
+                                        .get("detail")
+                                        .and_then(serde_json::Value::as_str)
+                                        .map(|detail| {
+                                            detail.contains(
+                                                "runtime retrying after transient failures",
+                                            )
+                                        })
+                                        == Some(true)
+                                    && operation
+                                        .get("issues")
+                                        .and_then(serde_json::Value::as_array)
+                                        .map(|issues| {
+                                            issues.iter().any(|issue| {
+                                                issue.as_str().map(|issue| {
+                                                    issue.contains("consecutive_failures=2")
+                                                }) == Some(true)
+                                            })
+                                        })
+                                        == Some(true)
+                                    && operation
+                                        .get("runtime")
+                                        .and_then(|runtime| runtime.get("consecutive_failures"))
+                                        .and_then(serde_json::Value::as_u64)
+                                        == Some(2)
+                                    && operation
+                                        .get("runtime")
+                                        .and_then(|runtime| runtime.get("last_error"))
+                                        .and_then(serde_json::Value::as_str)
+                                        == Some("temporary bridge timeout")
+                            })
+                        })
+                        == Some(true)
+            }),
+        "channels json should preserve runtime retry metadata: {encoded:#?}"
+    );
+}
+
+#[test]
 fn build_channels_cli_json_payload_includes_duplicate_managed_bridge_selection_fields() {
-    let config = mvp::config::LoongClawConfig::default();
+    let config = mvp::config::LoongConfig::default();
     let mut inventory = mvp::channel::channel_inventory(&config);
     let weixin_surface = inventory
         .channel_surfaces
@@ -1981,7 +2116,7 @@ fn build_channels_cli_json_payload_includes_duplicate_managed_bridge_selection_f
         "weixin-bridge-shared".to_owned(),
     ];
 
-    let payload = build_channels_cli_json_payload("/tmp/loongclaw.toml", &inventory);
+    let payload = build_channels_cli_json_payload("/tmp/loong.toml", &inventory);
     let encoded = serde_json::to_value(&payload).expect("serialize payload");
     let surfaces = encoded["channel_surfaces"]
         .as_array()
@@ -2027,7 +2162,7 @@ fn build_channels_cli_json_payload_includes_plugin_bridge_account_summary_for_mi
     config.external_skills.install_root = Some(install_root.display().to_string());
 
     let inventory = mvp::channel::channel_inventory(&config);
-    let payload = build_channels_cli_json_payload("/tmp/loongclaw.toml", &inventory);
+    let payload = build_channels_cli_json_payload("/tmp/loong.toml", &inventory);
     let encoded = serde_json::to_value(&payload).expect("serialize payload");
     let surfaces = encoded["channel_surfaces"]
         .as_array()
@@ -2073,21 +2208,21 @@ fn build_channels_cli_json_payload_includes_plugin_bridge_account_summary_for_mi
 
 #[test]
 fn build_channels_cli_json_payload_includes_full_channel_catalog() {
-    let config = mvp::config::LoongClawConfig::default();
+    let config = mvp::config::LoongConfig::default();
     let inventory = mvp::channel::channel_inventory(&config);
-    let payload = build_channels_cli_json_payload("/tmp/loongclaw.toml", &inventory);
+    let payload = build_channels_cli_json_payload("/tmp/loong.toml", &inventory);
     let encoded = serde_json::to_value(&payload).expect("serialize payload");
 
     assert_eq!(
         encoded.get("config").and_then(serde_json::Value::as_str),
-        Some("/tmp/loongclaw.toml")
+        Some("/tmp/loong.toml")
     );
     assert_eq!(
         encoded
             .get("schema")
             .and_then(|schema| schema.get("version"))
             .and_then(serde_json::Value::as_u64),
-        Some(1)
+        Some(u64::from(CHANNELS_CLI_JSON_SCHEMA_VERSION))
     );
     assert_eq!(
         encoded
@@ -2115,6 +2250,29 @@ fn build_channels_cli_json_payload_includes_full_channel_catalog() {
                     .collect::<Vec<_>>()
             }),
         Some(vec!["channels", "catalog_only_channels"])
+    );
+    assert_eq!(
+        encoded
+            .get("summary")
+            .and_then(|summary| summary.get("total_surface_count"))
+            .and_then(serde_json::Value::as_u64),
+        Some(inventory.channel_surfaces.len() as u64)
+    );
+    assert_eq!(
+        encoded
+            .get("summary")
+            .and_then(|summary| summary.get("plugin_backed_surface_count"))
+            .and_then(serde_json::Value::as_u64),
+        Some(
+            inventory
+                .channel_surfaces
+                .iter()
+                .filter(|surface| {
+                    surface.catalog.implementation_status
+                        == mvp::channel::ChannelCatalogImplementationStatus::PluginBacked
+                })
+                .count() as u64
+        )
     );
     assert_eq!(
         encoded
@@ -2482,9 +2640,9 @@ fn build_channels_cli_json_payload_includes_full_channel_catalog() {
 fn build_channels_cli_json_payload_includes_grouped_channel_surfaces() {
     let _env = super::MigrationEnvironmentGuard::set(&[("TELEGRAM_BOT_TOKEN", None)]);
 
-    let config = mvp::config::LoongClawConfig::default();
+    let config = mvp::config::LoongConfig::default();
     let inventory = mvp::channel::channel_inventory(&config);
-    let payload = build_channels_cli_json_payload("/tmp/loongclaw.toml", &inventory);
+    let payload = build_channels_cli_json_payload("/tmp/loong.toml", &inventory);
     let encoded = serde_json::to_value(&payload).expect("serialize payload");
 
     assert_eq!(

@@ -10,7 +10,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use loongclaw_daemon::{
+use loong_daemon::{
     gateway::{
         client::{GatewayLocalClient, GatewayStopResponseOutcome},
         service::{
@@ -50,44 +50,44 @@ fn unique_runtime_dir(label: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .expect("system clock before unix epoch")
         .as_nanos();
-    let runtime_dir = std::env::temp_dir().join(format!(
-        "loongclaw-daemon-gateway-owner-state-{label}-{suffix}"
-    ));
+    let runtime_dir =
+        std::env::temp_dir().join(format!("loong-daemon-gateway-owner-state-{label}-{suffix}"));
     std::fs::create_dir_all(&runtime_dir).expect("create runtime dir");
     runtime_dir
 }
 
-fn headless_loaded_config_fixture() -> LoadedSupervisorConfig {
-    let runtime_root = unique_runtime_dir("headless-config");
-    let config_path = runtime_root.join("loongclaw.toml");
-    let sqlite_path = runtime_root.join("memory.sqlite3");
-    let mut config = mvp::config::LoongClawConfig::default();
+fn headless_loaded_config_fixture(runtime_dir: &std::path::Path) -> LoadedSupervisorConfig {
+    let mut config = mvp::config::LoongConfig::default();
+    let sqlite_path = runtime_dir.join("gateway-owner-memory.sqlite3");
     config.memory.sqlite_path = sqlite_path.display().to_string();
+    config.gateway.port = 0;
 
     LoadedSupervisorConfig {
-        resolved_path: config_path,
+        resolved_path: runtime_dir.join("loong.toml"),
         config,
     }
 }
 
-fn telegram_loaded_config_fixture() -> LoadedSupervisorConfig {
-    let runtime_root = unique_runtime_dir("telegram-config");
-    let config_path = runtime_root.join("loongclaw.toml");
-    let sqlite_path = runtime_root.join("memory.sqlite3");
-    let mut config = mvp::config::LoongClawConfig::default();
+fn telegram_loaded_config_fixture(runtime_dir: &std::path::Path) -> LoadedSupervisorConfig {
+    let mut config = mvp::config::LoongConfig::default();
     config.telegram.enabled = true;
+    let sqlite_path = runtime_dir.join("gateway-owner-memory.sqlite3");
     config.memory.sqlite_path = sqlite_path.display().to_string();
+    config.gateway.port = 0;
     LoadedSupervisorConfig {
-        resolved_path: config_path,
+        resolved_path: runtime_dir.join("loong.toml"),
         config,
     }
 }
 
-fn plugin_backed_loaded_config_fixture() -> LoadedSupervisorConfig {
-    let config = super::mixed_account_weixin_plugin_bridge_config();
+fn plugin_backed_loaded_config_fixture(runtime_dir: &std::path::Path) -> LoadedSupervisorConfig {
+    let mut config = super::mixed_account_weixin_plugin_bridge_config();
+    let sqlite_path = runtime_dir.join("gateway-owner-memory.sqlite3");
+    config.memory.sqlite_path = sqlite_path.display().to_string();
+    config.gateway.port = 0;
 
     LoadedSupervisorConfig {
-        resolved_path: PathBuf::from("/tmp/loongclaw.toml"),
+        resolved_path: runtime_dir.join("loong.toml"),
         config,
     }
 }
@@ -129,7 +129,7 @@ async fn wait_until(description: &str, predicate: impl Fn() -> bool) {
 
 async fn wait_for_gateway_control_surface(
     runtime_dir: &std::path::Path,
-) -> loongclaw_daemon::gateway::state::GatewayOwnerStatus {
+) -> loong_daemon::gateway::state::GatewayOwnerStatus {
     wait_until("gateway control surface binding", || {
         let status = load_gateway_owner_status(runtime_dir);
         let Some(status) = status else {
@@ -151,7 +151,10 @@ async fn wait_for_gateway_control_surface(
 async fn gateway_owner_state_headless_run_claims_slot_and_stops_via_stop_request() {
     let runtime_dir = unique_runtime_dir("headless-stop");
     let hooks = SupervisorRuntimeHooks {
-        load_config: Arc::new(|_| Ok(headless_loaded_config_fixture())),
+        load_config: Arc::new({
+            let runtime_dir = runtime_dir.clone();
+            move |_| Ok(headless_loaded_config_fixture(runtime_dir.as_path()))
+        }),
         initialize_runtime_environment: Arc::new(|_| {}),
         run_cli_host: Arc::new(|_| {
             panic!("headless gateway run should not start the concurrent CLI host")
@@ -164,6 +167,7 @@ async fn gateway_owner_state_headless_run_claims_slot_and_stops_via_stop_request
     let runtime_dir_for_run = runtime_dir.clone();
     let run = tokio::spawn(async move {
         run_gateway_run_with_hooks_for_test(
+            None,
             None,
             None,
             Vec::new(),
@@ -211,7 +215,10 @@ async fn gateway_owner_state_headless_run_claims_slot_and_stops_via_stop_request
 async fn gateway_owner_state_rejects_second_active_owner_slot() {
     let runtime_dir = unique_runtime_dir("exclusive-slot");
     let hooks = SupervisorRuntimeHooks {
-        load_config: Arc::new(|_| Ok(headless_loaded_config_fixture())),
+        load_config: Arc::new({
+            let runtime_dir = runtime_dir.clone();
+            move |_| Ok(headless_loaded_config_fixture(runtime_dir.as_path()))
+        }),
         initialize_runtime_environment: Arc::new(|_| {}),
         run_cli_host: Arc::new(|_| {
             panic!("headless gateway run should not start the concurrent CLI host")
@@ -224,6 +231,7 @@ async fn gateway_owner_state_rejects_second_active_owner_slot() {
     let runtime_dir_for_run = runtime_dir.clone();
     let run = tokio::spawn(async move {
         run_gateway_run_with_hooks_for_test(
+            None,
             None,
             None,
             Vec::new(),
@@ -241,7 +249,10 @@ async fn gateway_owner_state_rejects_second_active_owner_slot() {
     .await;
 
     let second_hooks = SupervisorRuntimeHooks {
-        load_config: Arc::new(|_| Ok(headless_loaded_config_fixture())),
+        load_config: Arc::new({
+            let runtime_dir = runtime_dir.clone();
+            move |_| Ok(headless_loaded_config_fixture(runtime_dir.as_path()))
+        }),
         initialize_runtime_environment: Arc::new(|_| {}),
         run_cli_host: Arc::new(|_| {
             panic!("headless gateway run should not start the concurrent CLI host")
@@ -251,6 +262,7 @@ async fn gateway_owner_state_rejects_second_active_owner_slot() {
         observe_state: Arc::new(|_| Ok(())),
     };
     let second_result = run_gateway_run_with_hooks_for_test(
+        None,
         None,
         None,
         Vec::new(),
@@ -276,7 +288,10 @@ async fn gateway_owner_state_rejects_second_active_owner_slot() {
 async fn gateway_owner_state_second_owner_attempt_preserves_pending_stop_request() {
     let runtime_dir = unique_runtime_dir("duplicate-start-pending-stop");
     let hooks = SupervisorRuntimeHooks {
-        load_config: Arc::new(|_| Ok(headless_loaded_config_fixture())),
+        load_config: Arc::new({
+            let runtime_dir = runtime_dir.clone();
+            move |_| Ok(headless_loaded_config_fixture(runtime_dir.as_path()))
+        }),
         initialize_runtime_environment: Arc::new(|_| {}),
         run_cli_host: Arc::new(|_| {
             panic!("headless gateway run should not start the concurrent CLI host")
@@ -289,6 +304,7 @@ async fn gateway_owner_state_second_owner_attempt_preserves_pending_stop_request
     let runtime_dir_for_run = runtime_dir.clone();
     let run = tokio::spawn(async move {
         run_gateway_run_with_hooks_for_test(
+            None,
             None,
             None,
             Vec::new(),
@@ -309,7 +325,10 @@ async fn gateway_owner_state_second_owner_attempt_preserves_pending_stop_request
     assert_eq!(stop_result, GatewayStopRequestOutcome::Requested);
 
     let second_hooks = SupervisorRuntimeHooks {
-        load_config: Arc::new(|_| Ok(headless_loaded_config_fixture())),
+        load_config: Arc::new({
+            let runtime_dir = runtime_dir.clone();
+            move |_| Ok(headless_loaded_config_fixture(runtime_dir.as_path()))
+        }),
         initialize_runtime_environment: Arc::new(|_| {}),
         run_cli_host: Arc::new(|_| {
             panic!("headless gateway run should not start the concurrent CLI host")
@@ -319,6 +338,7 @@ async fn gateway_owner_state_second_owner_attempt_preserves_pending_stop_request
         observe_state: Arc::new(|_| Ok(())),
     };
     let second_result = run_gateway_run_with_hooks_for_test(
+        None,
         None,
         None,
         Vec::new(),
@@ -349,7 +369,10 @@ async fn gateway_owner_state_multi_channel_compat_records_wrapper_mode_and_sessi
         telegram_runner,
     )]);
     let hooks = SupervisorRuntimeHooks {
-        load_config: Arc::new(|_| Ok(telegram_loaded_config_fixture())),
+        load_config: Arc::new({
+            let runtime_dir = runtime_dir.clone();
+            move |_| Ok(telegram_loaded_config_fixture(runtime_dir.as_path()))
+        }),
         initialize_runtime_environment: Arc::new(|_| {}),
         run_cli_host: Arc::new(|options| {
             boxed_cli_result(async move {
@@ -406,7 +429,10 @@ async fn gateway_owner_state_localhost_control_surface_requires_auth_and_stops_r
     let _lock = lock_daemon_test_environment();
     let runtime_dir = unique_runtime_dir("localhost-control");
     let hooks = SupervisorRuntimeHooks {
-        load_config: Arc::new(|_| Ok(headless_loaded_config_fixture())),
+        load_config: Arc::new({
+            let runtime_dir = runtime_dir.clone();
+            move |_| Ok(headless_loaded_config_fixture(runtime_dir.as_path()))
+        }),
         initialize_runtime_environment: Arc::new(|_| {}),
         run_cli_host: Arc::new(|_| {
             panic!("headless gateway run should not start the concurrent CLI host")
@@ -419,6 +445,7 @@ async fn gateway_owner_state_localhost_control_surface_requires_auth_and_stops_r
     let runtime_dir_for_run = runtime_dir.clone();
     let run = tokio::spawn(async move {
         run_gateway_run_with_hooks_for_test(
+            None,
             None,
             None,
             Vec::new(),
@@ -447,20 +474,31 @@ async fn gateway_owner_state_localhost_control_surface_requires_auth_and_stops_r
     let base_url = format!("http://127.0.0.1:{port}");
     let client = reqwest::Client::new();
 
-    let unauthorized_status_response = client
-        .get(format!("{base_url}/api/gateway/status"))
-        .send()
-        .await
-        .expect("send unauthorized gateway status request");
-    assert_eq!(
-        unauthorized_status_response.status(),
-        reqwest::StatusCode::UNAUTHORIZED
-    );
-    let unauthorized_status_json: Value = unauthorized_status_response
-        .json()
-        .await
-        .expect("decode unauthorized gateway status response");
-    assert_eq!(unauthorized_status_json["error"]["code"], "unauthorized");
+    for path in [
+        "/api/gateway/status",
+        "/api/gateway/channels",
+        "/api/gateway/runtime-snapshot",
+        "/api/gateway/operator-summary",
+        "/api/gateway/acp/sessions",
+        "/api/gateway/acp/observability",
+        "/api/gateway/acp/status?session=missing-session",
+    ] {
+        let response = client
+            .get(format!("{base_url}{path}"))
+            .send()
+            .await
+            .unwrap_or_else(|_| panic!("send unauthorized gateway request for {path}"));
+        assert_eq!(
+            response.status(),
+            reqwest::StatusCode::UNAUTHORIZED,
+            "{path}"
+        );
+        let response_json: Value = response
+            .json()
+            .await
+            .unwrap_or_else(|_| panic!("decode unauthorized gateway response for {path}"));
+        assert_eq!(response_json["error"]["code"], "unauthorized", "{path}");
+    }
 
     let authorized_status_response = client
         .get(format!("{base_url}/api/gateway/status"))
@@ -520,16 +558,6 @@ async fn gateway_owner_state_localhost_control_surface_requires_auth_and_stops_r
         runtime_snapshot_json["tools"]["visible_tool_count"]
             .as_u64()
             .is_some()
-    );
-
-    let unauthorized_acp_sessions_response = client
-        .get(format!("{base_url}/api/gateway/acp/sessions"))
-        .send()
-        .await
-        .expect("send unauthorized gateway ACP sessions request");
-    assert_eq!(
-        unauthorized_acp_sessions_response.status(),
-        reqwest::StatusCode::UNAUTHORIZED
     );
 
     let authorized_acp_sessions_response = client
@@ -647,6 +675,21 @@ async fn gateway_owner_state_localhost_control_surface_requires_auth_and_stops_r
         "invalid_selector"
     );
 
+    let unauthorized_stop_response = client
+        .post(format!("{base_url}/api/gateway/stop"))
+        .send()
+        .await
+        .expect("send unauthorized gateway stop request");
+    assert_eq!(
+        unauthorized_stop_response.status(),
+        reqwest::StatusCode::UNAUTHORIZED
+    );
+    let unauthorized_stop_json: Value = unauthorized_stop_response
+        .json()
+        .await
+        .expect("decode unauthorized gateway stop response");
+    assert_eq!(unauthorized_stop_json["error"]["code"], "unauthorized");
+
     let stop_response = client
         .post(format!("{base_url}/api/gateway/stop"))
         .bearer_auth(token.as_str())
@@ -681,7 +724,10 @@ async fn gateway_owner_state_localhost_control_surface_requires_auth_and_stops_r
 async fn gateway_owner_state_turn_endpoint_rejects_when_acp_disabled_by_policy() {
     let runtime_dir = unique_runtime_dir("turn-policy-disabled");
     let hooks = SupervisorRuntimeHooks {
-        load_config: Arc::new(|_| Ok(headless_loaded_config_fixture())),
+        load_config: Arc::new({
+            let runtime_dir = runtime_dir.clone();
+            move |_| Ok(headless_loaded_config_fixture(runtime_dir.as_path()))
+        }),
         initialize_runtime_environment: Arc::new(|_| {}),
         run_cli_host: Arc::new(|_| {
             panic!("headless gateway run should not start the concurrent CLI host")
@@ -694,6 +740,7 @@ async fn gateway_owner_state_turn_endpoint_rejects_when_acp_disabled_by_policy()
     let runtime_dir_for_run = runtime_dir.clone();
     let run = tokio::spawn(async move {
         run_gateway_run_with_hooks_for_test(
+            None,
             None,
             None,
             Vec::new(),
@@ -749,7 +796,10 @@ async fn gateway_owner_state_turn_endpoint_rejects_when_acp_disabled_by_policy()
 async fn gateway_owner_state_local_client_discovers_owner_reads_summary_and_stops_runtime() {
     let runtime_dir = unique_runtime_dir("local-client");
     let hooks = SupervisorRuntimeHooks {
-        load_config: Arc::new(|_| Ok(headless_loaded_config_fixture())),
+        load_config: Arc::new({
+            let runtime_dir = runtime_dir.clone();
+            move |_| Ok(headless_loaded_config_fixture(runtime_dir.as_path()))
+        }),
         initialize_runtime_environment: Arc::new(|_| {}),
         run_cli_host: Arc::new(|_| {
             panic!("headless gateway run should not start the concurrent CLI host")
@@ -762,6 +812,7 @@ async fn gateway_owner_state_local_client_discovers_owner_reads_summary_and_stop
     let runtime_dir_for_run = runtime_dir.clone();
     let run = tokio::spawn(async move {
         run_gateway_run_with_hooks_for_test(
+            None,
             None,
             None,
             Vec::new(),
@@ -853,7 +904,10 @@ async fn gateway_owner_state_local_client_channels_and_operator_summary_keep_plu
 {
     let runtime_dir = unique_runtime_dir("plugin-backed-parity");
     let hooks = SupervisorRuntimeHooks {
-        load_config: Arc::new(|_| Ok(plugin_backed_loaded_config_fixture())),
+        load_config: Arc::new({
+            let runtime_dir = runtime_dir.clone();
+            move |_| Ok(plugin_backed_loaded_config_fixture(runtime_dir.as_path()))
+        }),
         initialize_runtime_environment: Arc::new(|_| {}),
         run_cli_host: Arc::new(|_| {
             panic!("headless gateway run should not start the concurrent CLI host")
@@ -866,6 +920,7 @@ async fn gateway_owner_state_local_client_channels_and_operator_summary_keep_plu
     let runtime_dir_for_run = runtime_dir.clone();
     let run = tokio::spawn(async move {
         run_gateway_run_with_hooks_for_test(
+            None,
             None,
             None,
             Vec::new(),
@@ -883,6 +938,7 @@ async fn gateway_owner_state_local_client_channels_and_operator_summary_keep_plu
         .operator_summary()
         .await
         .expect("read gateway operator summary");
+    let nodes = client.nodes().await.expect("read gateway nodes");
     let channel_surfaces = channels["channel_surfaces"]
         .as_array()
         .expect("channel surfaces array");
@@ -923,6 +979,27 @@ async fn gateway_owner_state_local_client_channels_and_operator_summary_keep_plu
         weixin_operator_surface
             .plugin_bridge_account_summary
             .as_deref(),
+        Some(expected_summary)
+    );
+    assert_eq!(
+        operator_summary.nodes.paired_device_count,
+        nodes.summary.paired_device_count
+    );
+    assert_eq!(
+        operator_summary.nodes.managed_bridge_count,
+        nodes.summary.managed_bridge_count
+    );
+    assert_eq!(
+        operator_summary.nodes.total_count,
+        nodes.summary.total_count
+    );
+    let weixin_managed_bridge = nodes
+        .managed_bridges
+        .iter()
+        .find(|node| node.channel_id == "weixin")
+        .expect("weixin managed bridge node");
+    assert_eq!(
+        weixin_managed_bridge.account_summary.as_deref(),
         Some(expected_summary)
     );
 
