@@ -30,3 +30,5 @@ This note documents the current operator-facing expectations for
   compaction/tool activity blocks.
 - `crates/app/src/chat/live_runtime.rs` — the live preview/tool-activity data
   that feeds the pending-turn surface.
+- `docs/references/pi-surface-resize-render-audit.md` — resize flicker audit,
+  current protections, and follow-up rendering recommendations.
