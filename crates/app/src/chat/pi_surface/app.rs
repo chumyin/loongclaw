@@ -2881,6 +2881,81 @@ mod tests {
     }
 
     #[test]
+    fn width_resize_keeps_provider_error_and_footer_visible() {
+        let backend = TestBackend::new(72, 18);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = blank_app();
+        app.message_list.add_assistant_message(
+            "[provider_error] provider returned status 401 for model `gpt-5.4` on attempt 1/3: {\"code\":\"INVALID_API_KEY\",\"message\":\"Invalid API key\"} | provider_failover={\"reason\":\"auth_rejected\",\"stage\":\"status_failure\",\"model\":\"gpt-5.4\",\"attempt\":1,\"max_attempts\":3,\"status_code\":401}".to_owned(),
+        );
+
+        terminal.draw(|f| app.render(f)).expect("draw");
+        terminal.backend_mut().resize(28, 18);
+        terminal.draw(|f| app.render(f)).expect("draw");
+
+        let lines = buffer_lines(&terminal);
+        let provider_row = lines
+            .iter()
+            .position(|line| line.contains("provider error"))
+            .expect("provider error row");
+        let detail_row = lines
+            .iter()
+            .position(|line| line.contains("INVALID_API_KEY"))
+            .expect("provider error detail row");
+        let footer_row = lines
+            .iter()
+            .position(|line| line.contains("gpt-test"))
+            .expect("footer row");
+
+        assert!(provider_row < detail_row);
+        assert!(detail_row < footer_row);
+        assert_eq!(footer_row, lines.len().saturating_sub(1));
+        assert!(lines.iter().any(|line| line.contains("401")));
+    }
+
+    #[test]
+    fn width_resize_keeps_pending_restore_footer_and_previews_visible() {
+        let backend = TestBackend::new(72, 18);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = blank_app();
+        app.pending_turn = true;
+        app.turn_start = Some(std::time::Instant::now());
+        app.pending_steers
+            .push_back("nudge the current answer toward the root cause".to_owned());
+        app.pending_queue
+            .push_back("after that, summarize the diff and keep the footer visible".to_owned());
+
+        terminal.draw(|f| app.render(f)).expect("draw");
+        terminal.backend_mut().resize(34, 18);
+        terminal.draw(|f| app.render(f)).expect("draw");
+
+        let lines = buffer_lines(&terminal);
+        let steer_row = lines
+            .iter()
+            .position(|line| line.contains("root cause"))
+            .expect("steer preview row");
+        let queued_row = lines
+            .iter()
+            .position(|line| line.contains("summarize the diff"))
+            .expect("queued preview row");
+        let composer_row = lines
+            .iter()
+            .position(|line| line.contains("›"))
+            .expect("composer row");
+        let footer_row = lines
+            .iter()
+            .position(|line| line.contains("queued ×1"))
+            .expect("restore footer row");
+
+        assert!(steer_row < queued_row);
+        assert!(queued_row < composer_row);
+        assert!(composer_row < footer_row);
+        assert_eq!(footer_row, lines.len().saturating_sub(1));
+        assert!(lines[queued_row].contains("↳"));
+        assert!(lines.iter().any(|line| line.contains("Option + Up") || line.contains("Alt + Up")));
+    }
+
+    #[test]
     fn pending_preview_shows_queued_steer_and_follow_up_above_composer() {
         let backend = TestBackend::new(72, 20);
         let mut terminal = Terminal::new(backend).expect("terminal");

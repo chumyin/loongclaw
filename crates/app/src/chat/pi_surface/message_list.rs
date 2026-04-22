@@ -2105,6 +2105,35 @@ mod tests {
     }
 
     #[test]
+    fn width_resize_preserves_bottom_anchor_for_wrapped_tail_content() {
+        let backend = TestBackend::new(48, 8);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut list = MessageList::new();
+        for idx in 0..8 {
+            list.add_assistant_message(format!(
+                "line-{idx} keeps a long wrapped transcript chunk stable while the terminal width shrinks"
+            ));
+        }
+
+        terminal.draw(|f| list.render(f, f.area())).expect("draw");
+        terminal.backend_mut().resize(24, 8);
+        terminal.draw(|f| list.render(f, f.area())).expect("draw");
+        let after = terminal.backend().buffer().clone();
+        let after_area = after.area;
+        let flattened = (0..after_area.height)
+            .map(|y| {
+                (0..after_area.width)
+                    .map(|x| after[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(flattened.contains("line-7"));
+        assert_eq!(list.scroll_offset, 0);
+    }
+
+    #[test]
     fn resize_preserves_bottom_anchor_when_following_tail() {
         let backend = TestBackend::new(40, 8);
         let mut terminal = Terminal::new(backend).expect("terminal");
