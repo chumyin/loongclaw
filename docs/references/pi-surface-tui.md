@@ -51,6 +51,28 @@ This note documents the current operator-facing expectations for
 - `docs/references/pi-surface-resize-render-audit.md` — resize flicker audit,
   current protections, and follow-up rendering recommendations.
 
+## Concrete findings on this branch
+
+- `crates/app/src/chat/live_runtime.rs` now makes pending streaming updates feel
+  steadier by separating smooth emission from catch-up emission. The current
+  branch explicitly forces progress for long unstable suffix bursts, visual-line
+  growth, newline boundaries, and width rerenders instead of waiting on a naive
+  fixed token stride.
+- `crates/app/src/chat/pi_surface/message_list.rs` now keeps structured
+  transcript output calmer under tool-heavy turns by deduping repeated
+  request/args/status/stdout/stderr bursts while still preserving unique child
+  details per called group.
+- `crates/app/src/chat/pi_surface/markdown.rs`,
+  `crates/app/src/chat/pi_surface/diff_viewer.rs`, and
+  `crates/app/src/chat/cli_render.rs` now keep markdown tables, diff fences, and
+  tool-activity sections closer to each other across pending preview and settled
+  transcript rendering, with narrow-width table fallback instead of raw markdown
+  noise.
+- `crates/app/src/chat/pi_surface/app.rs` keeps the queue, restore,
+  provider-error, and footer surfaces visible during resize pressure, so the
+  current polish work improves rendering maturity without regressing operator
+  control surfaces.
+
 ## Current verification evidence
 
 The current maturity checkpoint is protected by targeted `loong-app` tests that
