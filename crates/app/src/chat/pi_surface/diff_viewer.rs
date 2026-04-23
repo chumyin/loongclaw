@@ -134,12 +134,12 @@ mod tests {
         .map(line_texts())
         .collect::<Vec<_>>();
 
-        assert_eq!(lines.first().map(String::as_str), Some("   context line"));
+        assert_eq!(lines.first().map(String::as_str), Some("     context line"));
         assert!(lines.iter().any(|line| line.contains("- old value")));
         assert!(lines.iter().any(|line| line.contains("+ new value")));
         assert_eq!(
             lines.last().map(String::as_str),
-            Some("   trailing context")
+            Some("     trailing context")
         );
     }
 }
