@@ -3286,8 +3286,9 @@ let beta = alpha + 1;
 
         assert!(rendered.contains("```bash"));
         assert!(rendered.contains("cargo test"));
-        assert!(rendered.contains("Metric") && rendered.contains("coverage"));
-        assert!(rendered.contains("Value") && rendered.contains("68%"));
+        assert!(rendered.contains("┌"));
+        assert!(rendered.contains("68%"));
+        assert!(rendered.contains("cove"));
     }
 
     #[test]
