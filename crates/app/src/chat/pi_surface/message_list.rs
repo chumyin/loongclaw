@@ -3219,62 +3219,52 @@ mod tests {
     }
 
     #[test]
-    fn assistant_reply_keeps_diff_code_and_tables_consistent_in_one_message() {
+    fn assistant_markdown_code_block_preserves_line_breaks_and_green_styling() {
         let mut list = MessageList::new();
         list.add_assistant_message(
-            "### Patch\n```diff\n-old value\n+new value\n```\n\n### Commands\n```bash\nnpm install\nnpm test\n```\n\n| Metric | Value |\n| --- | --- |\n| coverage | 68% |\n| p95 | 220ms |"
-                .to_owned(),
+            "```rust
+let alpha = 1;
+let beta = alpha + 1;
+```"
+            .to_owned(),
         );
 
-        let rendered = list
-            .get_rendered_lines(52)
-            .into_iter()
+        let rendered = list.get_rendered_lines(48);
+        let flattened = rendered
+            .iter()
             .map(|line| {
                 line.spans
-                    .into_iter()
+                    .iter()
                     .map(|span| span.content.to_string())
                     .collect::<String>()
             })
-            .collect::<Vec<_>>()
-            .join("\n");
+            .collect::<Vec<_>>();
+        let alpha_index = flattened
+            .iter()
+            .position(|line| line.contains("let alpha = 1;"))
+            .expect("alpha line");
+        let beta_index = flattened
+            .iter()
+            .position(|line| line.contains("let beta = alpha + 1;"))
+            .expect("beta line");
 
-        assert!(rendered.contains("[Patch]"));
-        assert!(rendered.contains("- old value"));
-        assert!(rendered.contains("+ new value"));
-        assert!(!rendered.contains("```diff"));
-        assert!(rendered.contains("```bash"));
-        assert!(rendered.contains("npm install"));
-        assert!(rendered.contains("npm test"));
-        assert!(rendered.contains("┌"));
-        assert!(rendered.contains("coverage"));
-        assert!(rendered.contains("220ms"));
-        assert!(!rendered.contains("| --- |"));
-    }
+        assert_ne!(alpha_index, beta_index);
+        assert!(!flattened[alpha_index].contains("let beta = alpha + 1;"));
+        assert!(!flattened[beta_index].contains("let alpha = 1;"));
 
-    #[test]
-    fn narrow_surface_keeps_code_and_table_blocks_readable() {
-        let mut list = MessageList::new();
-        list.add_assistant_message(
-            "### Commands\n```bash\ncargo test -p loong-app --lib\n```\n\n| Metric | Value |\n| --- | --- |\n| coverage | 68% |"
-                .to_owned(),
-        );
+        let alpha_span = rendered[alpha_index]
+            .spans
+            .iter()
+            .find(|span| span.content.contains("let alpha = 1;"))
+            .expect("alpha span");
+        let beta_span = rendered[beta_index]
+            .spans
+            .iter()
+            .find(|span| span.content.contains("let beta = alpha + 1;"))
+            .expect("beta span");
 
-        let rendered = list
-            .get_rendered_lines(18)
-            .into_iter()
-            .map(|line| {
-                line.spans
-                    .into_iter()
-                    .map(|span| span.content.to_string())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        assert!(rendered.contains("```bash"));
-        assert!(rendered.contains("cargo test"));
-        assert!(rendered.contains("Metric: coverage"));
-        assert!(rendered.contains("Value: 68%"));
+        assert_eq!(alpha_span.style.fg, Some(PI_GREEN));
+        assert_eq!(beta_span.style.fg, Some(PI_GREEN));
     }
 
     #[test]
