@@ -99,7 +99,6 @@ fn prefixed_line(indent: &str, prefix: &str, spans: Vec<Span<'static>>) -> Line<
     Line::from(line_spans)
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::render_diff_to_lines;
@@ -125,17 +124,22 @@ mod tests {
 
     #[test]
     fn keeps_context_and_changed_lines_legible() {
-        let lines = render_diff_to_lines(" context line
+        let lines = render_diff_to_lines(
+            " context line
 -old value
 +new value
- trailing context")
-            .into_iter()
-            .map(line_texts())
-            .collect::<Vec<_>>();
+ trailing context",
+        )
+        .into_iter()
+        .map(line_texts())
+        .collect::<Vec<_>>();
 
         assert_eq!(lines.first().map(String::as_str), Some("   context line"));
         assert!(lines.iter().any(|line| line.contains("- old value")));
         assert!(lines.iter().any(|line| line.contains("+ new value")));
-        assert_eq!(lines.last().map(String::as_str), Some("   trailing context"));
+        assert_eq!(
+            lines.last().map(String::as_str),
+            Some("   trailing context")
+        );
     }
 }
