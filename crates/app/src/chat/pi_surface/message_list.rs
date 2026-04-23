@@ -3248,6 +3248,63 @@ let beta = alpha + 1;
             .position(|line| line.contains("let beta = alpha + 1;"))
             .expect("beta line");
 
+        assert_ne!(alpha_index, beta_index);
+        assert!(!flattened[alpha_index].contains("let beta = alpha + 1;"));
+        assert!(!flattened[beta_index].contains("let alpha = 1;"));
+
+        let alpha_span = rendered[alpha_index]
+            .spans
+            .iter()
+            .find(|span| span.content.contains("let alpha = 1;"))
+            .expect("alpha span");
+        let beta_span = rendered[beta_index]
+            .spans
+            .iter()
+            .find(|span| span.content.contains("let beta = alpha + 1;"))
+            .expect("beta span");
+
+        assert_eq!(alpha_span.style.fg, Some(PI_GREEN));
+        assert_eq!(beta_span.style.fg, Some(PI_GREEN));
+    }
+
+    #[test]
+    fn assistant_reply_keeps_diff_code_and_tables_consistent_in_one_message() {
+        let mut list = MessageList::new();
+        list.add_assistant_message(
+            "### Patch
+```diff
+-old value
++new value
+```
+
+### Commands
+```bash
+npm install
+npm test
+```
+
+| Metric | Value |
+| --- | --- |
+| coverage | 68% |
+| p95 | 220ms |"
+                .to_owned(),
+        );
+
+        let rendered = list
+            .get_rendered_lines(52)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join(
+                "
+",
+            );
+
         assert!(rendered.contains("[Patch]"));
         assert!(rendered.contains("old") && rendered.contains("value"));
         assert!(rendered.contains("new") && rendered.contains("value"));
@@ -3261,16 +3318,20 @@ let beta = alpha + 1;
         assert!(!rendered.contains("| --- |"));
     }
 
-        let alpha_span = rendered[alpha_index]
-            .spans
-            .iter()
-            .find(|span| span.content.contains("let alpha = 1;"))
-            .expect("alpha span");
-        let beta_span = rendered[beta_index]
-            .spans
-            .iter()
-            .find(|span| span.content.contains("let beta = alpha + 1;"))
-            .expect("beta span");
+    #[test]
+    fn narrow_surface_keeps_code_and_table_blocks_readable() {
+        let mut list = MessageList::new();
+        list.add_assistant_message(
+            "### Commands
+```bash
+cargo test -p loong-app --lib
+```
+
+| Metric | Value |
+| --- | --- |
+| coverage | 68% |"
+                .to_owned(),
+        );
 
         let rendered = list
             .get_rendered_lines(18)
@@ -3282,7 +3343,10 @@ let beta = alpha + 1;
                     .collect::<String>()
             })
             .collect::<Vec<_>>()
-            .join("\n");
+            .join(
+                "
+",
+            );
 
         assert!(rendered.contains("```bash"));
         assert!(rendered.contains("cargo test"));
