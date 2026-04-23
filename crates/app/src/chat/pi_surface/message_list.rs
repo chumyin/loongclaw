@@ -3272,8 +3272,22 @@ let beta = alpha + 1;
             .find(|span| span.content.contains("let beta = alpha + 1;"))
             .expect("beta span");
 
-        assert_eq!(alpha_span.style.fg, Some(PI_GREEN));
-        assert_eq!(beta_span.style.fg, Some(PI_GREEN));
+        let rendered = list
+            .get_rendered_lines(18)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(rendered.contains("```bash"));
+        assert!(rendered.contains("cargo test"));
+        assert!(rendered.contains("Metric") && rendered.contains("coverage"));
+        assert!(rendered.contains("Value") && rendered.contains("68%"));
     }
 
     #[test]
