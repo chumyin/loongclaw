@@ -1023,9 +1023,9 @@ fn assistant_line_style(line: &str) -> Style {
         || trimmed.starts_with('├')
         || trimmed.starts_with('└')
         || trimmed.starts_with('│')
+        || trimmed.starts_with("┃")
+        || trimmed.starts_with('>')
     {
-        Style::default().fg(PI_GRAY)
-    } else if trimmed.starts_with("┃") || trimmed.starts_with('>') {
         Style::default().fg(PI_GRAY)
     } else if trimmed.starts_with("- ") || trimmed.starts_with("* ") || trimmed.starts_with("• ")
     {
