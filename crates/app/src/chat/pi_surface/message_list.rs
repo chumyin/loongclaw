@@ -787,6 +787,7 @@ fn wrap_assistant_markdown_lines(lines: Vec<Line<'static>>, width: u16) -> Vec<L
     let content_width = width.saturating_sub(2) as usize;
     let mut rendered = Vec::new();
     let mut paragraph_buffer = String::new();
+    let mut in_code_block = false;
 
     let flush_paragraph =
         |rendered: &mut Vec<Line<'static>>, paragraph_buffer: &mut String, content_width: usize| {
@@ -794,16 +795,11 @@ fn wrap_assistant_markdown_lines(lines: Vec<Line<'static>>, width: u16) -> Vec<L
                 paragraph_buffer.clear();
                 return;
             }
-            let style = assistant_line_style(paragraph_buffer);
-            for wrapped in crate::presentation::render_wrapped_display_line(
+            rendered.extend(render_assistant_plain_line(
                 paragraph_buffer.as_str(),
                 content_width,
-            ) {
-                rendered.push(Line::from(vec![
-                    Span::raw("  "),
-                    Span::styled(wrapped, style),
-                ]));
-            }
+                assistant_line_style(paragraph_buffer),
+            ));
             paragraph_buffer.clear();
         };
 
@@ -813,25 +809,38 @@ fn wrap_assistant_markdown_lines(lines: Vec<Line<'static>>, width: u16) -> Vec<L
             .iter()
             .map(|span| span.content.as_ref())
             .collect::<String>();
+        let trimmed = plain.trim_start();
         if plain.trim().is_empty() {
             flush_paragraph(&mut rendered, &mut paragraph_buffer, content_width);
             rendered.push(Line::from(""));
             continue;
         }
 
+        if trimmed.starts_with("```") {
+            flush_paragraph(&mut rendered, &mut paragraph_buffer, content_width);
+            rendered.extend(render_assistant_plain_line(
+                plain.as_str(),
+                content_width,
+                assistant_line_style(&plain),
+            ));
+            in_code_block = !in_code_block;
+            continue;
+        }
+
+        if in_code_block {
+            flush_paragraph(&mut rendered, &mut paragraph_buffer, content_width);
+            rendered.extend(render_assistant_code_line(plain.as_str(), content_width));
+            continue;
+        }
+
         if let Some(split_bullets) = split_inline_bullet_runs(&plain) {
             flush_paragraph(&mut rendered, &mut paragraph_buffer, content_width);
             for bullet_line in split_bullets {
-                let style = assistant_line_style(&bullet_line);
-                for wrapped in crate::presentation::render_wrapped_display_line(
+                rendered.extend(render_assistant_plain_line(
                     bullet_line.as_str(),
                     content_width,
-                ) {
-                    rendered.push(Line::from(vec![
-                        Span::raw("  "),
-                        Span::styled(wrapped, style),
-                    ]));
-                }
+                    assistant_line_style(&bullet_line),
+                ));
             }
             continue;
         }
@@ -845,20 +854,49 @@ fn wrap_assistant_markdown_lines(lines: Vec<Line<'static>>, width: u16) -> Vec<L
         }
 
         flush_paragraph(&mut rendered, &mut paragraph_buffer, content_width);
-        let style = assistant_line_style(&plain);
-        for wrapped in
-            crate::presentation::render_wrapped_display_line(plain.as_str(), content_width)
-        {
-            rendered.push(Line::from(vec![
-                Span::raw("  "),
-                Span::styled(wrapped, style),
-            ]));
-        }
+        rendered.extend(render_assistant_plain_line(
+            plain.as_str(),
+            content_width,
+            assistant_line_style(&plain),
+        ));
     }
 
     flush_paragraph(&mut rendered, &mut paragraph_buffer, content_width);
 
     rendered
+}
+
+fn render_assistant_plain_line(
+    line: &str,
+    content_width: usize,
+    style: Style,
+) -> Vec<Line<'static>> {
+    crate::presentation::render_wrapped_display_line(line, content_width)
+        .into_iter()
+        .map(|wrapped| Line::from(vec![Span::raw("  "), Span::styled(wrapped, style)]))
+        .collect()
+}
+
+fn render_assistant_code_line(line: &str, content_width: usize) -> Vec<Line<'static>> {
+    let code_style = Style::default().fg(PI_GREEN);
+    let (gutter, code) = line
+        .strip_prefix("  ")
+        .map_or(("", line), |rest| ("  ", rest));
+    let code_width = content_width
+        .saturating_sub(crate::presentation::display_width(gutter))
+        .max(1);
+
+    crate::presentation::render_wrapped_display_line(code, code_width)
+        .into_iter()
+        .map(|wrapped| {
+            let mut spans = vec![Span::raw("  ")];
+            if !gutter.is_empty() {
+                spans.push(Span::styled(gutter.to_owned(), code_style));
+            }
+            spans.push(Span::styled(wrapped, code_style));
+            Line::from(spans)
+        })
+        .collect()
 }
 
 fn split_inline_bullet_runs(line: &str) -> Option<Vec<String>> {
@@ -3178,6 +3216,55 @@ mod tests {
         assert!(rendered.iter().any(|line| line.contains("覆盖率")));
         assert!(rendered.iter().any(|line| line.contains("220ms")));
         assert!(!rendered.iter().any(|line| line.contains("| --- |")));
+    }
+
+    #[test]
+    fn assistant_markdown_code_block_preserves_line_breaks_and_green_styling() {
+        let mut list = MessageList::new();
+        list.add_assistant_message(
+            "```rust
+let alpha = 1;
+let beta = alpha + 1;
+```"
+            .to_owned(),
+        );
+
+        let rendered = list.get_rendered_lines(48);
+        let flattened = rendered
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        let alpha_index = flattened
+            .iter()
+            .position(|line| line.contains("let alpha = 1;"))
+            .expect("alpha line");
+        let beta_index = flattened
+            .iter()
+            .position(|line| line.contains("let beta = alpha + 1;"))
+            .expect("beta line");
+
+        assert_ne!(alpha_index, beta_index);
+        assert!(!flattened[alpha_index].contains("let beta = alpha + 1;"));
+        assert!(!flattened[beta_index].contains("let alpha = 1;"));
+
+        let alpha_span = rendered[alpha_index]
+            .spans
+            .iter()
+            .find(|span| span.content.contains("let alpha = 1;"))
+            .expect("alpha span");
+        let beta_span = rendered[beta_index]
+            .spans
+            .iter()
+            .find(|span| span.content.contains("let beta = alpha + 1;"))
+            .expect("beta span");
+
+        assert_eq!(alpha_span.style.fg, Some(PI_GREEN));
+        assert_eq!(beta_span.style.fg, Some(PI_GREEN));
     }
 
     #[test]
