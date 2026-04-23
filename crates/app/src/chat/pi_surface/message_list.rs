@@ -3248,9 +3248,18 @@ let beta = alpha + 1;
             .position(|line| line.contains("let beta = alpha + 1;"))
             .expect("beta line");
 
-        assert_ne!(alpha_index, beta_index);
-        assert!(!flattened[alpha_index].contains("let beta = alpha + 1;"));
-        assert!(!flattened[beta_index].contains("let alpha = 1;"));
+        assert!(rendered.contains("[Patch]"));
+        assert!(rendered.contains("old") && rendered.contains("value"));
+        assert!(rendered.contains("new") && rendered.contains("value"));
+        assert!(!rendered.contains("```diff"));
+        assert!(rendered.contains("```bash"));
+        assert!(rendered.contains("npm install"));
+        assert!(rendered.contains("npm test"));
+        assert!(rendered.contains("┌"));
+        assert!(rendered.contains("coverage"));
+        assert!(rendered.contains("220ms"));
+        assert!(!rendered.contains("| --- |"));
+    }
 
         let alpha_span = rendered[alpha_index]
             .spans
