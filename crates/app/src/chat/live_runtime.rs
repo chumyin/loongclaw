@@ -3,16 +3,22 @@ use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use super::pi_surface::markdown;
 use super::pi_surface::utils::compact_structured_preview;
 use super::*;
 
-const CLI_CHAT_LIVE_PREVIEW_MIN_EMIT_CHARS: usize = 24;
-const CLI_CHAT_LIVE_PREVIEW_MAX_EMIT_CHARS: usize = 120;
+const CLI_CHAT_LIVE_PREVIEW_MIN_EMIT_CHARS: usize = 8;
+const CLI_CHAT_LIVE_PREVIEW_MAX_EMIT_CHARS: usize = 48;
+const CLI_CHAT_LIVE_PREVIEW_INITIAL_EMIT_CHARS: usize = 4;
 const CLI_CHAT_LIVE_PREVIEW_MAX_BUFFER_CHARS: usize = 4096;
 const CLI_CHAT_LIVE_TOOL_ARGS_MAX_BUFFER_CHARS: usize = 1024;
 const CLI_CHAT_LIVE_OUTPUT_MAX_BUFFER_CHARS: usize = 1536;
 const CLI_CHAT_LIVE_OUTPUT_RENDER_MAX_LINES: usize = 4;
 const CLI_CHAT_LIVE_DIFF_PREVIEW_MAX_LINES: usize = 6;
+const CLI_CHAT_LIVE_PREVIEW_CATCH_UP_ENTER_VISUAL_LINE_GROWTH: usize = 2;
+const CLI_CHAT_LIVE_PREVIEW_CATCH_UP_ENTER_MIN_VISUAL_LINES: usize = 4;
+const CLI_CHAT_LIVE_PREVIEW_SMOOTH_MIN_INTERVAL_MS: u64 = 40;
+const CLI_CHAT_LIVE_PREVIEW_CATCH_UP_MIN_INTERVAL_MS: u64 = 16;
 pub(super) type CliChatLiveSurfaceSink = Arc<dyn Fn(Vec<String>) + Send + Sync>;
 pub(super) type CliChatLiveSurfaceRerender = Arc<dyn Fn() + Send + Sync>;
 
@@ -20,6 +26,12 @@ pub(super) type CliChatLiveSurfaceRerender = Arc<dyn Fn() + Send + Sync>;
 enum CliChatLiveSurfaceRenderMode {
     Card,
     Compact,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CliChatLivePreviewEmitMode {
+    Smooth,
+    CatchUp,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -126,7 +138,10 @@ pub(super) struct CliChatLiveSurfaceState {
     pub next_tool_display_order: usize,
     pub total_text_chars_seen: usize,
     pub last_preview_emit_chars_seen: usize,
+    pub last_preview_emit_visual_line_count: usize,
+    pub last_preview_emit_elapsed_ms: Option<u64>,
     pub last_emitted_snapshot: Option<CliChatLiveSurfaceSnapshot>,
+    pub last_emitted_lines: Option<Vec<String>>,
 }
 
 pub(super) struct CliChatLiveSurfaceObserver {
@@ -240,7 +255,7 @@ impl CliChatLiveSurfaceObserver {
             if state.latest_phase_event.is_none() {
                 None
             } else {
-                build_cli_chat_live_surface_snapshot(&state).map(|snapshot| {
+                build_cli_chat_live_surface_snapshot(&state).and_then(|snapshot| {
                     let lines = match self.render_mode {
                         CliChatLiveSurfaceRenderMode::Card => {
                             render_cli_chat_live_surface_lines_with_width(
@@ -255,8 +270,18 @@ impl CliChatLiveSurfaceObserver {
                             )
                         }
                     };
+                    if state.last_emitted_lines.as_ref() == Some(&lines) {
+                        state.last_emitted_snapshot = Some(snapshot);
+                        return None;
+                    }
+                    state.last_preview_emit_visual_line_count =
+                        cli_chat_live_preview_visual_line_count(
+                            snapshot.draft_preview.as_deref(),
+                            self.render_width(),
+                        );
                     state.last_emitted_snapshot = Some(snapshot);
-                    lines
+                    state.last_emitted_lines = Some(lines.clone());
+                    Some(lines)
                 })
             }
         };
@@ -363,7 +388,8 @@ impl CliChatLiveSurfaceObserver {
                 state.total_text_chars_seen =
                     state.total_text_chars_seen.saturating_add(delta_chars);
 
-                if should_emit_cli_chat_live_preview(&state, render_width)
+                if (should_emit_cli_chat_live_preview(&state, render_width, event.elapsed_ms)
+                    || cli_chat_live_delta_has_commit_boundary(text_delta.as_str()))
                     && phase_supports_cli_chat_live_preview(current_phase)
                 {
                     should_render = true;
@@ -386,7 +412,11 @@ impl CliChatLiveSurfaceObserver {
             }
 
             if should_render {
-                self.prepare_live_surface_lines(&mut state)
+                let rendered = self.prepare_live_surface_lines(&mut state);
+                if rendered.is_some() {
+                    state.last_preview_emit_elapsed_ms = event.elapsed_ms;
+                }
+                rendered
             } else {
                 None
             }
@@ -415,7 +445,15 @@ impl CliChatLiveSurfaceObserver {
             }
         };
         state.last_preview_emit_chars_seen = state.total_text_chars_seen;
+        state.last_preview_emit_visual_line_count = cli_chat_live_preview_visual_line_count(
+            snapshot.draft_preview.as_deref(),
+            self.render_width(),
+        );
         state.last_emitted_snapshot = Some(snapshot);
+        if state.last_emitted_lines.as_ref() == Some(&lines) {
+            return None;
+        }
+        state.last_emitted_lines = Some(lines.clone());
         Some(lines)
     }
 }
@@ -454,6 +492,10 @@ pub(super) fn reset_cli_chat_live_request_state(state: &mut CliChatLiveSurfaceSt
     state.next_tool_display_order = 0;
     state.total_text_chars_seen = 0;
     state.last_preview_emit_chars_seen = 0;
+    state.last_preview_emit_visual_line_count = 0;
+    state.last_preview_emit_elapsed_ms = None;
+    state.last_emitted_snapshot = None;
+    state.last_emitted_lines = None;
 }
 
 fn should_render_cli_chat_live_phase(phase: ConversationTurnPhase) -> bool {
@@ -481,28 +523,185 @@ pub(super) fn phase_supports_cli_chat_live_preview(phase: ConversationTurnPhase)
     }
 }
 
-fn should_emit_cli_chat_live_preview(state: &CliChatLiveSurfaceState, render_width: usize) -> bool {
+fn should_emit_cli_chat_live_preview(
+    state: &CliChatLiveSurfaceState,
+    render_width: usize,
+    event_elapsed_ms: Option<u64>,
+) -> bool {
     if state.total_text_chars_seen == 0 {
         return false;
     }
 
+    let emit_stride = cli_chat_live_preview_emit_stride(render_width);
+    let preview_has_stable_suffix =
+        cli_chat_live_preview_has_stable_suffix(state.draft_preview.as_str());
+    let visual_line_count =
+        cli_chat_live_preview_visual_line_count(Some(state.draft_preview.as_str()), render_width);
+    let visual_line_growth =
+        visual_line_count.saturating_sub(state.last_preview_emit_visual_line_count);
+    let emit_mode = cli_chat_live_preview_emit_mode(state, render_width);
+    let cadence_ready =
+        cli_chat_live_preview_emit_cadence_ready(state, emit_mode, event_elapsed_ms);
+
     if state.last_preview_emit_chars_seen == 0 {
-        return true;
+        return (state.total_text_chars_seen >= CLI_CHAT_LIVE_PREVIEW_INITIAL_EMIT_CHARS
+            && preview_has_stable_suffix)
+            || (visual_line_count >= 2
+                && state.total_text_chars_seen
+                    >= CLI_CHAT_LIVE_PREVIEW_INITIAL_EMIT_CHARS.saturating_add(1))
+            || state.total_text_chars_seen >= emit_stride;
     }
 
-    let emit_stride = cli_chat_live_preview_emit_stride(render_width);
+    if !cadence_ready {
+        return false;
+    }
+
     let unseen_chars = state
         .total_text_chars_seen
         .saturating_sub(state.last_preview_emit_chars_seen);
-    unseen_chars >= emit_stride
+    match emit_mode {
+        CliChatLivePreviewEmitMode::Smooth => {
+            if visual_line_growth >= CLI_CHAT_LIVE_PREVIEW_CATCH_UP_ENTER_VISUAL_LINE_GROWTH
+                && unseen_chars >= emit_stride.saturating_div(2).max(1)
+            {
+                return true;
+            }
+            (unseen_chars >= emit_stride && preview_has_stable_suffix)
+                || unseen_chars >= emit_stride.saturating_mul(2)
+        }
+        CliChatLivePreviewEmitMode::CatchUp => {
+            visual_line_growth >= 1
+                || (preview_has_stable_suffix
+                    && unseen_chars >= emit_stride.saturating_div(2).max(1))
+                || unseen_chars >= emit_stride
+        }
+    }
+}
+
+fn cli_chat_live_preview_emit_cadence_ready(
+    state: &CliChatLiveSurfaceState,
+    emit_mode: CliChatLivePreviewEmitMode,
+    event_elapsed_ms: Option<u64>,
+) -> bool {
+    let Some(current_elapsed_ms) = event_elapsed_ms else {
+        return true;
+    };
+    let Some(last_emit_elapsed_ms) = state.last_preview_emit_elapsed_ms else {
+        return true;
+    };
+
+    let min_interval_ms = match emit_mode {
+        CliChatLivePreviewEmitMode::Smooth => CLI_CHAT_LIVE_PREVIEW_SMOOTH_MIN_INTERVAL_MS,
+        CliChatLivePreviewEmitMode::CatchUp => CLI_CHAT_LIVE_PREVIEW_CATCH_UP_MIN_INTERVAL_MS,
+    };
+
+    current_elapsed_ms.saturating_sub(last_emit_elapsed_ms) >= min_interval_ms
+}
+
+fn cli_chat_live_preview_emit_mode(
+    state: &CliChatLiveSurfaceState,
+    render_width: usize,
+) -> CliChatLivePreviewEmitMode {
+    if state.total_text_chars_seen == 0 {
+        return CliChatLivePreviewEmitMode::Smooth;
+    }
+
+    let emit_stride = cli_chat_live_preview_emit_stride(render_width);
+    let visual_line_count =
+        cli_chat_live_preview_visual_line_count(Some(state.draft_preview.as_str()), render_width);
+    let visual_line_growth =
+        visual_line_count.saturating_sub(state.last_preview_emit_visual_line_count);
+    let unseen_chars = state
+        .total_text_chars_seen
+        .saturating_sub(state.last_preview_emit_chars_seen);
+
+    if visual_line_growth >= CLI_CHAT_LIVE_PREVIEW_CATCH_UP_ENTER_VISUAL_LINE_GROWTH
+        || unseen_chars >= emit_stride.saturating_mul(2)
+        || (visual_line_count >= CLI_CHAT_LIVE_PREVIEW_CATCH_UP_ENTER_MIN_VISUAL_LINES
+            && unseen_chars >= emit_stride.saturating_div(2).max(1))
+    {
+        CliChatLivePreviewEmitMode::CatchUp
+    } else {
+        CliChatLivePreviewEmitMode::Smooth
+    }
 }
 
 fn cli_chat_live_preview_emit_stride(render_width: usize) -> usize {
-    let doubled_width = render_width.saturating_mul(2);
-    doubled_width.clamp(
+    render_width.clamp(
         CLI_CHAT_LIVE_PREVIEW_MIN_EMIT_CHARS,
         CLI_CHAT_LIVE_PREVIEW_MAX_EMIT_CHARS,
     )
+}
+
+fn cli_chat_live_delta_has_commit_boundary(text_delta: &str) -> bool {
+    text_delta.contains('\n')
+        || text_delta.contains("<think>")
+        || text_delta.contains("</think>")
+        || text_delta.contains("```")
+}
+
+fn cli_chat_live_preview_has_stable_suffix(preview: &str) -> bool {
+    if preview.is_empty() {
+        return false;
+    }
+
+    if preview.ends_with('\n') || preview.ends_with(' ') || preview.ends_with('\t') {
+        return true;
+    }
+
+    let trimmed = preview.trim_end_matches([' ', '\t']);
+    if trimmed.is_empty() {
+        return false;
+    }
+
+    if trimmed.ends_with("```") && trimmed.matches("```").count() % 2 == 0 {
+        return true;
+    }
+
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.ends_with("<think>") || lower.ends_with("</think>") {
+        return true;
+    }
+
+    let Some(last_char) = trimmed.chars().last() else {
+        return false;
+    };
+
+    last_char.is_ascii_punctuation()
+        || matches!(
+            last_char,
+            '，' | '。' | '！' | '？' | '、' | '；' | '：' | '）' | '】' | '」' | '』'
+        )
+        || live_preview_is_cjk(last_char)
+}
+
+fn cli_chat_live_preview_visual_line_count(preview: Option<&str>, render_width: usize) -> usize {
+    let Some(preview) = preview else {
+        return 0;
+    };
+    if preview.trim().is_empty() {
+        return 0;
+    }
+
+    let wrap_width = render_width.saturating_sub(2).max(1);
+    let (thinking_preview, visible_preview) = split_live_preview_text(preview);
+    let mut line_count = 0usize;
+
+    if let Some(thinking_preview) = thinking_preview.as_deref() {
+        line_count = line_count
+            .saturating_add(render_live_preview_segment_lines(thinking_preview, wrap_width).len());
+    }
+
+    if thinking_preview.is_some() && visible_preview.is_some() && line_count > 0 {
+        line_count = line_count.saturating_add(1);
+    }
+
+    if let Some(visible_preview) = visible_preview.as_deref() {
+        line_count = line_count
+            .saturating_add(render_live_preview_segment_lines(visible_preview, wrap_width).len());
+    }
+
+    line_count
 }
 
 pub(super) fn cli_chat_live_preview_char_limit(render_width: usize) -> usize {
@@ -970,16 +1169,10 @@ pub(super) fn render_cli_chat_live_compact_lines_with_width(
         let (thinking_preview, visible_preview) = split_live_preview_text(preview);
 
         if let Some(thinking_preview) = thinking_preview.as_deref() {
-            for raw_line in thinking_preview
-                .lines()
-                .filter(|line| !line.trim().is_empty())
-            {
-                for wrapped in
-                    crate::presentation::render_wrapped_display_line(raw_line, wrap_width)
-                {
-                    lines.push(wrapped);
-                }
-            }
+            lines.extend(render_live_preview_segment_lines(
+                thinking_preview,
+                wrap_width,
+            ));
         }
 
         if thinking_preview.is_some() && visible_preview.is_some() && !lines.is_empty() {
@@ -987,16 +1180,10 @@ pub(super) fn render_cli_chat_live_compact_lines_with_width(
         }
 
         if let Some(visible_preview) = visible_preview.as_deref() {
-            for raw_line in visible_preview
-                .lines()
-                .filter(|line| !line.trim().is_empty())
-            {
-                for wrapped in
-                    crate::presentation::render_wrapped_display_line(raw_line, wrap_width)
-                {
-                    lines.push(wrapped);
-                }
-            }
+            lines.extend(render_live_preview_segment_lines(
+                visible_preview,
+                wrap_width,
+            ));
         }
     }
 
@@ -1037,6 +1224,9 @@ fn split_live_preview_text(preview: &str) -> (Option<String>, Option<String>) {
             idx += close_tag.len();
             continue;
         }
+        if open_tag.starts_with(remaining) || close_tag.starts_with(remaining) {
+            break;
+        }
 
         let Some(ch) = preview[idx..].chars().next() else {
             break;
@@ -1055,6 +1245,366 @@ fn split_live_preview_text(preview: &str) -> (Option<String>, Option<String>) {
         (!thinking.is_empty()).then_some(thinking),
         (!visible.is_empty()).then_some(visible),
     )
+}
+
+fn render_live_preview_segment_lines(segment: &str, wrap_width: usize) -> Vec<String> {
+    let normalized = sanitize_live_preview_text(segment);
+    if let Some(structured_lines) =
+        render_live_preview_structured_lines(normalized.as_str(), wrap_width)
+    {
+        return structured_lines;
+    }
+    let trailing_line_is_complete = live_preview_trailing_line_is_complete(segment);
+    let mut rendered = Vec::new();
+    let mut paragraph_buffer = String::new();
+
+    let flush_paragraph = |rendered: &mut Vec<String>, paragraph_buffer: &mut String| {
+        if paragraph_buffer.trim().is_empty() {
+            paragraph_buffer.clear();
+            return;
+        }
+        rendered.extend(crate::presentation::render_wrapped_display_line(
+            paragraph_buffer.as_str(),
+            wrap_width,
+        ));
+        paragraph_buffer.clear();
+    };
+
+    let normalized_lines = normalized.lines().collect::<Vec<_>>();
+    for (index, line) in normalized_lines.iter().enumerate() {
+        let line = *line;
+        let is_last_line = index + 1 == normalized_lines.len();
+        let trimmed = line.trim_end();
+        if trimmed.trim().is_empty() {
+            flush_paragraph(&mut rendered, &mut paragraph_buffer);
+            if rendered.last().is_none_or(|line| !line.trim().is_empty()) {
+                rendered.push(String::new());
+            }
+            continue;
+        }
+
+        if let Some(split_bullets) = split_live_preview_inline_bullet_runs(trimmed) {
+            flush_paragraph(&mut rendered, &mut paragraph_buffer);
+            for bullet_line in split_bullets {
+                rendered.extend(crate::presentation::render_wrapped_display_line(
+                    bullet_line.as_str(),
+                    wrap_width,
+                ));
+            }
+            continue;
+        }
+
+        if is_reflowable_live_preview_line(trimmed) {
+            if is_last_line && !trailing_line_is_complete {
+                flush_paragraph(&mut rendered, &mut paragraph_buffer);
+                rendered.extend(crate::presentation::render_wrapped_display_line(
+                    trimmed.trim(),
+                    wrap_width,
+                ));
+                continue;
+            }
+            if !paragraph_buffer.is_empty() {
+                paragraph_buffer.push_str(live_preview_paragraph_joiner(
+                    paragraph_buffer.as_str(),
+                    trimmed,
+                ));
+            }
+            paragraph_buffer.push_str(trimmed.trim());
+            continue;
+        }
+
+        flush_paragraph(&mut rendered, &mut paragraph_buffer);
+        rendered.extend(crate::presentation::render_wrapped_display_line(
+            trimmed, wrap_width,
+        ));
+    }
+
+    flush_paragraph(&mut rendered, &mut paragraph_buffer);
+    trim_outer_blank_lines(&mut rendered);
+    rendered
+}
+
+fn render_live_preview_structured_lines(segment: &str, wrap_width: usize) -> Option<Vec<String>> {
+    let trimmed = segment.trim();
+    if trimmed.is_empty() {
+        return Some(Vec::new());
+    }
+
+    if let Some(diff_body) = live_preview_diff_body(trimmed) {
+        let mut rendered = Vec::new();
+        for plain in live_preview_render_raw_diff_lines(diff_body.as_str()) {
+            for wrapped in wrap_live_preview_diff_line(plain.as_str(), wrap_width) {
+                rendered.push(wrapped);
+            }
+        }
+        trim_outer_blank_lines(&mut rendered);
+        return Some(rendered);
+    }
+
+    if live_preview_contains_markdown_table(trimmed) {
+        let mut rendered = markdown::render_markdown_to_lines_with_width(trimmed, Some(wrap_width))
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.into_owned())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        trim_outer_blank_lines(&mut rendered);
+        return Some(rendered);
+    }
+
+    if live_preview_contains_structured_markdown(trimmed) {
+        let mut rendered = markdown::render_markdown_to_lines_with_width(trimmed, Some(wrap_width))
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.into_owned())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        trim_outer_blank_lines(&mut rendered);
+        return Some(rendered);
+    }
+
+    None
+}
+
+fn live_preview_diff_body(segment: &str) -> Option<String> {
+    let mut lines = segment.lines();
+    let fence = lines.next()?.trim();
+    if !matches!(fence, "```diff" | "```patch") {
+        return None;
+    }
+
+    let mut body = lines.collect::<Vec<_>>();
+    if body.last().is_some_and(|line| line.trim() == "```") {
+        body.pop();
+    }
+    Some(body.join("\n"))
+}
+
+fn live_preview_render_raw_diff_lines(diff: &str) -> Vec<String> {
+    let lines = diff
+        .lines()
+        .map(|line| {
+            if line.starts_with('+')
+                || line.starts_with('-')
+                || line.starts_with("@@")
+                || line.starts_with("diff ")
+                || line.starts_with("index ")
+                || line.starts_with("--- ")
+                || line.starts_with("+++ ")
+            {
+                line.to_owned()
+            } else {
+                format!("  {line}")
+            }
+        })
+        .collect::<Vec<_>>();
+
+    if lines.is_empty() {
+        vec!["  (empty diff)".to_owned()]
+    } else {
+        lines
+    }
+}
+
+fn wrap_live_preview_diff_line(line: &str, wrap_width: usize) -> Vec<String> {
+    for prefix in ["+ ", "- ", "@@ ", "+++ ", "--- ", "diff ", "index "] {
+        if let Some(rest) = line.strip_prefix(prefix) {
+            let continuation = " ".repeat(crate::presentation::display_width(prefix));
+            return wrap_with_prefix(prefix, continuation.as_str(), rest, wrap_width);
+        }
+    }
+
+    crate::presentation::render_wrapped_display_line(line, wrap_width)
+}
+
+fn wrap_with_prefix(
+    prefix: &str,
+    continuation_prefix: &str,
+    body: &str,
+    wrap_width: usize,
+) -> Vec<String> {
+    let prefix_width = crate::presentation::display_width(prefix);
+    let continuation_width = crate::presentation::display_width(continuation_prefix);
+    let first_width = wrap_width.saturating_sub(prefix_width).max(1);
+    let continuation_body_width = wrap_width.saturating_sub(continuation_width).max(1);
+
+    let wrapped_body = crate::presentation::render_wrapped_display_line(body, first_width);
+    let mut rendered = Vec::new();
+    for (index, line) in wrapped_body.into_iter().enumerate() {
+        if index == 0 {
+            rendered.push(format!("{prefix}{line}"));
+        } else {
+            for continuation_line in crate::presentation::render_wrapped_display_line(
+                line.as_str(),
+                continuation_body_width,
+            ) {
+                rendered.push(format!("{continuation_prefix}{continuation_line}"));
+            }
+        }
+    }
+    rendered
+}
+
+fn live_preview_contains_markdown_table(segment: &str) -> bool {
+    let lines = segment.lines().map(str::trim).collect::<Vec<_>>();
+    lines.len() >= 2
+        && lines.windows(2).any(|pair| {
+            live_preview_is_markdown_table_row(pair[0])
+                && live_preview_is_markdown_table_separator(pair[1])
+        })
+}
+
+fn live_preview_contains_structured_markdown(segment: &str) -> bool {
+    let lines = segment.lines().map(str::trim).collect::<Vec<_>>();
+    if lines.is_empty() {
+        return false;
+    }
+
+    lines.iter().any(|line| {
+        line.starts_with("```")
+            || line.starts_with("# ")
+            || line.starts_with("## ")
+            || line.starts_with("### ")
+            || line.starts_with("> ")
+            || line.starts_with("- ")
+            || line.starts_with("* ")
+            || line.starts_with("1. ")
+            || line.starts_with("2. ")
+            || line.starts_with("3. ")
+    })
+}
+
+fn live_preview_is_markdown_table_row(line: &str) -> bool {
+    line.starts_with('|') && line.ends_with('|') && line.matches('|').count() >= 3
+}
+
+fn live_preview_is_markdown_table_separator(line: &str) -> bool {
+    let trimmed = line.trim();
+    if !live_preview_is_markdown_table_row(trimmed) {
+        return false;
+    }
+
+    trimmed.trim_matches('|').split('|').all(|cell| {
+        let cell = cell.trim();
+        !cell.is_empty() && cell.chars().all(|ch| matches!(ch, '-' | ':' | ' '))
+    })
+}
+
+fn live_preview_trailing_line_is_complete(segment: &str) -> bool {
+    let normalized = segment.replace("\r\n", "\n").replace('\r', "\n");
+    let trimmed = trim_unstable_preview_suffix(normalized.as_str());
+    trimmed.ends_with('\n')
+}
+
+fn sanitize_live_preview_text(segment: &str) -> String {
+    let normalized = segment.replace("\r\n", "\n").replace('\r', "\n");
+    let trimmed = trim_unstable_preview_suffix(normalized.as_str());
+    collapse_preview_blank_runs(trimmed.as_str())
+}
+
+fn trim_unstable_preview_suffix(segment: &str) -> String {
+    if segment.is_empty() || segment.ends_with('\n') {
+        return segment.to_owned();
+    }
+
+    let trimmed = segment.trim_end_matches([' ', '\t']);
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    let lower = trimmed.to_ascii_lowercase();
+    if "<think>".starts_with(lower.as_str())
+        || "</think>".starts_with(lower.as_str())
+        || lower.ends_with('<')
+        || lower.ends_with("</")
+    {
+        return String::new();
+    }
+
+    if trimmed.ends_with("```") && trimmed.matches("```").count() % 2 == 1 {
+        return trimmed
+            .rsplit_once('\n')
+            .map(|(head, _)| head.to_owned())
+            .unwrap_or_default();
+    }
+
+    trimmed.to_owned()
+}
+
+fn collapse_preview_blank_runs(segment: &str) -> String {
+    let mut normalized = Vec::new();
+    let mut last_was_blank = false;
+    for line in segment.lines() {
+        let is_blank = line.trim().is_empty();
+        if is_blank && last_was_blank {
+            continue;
+        }
+        last_was_blank = is_blank;
+        normalized.push(line);
+    }
+    normalized.join("\n")
+}
+
+fn split_live_preview_inline_bullet_runs(line: &str) -> Option<Vec<String>> {
+    let trimmed = line.trim();
+    if trimmed.matches("• ").count() < 2 {
+        return None;
+    }
+
+    let items = trimmed
+        .split("• ")
+        .filter_map(|segment| {
+            let segment = segment.trim();
+            (!segment.is_empty()).then(|| format!("• {segment}"))
+        })
+        .collect::<Vec<_>>();
+
+    (items.len() >= 2).then_some(items)
+}
+
+fn is_reflowable_live_preview_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    !trimmed.is_empty()
+        && !trimmed.starts_with('#')
+        && !trimmed.starts_with("```")
+        && !trimmed.starts_with('>')
+        && !trimmed.starts_with("- ")
+        && !trimmed.starts_with("* ")
+        && !trimmed.starts_with("• ")
+        && !trimmed.starts_with("[image]")
+}
+
+fn live_preview_paragraph_joiner(current: &str, next: &str) -> &'static str {
+    if live_preview_contains_cjk(current) || live_preview_contains_cjk(next) {
+        ""
+    } else {
+        " "
+    }
+}
+
+fn live_preview_contains_cjk(text: &str) -> bool {
+    text.chars().any(live_preview_is_cjk)
+}
+
+fn live_preview_is_cjk(ch: char) -> bool {
+    ('\u{4E00}'..='\u{9FFF}').contains(&ch)
+        || ('\u{3040}'..='\u{30FF}').contains(&ch)
+        || ('\u{AC00}'..='\u{D7AF}').contains(&ch)
+}
+
+fn trim_outer_blank_lines(lines: &mut Vec<String>) {
+    while lines.first().is_some_and(|line| line.trim().is_empty()) {
+        lines.remove(0);
+    }
+    while lines.last().is_some_and(|line| line.trim().is_empty()) {
+        lines.pop();
+    }
 }
 
 fn build_cli_chat_live_surface_message_spec(
@@ -1463,10 +2013,32 @@ fn build_cli_chat_live_preview_section(
     snapshot: &CliChatLiveSurfaceSnapshot,
 ) -> Option<TuiSectionSpec> {
     let preview = snapshot.draft_preview.as_ref()?;
-    let preview_lines = preview
-        .lines()
-        .map(|line| line.to_owned())
-        .collect::<Vec<_>>();
+    let (thinking_preview, visible_preview) = split_live_preview_text(preview);
+    let mut preview_lines = Vec::new();
+
+    if let Some(thinking_preview) = thinking_preview.as_deref() {
+        preview_lines.extend(
+            sanitize_live_preview_text(thinking_preview)
+                .lines()
+                .map(|line| line.to_owned()),
+        );
+    }
+
+    if thinking_preview.is_some() && visible_preview.is_some() && !preview_lines.is_empty() {
+        preview_lines.push(String::new());
+    }
+
+    if let Some(visible_preview) = visible_preview.as_deref() {
+        preview_lines.extend(
+            sanitize_live_preview_text(visible_preview)
+                .lines()
+                .map(|line| line.to_owned()),
+        );
+    }
+
+    if preview_lines.is_empty() {
+        return None;
+    }
 
     Some(TuiSectionSpec::Narrative {
         title: Some("draft preview".to_owned()),
@@ -1659,6 +2231,54 @@ mod tests {
     }
 
     #[test]
+    fn compact_render_surfaces_approval_and_denied_status_lines() {
+        let snapshot = CliChatLiveSurfaceSnapshot {
+            phase: ConversationTurnPhase::RunningTools,
+            provider_round: Some(1),
+            lane: Some(ExecutionLane::Safe),
+            tool_call_count: 2,
+            message_count: Some(5),
+            estimated_tokens: Some(700),
+            first_token_latency_ms: None,
+            draft_preview: None,
+            tools: vec![
+                CliChatLiveToolSnapshot {
+                    tool_call_id: "call-a".to_owned(),
+                    name: Some("search".to_owned()),
+                    request_summary: None,
+                    args: String::new(),
+                    status: ConversationTurnToolState::NeedsApproval,
+                    detail: Some("operator confirmation required".to_owned()),
+                    stdout: empty_output(),
+                    stderr: empty_output(),
+                    file_change: None,
+                    duration_ms: None,
+                    exit_code: None,
+                },
+                CliChatLiveToolSnapshot {
+                    tool_call_id: "call-b".to_owned(),
+                    name: Some("search".to_owned()),
+                    request_summary: None,
+                    args: String::new(),
+                    status: ConversationTurnToolState::Denied,
+                    detail: Some("blocked".to_owned()),
+                    stdout: empty_output(),
+                    stderr: empty_output(),
+                    file_change: None,
+                    duration_ms: None,
+                    exit_code: None,
+                },
+            ],
+        };
+
+        let lines = render_cli_chat_live_compact_lines_with_width(&snapshot, 64);
+        let joined = lines.join("\n");
+
+        assert!(joined.contains("• Approval search · operator confirmation required"));
+        assert!(joined.contains("• Denied search · blocked"));
+    }
+
+    #[test]
     fn compact_render_splits_think_blocks_into_reasoning_and_visible_reply() {
         let snapshot = CliChatLiveSurfaceSnapshot {
             phase: ConversationTurnPhase::RequestingProvider,
@@ -1712,6 +2332,304 @@ mod tests {
     }
 
     #[test]
+    fn compact_render_hides_partial_think_tag_prefixes() {
+        let snapshot = CliChatLiveSurfaceSnapshot {
+            phase: ConversationTurnPhase::RequestingProvider,
+            provider_round: Some(1),
+            lane: Some(ExecutionLane::Fast),
+            tool_call_count: 0,
+            message_count: Some(1),
+            estimated_tokens: Some(128),
+            first_token_latency_ms: None,
+            draft_preview: Some("<thi".to_owned()),
+            tools: Vec::new(),
+        };
+
+        let lines = render_cli_chat_live_compact_lines_with_width(&snapshot, 40);
+
+        assert!(lines.is_empty());
+    }
+
+    #[test]
+    fn compact_render_keeps_incomplete_trailing_paragraph_literal_while_streaming() {
+        let snapshot = CliChatLiveSurfaceSnapshot {
+            phase: ConversationTurnPhase::RequestingProvider,
+            provider_round: Some(1),
+            lane: Some(ExecutionLane::Fast),
+            tool_call_count: 0,
+            message_count: Some(1),
+            estimated_tokens: Some(256),
+            first_token_latency_ms: None,
+            draft_preview: Some("hello\nworld from stream".to_owned()),
+            tools: Vec::new(),
+        };
+
+        let lines = render_cli_chat_live_compact_lines_with_width(&snapshot, 80);
+
+        assert_eq!(
+            lines,
+            vec!["hello".to_owned(), "world from stream".to_owned()]
+        );
+    }
+
+    #[test]
+    fn compact_render_drops_trailing_unclosed_code_fence_suffix() {
+        let snapshot = CliChatLiveSurfaceSnapshot {
+            phase: ConversationTurnPhase::RequestingProvider,
+            provider_round: Some(1),
+            lane: Some(ExecutionLane::Fast),
+            tool_call_count: 0,
+            message_count: Some(1),
+            estimated_tokens: Some(256),
+            first_token_latency_ms: None,
+            draft_preview: Some("hello world\n```".to_owned()),
+            tools: Vec::new(),
+        };
+
+        let lines = render_cli_chat_live_compact_lines_with_width(&snapshot, 80);
+
+        assert_eq!(lines, vec!["hello world".to_owned()]);
+    }
+
+    #[test]
+    fn compact_render_keeps_visible_text_when_partial_closing_think_tag_arrives() {
+        let snapshot = CliChatLiveSurfaceSnapshot {
+            phase: ConversationTurnPhase::RequestingProvider,
+            provider_round: Some(1),
+            lane: Some(ExecutionLane::Fast),
+            tool_call_count: 0,
+            message_count: Some(1),
+            estimated_tokens: Some(256),
+            first_token_latency_ms: None,
+            draft_preview: Some("visible answer</t".to_owned()),
+            tools: Vec::new(),
+        };
+
+        let lines = render_cli_chat_live_compact_lines_with_width(&snapshot, 80);
+
+        assert_eq!(lines, vec!["visible answer".to_owned()]);
+    }
+
+    #[test]
+    fn compact_render_structures_markdown_tables_in_preview() {
+        let snapshot = CliChatLiveSurfaceSnapshot {
+            phase: ConversationTurnPhase::RequestingProvider,
+            provider_round: Some(1),
+            lane: Some(ExecutionLane::Fast),
+            tool_call_count: 0,
+            message_count: Some(1),
+            estimated_tokens: Some(256),
+            first_token_latency_ms: None,
+            draft_preview: Some(
+                "| 指标 | 数值 |\n| --- | --- |\n| 覆盖率 | 68% |\n| 平均响应时间 | 220ms |"
+                    .to_owned(),
+            ),
+            tools: Vec::new(),
+        };
+
+        let lines = render_cli_chat_live_compact_lines_with_width(&snapshot, 40);
+        let joined = lines.join("\n");
+
+        assert!(joined.contains("┌"));
+        assert!(joined.contains("覆盖率"));
+        assert!(joined.contains("220ms"));
+        assert!(!joined.contains("| --- |"));
+    }
+
+    #[test]
+    fn compact_render_structures_fenced_diff_in_preview() {
+        let snapshot = CliChatLiveSurfaceSnapshot {
+            phase: ConversationTurnPhase::RequestingProvider,
+            provider_round: Some(1),
+            lane: Some(ExecutionLane::Fast),
+            tool_call_count: 0,
+            message_count: Some(1),
+            estimated_tokens: Some(256),
+            first_token_latency_ms: None,
+            draft_preview: Some("```diff\n- old value\n+ new value\n```".to_owned()),
+            tools: Vec::new(),
+        };
+
+        let lines = render_cli_chat_live_compact_lines_with_width(&snapshot, 50);
+        let joined = lines.join("\n");
+
+        assert!(joined.contains("- old value"));
+        assert!(joined.contains("+ new value"));
+        assert!(!joined.contains("```diff"));
+    }
+
+    #[test]
+    fn compact_render_structures_fenced_code_block_in_preview() {
+        let snapshot = CliChatLiveSurfaceSnapshot {
+            phase: ConversationTurnPhase::RequestingProvider,
+            provider_round: Some(1),
+            lane: Some(ExecutionLane::Fast),
+            tool_call_count: 0,
+            message_count: Some(1),
+            estimated_tokens: Some(256),
+            first_token_latency_ms: None,
+            draft_preview: Some("```bash\nnpm install\nnpm test\n```".to_owned()),
+            tools: Vec::new(),
+        };
+
+        let lines = render_cli_chat_live_compact_lines_with_width(&snapshot, 40);
+        let joined = lines.join("\n");
+
+        assert!(joined.contains("```bash"));
+        assert!(joined.contains("npm install"));
+        assert!(joined.contains("npm test"));
+        assert!(joined.contains("```"));
+    }
+
+    #[test]
+    fn compact_render_structures_markdown_list_in_preview() {
+        let snapshot = CliChatLiveSurfaceSnapshot {
+            phase: ConversationTurnPhase::RequestingProvider,
+            provider_round: Some(1),
+            lane: Some(ExecutionLane::Fast),
+            tool_call_count: 0,
+            message_count: Some(1),
+            estimated_tokens: Some(256),
+            first_token_latency_ms: None,
+            draft_preview: Some("## 本周进展\n- 修复崩溃\n- 提升性能".to_owned()),
+            tools: Vec::new(),
+        };
+
+        let lines = render_cli_chat_live_compact_lines_with_width(&snapshot, 40);
+        let joined = lines.join("\n");
+
+        assert!(joined.contains("## 本周进展"));
+        assert!(joined.contains("• 修复崩溃"));
+        assert!(joined.contains("• 提升性能"));
+    }
+
+    #[test]
+    fn preview_emit_waits_for_a_stable_initial_boundary() {
+        let mut state = super::CliChatLiveSurfaceState::default();
+        state.draft_preview = "hel".to_owned();
+        state.total_text_chars_seen = 3;
+
+        assert!(!super::should_emit_cli_chat_live_preview(
+            &state,
+            40,
+            Some(3)
+        ));
+
+        state.draft_preview.push(' ');
+        state.total_text_chars_seen = 4;
+
+        assert!(super::should_emit_cli_chat_live_preview(
+            &state,
+            40,
+            Some(4)
+        ));
+    }
+
+    #[test]
+    fn preview_emit_forces_progress_after_large_unstable_burst() {
+        let mut state = super::CliChatLiveSurfaceState::default();
+        state.last_preview_emit_chars_seen = 8;
+        state.draft_preview = "averylongunstablesuffixwithoutbreaks".to_owned();
+        state.total_text_chars_seen = 24;
+
+        assert!(super::should_emit_cli_chat_live_preview(
+            &state,
+            8,
+            Some(24)
+        ));
+    }
+
+    #[test]
+    fn preview_emit_uses_visual_line_pressure_for_wrapped_cjk_text() {
+        let mut state = super::CliChatLiveSurfaceState::default();
+        state.draft_preview = "你你你你你".to_owned();
+        state.total_text_chars_seen = 5;
+
+        assert!(super::should_emit_cli_chat_live_preview(&state, 8, Some(5)));
+    }
+
+    #[test]
+    fn preview_emit_mode_enters_catch_up_when_visual_backlog_grows() {
+        let mut state = super::CliChatLiveSurfaceState::default();
+        state.draft_preview =
+            "line one wraps quickly\nline two wraps quickly\nline three wraps quickly".to_owned();
+        state.total_text_chars_seen = state.draft_preview.chars().count();
+        state.last_preview_emit_chars_seen = 8;
+        state.last_preview_emit_visual_line_count = 1;
+
+        assert_eq!(
+            super::cli_chat_live_preview_emit_mode(&state, 18),
+            super::CliChatLivePreviewEmitMode::CatchUp
+        );
+    }
+
+    #[test]
+    fn preview_emit_mode_stays_smooth_for_small_stable_updates() {
+        let mut state = super::CliChatLiveSurfaceState::default();
+        state.draft_preview = "hello world ".to_owned();
+        state.total_text_chars_seen = state.draft_preview.chars().count();
+        state.last_preview_emit_chars_seen = 8;
+        state.last_preview_emit_visual_line_count = 1;
+
+        assert_eq!(
+            super::cli_chat_live_preview_emit_mode(&state, 80),
+            super::CliChatLivePreviewEmitMode::Smooth
+        );
+    }
+
+    #[test]
+    fn preview_emit_cadence_slows_smooth_mode() {
+        let mut state = super::CliChatLiveSurfaceState::default();
+        state.draft_preview =
+            "hello world this is a stable preview chunk with just enough size ".to_owned();
+        state.total_text_chars_seen = state.draft_preview.chars().count();
+        state.last_preview_emit_chars_seen = 8;
+        state.last_preview_emit_visual_line_count = 1;
+        state.last_preview_emit_elapsed_ms = Some(100);
+
+        assert!(!super::should_emit_cli_chat_live_preview(
+            &state,
+            80,
+            Some(120)
+        ));
+        assert!(super::should_emit_cli_chat_live_preview(
+            &state,
+            80,
+            Some(140)
+        ));
+    }
+
+    #[test]
+    fn preview_emit_cadence_keeps_catch_up_faster_than_smooth() {
+        let mut state = super::CliChatLiveSurfaceState::default();
+        state.draft_preview =
+            "line one wraps quickly\nline two wraps quickly\nline three wraps quickly".to_owned();
+        state.total_text_chars_seen = state.draft_preview.chars().count();
+        state.last_preview_emit_chars_seen = 8;
+        state.last_preview_emit_visual_line_count = 1;
+        state.last_preview_emit_elapsed_ms = Some(100);
+
+        assert!(super::should_emit_cli_chat_live_preview(
+            &state,
+            18,
+            Some(118)
+        ));
+    }
+
+    #[test]
+    fn delta_commit_boundary_detects_newline_and_structural_tokens() {
+        assert!(super::cli_chat_live_delta_has_commit_boundary(
+            "line done\n"
+        ));
+        assert!(super::cli_chat_live_delta_has_commit_boundary("<think>"));
+        assert!(super::cli_chat_live_delta_has_commit_boundary("</think>"));
+        assert!(super::cli_chat_live_delta_has_commit_boundary("```rust"));
+        assert!(!super::cli_chat_live_delta_has_commit_boundary(
+            "plain delta"
+        ));
+    }
+
+    #[test]
     fn compact_observer_rerenders_preview_when_width_changes() {
         let captured_batches = Arc::new(StdMutex::new(Vec::<Vec<String>>::new()));
         let render_sink: CliChatLiveSurfaceSink = {
@@ -1754,10 +2672,96 @@ mod tests {
     }
 
     #[test]
+    fn compact_observer_commits_preview_immediately_on_newline_boundary() {
+        let captured_batches = Arc::new(StdMutex::new(Vec::<Vec<String>>::new()));
+        let render_sink: CliChatLiveSurfaceSink = {
+            let captured_batches = Arc::clone(&captured_batches);
+            Arc::new(move |lines| {
+                let mut batches = captured_batches
+                    .lock()
+                    .expect("captured batches lock should not be poisoned");
+                batches.push(lines);
+            })
+        };
+        let render_width = Arc::new(AtomicUsize::new(80));
+        let (observer, _) =
+            build_cli_chat_live_compact_observer_controller(Arc::clone(&render_width), render_sink);
+
+        observer.on_phase(ConversationTurnPhaseEvent::requesting_provider(
+            1,
+            3,
+            Some(32),
+        ));
+        observer.on_streaming_token(crate::acp::StreamingTokenEvent {
+            event_type: "text_delta".to_owned(),
+            delta: crate::acp::TokenDelta {
+                text: Some("ok\n".to_owned()),
+                tool_call: None,
+            },
+            index: None,
+            elapsed_ms: Some(8),
+        });
+
+        let batches = captured_batches
+            .lock()
+            .expect("captured batches lock should not be poisoned");
+        let last_batch = batches.last().expect("newline-triggered batch");
+        assert!(last_batch.iter().any(|line| line.contains("ok")));
+    }
+
+    #[test]
+    fn compact_observer_skips_rerender_when_width_change_keeps_same_lines() {
+        let captured_batches = Arc::new(StdMutex::new(Vec::<Vec<String>>::new()));
+        let render_sink: CliChatLiveSurfaceSink = {
+            let captured_batches = Arc::clone(&captured_batches);
+            Arc::new(move |lines| {
+                let mut batches = captured_batches
+                    .lock()
+                    .expect("captured batches lock should not be poisoned");
+                batches.push(lines);
+            })
+        };
+        let render_width = Arc::new(AtomicUsize::new(80));
+        let (observer, rerender) =
+            build_cli_chat_live_compact_observer_controller(Arc::clone(&render_width), render_sink);
+
+        observer.on_phase(ConversationTurnPhaseEvent::requesting_provider(
+            1,
+            3,
+            Some(64),
+        ));
+        observer.on_streaming_token(crate::acp::StreamingTokenEvent {
+            event_type: "text_delta".to_owned(),
+            delta: crate::acp::TokenDelta {
+                text: Some("short line ".to_owned()),
+                tool_call: None,
+            },
+            index: None,
+            elapsed_ms: Some(10),
+        });
+
+        let batch_count_before = captured_batches
+            .lock()
+            .expect("captured batches lock should not be poisoned")
+            .len();
+
+        render_width.store(79, Ordering::Relaxed);
+        rerender();
+
+        let batch_count_after = captured_batches
+            .lock()
+            .expect("captured batches lock should not be poisoned")
+            .len();
+
+        assert_eq!(batch_count_after, batch_count_before);
+    }
+
+    #[test]
     fn preview_emit_stride_is_more_responsive_on_narrow_widths() {
-        assert_eq!(super::cli_chat_live_preview_emit_stride(12), 24);
-        assert_eq!(super::cli_chat_live_preview_emit_stride(20), 40);
-        assert_eq!(super::cli_chat_live_preview_emit_stride(80), 120);
+        assert_eq!(super::cli_chat_live_preview_emit_stride(4), 8);
+        assert_eq!(super::cli_chat_live_preview_emit_stride(12), 12);
+        assert_eq!(super::cli_chat_live_preview_emit_stride(20), 20);
+        assert_eq!(super::cli_chat_live_preview_emit_stride(80), 48);
     }
 
     #[test]

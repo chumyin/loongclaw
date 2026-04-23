@@ -9,6 +9,7 @@ pub mod utils;
 
 use crate::CliResult;
 use crate::chat::{CliChatOptions, ConcurrentCliHostOptions, initialize_cli_turn_runtime};
+use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use crossterm::terminal;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
@@ -74,6 +75,7 @@ pub(super) async fn run_cli_chat_surface(
         stdout,
         crossterm::terminal::EnterAlternateScreen,
         EnableAlternateScroll,
+        EnableMouseCapture,
     )
     .map_err(|e| format!("failed to enter alternate screen: {}", e))?;
     let backend = CrosstermBackend::new(stdout);
@@ -91,6 +93,7 @@ pub(super) async fn run_cli_chat_surface(
     terminal::disable_raw_mode().map_err(|e| format!("failed to disable raw mode: {}", e))?;
     crossterm::execute!(
         terminal.backend_mut(),
+        DisableMouseCapture,
         DisableAlternateScroll,
         crossterm::terminal::LeaveAlternateScreen
     )
@@ -111,6 +114,7 @@ pub(super) fn run_concurrent_cli_host_surface(
 #[cfg(test)]
 mod tests {
     use super::{DisableAlternateScroll, EnableAlternateScroll};
+    use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 
     #[test]
     fn alternate_scroll_commands_emit_expected_ansi_sequences() {
@@ -122,5 +126,20 @@ mod tests {
 
         assert_eq!(enable, "\x1b[?1007h");
         assert_eq!(disable, "\x1b[?1007l");
+    }
+
+    #[test]
+    fn mouse_capture_commands_emit_expected_ansi_sequences() {
+        let mut enable = String::new();
+        crossterm::Command::write_ansi(&EnableMouseCapture, &mut enable)
+            .expect("enable mouse capture ansi");
+        let mut disable = String::new();
+        crossterm::Command::write_ansi(&DisableMouseCapture, &mut disable)
+            .expect("disable mouse capture ansi");
+
+        assert!(enable.contains("?1000h"));
+        assert!(enable.contains("?1006h"));
+        assert!(disable.contains("?1000l"));
+        assert!(disable.contains("?1006l"));
     }
 }

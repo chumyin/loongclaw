@@ -1,4 +1,6 @@
-use crossterm::event::{self, Event, KeyCode, KeyModifiers};
+use crossterm::event::{
+    self, Event, KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 use ratatui::{
     Frame, Terminal,
     backend::Backend,
@@ -10,6 +12,7 @@ use ratatui::{
 use serde::Deserialize;
 use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
+use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
@@ -19,9 +22,9 @@ use crate::CliResult;
 use crate::chat::CliChatOptions;
 use crate::chat::CliTurnRuntime;
 use crate::chat::control_plane::ChatControlPlaneStore;
-use crate::tui_surface::{TuiKeyValueSpec, TuiMessageSpec, TuiSectionSpec};
+use crate::tui_surface::{TuiCalloutTone, TuiKeyValueSpec, TuiMessageSpec, TuiSectionSpec};
 
-use super::command_palette::{CommandAction, CommandPalette};
+use super::command_palette::{CommandAction, CommandPalette, SkillEntry};
 use super::composer::Composer;
 use super::i18n::{I18nService, PiCopy, resolve_default_language};
 use super::message_list::MessageList;
@@ -36,6 +39,13 @@ pub enum Focus {
 
 const FOOTER_BOTTOM_BREATHING_HEIGHT: u16 = 1;
 const FOOTER_HORIZONTAL_INDENT: u16 = 2;
+
+#[derive(Clone)]
+struct PendingRenderCache {
+    signature: u64,
+    max_pending_height: u16,
+    lines: Vec<Line<'static>>,
+}
 
 pub struct App {
     pub message_list: MessageList,
@@ -53,8 +63,13 @@ pub struct App {
     pub live_rerender: Option<super::super::CliChatLiveSurfaceRerender>,
     pub spinner_seed: u64,
     pub last_pending_signature: Option<u64>,
+    pending_render_cache: Option<PendingRenderCache>,
+    inline_skill_popup_active: bool,
     pub last_render_width: u16,
     pub last_render_height: u16,
+    pub last_transcript_area: Rect,
+    pub last_composer_area: Rect,
+    pub last_palette_area: Rect,
     pub cwd: String,
     pub model: String,
     pub i18n: I18nService,
@@ -67,10 +82,11 @@ impl App {
         render_width: usize,
     ) -> CliResult<Self> {
         let language = resolve_default_language();
+        let detected_skills = detect_repo_skills(runtime.effective_working_directory.as_deref());
         let mut app = Self {
             message_list: MessageList::new(),
             composer: Composer::new(),
-            command_palette: CommandPalette::new(language),
+            command_palette: CommandPalette::new(language, detected_skills),
             focus: Focus::Composer,
             pending_turn: false,
             turn_start: None,
@@ -83,8 +99,13 @@ impl App {
             live_rerender: None,
             spinner_seed: spinner_seed(),
             last_pending_signature: None,
+            pending_render_cache: None,
+            inline_skill_popup_active: false,
             last_render_width: render_width as u16,
             last_render_height: 0,
+            last_transcript_area: Rect::default(),
+            last_composer_area: Rect::default(),
+            last_palette_area: Rect::default(),
             cwd: format_cwd(runtime),
             model: runtime.config.provider.model.clone(),
             i18n: I18nService::new(language),
@@ -103,37 +124,15 @@ impl App {
         self.last_render_width = size.width;
         self.last_render_height = size.height;
         let composer_height = self.composer.height_for_width(size.width);
-        let palette_height = if matches!(self.focus, Focus::CommandPalette) {
+        let palette_visible =
+            matches!(self.focus, Focus::CommandPalette) || self.inline_skill_popup_active;
+        let palette_height = if palette_visible {
             self.command_palette.desired_height() as u16
         } else {
             0
         };
-        let reserved_without_pending = 1
-            + composer_height
-            + if palette_height > 0 {
-                1 + palette_height
-            } else {
-                0
-            }
-            + 1
-            + 1
-            + FOOTER_BOTTOM_BREATHING_HEIGHT;
-        let max_pending_height = size.height.saturating_sub(reserved_without_pending).max(3);
-        let max_pending_preview_lines = max_pending_height.saturating_sub(3).max(1) as usize;
-        let live_lines = pending_live_lines(&self.live_lines, max_pending_preview_lines);
-        let pending_lines = if self.pending_turn {
-            let raw_pending_lines = build_pending_lines(
-                self.turn_start,
-                &live_lines,
-                self.spinner_seed,
-                &self.pending_steers,
-                &self.pending_queue,
-                size.width,
-            );
-            compact_pending_lines_for_height(raw_pending_lines, max_pending_height)
-        } else {
-            Vec::new()
-        };
+        let pending_lines =
+            self.pending_lines_for(size.width, size.height, composer_height, palette_height);
         let pending_height = if self.pending_turn {
             pending_lines.len() as u16
         } else {
@@ -189,6 +188,14 @@ impl App {
             return;
         };
 
+        self.last_transcript_area = *transcript_area;
+        self.last_composer_area = *composer_area;
+        self.last_palette_area = if palette_visible {
+            *palette_area
+        } else {
+            Rect::default()
+        };
+
         self.message_list.render(f, *transcript_area);
 
         if self.pending_turn {
@@ -216,7 +223,7 @@ impl App {
             f.set_cursor_position((x, y));
         }
 
-        if palette_height > 0 {
+        if palette_visible {
             f.render_widget(
                 Block::default()
                     .borders(Borders::TOP)
@@ -246,11 +253,191 @@ impl App {
                 self.pending_queue.len(),
                 footer_content_area.width,
             )
+        } else if !self.message_list.is_following_tail() {
+            build_follow_footer_line(&self.i18n, &self.model, footer_content_area.width)
         } else {
             build_status_footer_line(&self.cwd, &self.model, footer_content_area.width)
         };
         f.render_widget(Paragraph::new(footer_line), footer_content_area);
         f.render_widget(Paragraph::new(""), *footer_bottom_spacing_area);
+    }
+
+    fn apply_palette_action(&mut self, action: CommandAction) -> Option<String> {
+        match action {
+            CommandAction::RunCommand(command) => {
+                self.inline_skill_popup_active = false;
+                self.focus = Focus::Composer;
+                Some(command.to_owned())
+            }
+            CommandAction::InsertText(text) => {
+                if let Some(range) = current_skill_token_range(&self.composer) {
+                    let replacement =
+                        inline_skill_replacement_text(self.composer.text(), &range, text.as_str());
+                    self.composer.replace_range(range, replacement.as_str());
+                } else {
+                    self.composer.set_input(text);
+                }
+                self.inline_skill_popup_active = false;
+                self.focus = Focus::Composer;
+                None
+            }
+            CommandAction::Close => {
+                self.inline_skill_popup_active = false;
+                self.focus = Focus::Composer;
+                None
+            }
+        }
+    }
+
+    fn handle_mouse_event(&mut self, mouse_event: MouseEvent) -> Option<String> {
+        if rect_contains_point(self.last_palette_area, mouse_event.column, mouse_event.row)
+            && (matches!(self.focus, Focus::CommandPalette) || self.inline_skill_popup_active)
+        {
+            return self
+                .command_palette
+                .handle_mouse(mouse_event, self.last_palette_area)
+                .and_then(|action| self.apply_palette_action(action));
+        }
+
+        if rect_contains_point(self.last_composer_area, mouse_event.column, mouse_event.row) {
+            if matches!(mouse_event.kind, MouseEventKind::Down(MouseButton::Left)) {
+                self.focus = Focus::Composer;
+                self.sync_inline_skill_popup();
+            }
+            return None;
+        }
+
+        if rect_contains_point(
+            self.last_transcript_area,
+            mouse_event.column,
+            mouse_event.row,
+        ) {
+            if matches!(
+                mouse_event.kind,
+                MouseEventKind::Down(MouseButton::Left)
+                    | MouseEventKind::Down(MouseButton::Right)
+                    | MouseEventKind::Down(MouseButton::Middle)
+            ) {
+                self.focus = Focus::MessageList;
+                self.sync_inline_skill_popup();
+            }
+            self.message_list.handle_mouse(mouse_event);
+        }
+
+        None
+    }
+
+    fn sync_inline_skill_popup(&mut self) {
+        if !matches!(self.focus, Focus::Composer) {
+            self.inline_skill_popup_active = false;
+            return;
+        }
+
+        if self.command_palette.has_skills()
+            && let Some(query) = current_skill_token_query(&self.composer)
+        {
+            self.command_palette.show_skills(query.as_str());
+            self.inline_skill_popup_active = true;
+        } else {
+            self.inline_skill_popup_active = false;
+        }
+    }
+
+    fn confirm_inline_skill_popup(&mut self) {
+        if let Some(action) = self
+            .command_palette
+            .handle_key(crossterm::event::KeyEvent::new(
+                KeyCode::Enter,
+                KeyModifiers::NONE,
+            ))
+        {
+            let _ = self.apply_palette_action(action);
+        } else {
+            self.inline_skill_popup_active = false;
+        }
+    }
+
+    fn handle_inline_skill_popup_key(&mut self, key: crossterm::event::KeyEvent) -> bool {
+        if !self.inline_skill_popup_active {
+            return false;
+        }
+
+        if matches!(
+            key.code,
+            KeyCode::Up
+                | KeyCode::Down
+                | KeyCode::PageUp
+                | KeyCode::PageDown
+                | KeyCode::Home
+                | KeyCode::End
+        ) {
+            let _ = self.command_palette.handle_key(key);
+            return true;
+        }
+
+        if key.code == KeyCode::Esc {
+            self.inline_skill_popup_active = false;
+            return true;
+        }
+
+        if (key.code == KeyCode::Enter && !key.modifiers.contains(KeyModifiers::SHIFT))
+            || key.code == KeyCode::Tab
+        {
+            self.confirm_inline_skill_popup();
+            return true;
+        }
+
+        false
+    }
+
+    fn pending_lines_for(
+        &mut self,
+        width: u16,
+        height: u16,
+        composer_height: u16,
+        palette_height: u16,
+    ) -> Vec<Line<'static>> {
+        if !self.pending_turn {
+            self.pending_render_cache = None;
+            return Vec::new();
+        }
+
+        let max_pending_height = pending_band_max_height(height, composer_height, palette_height);
+        let Some(signature) = pending_render_signature_for_geometry(
+            self,
+            width,
+            height,
+            composer_height,
+            palette_height,
+        ) else {
+            self.pending_render_cache = None;
+            return Vec::new();
+        };
+
+        if let Some(cache) = self.pending_render_cache.as_ref()
+            && cache.signature == signature
+            && cache.max_pending_height == max_pending_height
+        {
+            return cache.lines.clone();
+        }
+
+        let max_pending_preview_lines = max_pending_height.saturating_sub(2).max(1) as usize;
+        let live_lines = pending_live_lines(&self.live_lines, max_pending_preview_lines);
+        let raw_pending_lines = build_pending_lines(
+            self.turn_start,
+            &live_lines,
+            self.spinner_seed,
+            &self.pending_steers,
+            &self.pending_queue,
+            width,
+        );
+        let lines = compact_pending_lines_for_height(raw_pending_lines, max_pending_height);
+        self.pending_render_cache = Some(PendingRenderCache {
+            signature,
+            max_pending_height,
+            lines: lines.clone(),
+        });
+        lines
     }
 }
 
@@ -264,16 +451,22 @@ pub async fn run_app<B: Backend>(
         .map_err(|e| format!("failed to query terminal size: {e}"))?;
     let render_width = last_known_size.width as usize;
     let mut app = App::new(&runtime, &options, render_width)?;
-    if let Some(lines) = load_startup_release_lines(render_width).await {
-        app.message_list.add_rendered_lines(lines);
-    }
+    let mut startup_release_task = Some(tokio::spawn(load_startup_release_lines(render_width)));
     let mut dirty = true;
     let mut last_resize_at: Option<std::time::Instant> = None;
     let mut last_resize_requires_quiet = false;
-    let mut last_resize_draw_at: Option<std::time::Instant> = None;
     let mut pending_live_resize_rerender = false;
 
     loop {
+        if let Some(task) = startup_release_task.as_ref()
+            && task.is_finished()
+            && let Some(task) = startup_release_task.take()
+            && let Ok(Some(lines)) = task.await
+        {
+            app.message_list.add_rendered_lines(lines);
+            dirty = true;
+        }
+
         if maybe_finalize_pending_turn(terminal, &mut app, &runtime).await? {
             dirty = true;
         }
@@ -290,7 +483,7 @@ pub async fn run_app<B: Backend>(
 
         let resize_ready = redraw_throttle_ready(
             last_resize_requires_quiet,
-            last_resize_draw_at.map(|instant| instant.elapsed()),
+            last_resize_at.map(|instant| instant.elapsed()),
         );
         if dirty && resize_ready {
             if pending_live_resize_rerender {
@@ -304,18 +497,15 @@ pub async fn run_app<B: Backend>(
                 .map_err(|e| format!("draw error: {}", e))?;
             dirty = false;
             if last_resize_requires_quiet {
-                last_resize_draw_at = Some(std::time::Instant::now());
                 if last_resize_at
                     .map(|instant| instant.elapsed() >= Duration::from_millis(70))
                     .unwrap_or(true)
                 {
                     last_resize_at = None;
                     last_resize_requires_quiet = false;
-                    last_resize_draw_at = None;
                 }
             } else {
                 last_resize_at = None;
-                last_resize_draw_at = None;
             }
         }
 
@@ -361,27 +551,34 @@ pub async fn run_app<B: Backend>(
                                 if matches!(key.code, KeyCode::Char('/') | KeyCode::Char(':'))
                                     && app.composer.is_empty()
                                 {
-                                    app.command_palette.show(":");
+                                    app.command_palette.show_commands(":");
+                                    app.inline_skill_popup_active = false;
                                     app.focus = Focus::CommandPalette;
+                                } else if app.handle_inline_skill_popup_key(key) {
                                 } else if should_route_composer_key_to_transcript(&app, key) {
                                     app.message_list.handle_key(key);
                                 } else if key.code == KeyCode::Tab {
                                     if !app.composer.is_empty() {
                                         queue_pending_message(&mut app);
+                                        app.inline_skill_popup_active = false;
                                     } else {
                                         app.focus = Focus::MessageList;
                                     }
                                 } else if let Some(msg) = app.composer.handle_key(key) {
                                     pending_submission = Some(msg);
+                                    app.sync_inline_skill_popup();
                                 } else if !app.composer.is_empty() {
                                     app.composer_follow_up_intent = true;
+                                    app.sync_inline_skill_popup();
+                                } else {
+                                    app.sync_inline_skill_popup();
                                 }
                             }
                             Focus::MessageList => {
                                 if matches!(key.code, KeyCode::Char('/') | KeyCode::Char(':'))
                                     && app.composer.is_empty()
                                 {
-                                    app.command_palette.show(":");
+                                    app.command_palette.show_commands(":");
                                     app.focus = Focus::CommandPalette;
                                 } else {
                                     app.message_list.handle_key(key);
@@ -395,9 +592,16 @@ pub async fn run_app<B: Backend>(
                                     match action {
                                         CommandAction::RunCommand(command) => {
                                             pending_command = Some(command.to_owned());
+                                            app.inline_skill_popup_active = false;
+                                            app.focus = Focus::Composer;
+                                        }
+                                        CommandAction::InsertText(text) => {
+                                            app.composer.set_input(text);
+                                            app.inline_skill_popup_active = false;
                                             app.focus = Focus::Composer;
                                         }
                                         CommandAction::Close => {
+                                            app.inline_skill_popup_active = false;
                                             app.focus = Focus::Composer;
                                         }
                                     }
@@ -439,18 +643,24 @@ pub async fn run_app<B: Backend>(
                                 if !app.composer.is_empty() {
                                     app.composer.clear();
                                     app.composer_follow_up_intent = false;
+                                    app.inline_skill_popup_active = false;
                                 }
                             } else if matches!(key.code, KeyCode::Char('/') | KeyCode::Char(':'))
                                 && app.composer.is_empty()
                             {
-                                app.command_palette.show(":");
+                                app.command_palette.show_commands(":");
+                                app.inline_skill_popup_active = false;
                                 app.focus = Focus::CommandPalette;
+                            } else if app.handle_inline_skill_popup_key(key) {
                             } else if should_route_composer_key_to_transcript(&app, key) {
                                 app.message_list.handle_key(key);
                             } else if key.code == KeyCode::Tab {
                                 app.focus = Focus::MessageList;
                             } else if let Some(msg) = app.composer.handle_key(key) {
                                 submitted_message = Some(msg);
+                                app.sync_inline_skill_popup();
+                            } else {
+                                app.sync_inline_skill_popup();
                             }
                         }
                         Focus::CommandPalette => {
@@ -458,9 +668,16 @@ pub async fn run_app<B: Backend>(
                                 match action {
                                     CommandAction::RunCommand(command) => {
                                         command_to_run = Some(command.to_owned());
+                                        app.inline_skill_popup_active = false;
+                                        app.focus = Focus::Composer;
+                                    }
+                                    CommandAction::InsertText(text) => {
+                                        app.composer.set_input(text);
+                                        app.inline_skill_popup_active = false;
                                         app.focus = Focus::Composer;
                                     }
                                     CommandAction::Close => {
+                                        app.inline_skill_popup_active = false;
                                         app.focus = Focus::Composer;
                                     }
                                 }
@@ -484,7 +701,7 @@ pub async fn run_app<B: Backend>(
                         }
 
                         if msg.starts_with('/') || msg.starts_with(':') {
-                            app.command_palette.show(&msg);
+                            app.command_palette.show_commands(&msg);
                             app.focus = Focus::CommandPalette;
                             continue;
                         }
@@ -505,7 +722,13 @@ pub async fn run_app<B: Backend>(
                     dirty = true;
                 }
                 Event::Mouse(mouse_event) => {
-                    app.message_list.handle_mouse(mouse_event);
+                    if let Some(command) = app.handle_mouse_event(mouse_event) {
+                        if command == "/exit" {
+                            break;
+                        }
+                        run_surface_command(terminal, &mut app, &runtime, &options, &command)
+                            .await?;
+                    }
                     dirty = true;
                 }
                 Event::Resize(width, height) => {
@@ -519,8 +742,9 @@ pub async fn run_app<B: Backend>(
                     last_resize_requires_quiet =
                         resize_reflow_required(last_known_size.width, new_size.width);
                     last_resize_at = last_resize_requires_quiet.then(std::time::Instant::now);
-                    last_resize_draw_at = None;
                     last_known_size = new_size;
+                    app.last_render_width = new_size.width;
+                    app.last_render_height = new_size.height;
                     app.live_render_width
                         .store(new_size.width.max(1) as usize, Ordering::Relaxed);
                     if width_changed && app.live_rerender.is_some() {
@@ -731,6 +955,65 @@ fn truncate_middle_for_width(text: &str, width: usize) -> String {
     format!("{prefix}…{suffix}")
 }
 
+fn rect_contains_point(area: Rect, column: u16, row: u16) -> bool {
+    column >= area.x
+        && column < area.x.saturating_add(area.width)
+        && row >= area.y
+        && row < area.y.saturating_add(area.height)
+}
+
+fn current_skill_token_query(composer: &Composer) -> Option<String> {
+    let range = current_skill_token_range(composer)?;
+    composer.text()[range]
+        .strip_prefix('$')
+        .map(|query| query.to_owned())
+}
+
+fn current_skill_token_range(composer: &Composer) -> Option<std::ops::Range<usize>> {
+    let text = composer.text();
+    let cursor = composer.cursor().min(text.len());
+    if text.is_empty() {
+        return None;
+    }
+
+    let before_cursor = &text[..cursor];
+    let token_start = before_cursor
+        .char_indices()
+        .rfind(|(_, ch)| ch.is_whitespace())
+        .map(|(idx, ch)| idx + ch.len_utf8())
+        .unwrap_or(0);
+    let after_cursor = &text[cursor..];
+    let token_end = after_cursor
+        .char_indices()
+        .find(|(_, ch)| ch.is_whitespace())
+        .map(|(idx, _)| cursor + idx)
+        .unwrap_or(text.len());
+    if token_start >= token_end {
+        return None;
+    }
+
+    let token = &text[token_start..token_end];
+    token.starts_with('$').then_some(token_start..token_end)
+}
+
+fn inline_skill_replacement_text(
+    text: &str,
+    range: &std::ops::Range<usize>,
+    replacement: &str,
+) -> String {
+    let should_trim_trailing_space = replacement.ends_with(' ')
+        && text
+            .get(range.end..)
+            .and_then(|tail| tail.chars().next())
+            .is_some_and(char::is_whitespace);
+
+    if should_trim_trailing_space {
+        replacement.trim_end_matches(' ').to_owned()
+    } else {
+        replacement.to_owned()
+    }
+}
+
 fn build_status_footer_line(cwd: &str, model: &str, width: u16) -> Line<'static> {
     let width = width as usize;
     if width == 0 {
@@ -853,6 +1136,39 @@ fn build_restore_footer_line(i18n: &I18nService, queued: usize, width: u16) -> L
     )])
 }
 
+fn build_follow_footer_line(i18n: &I18nService, model: &str, width: u16) -> Line<'static> {
+    let max_width = width as usize;
+    if max_width == 0 {
+        return Line::from(String::new());
+    }
+
+    let full_hint = i18n.text(PiCopy::FooterFollowHint).to_owned();
+    let short_hint = i18n.text(PiCopy::FooterFollowShort).to_owned();
+    let hint = if display_columns(&full_hint) <= max_width {
+        full_hint
+    } else {
+        short_hint
+    };
+
+    if display_columns(&hint) >= max_width {
+        return Line::from(vec![Span::styled(
+            truncate_right_for_width(&hint, max_width),
+            Style::default().fg(PI_ACCENT),
+        )]);
+    }
+
+    let available_for_model = max_width.saturating_sub(display_columns(&hint) + 1);
+    let model_text = truncate_right_for_width(model, available_for_model);
+    let spacer_width =
+        max_width.saturating_sub(display_columns(&hint) + display_columns(&model_text));
+
+    Line::from(vec![
+        Span::styled(hint, Style::default().fg(PI_ACCENT)),
+        Span::raw(" ".repeat(spacer_width)),
+        Span::styled(model_text, Style::default().fg(PI_GRAY)),
+    ])
+}
+
 fn queue_restore_shortcut_label() -> &'static str {
     if cfg!(target_os = "macos") {
         "Option + Up"
@@ -870,9 +1186,7 @@ async fn build_command_lines(
     let trimmed = input.trim();
 
     match trimmed {
-        super::super::CLI_CHAT_HELP_COMMAND => {
-            Ok(super::super::operator_surfaces::render_cli_chat_help_lines_with_width(width))
-        }
+        super::super::CLI_CHAT_HELP_COMMAND => Ok(render_pi_surface_help_lines_with_width(width)),
         super::super::CLI_CHAT_STATUS_COMMAND => {
             let summary =
                 super::super::operator_surfaces::build_cli_chat_startup_summary(runtime, options)?;
@@ -1622,25 +1936,42 @@ fn pending_live_lines(live_lines: &Arc<StdMutex<Vec<String>>>, max_lines: usize)
 }
 
 fn pending_render_signature(app: &App) -> Option<u64> {
-    if !app.pending_turn {
-        return None;
+    if app.last_render_width == 0 || app.last_render_height == 0 {
+        if !app.pending_turn {
+            return None;
+        }
+        let start = app.turn_start?;
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        focus_ring_frame(start).hash(&mut hasher);
+        get_spinner_verb_with_seed(start, app.spinner_seed).hash(&mut hasher);
+        app.pending_steers
+            .iter()
+            .for_each(|message| message.hash(&mut hasher));
+        app.pending_queue
+            .iter()
+            .for_each(|message| message.hash(&mut hasher));
+        for line in pending_live_lines(&app.live_lines, 6) {
+            line.hash(&mut hasher);
+        }
+        return Some(hasher.finish());
     }
-    let start = app.turn_start?;
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    focus_ring_frame(start).hash(&mut hasher);
-    get_spinner_verb_with_seed(start, app.spinner_seed).hash(&mut hasher);
-    app.pending_steers
-        .iter()
-        .for_each(|message| message.hash(&mut hasher));
-    app.pending_queue
-        .iter()
-        .for_each(|message| message.hash(&mut hasher));
-    for line in pending_live_lines(&app.live_lines, pending_signature_preview_budget(app)) {
-        line.hash(&mut hasher);
-    }
-    Some(hasher.finish())
+
+    let composer_height = app.composer.height_for_width(app.last_render_width);
+    let palette_height = if matches!(app.focus, Focus::CommandPalette) {
+        app.command_palette.desired_height() as u16
+    } else {
+        0
+    };
+    pending_render_signature_for_geometry(
+        app,
+        app.last_render_width,
+        app.last_render_height,
+        composer_height,
+        palette_height,
+    )
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn pending_signature_preview_budget(app: &App) -> usize {
     if app.last_render_width == 0 || app.last_render_height == 0 {
         return 6;
@@ -1652,6 +1983,23 @@ fn pending_signature_preview_budget(app: &App) -> usize {
     } else {
         0
     };
+    pending_signature_preview_budget_for_geometry(
+        app.last_render_height,
+        composer_height,
+        palette_height,
+    )
+}
+
+fn pending_signature_preview_budget_for_geometry(
+    height: u16,
+    composer_height: u16,
+    palette_height: u16,
+) -> usize {
+    let max_pending_height = pending_band_max_height(height, composer_height, palette_height);
+    max_pending_height.saturating_sub(2).max(1) as usize
+}
+
+fn pending_band_max_height(height: u16, composer_height: u16, palette_height: u16) -> u16 {
     let reserved_without_pending = 1
         + composer_height
         + if palette_height > 0 {
@@ -1662,11 +2010,36 @@ fn pending_signature_preview_budget(app: &App) -> usize {
         + 1
         + 1
         + 1;
-    let max_pending_height = app
-        .last_render_height
-        .saturating_sub(reserved_without_pending)
-        .max(3);
-    max_pending_height.saturating_sub(3).max(1) as usize
+    height.saturating_sub(reserved_without_pending).max(3)
+}
+
+fn pending_render_signature_for_geometry(
+    app: &App,
+    width: u16,
+    height: u16,
+    composer_height: u16,
+    palette_height: u16,
+) -> Option<u64> {
+    if !app.pending_turn {
+        return None;
+    }
+    let start = app.turn_start?;
+    let max_pending_preview_lines =
+        pending_signature_preview_budget_for_geometry(height, composer_height, palette_height);
+    let visible_lines = pending_live_lines(&app.live_lines, max_pending_preview_lines);
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    focus_ring_frame(start).hash(&mut hasher);
+    get_spinner_verb_with_seed(start, app.spinner_seed).hash(&mut hasher);
+    width.hash(&mut hasher);
+    height.hash(&mut hasher);
+    visible_lines.hash(&mut hasher);
+    app.pending_steers
+        .iter()
+        .for_each(|message| message.hash(&mut hasher));
+    app.pending_queue
+        .iter()
+        .for_each(|message| message.hash(&mut hasher));
+    Some(hasher.finish())
 }
 
 fn build_pending_lines(
@@ -1693,10 +2066,7 @@ fn build_pending_lines(
     ];
 
     let content_width = width.saturating_sub(2).max(1) as usize;
-    let mut lines = vec![Line::from(""), Line::from(spinner_spans)];
-    if !live_lines.is_empty() {
-        lines.push(Line::from(""));
-    }
+    let mut lines = Vec::new();
     let has_visible_reply_after_blank = live_lines
         .iter()
         .position(|line| line.trim().is_empty())
@@ -1739,6 +2109,7 @@ fn build_pending_lines(
         !live_lines.is_empty(),
     );
     lines.push(Line::from(""));
+    lines.push(Line::from(spinner_spans));
     lines
 }
 
@@ -1968,12 +2339,8 @@ fn build_pi_startup_content(
     } else {
         runtime.effective_bootstrap_mcp_servers.clone()
     };
-    let skills = detect_repo_skills();
-    let skills = if skills.is_empty() {
-        vec!["none detected".to_owned()]
-    } else {
-        vec![skills.join(", ")]
-    };
+    let skills = detect_repo_skills(runtime.effective_working_directory.as_deref());
+    let skills = format_repo_skill_summary(&skills, 3);
 
     let tutorial = i18n.text(PiCopy::Tutorial).to_owned();
     let mut sections = vec![
@@ -1994,24 +2361,237 @@ fn build_pi_startup_content(
     (version, tutorial, sections)
 }
 
-fn detect_repo_skills() -> Vec<String> {
-    let Ok(entries) = std::fs::read_dir("skills") else {
+fn detect_repo_skills(root: Option<&Path>) -> Vec<SkillEntry> {
+    let skills_dir = root
+        .map(|path| path.join("skills"))
+        .unwrap_or_else(|| Path::new("skills").to_path_buf());
+    let Ok(entries) = std::fs::read_dir(skills_dir) else {
         return Vec::new();
     };
-    let mut names = entries
+    let mut skills = entries
         .filter_map(|entry| entry.ok())
         .filter_map(|entry| {
             entry.file_type().ok().and_then(|kind| {
                 if kind.is_dir() {
-                    Some(entry.file_name().to_string_lossy().to_string())
+                    let folder_name = entry.file_name().to_string_lossy().to_string();
+                    Some(read_repo_skill_metadata(
+                        folder_name,
+                        entry.path().join("SKILL.md"),
+                    ))
                 } else {
                     None
                 }
             })
         })
         .collect::<Vec<_>>();
-    names.sort();
-    names
+    skills.sort_by(|left, right| left.name.cmp(&right.name));
+    skills
+}
+
+fn read_repo_skill_metadata(folder_name: String, skill_doc_path: std::path::PathBuf) -> SkillEntry {
+    let Ok(contents) = std::fs::read_to_string(skill_doc_path) else {
+        return SkillEntry {
+            name: folder_name.clone(),
+            description: "repo-local skill".to_owned(),
+            search_terms: build_repo_skill_search_terms(folder_name.as_str(), folder_name.as_str()),
+            category_tag: "[Skill]".to_owned(),
+            source_alias: None,
+        };
+    };
+
+    let name = parse_repo_skill_frontmatter_value(contents.as_str(), "name")
+        .filter(|value| !value.is_empty())
+        .unwrap_or(folder_name.clone());
+    let description = parse_repo_skill_frontmatter_value(contents.as_str(), "description")
+        .filter(|value| !value.is_empty())
+        .or_else(|| fallback_repo_skill_description(contents.as_str()))
+        .unwrap_or_else(|| "repo-local skill".to_owned());
+    let search_terms = build_repo_skill_search_terms(folder_name.as_str(), name.as_str());
+    let source_alias = (folder_name != name).then_some(folder_name);
+
+    SkillEntry {
+        name,
+        description,
+        search_terms,
+        category_tag: "[Skill]".to_owned(),
+        source_alias,
+    }
+}
+
+fn build_repo_skill_search_terms(folder_name: &str, name: &str) -> Vec<String> {
+    let mut terms = Vec::new();
+    for value in [folder_name, name] {
+        if !terms.iter().any(|term| term == value) {
+            terms.push(value.to_owned());
+        }
+        for segment in value.split(|ch: char| ch == '-' || ch == '_' || ch.is_whitespace()) {
+            let trimmed = segment.trim();
+            if trimmed.len() >= 2 && !terms.iter().any(|term| term == trimmed) {
+                terms.push(trimmed.to_owned());
+            }
+        }
+    }
+    terms
+}
+
+fn parse_repo_skill_frontmatter_value(contents: &str, key: &str) -> Option<String> {
+    let lines = contents.lines().collect::<Vec<_>>();
+    let mut inside_frontmatter = false;
+    let mut frontmatter_consumed = false;
+
+    for line in lines {
+        let trimmed = line.trim();
+        if trimmed == "---" {
+            if !frontmatter_consumed {
+                inside_frontmatter = !inside_frontmatter;
+                if !inside_frontmatter {
+                    frontmatter_consumed = true;
+                }
+            }
+            continue;
+        }
+
+        if inside_frontmatter && let Some(value) = trimmed.strip_prefix(&format!("{key}:")) {
+            return Some(value.trim().trim_matches('"').to_owned());
+        }
+    }
+
+    None
+}
+
+fn fallback_repo_skill_description(contents: &str) -> Option<String> {
+    contents
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && !line.starts_with('#') && *line != "---")
+        .map(ToOwned::to_owned)
+}
+
+fn format_repo_skill_summary(skills: &[SkillEntry], max_items: usize) -> Vec<String> {
+    if skills.is_empty() {
+        return vec!["none detected".to_owned()];
+    }
+
+    let mut lines = skills
+        .iter()
+        .take(max_items)
+        .map(|skill| {
+            let name = if let Some(alias) = skill.source_alias.as_deref() {
+                format!("{} ({alias})", skill.name)
+            } else {
+                skill.name.clone()
+            };
+            format!("{name} — {}", skill.description)
+        })
+        .collect::<Vec<_>>();
+    let remaining = skills.len().saturating_sub(lines.len());
+    if remaining > 0 {
+        lines.push(format!("… +{remaining} more"));
+    }
+    lines
+}
+
+fn render_pi_surface_help_lines_with_width(width: usize) -> Vec<String> {
+    let queue_restore_shortcut = queue_restore_shortcut_label();
+    let message_spec = TuiMessageSpec {
+        role: "help".to_owned(),
+        caption: Some("pi surface".to_owned()),
+        sections: vec![
+            TuiSectionSpec::KeyValues {
+                title: Some("slash commands".to_owned()),
+                items: vec![
+                    TuiKeyValueSpec::Plain {
+                        key: "/help".to_owned(),
+                        value: "show pi_surface keyboard and command guidance".to_owned(),
+                    },
+                    TuiKeyValueSpec::Plain {
+                        key: "/status".to_owned(),
+                        value: "inspect runtime posture and continuity settings".to_owned(),
+                    },
+                    TuiKeyValueSpec::Plain {
+                        key: "/history".to_owned(),
+                        value: "show the current transcript window".to_owned(),
+                    },
+                    TuiKeyValueSpec::Plain {
+                        key: "/compact".to_owned(),
+                        value: "create a manual continuity checkpoint".to_owned(),
+                    },
+                    TuiKeyValueSpec::Plain {
+                        key: "/sessions".to_owned(),
+                        value: "inspect visible sessions in the current scope".to_owned(),
+                    },
+                    TuiKeyValueSpec::Plain {
+                        key: "/workers".to_owned(),
+                        value: "inspect visible delegate worker sessions".to_owned(),
+                    },
+                    TuiKeyValueSpec::Plain {
+                        key: "/review".to_owned(),
+                        value: "inspect the latest approval and review queue".to_owned(),
+                    },
+                    TuiKeyValueSpec::Plain {
+                        key: "/mission".to_owned(),
+                        value: "inspect mission-control lane counts and phase state".to_owned(),
+                    },
+                    TuiKeyValueSpec::Plain {
+                        key: "$skill-name <request>".to_owned(),
+                        value: "type a repo-local skill invocation directly in the composer"
+                            .to_owned(),
+                    },
+                    TuiKeyValueSpec::Plain {
+                        key: "/exit".to_owned(),
+                        value: "leave interactive chat".to_owned(),
+                    },
+                ],
+            },
+            TuiSectionSpec::Narrative {
+                title: Some("surface controls".to_owned()),
+                lines: vec![
+                    "Use / or : from an empty composer to open the command palette.".to_owned(),
+                    "Type $skill-name directly in the composer, then continue writing the rest of the request."
+                        .to_owned(),
+                    "When the inline $ suggestion popup is visible, Enter or Tab confirms the current skill."
+                        .to_owned(),
+                    "Use Ctrl+O to expand or collapse the latest compaction summary.".to_owned(),
+                ],
+            },
+            TuiSectionSpec::Narrative {
+                title: Some("keyboard".to_owned()),
+                lines: vec![
+                    "Enter sends the current draft. Shift+Enter inserts a new line."
+                        .to_owned(),
+                    format!(
+                        "Tab moves between composer and transcript. While a turn is running, Tab queues the current draft and {queue_restore_shortcut} restores the latest queued message."
+                    ),
+                    "PgUp / PgDn, Home / End, and j / k scroll the transcript.".to_owned(),
+                ],
+            },
+            TuiSectionSpec::Callout {
+                tone: TuiCalloutTone::Info,
+                title: Some("mouse".to_owned()),
+                lines: vec![
+                    "Mouse wheel scrolls the transcript.".to_owned(),
+                    "When the command palette is open, mouse wheel scrolls the palette and left-click selects an entry."
+                        .to_owned(),
+                ],
+            },
+            TuiSectionSpec::Callout {
+                tone: TuiCalloutTone::Info,
+                title: Some("usage notes".to_owned()),
+                lines: vec![
+                    "Type any non-command text to send a normal assistant turn.".to_owned(),
+                    "Repo-local skill names shown at startup come from the current workspace skills/ directory."
+                        .to_owned(),
+                    "Use Ctrl+C or /exit to leave chat.".to_owned(),
+                ],
+            },
+        ],
+        footer_lines: vec![
+            "Send normal text to continue the transcript.".to_owned(),
+            "Use /status, /history, or /compact when you need to inspect or stabilize the current session."
+                .to_owned(),
+        ],
+    };
+    super::super::render_cli_chat_message_spec_with_width(&message_spec, width)
 }
 
 #[derive(Debug, Deserialize)]
@@ -2116,13 +2696,13 @@ fn redraw_throttle_ready(
 #[cfg(test)]
 mod tests {
     use super::{App, Focus};
-    use crate::chat::pi_surface::command_palette::CommandPalette;
+    use crate::chat::pi_surface::command_palette::{CommandAction, CommandPalette, SkillEntry};
     use crate::chat::pi_surface::composer::Composer;
     use crate::chat::pi_surface::i18n::{I18nService, Language};
     use crate::chat::pi_surface::message_list::MessageList;
     use crate::chat::pi_surface::utils::PI_USER_MSG_BG;
-    use crossterm::event::{KeyCode, KeyModifiers};
-    use ratatui::{Terminal, backend::TestBackend};
+    use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    use ratatui::{Terminal, backend::TestBackend, layout::Rect};
     use std::sync::atomic::AtomicUsize;
     use std::sync::{Arc, Mutex as StdMutex};
     use std::time::Duration;
@@ -2131,7 +2711,7 @@ mod tests {
         App {
             message_list: MessageList::new(),
             composer: Composer::new(),
-            command_palette: CommandPalette::new(Language::En),
+            command_palette: CommandPalette::new(Language::En, Vec::new()),
             focus: Focus::Composer,
             pending_turn: false,
             turn_start: None,
@@ -2144,11 +2724,35 @@ mod tests {
             live_rerender: None,
             spinner_seed: 1,
             last_pending_signature: None,
+            pending_render_cache: None,
+            inline_skill_popup_active: false,
             last_render_width: 0,
             last_render_height: 0,
+            last_transcript_area: Rect::default(),
+            last_composer_area: Rect::default(),
+            last_palette_area: Rect::default(),
             cwd: "/tmp/example".to_owned(),
             model: "gpt-test".to_owned(),
             i18n: I18nService::new(Language::En),
+        }
+    }
+
+    fn mouse(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    fn skill(name: &str) -> SkillEntry {
+        SkillEntry {
+            name: name.to_owned(),
+            description: format!("{name} description"),
+            search_terms: vec![name.to_owned()],
+            category_tag: "[Skill]".to_owned(),
+            source_alias: None,
         }
     }
 
@@ -2482,7 +3086,7 @@ mod tests {
     }
 
     #[test]
-    fn composer_and_footer_move_up_after_pending_turn_finishes() {
+    fn composer_and_footer_do_not_jump_up_after_pending_turn_finishes() {
         let backend = TestBackend::new(60, 18);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = blank_app();
@@ -2523,8 +3127,586 @@ mod tests {
             .position(|line| line.contains("/tmp/example"))
             .expect("settled footer row");
 
-        assert!(settled_composer_row < pending_composer_row);
-        assert!(settled_footer_row < pending_footer_row);
+        assert!(settled_composer_row >= pending_composer_row);
+        assert!(settled_footer_row >= pending_footer_row);
+    }
+
+    #[test]
+    fn spinner_stays_adjacent_to_composer_below_pending_content() {
+        let backend = TestBackend::new(60, 18);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = blank_app();
+        app.message_list.add_user_message("hi".to_owned());
+        app.pending_turn = true;
+        app.turn_start = Some(std::time::Instant::now());
+        if let Ok(mut lines) = app.live_lines.lock() {
+            *lines = vec!["streamed reply line".to_owned()];
+        }
+
+        terminal.draw(|f| app.render(f)).expect("draw");
+        let lines = buffer_lines(&terminal);
+        let preview_row = lines
+            .iter()
+            .position(|line| line.contains("streamed reply line"))
+            .expect("preview row");
+        let spinner_row = lines
+            .iter()
+            .position(|line| line.contains("..."))
+            .expect("spinner row");
+        let composer_row = lines
+            .iter()
+            .position(|line| line.contains("›"))
+            .expect("composer row");
+
+        assert!(preview_row < spinner_row);
+        assert_eq!(composer_row, spinner_row + 2);
+    }
+
+    #[test]
+    fn help_lines_match_pi_surface_controls() {
+        let rendered = super::render_pi_surface_help_lines_with_width(80).join("\n");
+
+        assert!(rendered.contains("Shift+Enter inserts a new line"));
+        assert!(rendered.contains("Use / or : from an empty composer"));
+        assert!(rendered.contains("Type $skill-name directly in the composer"));
+        assert!(!rendered.contains("A trailing \\\\ keeps composing"));
+        assert!(!rendered.contains("control deck"));
+        assert!(!rendered.contains("Esc from an empty composer"));
+    }
+
+    #[test]
+    fn typing_dollar_keeps_focus_in_composer_while_inline_skill_popup_filters() {
+        let mut app = blank_app();
+        app.command_palette = CommandPalette::new(
+            Language::En,
+            vec![skill("demo-skill"), skill("other-skill")],
+        );
+
+        assert!(
+            app.composer
+                .handle_key(crossterm::event::KeyEvent::new(
+                    KeyCode::Char('$'),
+                    KeyModifiers::NONE,
+                ))
+                .is_none()
+        );
+        app.sync_inline_skill_popup();
+        assert_eq!(app.focus, Focus::Composer);
+        assert!(app.inline_skill_popup_active);
+        assert_eq!(app.composer.text(), "$");
+
+        assert!(
+            app.composer
+                .handle_key(crossterm::event::KeyEvent::new(
+                    KeyCode::Char('d'),
+                    KeyModifiers::NONE,
+                ))
+                .is_none()
+        );
+        app.sync_inline_skill_popup();
+
+        if let Some(action) = app
+            .command_palette
+            .handle_key(crossterm::event::KeyEvent::new(
+                KeyCode::Enter,
+                KeyModifiers::NONE,
+            ))
+        {
+            let _ = app.apply_palette_action(action);
+        }
+        assert_eq!(app.composer.text(), "$demo-skill ");
+        assert_eq!(app.focus, Focus::Composer);
+    }
+
+    #[test]
+    fn typing_dollar_without_available_skills_keeps_plain_text_without_popup() {
+        let mut app = blank_app();
+
+        assert!(
+            app.composer
+                .handle_key(crossterm::event::KeyEvent::new(
+                    KeyCode::Char('$'),
+                    KeyModifiers::NONE,
+                ))
+                .is_none()
+        );
+        app.sync_inline_skill_popup();
+
+        assert_eq!(app.focus, Focus::Composer);
+        assert!(!app.inline_skill_popup_active);
+        assert_eq!(app.composer.text(), "$");
+    }
+
+    #[test]
+    fn confirming_inline_skill_popup_with_no_matches_closes_popup_and_keeps_text() {
+        let mut app = blank_app();
+        app.command_palette = CommandPalette::new(Language::En, vec![skill("demo-skill")]);
+        app.composer.set_input("$zzz".to_owned());
+        app.sync_inline_skill_popup();
+
+        assert!(app.inline_skill_popup_active);
+
+        app.confirm_inline_skill_popup();
+
+        assert_eq!(app.composer.text(), "$zzz");
+        assert_eq!(app.focus, Focus::Composer);
+        assert!(!app.inline_skill_popup_active);
+    }
+
+    #[test]
+    fn repo_skill_summary_includes_names_and_descriptions() {
+        let lines = super::format_repo_skill_summary(
+            &[
+                skill("demo-skill"),
+                SkillEntry {
+                    name: "browser-companion".to_owned(),
+                    description: "preview browser automation flow".to_owned(),
+                    search_terms: vec!["browser-companion".to_owned(), "browser".to_owned()],
+                    category_tag: "[Skill]".to_owned(),
+                    source_alias: None,
+                },
+            ],
+            3,
+        );
+
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].contains("demo-skill"));
+        assert!(lines[0].contains("description"));
+        assert!(lines[1].contains("browser-companion"));
+        assert!(lines[1].contains("preview browser automation flow"));
+    }
+
+    #[test]
+    fn repo_skill_summary_adds_overflow_line_when_truncated() {
+        let lines = super::format_repo_skill_summary(
+            &[skill("one"), skill("two"), skill("three"), skill("four")],
+            2,
+        );
+
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[2], "… +2 more");
+    }
+
+    #[test]
+    fn repo_skill_summary_surfaces_folder_alias_when_name_differs() {
+        let lines = super::format_repo_skill_summary(
+            &[SkillEntry {
+                name: "PR Babysitter".to_owned(),
+                description: "triage pull requests".to_owned(),
+                search_terms: vec!["PR Babysitter".to_owned(), "babysit-pr".to_owned()],
+                category_tag: "[Skill]".to_owned(),
+                source_alias: Some("babysit-pr".to_owned()),
+            }],
+            3,
+        );
+
+        assert_eq!(
+            lines[0],
+            "PR Babysitter (babysit-pr) — triage pull requests"
+        );
+    }
+
+    #[test]
+    fn read_repo_skill_metadata_prefers_frontmatter_name_and_description() {
+        let skill = super::read_repo_skill_metadata(
+            "folder-fallback".to_owned(),
+            std::path::PathBuf::from("/tmp/nonexistent")
+                .with_file_name("skill.md")
+                .with_extension("tmp"),
+        );
+        assert_eq!(skill.name, "folder-fallback");
+        assert_eq!(skill.description, "repo-local skill");
+
+        let contents = r#"---
+name: actual-skill
+description: "actual description"
+---
+
+# Skill
+"#;
+        let dir = std::env::temp_dir().join(format!(
+            "loong-pi-skill-meta-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let path = dir.join("SKILL.md");
+        std::fs::write(&path, contents).expect("write");
+
+        let skill = super::read_repo_skill_metadata("folder-fallback".to_owned(), path.clone());
+        assert_eq!(skill.name, "actual-skill");
+        assert_eq!(skill.description, "actual description");
+
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn detect_repo_skills_reads_skill_metadata_from_workspace() {
+        let root = std::env::temp_dir().join(format!(
+            "loong-pi-skills-root-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let skills_dir = root.join("skills");
+        std::fs::create_dir_all(&skills_dir).expect("mkdir skills");
+
+        let alpha_dir = skills_dir.join("alpha");
+        std::fs::create_dir_all(&alpha_dir).expect("mkdir alpha");
+        std::fs::write(
+            alpha_dir.join("SKILL.md"),
+            "---\nname: alpha-skill\ndescription: alpha description\n---\n",
+        )
+        .expect("write alpha");
+
+        let beta_dir = skills_dir.join("beta");
+        std::fs::create_dir_all(&beta_dir).expect("mkdir beta");
+        std::fs::write(
+            beta_dir.join("SKILL.md"),
+            "# Beta\nbeta fallback description\n",
+        )
+        .expect("write beta");
+
+        let skills = super::detect_repo_skills(Some(root.as_path()));
+
+        assert_eq!(skills.len(), 2);
+        assert_eq!(skills[0].name, "alpha-skill");
+        assert_eq!(skills[0].description, "alpha description");
+        assert!(skills[0].search_terms.iter().any(|term| term == "alpha"));
+        assert_eq!(skills[1].name, "beta");
+        assert_eq!(skills[1].description, "beta fallback description");
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn build_repo_skill_search_terms_includes_folder_and_name_segments() {
+        let terms = super::build_repo_skill_search_terms("babysit-pr", "PR Babysitter");
+
+        assert!(terms.iter().any(|term| term == "babysit-pr"));
+        assert!(terms.iter().any(|term| term == "babysit"));
+        assert!(terms.iter().any(|term| term == "pr"));
+        assert!(terms.iter().any(|term| term == "PR Babysitter"));
+        assert!(terms.iter().any(|term| term == "Babysitter"));
+    }
+
+    #[test]
+    fn confirming_inline_skill_popup_keeps_focus_in_composer() {
+        let mut app = blank_app();
+        app.command_palette = CommandPalette::new(Language::En, vec![skill("demo-skill")]);
+        app.composer.set_input("$dem".to_owned());
+        app.sync_inline_skill_popup();
+
+        assert!(app.inline_skill_popup_active);
+
+        app.confirm_inline_skill_popup();
+
+        assert_eq!(app.composer.text(), "$demo-skill ");
+        assert_eq!(app.focus, Focus::Composer);
+        assert!(!app.inline_skill_popup_active);
+    }
+
+    #[test]
+    fn tab_confirms_inline_skill_popup_through_shared_key_handler() {
+        let mut app = blank_app();
+        app.command_palette = CommandPalette::new(Language::En, vec![skill("demo-skill")]);
+        app.composer.set_input("$dem".to_owned());
+        app.sync_inline_skill_popup();
+
+        assert!(
+            app.handle_inline_skill_popup_key(crossterm::event::KeyEvent::new(
+                KeyCode::Tab,
+                KeyModifiers::NONE,
+            ))
+        );
+
+        assert_eq!(app.composer.text(), "$demo-skill ");
+        assert_eq!(app.focus, Focus::Composer);
+        assert!(!app.inline_skill_popup_active);
+    }
+
+    #[test]
+    fn confirming_inline_skill_keeps_surrounding_text_stable() {
+        let mut app = blank_app();
+        app.command_palette = CommandPalette::new(Language::En, vec![skill("demo-skill")]);
+        app.composer.set_input("please $dem now".to_owned());
+        for _ in 0..4 {
+            let _ = app.composer.handle_key(crossterm::event::KeyEvent::new(
+                KeyCode::Left,
+                KeyModifiers::NONE,
+            ));
+        }
+        app.sync_inline_skill_popup();
+
+        app.confirm_inline_skill_popup();
+
+        assert_eq!(app.composer.text(), "please $demo-skill now");
+    }
+
+    #[test]
+    fn confirming_inline_skill_works_with_cursor_inside_token_middle() {
+        let mut app = blank_app();
+        app.command_palette = CommandPalette::new(Language::En, vec![skill("demo-skill")]);
+        app.composer.set_input("$demo now".to_owned());
+        for _ in 0..4 {
+            let _ = app.composer.handle_key(crossterm::event::KeyEvent::new(
+                KeyCode::Left,
+                KeyModifiers::NONE,
+            ));
+        }
+        app.sync_inline_skill_popup();
+
+        app.confirm_inline_skill_popup();
+
+        assert_eq!(app.composer.text(), "$demo-skill now");
+    }
+
+    #[test]
+    fn inline_skill_popup_mouse_click_works_while_composer_keeps_focus() {
+        let backend = TestBackend::new(50, 14);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = blank_app();
+        app.command_palette = CommandPalette::new(Language::En, vec![skill("demo-skill")]);
+        app.composer.set_input("$dem".to_owned());
+        app.sync_inline_skill_popup();
+
+        terminal.draw(|f| app.render(f)).expect("draw");
+        let palette_row = app.last_palette_area.y;
+        let palette_col = app.last_palette_area.x.saturating_add(1);
+        app.handle_mouse_event(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            palette_col,
+            palette_row,
+        ));
+
+        assert_eq!(app.focus, Focus::Composer);
+        assert_eq!(app.composer.text(), "$demo-skill ");
+    }
+
+    #[test]
+    fn inline_skill_popup_mouse_scroll_updates_selection_while_composer_stays_focused() {
+        let backend = TestBackend::new(50, 14);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = blank_app();
+        app.command_palette = CommandPalette::new(
+            Language::En,
+            vec![skill("demo-skill"), skill("other-skill")],
+        );
+        app.composer.set_input("$".to_owned());
+        app.sync_inline_skill_popup();
+
+        terminal.draw(|f| app.render(f)).expect("draw");
+        let palette_row = app.last_palette_area.y;
+        let palette_col = app.last_palette_area.x.saturating_add(1);
+        app.handle_mouse_event(mouse(MouseEventKind::ScrollDown, palette_col, palette_row));
+        app.confirm_inline_skill_popup();
+
+        assert_eq!(app.focus, Focus::Composer);
+        assert_eq!(app.composer.text(), "$other-skill ");
+    }
+
+    #[test]
+    fn mouse_scroll_routes_to_transcript_even_with_a_draft() {
+        let backend = TestBackend::new(40, 12);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = blank_app();
+        for idx in 0..14 {
+            app.message_list
+                .add_assistant_message(format!("line-{idx}"));
+        }
+        app.composer.set_input("draft".to_owned());
+
+        terminal.draw(|f| app.render(f)).expect("draw");
+        let before = buffer_lines(&terminal).join("\n");
+
+        let transcript_row = app.last_transcript_area.y.saturating_add(1);
+        let transcript_col = app.last_transcript_area.x.saturating_add(1);
+        app.handle_mouse_event(mouse(
+            MouseEventKind::ScrollUp,
+            transcript_col,
+            transcript_row,
+        ));
+
+        terminal.draw(|f| app.render(f)).expect("draw after scroll");
+        let after = buffer_lines(&terminal).join("\n");
+
+        assert!(app.message_list.scroll_offset > 0);
+        assert_ne!(before, after);
+        assert_eq!(app.focus, Focus::Composer);
+    }
+
+    #[test]
+    fn footer_shows_follow_hint_when_transcript_is_off_tail() {
+        let backend = TestBackend::new(50, 12);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = blank_app();
+        for idx in 0..14 {
+            app.message_list
+                .add_assistant_message(format!("line-{idx}"));
+        }
+
+        terminal.draw(|f| app.render(f)).expect("draw");
+        app.message_list.handle_key(crossterm::event::KeyEvent::new(
+            KeyCode::Up,
+            KeyModifiers::NONE,
+        ));
+        terminal.draw(|f| app.render(f)).expect("draw off tail");
+        let lines = buffer_lines(&terminal).join("\n");
+
+        assert!(lines.contains("PgDn / End"));
+        assert!(!lines.contains("/tmp/example"));
+    }
+
+    #[test]
+    fn footer_returns_to_status_line_when_tail_is_restored() {
+        let backend = TestBackend::new(50, 12);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = blank_app();
+        for idx in 0..14 {
+            app.message_list
+                .add_assistant_message(format!("line-{idx}"));
+        }
+
+        terminal.draw(|f| app.render(f)).expect("draw");
+        app.message_list.handle_key(crossterm::event::KeyEvent::new(
+            KeyCode::Up,
+            KeyModifiers::NONE,
+        ));
+        terminal.draw(|f| app.render(f)).expect("draw off tail");
+        app.message_list.handle_key(crossterm::event::KeyEvent::new(
+            KeyCode::End,
+            KeyModifiers::NONE,
+        ));
+        terminal
+            .draw(|f| app.render(f))
+            .expect("draw tail restored");
+        let lines = buffer_lines(&terminal).join("\n");
+
+        assert!(lines.contains("/tmp/example"));
+        assert!(!lines.contains("PgDn / End"));
+    }
+
+    #[test]
+    fn mouse_scroll_over_palette_changes_selection_without_scrolling_transcript() {
+        let backend = TestBackend::new(50, 14);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = blank_app();
+        for idx in 0..10 {
+            app.message_list
+                .add_assistant_message(format!("line-{idx}"));
+        }
+        app.message_list.scroll_offset = 4;
+        app.command_palette.show_commands(":");
+        app.focus = Focus::CommandPalette;
+
+        terminal.draw(|f| app.render(f)).expect("draw");
+        let palette_row = app.last_palette_area.y.saturating_add(1);
+        let palette_col = app.last_palette_area.x.saturating_add(1);
+        app.handle_mouse_event(mouse(MouseEventKind::ScrollDown, palette_col, palette_row));
+
+        assert_eq!(app.message_list.scroll_offset, 4);
+        match app
+            .command_palette
+            .handle_key(crossterm::event::KeyEvent::new(
+                KeyCode::Enter,
+                KeyModifiers::NONE,
+            )) {
+            Some(CommandAction::RunCommand("/status")) => {}
+            other => panic!("expected palette mouse scroll to land on /status, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mouse_clicking_skill_palette_inserts_into_composer() {
+        let backend = TestBackend::new(50, 14);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = blank_app();
+        app.command_palette = CommandPalette::new(Language::En, vec![skill("demo-skill")]);
+        app.command_palette.show_skills("$demo");
+        app.focus = Focus::CommandPalette;
+
+        terminal.draw(|f| app.render(f)).expect("draw");
+        let palette_row = app.last_palette_area.y;
+        let palette_col = app.last_palette_area.x.saturating_add(1);
+        app.handle_mouse_event(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            palette_col,
+            palette_row,
+        ));
+
+        assert_eq!(app.focus, Focus::Composer);
+        assert_eq!(app.composer.take_input(), "$demo-skill ");
+    }
+
+    #[test]
+    fn mouse_clicking_composer_restores_focus() {
+        let backend = TestBackend::new(50, 14);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = blank_app();
+        app.focus = Focus::MessageList;
+
+        terminal.draw(|f| app.render(f)).expect("draw");
+        let composer_row = app.last_composer_area.y;
+        let composer_col = app.last_composer_area.x.saturating_add(1);
+        app.handle_mouse_event(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            composer_col,
+            composer_row,
+        ));
+
+        assert_eq!(app.focus, Focus::Composer);
+    }
+
+    #[test]
+    fn transcript_click_closes_inline_skill_popup_after_focus_change() {
+        let backend = TestBackend::new(50, 14);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = blank_app();
+        app.command_palette = CommandPalette::new(Language::En, vec![skill("demo-skill")]);
+        app.composer.set_input("$dem".to_owned());
+        app.sync_inline_skill_popup();
+        app.message_list.add_assistant_message("line-0".to_owned());
+        app.message_list.add_assistant_message("line-1".to_owned());
+
+        terminal.draw(|f| app.render(f)).expect("draw");
+        let transcript_row = app.last_transcript_area.y.saturating_add(1);
+        let transcript_col = app.last_transcript_area.x.saturating_add(1);
+        app.handle_mouse_event(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            transcript_col,
+            transcript_row,
+        ));
+
+        assert_eq!(app.focus, Focus::MessageList);
+        assert!(!app.inline_skill_popup_active);
+    }
+
+    #[test]
+    fn composer_click_reopens_inline_skill_popup_after_transcript_focus() {
+        let backend = TestBackend::new(50, 14);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = blank_app();
+        app.command_palette = CommandPalette::new(Language::En, vec![skill("demo-skill")]);
+        app.composer.set_input("$dem".to_owned());
+        app.focus = Focus::MessageList;
+        app.message_list.add_assistant_message("line-0".to_owned());
+        app.sync_inline_skill_popup();
+
+        terminal.draw(|f| app.render(f)).expect("draw");
+        let composer_row = app.last_composer_area.y;
+        let composer_col = app.last_composer_area.x.saturating_add(1);
+        app.handle_mouse_event(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            composer_col,
+            composer_row,
+        ));
+
+        assert_eq!(app.focus, Focus::Composer);
+        assert!(app.inline_skill_popup_active);
     }
 
     #[test]
@@ -2648,32 +3830,6 @@ mod tests {
     }
 
     #[test]
-    fn composer_immediately_follows_pending_preview_band() {
-        let backend = TestBackend::new(60, 18);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        let mut app = blank_app();
-        app.message_list.add_user_message("hi".to_owned());
-        app.pending_turn = true;
-        app.turn_start = Some(std::time::Instant::now());
-        if let Ok(mut lines) = app.live_lines.lock() {
-            *lines = vec!["streamed reply line".to_owned()];
-        }
-
-        terminal.draw(|f| app.render(f)).expect("draw");
-        let lines = buffer_lines(&terminal);
-        let preview_row = lines
-            .iter()
-            .position(|line| line.contains("streamed reply line"))
-            .expect("preview row");
-        let composer_row = lines
-            .iter()
-            .position(|line| line.contains("›"))
-            .expect("composer row");
-
-        assert_eq!(composer_row, preview_row + 3);
-    }
-
-    #[test]
     fn pending_preview_shows_reasoning_before_visible_reply() {
         let backend = TestBackend::new(70, 12);
         let mut terminal = Terminal::new(backend).expect("terminal");
@@ -2700,7 +3856,7 @@ mod tests {
     }
 
     #[test]
-    fn pending_preview_keeps_blank_row_between_spinner_and_live_lines() {
+    fn pending_preview_keeps_blank_row_between_live_lines_and_spinner() {
         let backend = TestBackend::new(70, 20);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = blank_app();
@@ -2722,8 +3878,8 @@ mod tests {
             .position(|line| line.contains("visible reply"))
             .expect("preview row");
 
-        assert_eq!(preview_row, spinner_row + 2);
-        assert!(lines[spinner_row + 1].trim().is_empty());
+        assert_eq!(spinner_row, preview_row + 2);
+        assert!(lines[preview_row + 1].trim().is_empty());
     }
 
     #[test]
@@ -2890,7 +4046,8 @@ mod tests {
         assert!(!rendered.contains("reason-3"));
         assert!(!rendered.contains("reason-4"));
         assert!(rendered.contains("reply-1"));
-        assert!(!rendered.contains("reply-2"));
+        assert!(rendered.contains("reply-2"));
+        assert!(!rendered.contains("reply-3"));
     }
 
     #[test]
@@ -3124,6 +4281,54 @@ mod tests {
                 .iter()
                 .any(|line| line.contains("Option + Up") || line.contains("Alt + Up"))
         );
+    }
+
+    #[test]
+    fn off_tail_pending_resize_and_end_restore_tail_without_losing_state() {
+        let backend = TestBackend::new(48, 18);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = blank_app();
+        for idx in 0..18 {
+            app.message_list.add_assistant_message(format!(
+                "line-{idx} keeps transcript stable while pending preview and resize interact"
+            ));
+        }
+
+        terminal.draw(|f| app.render(f)).expect("draw");
+        app.message_list.handle_key(crossterm::event::KeyEvent::new(
+            KeyCode::Up,
+            KeyModifiers::NONE,
+        ));
+        app.pending_turn = true;
+        app.turn_start = Some(std::time::Instant::now());
+        if let Ok(mut lines) = app.live_lines.lock() {
+            *lines = vec!["streamed preview line".to_owned()];
+        }
+
+        terminal.draw(|f| app.render(f)).expect("draw off tail");
+        let off_tail_lines = buffer_lines(&terminal).join("\n");
+        assert!(off_tail_lines.contains("PgDn / End"));
+        assert!(off_tail_lines.contains("streamed preview line"));
+
+        app.message_list
+            .add_assistant_message("new-tail-line after scroll".to_owned());
+        terminal.backend_mut().resize(34, 18);
+        terminal.draw(|f| app.render(f)).expect("draw resized");
+        let resized_lines = buffer_lines(&terminal).join("\n");
+        assert!(resized_lines.contains("PgDn / End"));
+        assert!(resized_lines.contains("streamed preview line"));
+
+        app.message_list.handle_key(crossterm::event::KeyEvent::new(
+            KeyCode::End,
+            KeyModifiers::NONE,
+        ));
+        terminal.draw(|f| app.render(f)).expect("draw restored");
+        let restored_lines = buffer_lines(&terminal).join("\n");
+
+        assert!(restored_lines.contains("new-tail-line after scroll"));
+        assert!(restored_lines.contains("streamed preview line"));
+        assert!(!restored_lines.contains("PgDn / End"));
+        assert_eq!(app.message_list.scroll_offset, 0);
     }
 
     #[test]

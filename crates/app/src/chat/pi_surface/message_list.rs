@@ -207,12 +207,7 @@ impl MessageList {
                                     text_lines.push(Line::from(""));
                                     continue;
                                 }
-                                for wrapped in crate::presentation::render_wrapped_display_line(
-                                    normalized.as_str(),
-                                    width as usize,
-                                ) {
-                                    text_lines.push(Line::from(wrapped));
-                                }
+                                text_lines.extend(render_rendered_system_line(&normalized, width));
                             }
                         }
                     }
@@ -254,7 +249,9 @@ impl MessageList {
                     }
                     MessageContent::Markdown(md) => {
                         let is_user = msg.role == "You";
-                        let md_lines = markdown::render_markdown_to_lines(md);
+                        let markdown_width = width.saturating_sub(2) as usize;
+                        let md_lines =
+                            markdown::render_markdown_to_lines_with_width(md, Some(markdown_width));
 
                         if is_user {
                             let mut padding =
@@ -465,6 +462,10 @@ impl MessageList {
         }
         self.follow_tail = self.scroll_offset == 0;
     }
+
+    pub fn is_following_tail(&self) -> bool {
+        self.follow_tail
+    }
 }
 
 fn page_step_for_height(height: u16) -> u16 {
@@ -597,6 +598,151 @@ fn normalize_rendered_system_line(line: &str) -> Option<String> {
     Some(trimmed.to_owned())
 }
 
+fn render_rendered_system_line(line: &str, width: u16) -> Vec<Line<'static>> {
+    let content_width = width as usize;
+
+    if let Some(rendered) = render_system_activity_headline(line, content_width) {
+        return rendered;
+    }
+
+    if let Some(rendered) = render_system_activity_child(line, content_width) {
+        return rendered;
+    }
+
+    let style = if line.trim_start().starts_with("… +") {
+        Style::default().fg(PI_GRAY).add_modifier(Modifier::DIM)
+    } else {
+        Style::default().fg(PI_DARK_GRAY)
+    };
+
+    crate::presentation::render_wrapped_display_line(line, content_width)
+        .into_iter()
+        .map(|wrapped| Line::from(vec![Span::styled(wrapped, style)]))
+        .collect()
+}
+
+fn render_system_activity_headline(line: &str, content_width: usize) -> Option<Vec<Line<'static>>> {
+    let trimmed = line.trim_start();
+    let rest = trimmed.strip_prefix("• ")?;
+
+    let (label, body, label_style) = if let Some(body) = rest.strip_prefix("Ran ") {
+        (
+            "Ran",
+            body,
+            Style::default().fg(PI_ACCENT).add_modifier(Modifier::BOLD),
+        )
+    } else if let Some(body) = rest.strip_prefix("Explored ") {
+        (
+            "Explored",
+            body,
+            Style::default()
+                .fg(ratatui::style::Color::White)
+                .add_modifier(Modifier::BOLD),
+        )
+    } else if let Some(body) = rest.strip_prefix("Called ") {
+        (
+            "Called",
+            body,
+            Style::default().fg(PI_ACCENT).add_modifier(Modifier::BOLD),
+        )
+    } else if let Some(body) = rest.strip_prefix("Closed ") {
+        (
+            "Closed",
+            body,
+            Style::default().fg(PI_GRAY).add_modifier(Modifier::BOLD),
+        )
+    } else {
+        return None;
+    };
+
+    let body_width = content_width
+        .saturating_sub(2 + crate::presentation::display_width(label) + 1)
+        .max(1);
+    let wrapped = crate::presentation::render_wrapped_display_line(body, body_width);
+
+    Some(
+        wrapped
+            .into_iter()
+            .enumerate()
+            .map(|(index, wrapped_line)| {
+                if index == 0 {
+                    Line::from(vec![
+                        Span::styled("• ", Style::default().fg(PI_GREEN)),
+                        Span::styled(format!("{label} "), label_style),
+                        Span::styled(
+                            wrapped_line,
+                            Style::default().fg(ratatui::style::Color::White),
+                        ),
+                    ])
+                } else {
+                    Line::from(vec![
+                        Span::raw("  "),
+                        Span::raw(" ".repeat(crate::presentation::display_width(label) + 1)),
+                        Span::styled(
+                            wrapped_line,
+                            Style::default().fg(ratatui::style::Color::White),
+                        ),
+                    ])
+                }
+            })
+            .collect(),
+    )
+}
+
+fn render_system_activity_child(line: &str, content_width: usize) -> Option<Vec<Line<'static>>> {
+    let trimmed = line.trim_start();
+    let rest = trimmed.strip_prefix("└ ")?;
+
+    let (label, body) = if let Some(body) = rest.strip_prefix("Read ") {
+        ("Read", body)
+    } else if let Some(body) = rest.strip_prefix("List ") {
+        ("List", body)
+    } else if let Some(body) = rest.strip_prefix("Search ") {
+        ("Search", body)
+    } else if let Some(body) = rest.strip_prefix("Inspect ") {
+        ("Inspect", body)
+    } else {
+        return None;
+    };
+
+    let body_width = content_width
+        .saturating_sub(2 + 2 + crate::presentation::display_width(label) + 1)
+        .max(1);
+    let wrapped = crate::presentation::render_wrapped_display_line(body, body_width);
+
+    Some(
+        wrapped
+            .into_iter()
+            .enumerate()
+            .map(|(index, wrapped_line)| {
+                if index == 0 {
+                    Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(
+                            "└ ",
+                            Style::default().fg(PI_GRAY).add_modifier(Modifier::DIM),
+                        ),
+                        Span::styled(format!("{label} "), Style::default().fg(PI_ACCENT)),
+                        Span::styled(
+                            wrapped_line,
+                            Style::default().fg(ratatui::style::Color::White),
+                        ),
+                    ])
+                } else {
+                    Line::from(vec![
+                        Span::raw("    "),
+                        Span::raw(" ".repeat(crate::presentation::display_width(label) + 1)),
+                        Span::styled(
+                            wrapped_line,
+                            Style::default().fg(ratatui::style::Color::White),
+                        ),
+                    ])
+                }
+            })
+            .collect(),
+    )
+}
+
 fn content_renders_colored_block(role: &str, content: &MessageContent) -> bool {
     match content {
         MessageContent::Markdown(_) => role == "You",
@@ -673,6 +819,23 @@ fn wrap_assistant_markdown_lines(lines: Vec<Line<'static>>, width: u16) -> Vec<L
             continue;
         }
 
+        if let Some(split_bullets) = split_inline_bullet_runs(&plain) {
+            flush_paragraph(&mut rendered, &mut paragraph_buffer, content_width);
+            for bullet_line in split_bullets {
+                let style = assistant_line_style(&bullet_line);
+                for wrapped in crate::presentation::render_wrapped_display_line(
+                    bullet_line.as_str(),
+                    content_width,
+                ) {
+                    rendered.push(Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(wrapped, style),
+                    ]));
+                }
+            }
+            continue;
+        }
+
         if is_reflowable_assistant_line(&plain) {
             if !paragraph_buffer.is_empty() {
                 paragraph_buffer.push_str(paragraph_joiner(&paragraph_buffer, &plain));
@@ -696,6 +859,23 @@ fn wrap_assistant_markdown_lines(lines: Vec<Line<'static>>, width: u16) -> Vec<L
     flush_paragraph(&mut rendered, &mut paragraph_buffer, content_width);
 
     rendered
+}
+
+fn split_inline_bullet_runs(line: &str) -> Option<Vec<String>> {
+    let trimmed = line.trim();
+    if trimmed.matches("• ").count() < 2 {
+        return None;
+    }
+
+    let items = trimmed
+        .split("• ")
+        .filter_map(|segment| {
+            let segment = segment.trim();
+            (!segment.is_empty()).then(|| format!("• {segment}"))
+        })
+        .collect::<Vec<_>>();
+
+    (items.len() >= 2).then_some(items)
 }
 
 fn normalize_blank_lines(mut lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
@@ -767,6 +947,10 @@ fn is_reflowable_assistant_line(line: &str) -> bool {
     !trimmed.is_empty()
         && !trimmed.starts_with('#')
         && !trimmed.starts_with("```")
+        && !trimmed.starts_with('┌')
+        && !trimmed.starts_with('├')
+        && !trimmed.starts_with('└')
+        && !trimmed.starts_with('│')
         && !trimmed.starts_with("┃")
         && !trimmed.starts_with('>')
         && !trimmed.starts_with("- ")
@@ -797,6 +981,12 @@ fn assistant_line_style(line: &str) -> Style {
         Style::default().fg(PI_HEADING).add_modifier(Modifier::BOLD)
     } else if trimmed.starts_with("```") {
         Style::default().fg(PI_DIM_GRAY)
+    } else if trimmed.starts_with('┌')
+        || trimmed.starts_with('├')
+        || trimmed.starts_with('└')
+        || trimmed.starts_with('│')
+    {
+        Style::default().fg(PI_GRAY)
     } else if trimmed.starts_with("┃") || trimmed.starts_with('>') {
         Style::default().fg(PI_GRAY)
     } else if trimmed.starts_with("- ") || trimmed.starts_with("* ") || trimmed.starts_with("• ")
@@ -1418,11 +1608,33 @@ fn tool_activity_dedupe_key(line: &str) -> String {
     if let Some(preview) = compact_tool_args_preview(line) {
         return format!("args:{preview}");
     }
+    if let Some(preview) = compact_tool_child_preview(line, "stdout") {
+        return format!("stdout:{preview}");
+    }
+    if let Some(preview) = compact_tool_child_preview(line, "stderr") {
+        return format!("stderr:{preview}");
+    }
+    if let Some(preview) = compact_tool_child_preview(line, "file") {
+        return format!("file:{preview}");
+    }
+    if let Some(preview) = compact_tool_child_preview(line, "metrics") {
+        return format!("metrics:{preview}");
+    }
     if let Some((label, body)) = normalized_activity_headline(line) {
         return format!("status:{label}:{body}");
     }
 
     line.trim().to_owned()
+}
+
+fn compact_tool_child_preview(line: &str, label: &str) -> Option<String> {
+    let trimmed = line.trim();
+    let body = trimmed
+        .strip_prefix(&format!("{label}:"))
+        .or_else(|| trimmed.strip_prefix(&format!("{label} ")))
+        .or_else(|| trimmed.strip_prefix(&format!("↳ {label} ")))?
+        .trim_start();
+    Some(body.to_owned())
 }
 
 fn normalized_activity_headline(line: &str) -> Option<(String, String)> {
@@ -1481,6 +1693,7 @@ fn compact_tool_args_preview(line: &str) -> Option<String> {
 
 fn render_tool_detail_lines(line: &str, width: u16) -> Vec<Line<'static>> {
     let content_width = width.saturating_sub(2).max(1) as usize;
+    let trimmed = line.trim_start();
 
     if let Some(rendered) = render_status_activity_line(line, content_width) {
         return rendered;
@@ -1490,7 +1703,7 @@ fn render_tool_detail_lines(line: &str, width: u16) -> Vec<Line<'static>> {
         return rendered;
     }
 
-    if let Some(body) = line.strip_prefix("↳ ") {
+    if let Some(body) = trimmed.strip_prefix("↳ ") {
         let prefix = "↳ ";
         let body = if let Some(args) = body.strip_prefix("args ") {
             let compacted = compact_structured_preview(args, 3).unwrap_or_else(|| args.to_owned());
@@ -1530,35 +1743,35 @@ fn render_tool_detail_lines(line: &str, width: u16) -> Vec<Line<'static>> {
             .collect();
     }
 
-    if let Some(request) = line.strip_prefix("request:") {
+    if let Some(request) = trimmed.strip_prefix("request:") {
         return render_tool_detail_lines(&format!("↳ request {}", request.trim_start()), width);
     }
 
-    if let Some(request) = line.strip_prefix("request ") {
+    if let Some(request) = trimmed.strip_prefix("request ") {
         return render_tool_detail_lines(&format!("↳ request {}", request.trim_start()), width);
     }
 
-    if let Some(args) = line.strip_prefix("args:") {
+    if let Some(args) = trimmed.strip_prefix("args:") {
         return render_tool_detail_lines(&format!("↳ args {}", args.trim_start()), width);
     }
 
-    if let Some(args) = line.strip_prefix("args ") {
+    if let Some(args) = trimmed.strip_prefix("args ") {
         return render_tool_detail_lines(&format!("↳ args {}", args.trim_start()), width);
     }
 
-    if let Some(stdout) = line.strip_prefix("stdout:") {
+    if let Some(stdout) = trimmed.strip_prefix("stdout:") {
         return render_tool_detail_lines(&format!("↳ stdout {}", stdout.trim_start()), width);
     }
 
-    if let Some(stderr) = line.strip_prefix("stderr:") {
+    if let Some(stderr) = trimmed.strip_prefix("stderr:") {
         return render_tool_detail_lines(&format!("↳ stderr {}", stderr.trim_start()), width);
     }
 
-    if let Some(file) = line.strip_prefix("file:") {
+    if let Some(file) = trimmed.strip_prefix("file:") {
         return render_tool_detail_lines(&format!("↳ file {}", file.trim_start()), width);
     }
 
-    if let Some(metrics) = line.strip_prefix("metrics:") {
+    if let Some(metrics) = trimmed.strip_prefix("metrics:") {
         return render_tool_detail_lines(&format!("↳ metrics {}", metrics.trim_start()), width);
     }
 
@@ -1973,7 +2186,7 @@ mod tests {
         MessageContent, MessageList, ToolStatus, adjust_scroll_start_for_message_boundary,
         build_assistant_contents, dominant_block_bg,
     };
-    use crate::chat::pi_surface::utils::PI_USER_MSG_BG;
+    use crate::chat::pi_surface::utils::{PI_ACCENT, PI_GRAY, PI_GREEN, PI_USER_MSG_BG};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
     use ratatui::{Terminal, backend::TestBackend};
 
@@ -2180,6 +2393,30 @@ mod tests {
     }
 
     #[test]
+    fn tool_activity_compacts_indented_arrow_args_lines() {
+        let mut list = MessageList::new();
+        list.add_assistant_message(
+            "### Tool activity\n>   ↳ args {\"query\":\"rust\",\"limit\":5,\"scope\":\"repo\"}"
+                .to_owned(),
+        );
+
+        let rendered = list
+            .get_rendered_lines(52)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        assert!(rendered.iter().any(|line| line.contains("↳ args")));
+        assert!(rendered.iter().any(|line| line.contains("query=rust")));
+        assert!(rendered.iter().any(|line| line.contains("limit=5")));
+    }
+
+    #[test]
     fn plain_called_closed_lines_render_with_bullet_status_flow() {
         let mut list = MessageList::new();
         list.add_assistant_message(
@@ -2207,6 +2444,124 @@ mod tests {
                 .iter()
                 .any(|line| line.contains("• Closed demo_mcp.search · ok"))
         );
+    }
+
+    #[test]
+    fn plain_approval_and_denied_lines_render_with_bullet_status_flow() {
+        let mut list = MessageList::new();
+        list.add_assistant_message(
+            "### Tool activity\n> Approval demo_mcp.search\n> Denied demo_mcp.search · blocked"
+                .to_owned(),
+        );
+
+        let rendered = list
+            .get_rendered_lines(56)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line.contains("• Approval demo_mcp.search"))
+        );
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line.contains("• Denied demo_mcp.search · blocked"))
+        );
+    }
+
+    #[test]
+    fn bracket_approval_and_denied_lines_normalize_into_status_flow() {
+        let mut list = MessageList::new();
+        list.add_assistant_message(
+            "### Tool activity\n> [needs_approval] read_file (id=call-1) - operator confirmation required\n> [denied] read_file (id=call-1) - blocked".to_owned(),
+        );
+
+        let rendered = list
+            .get_rendered_lines(64)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line.contains("• Approval read_file · operator confirmation required"))
+        );
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line.contains("• Denied read_file · blocked"))
+        );
+    }
+
+    #[test]
+    fn tool_activity_dedupes_consecutive_duplicate_approval_and_denied_lines() {
+        let mut list = MessageList::new();
+        list.add_assistant_message(
+            "### Tool activity\n> Approval demo_mcp.search\n> Approval demo_mcp.search\n> Denied demo_mcp.search · blocked\n> Denied demo_mcp.search · blocked".to_owned(),
+        );
+
+        let rendered = list
+            .get_rendered_lines(64)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        let approval_count = rendered
+            .iter()
+            .filter(|line| line.contains("• Approval demo_mcp.search"))
+            .count();
+        let denied_count = rendered
+            .iter()
+            .filter(|line| line.contains("• Denied demo_mcp.search · blocked"))
+            .count();
+
+        assert_eq!(approval_count, 1);
+        assert_eq!(denied_count, 1);
+    }
+
+    #[test]
+    fn tool_activity_dedupes_consecutive_bracket_approval_lines_with_different_ids() {
+        let mut list = MessageList::new();
+        list.add_assistant_message(
+            "### Tool activity\n> [needs_approval] read_file (id=call-1) - operator confirmation required\n> [needs_approval] read_file (id=call-2) - operator confirmation required".to_owned(),
+        );
+
+        let rendered = list
+            .get_rendered_lines(72)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        let approval_count = rendered
+            .iter()
+            .filter(|line| line.contains("• Approval read_file · operator confirmation required"))
+            .count();
+
+        assert_eq!(approval_count, 1);
     }
 
     #[test]
@@ -2376,6 +2731,32 @@ mod tests {
     }
 
     #[test]
+    fn tool_activity_dedupes_bracket_approval_lines_with_different_ids() {
+        let mut list = MessageList::new();
+        list.add_assistant_message(
+            "### Tool activity\n> [needs_approval] read_file (id=call-1) - operator confirmation required\n> [needs_approval] read_file (id=call-2) - operator confirmation required".to_owned(),
+        );
+
+        let rendered = list
+            .get_rendered_lines(72)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        let approval_count = rendered
+            .iter()
+            .filter(|line| line.contains("• Approval read_file · operator confirmation required"))
+            .count();
+
+        assert_eq!(approval_count, 1);
+    }
+
+    #[test]
     fn tool_activity_compacts_file_and_metrics_into_arrow_children() {
         let mut list = MessageList::new();
         list.add_assistant_message(
@@ -2431,6 +2812,58 @@ mod tests {
     }
 
     #[test]
+    fn tool_activity_dedupes_consecutive_duplicate_stdout_lines() {
+        let mut list = MessageList::new();
+        list.add_assistant_message(
+            "### Tool activity\n> Called demo_mcp.exec\n> stdout: 2 lines · 22 bytes\n> stdout: 2 lines · 22 bytes".to_owned(),
+        );
+
+        let rendered = list
+            .get_rendered_lines(60)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        let stdout_count = rendered
+            .iter()
+            .filter(|line| line.contains("↳ stdout 2 lines · 22 bytes"))
+            .count();
+
+        assert_eq!(stdout_count, 1);
+    }
+
+    #[test]
+    fn tool_activity_dedupes_consecutive_duplicate_stderr_lines() {
+        let mut list = MessageList::new();
+        list.add_assistant_message(
+            "### Tool activity\n> Called demo_mcp.exec\n> stderr: 1 lines · 12 bytes\n> stderr: 1 lines · 12 bytes".to_owned(),
+        );
+
+        let rendered = list
+            .get_rendered_lines(60)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        let stderr_count = rendered
+            .iter()
+            .filter(|line| line.contains("↳ stderr 1 lines · 12 bytes"))
+            .count();
+
+        assert_eq!(stderr_count, 1);
+    }
+
+    #[test]
     fn tool_activity_compacts_stderr_into_arrow_children() {
         let mut list = MessageList::new();
         list.add_assistant_message(
@@ -2453,6 +2886,58 @@ mod tests {
                 .iter()
                 .any(|line| line.contains("↳ stderr 1 lines · 12 bytes"))
         );
+    }
+
+    #[test]
+    fn tool_activity_dedupes_consecutive_duplicate_metrics_lines() {
+        let mut list = MessageList::new();
+        list.add_assistant_message(
+            "### Tool activity\n> Called demo_mcp.exec\n> metrics: 42ms · exit=0\n> metrics: 42ms · exit=0".to_owned(),
+        );
+
+        let rendered = list
+            .get_rendered_lines(60)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        let metrics_count = rendered
+            .iter()
+            .filter(|line| line.contains("↳ metrics 42ms · exit=0"))
+            .count();
+
+        assert_eq!(metrics_count, 1);
+    }
+
+    #[test]
+    fn tool_activity_dedupes_consecutive_duplicate_file_lines() {
+        let mut list = MessageList::new();
+        list.add_assistant_message(
+            "### Tool activity\n> Called demo_mcp.edit\n> file: edit src/lib.rs (+2 / -1)\n> file: edit src/lib.rs (+2 / -1)".to_owned(),
+        );
+
+        let rendered = list
+            .get_rendered_lines(64)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        let file_count = rendered
+            .iter()
+            .filter(|line| line.contains("↳ file edit src/lib.rs (+2 / -1)"))
+            .count();
+
+        assert_eq!(file_count, 1);
     }
 
     #[test]
@@ -2479,8 +2964,16 @@ mod tests {
             .count();
 
         assert_eq!(request_label_count, 2);
-        assert!(rendered.iter().any(|line| line.contains("↳ file edit src/lib.rs")));
-        assert!(rendered.iter().any(|line| line.contains("↳ metrics 42ms · exit=0")));
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line.contains("↳ file edit src/lib.rs"))
+        );
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line.contains("↳ metrics 42ms · exit=0"))
+        );
     }
 
     #[test]
@@ -2660,6 +3153,31 @@ mod tests {
             Some(MessageContent::Image { alt, url })
                 if alt == "plan" && url == "https://example.com/plan.png"
         ));
+    }
+
+    #[test]
+    fn assistant_markdown_table_renders_as_structured_grid() {
+        let mut list = MessageList::new();
+        list.add_assistant_message(
+            "| 指标 | 数值 |\n| --- | --- |\n| 覆盖率 | 68% |\n| 平均响应时间 | 220ms |".to_owned(),
+        );
+
+        let rendered = list
+            .get_rendered_lines(64)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        assert!(rendered.iter().any(|line| line.contains("┌")));
+        assert!(rendered.iter().any(|line| line.contains("指标")));
+        assert!(rendered.iter().any(|line| line.contains("覆盖率")));
+        assert!(rendered.iter().any(|line| line.contains("220ms")));
+        assert!(!rendered.iter().any(|line| line.contains("| --- |")));
     }
 
     #[test]
@@ -3034,10 +3552,7 @@ mod tests {
             "help".to_owned(),
             vec![(
                 "Skills".to_owned(),
-                vec![
-                    "agent-browser, anthropic-office, browser-companion-preview, design-md"
-                        .to_owned(),
-                ],
+                vec!["demo-skill, demo-helper, browser-preview, docx-helper".to_owned()],
             )],
         );
 
@@ -3057,8 +3572,8 @@ mod tests {
                 .iter()
                 .all(|line| crate::presentation::display_width(line) <= 28)
         );
-        assert!(rendered.iter().any(|line| line.contains("agent-browser")));
-        assert!(rendered.iter().any(|line| line.contains("design-md")));
+        assert!(rendered.iter().any(|line| line.contains("demo-skill")));
+        assert!(rendered.iter().any(|line| line.contains("docx-helper")));
     }
 
     #[test]
@@ -3159,6 +3674,70 @@ mod tests {
                 .get(hello_index + 1)
                 .is_some_and(|line| line.trim().is_empty())
         );
+    }
+
+    #[test]
+    fn assistant_inline_bullet_runs_split_into_separate_lines() {
+        let mut list = MessageList::new();
+        list.add_assistant_message("• first item • second item • third item".to_owned());
+
+        let rendered = list
+            .get_rendered_lines(36)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        assert!(rendered.iter().any(|line| line.contains("• first item")));
+        assert!(rendered.iter().any(|line| line.contains("• second item")));
+        assert!(rendered.iter().any(|line| line.contains("• third item")));
+    }
+
+    #[test]
+    fn rendered_system_activity_headline_uses_colored_spans() {
+        let mut list = MessageList::new();
+        list.add_rendered_lines(vec!["• Ran cargo test -p loong-app".to_owned()]);
+
+        let rendered = list.get_rendered_lines(48);
+        let line = rendered
+            .iter()
+            .find(|line| {
+                line.spans
+                    .iter()
+                    .any(|span| span.content.contains("cargo test"))
+            })
+            .expect("system activity line");
+
+        assert_eq!(line.spans[0].content.as_ref(), "• ");
+        assert_eq!(line.spans[0].style.fg, Some(PI_GREEN));
+        assert_eq!(line.spans[1].content.as_ref(), "Ran ");
+        assert_eq!(line.spans[1].style.fg, Some(PI_ACCENT));
+    }
+
+    #[test]
+    fn rendered_system_activity_child_uses_tree_and_action_styling() {
+        let mut list = MessageList::new();
+        list.add_rendered_lines(vec!["  └ Read app.rs".to_owned()]);
+
+        let rendered = list.get_rendered_lines(32);
+        let line = rendered
+            .iter()
+            .find(|line| {
+                line.spans
+                    .iter()
+                    .any(|span| span.content.contains("app.rs"))
+            })
+            .expect("system child line");
+
+        assert_eq!(line.spans[0].content.as_ref(), "  ");
+        assert_eq!(line.spans[1].content.as_ref(), "└ ");
+        assert_eq!(line.spans[1].style.fg, Some(PI_GRAY));
+        assert_eq!(line.spans[2].content.as_ref(), "Read ");
+        assert_eq!(line.spans[2].style.fg, Some(PI_ACCENT));
     }
 
     #[test]

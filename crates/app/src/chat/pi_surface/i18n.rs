@@ -36,6 +36,8 @@ pub enum PiCopy {
     FooterQueueShort,
     FooterRestoreQueued,
     FooterRestoreShort,
+    FooterFollowHint,
+    FooterFollowShort,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,9 +88,9 @@ fn text_for(lang: Language, key: PiCopy) -> &'static str {
 
 fn en_text(key: PiCopy) -> &'static str {
     match key {
-        PiCopy::Tutorial => "escape interrupt · : deck · / commands · ctrl+o compaction",
+        PiCopy::Tutorial => "ctrl+c exit · :/ commands · type $skill directly · ctrl+o compaction",
         PiCopy::StartupSectionMcp => "MCP",
-        PiCopy::StartupSectionSkills => "Skills",
+        PiCopy::StartupSectionSkills => "Repo skills",
         PiCopy::StartupSectionAcp => "ACP",
         PiCopy::CommandDeckLabelHelp => "help",
         PiCopy::CommandDeckDescHelp => "Show keyboard shortcuts and control-surface commands",
@@ -113,14 +115,16 @@ fn en_text(key: PiCopy) -> &'static str {
         PiCopy::FooterQueueShort => "Tab to queue",
         PiCopy::FooterRestoreQueued => "to restore queued message",
         PiCopy::FooterRestoreShort => "restore queued",
+        PiCopy::FooterFollowHint => "PgDn / End to latest reply",
+        PiCopy::FooterFollowShort => "End to latest",
     }
 }
 
 fn zh_cn_text(key: PiCopy) -> &'static str {
     match key {
-        PiCopy::Tutorial => "esc 中断 · : 命令台 · / 命令 · ctrl+o 压缩",
+        PiCopy::Tutorial => "ctrl+c 退出 · :/ 命令 · 直接输入 $skill · ctrl+o 压缩",
         PiCopy::StartupSectionMcp => "MCP",
-        PiCopy::StartupSectionSkills => "技能",
+        PiCopy::StartupSectionSkills => "仓库技能",
         PiCopy::StartupSectionAcp => "ACP",
         PiCopy::CommandDeckLabelHelp => "帮助",
         PiCopy::CommandDeckDescHelp => "查看快捷键与控制面命令",
@@ -145,14 +149,16 @@ fn zh_cn_text(key: PiCopy) -> &'static str {
         PiCopy::FooterQueueShort => "Tab 加入队列",
         PiCopy::FooterRestoreQueued => "可恢复排队消息",
         PiCopy::FooterRestoreShort => "恢复队列",
+        PiCopy::FooterFollowHint => "PgDn / End 跳到最新回复",
+        PiCopy::FooterFollowShort => "End 到最新",
     }
 }
 
 fn zh_tw_text(key: PiCopy) -> &'static str {
     match key {
-        PiCopy::Tutorial => "esc 中斷 · : 命令台 · / 命令 · ctrl+o 壓縮",
+        PiCopy::Tutorial => "ctrl+c 離開 · :/ 命令 · 直接輸入 $skill · ctrl+o 壓縮",
         PiCopy::StartupSectionMcp => "MCP",
-        PiCopy::StartupSectionSkills => "技能",
+        PiCopy::StartupSectionSkills => "倉庫技能",
         PiCopy::StartupSectionAcp => "ACP",
         PiCopy::CommandDeckLabelHelp => "幫助",
         PiCopy::CommandDeckDescHelp => "查看快捷鍵與控制面命令",
@@ -177,14 +183,16 @@ fn zh_tw_text(key: PiCopy) -> &'static str {
         PiCopy::FooterQueueShort => "Tab 加入佇列",
         PiCopy::FooterRestoreQueued => "可還原排隊訊息",
         PiCopy::FooterRestoreShort => "還原佇列",
+        PiCopy::FooterFollowHint => "PgDn / End 跳到最新回覆",
+        PiCopy::FooterFollowShort => "End 到最新",
     }
 }
 
 fn ja_text(key: PiCopy) -> &'static str {
     match key {
-        PiCopy::Tutorial => "esc 中断 · : デッキ · / コマンド · ctrl+o 圧縮",
+        PiCopy::Tutorial => "ctrl+c で終了 · :/ コマンド · $skill を直接入力 · ctrl+o 圧縮",
         PiCopy::StartupSectionMcp => "MCP",
-        PiCopy::StartupSectionSkills => "スキル",
+        PiCopy::StartupSectionSkills => "リポジトリスキル",
         PiCopy::StartupSectionAcp => "ACP",
         PiCopy::CommandDeckLabelHelp => "ヘルプ",
         PiCopy::CommandDeckDescHelp => "ショートカットと制御面コマンドを表示",
@@ -209,14 +217,16 @@ fn ja_text(key: PiCopy) -> &'static str {
         PiCopy::FooterQueueShort => "Tab でキューへ",
         PiCopy::FooterRestoreQueued => "でキュー済みメッセージを復元",
         PiCopy::FooterRestoreShort => "キュー復元",
+        PiCopy::FooterFollowHint => "PgDn / End で最新返信へ",
+        PiCopy::FooterFollowShort => "End で最新へ",
     }
 }
 
 fn ru_text(key: PiCopy) -> &'static str {
     match key {
-        PiCopy::Tutorial => "esc прервать · : панель · / команды · ctrl+o сжатие",
+        PiCopy::Tutorial => "ctrl+c выйти · :/ команды · вводите $skill прямо · ctrl+o сжатие",
         PiCopy::StartupSectionMcp => "MCP",
-        PiCopy::StartupSectionSkills => "Навыки",
+        PiCopy::StartupSectionSkills => "Навыки репозитория",
         PiCopy::StartupSectionAcp => "ACP",
         PiCopy::CommandDeckLabelHelp => "помощь",
         PiCopy::CommandDeckDescHelp => "Показать сочетания клавиш и команды панели",
@@ -241,5 +251,7 @@ fn ru_text(key: PiCopy) -> &'static str {
         PiCopy::FooterQueueShort => "Tab — в очередь",
         PiCopy::FooterRestoreQueued => "чтобы вернуть сообщение из очереди",
         PiCopy::FooterRestoreShort => "вернуть очередь",
+        PiCopy::FooterFollowHint => "PgDn / End к последнему ответу",
+        PiCopy::FooterFollowShort => "End к последнему",
     }
 }

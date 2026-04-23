@@ -30,6 +30,19 @@ impl Composer {
         self.input.trim().is_empty()
     }
 
+    pub fn text(&self) -> &str {
+        &self.input
+    }
+
+    pub fn cursor(&self) -> usize {
+        self.cursor
+    }
+
+    pub fn replace_range(&mut self, range: std::ops::Range<usize>, replacement: &str) {
+        self.input.replace_range(range.clone(), replacement);
+        self.cursor = range.start.saturating_add(replacement.len());
+    }
+
     pub fn clear(&mut self) {
         self.input.clear();
         self.cursor = 0;
@@ -58,7 +71,9 @@ impl Composer {
             } else {
                 Span::styled("   ", prefix_style)
             };
-            lines.push(Line::from(vec![prefix, Span::raw(row)]));
+            let mut spans = vec![prefix];
+            spans.extend(highlight_composer_row(row.as_str()));
+            lines.push(Line::from(spans));
         }
         if lines.is_empty() {
             lines.push(Line::from(vec![Span::styled(" › ", prefix_style)]));
@@ -299,6 +314,53 @@ fn wrapped_rows(text: &str, width: u16) -> Vec<String> {
     rows
 }
 
+fn highlight_composer_row(row: &str) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    let mut current = String::new();
+    let mut in_whitespace = None;
+
+    let flush =
+        |spans: &mut Vec<Span<'static>>, current: &mut String, in_whitespace: &mut Option<bool>| {
+            let Some(is_whitespace) = *in_whitespace else {
+                return;
+            };
+            if current.is_empty() {
+                return;
+            }
+            let text = std::mem::take(current);
+            if is_whitespace {
+                spans.push(Span::raw(text));
+            } else if text.starts_with('$') && text.len() > 1 {
+                spans.push(Span::styled(
+                    text,
+                    Style::default().fg(PI_ACCENT).add_modifier(Modifier::BOLD),
+                ));
+            } else {
+                spans.push(Span::raw(text));
+            }
+            *in_whitespace = None;
+        };
+
+    for ch in row.chars() {
+        let is_whitespace = ch.is_whitespace();
+        match in_whitespace {
+            Some(mode) if mode == is_whitespace => current.push(ch),
+            Some(_) => {
+                flush(&mut spans, &mut current, &mut in_whitespace);
+                current.push(ch);
+                in_whitespace = Some(is_whitespace);
+            }
+            None => {
+                current.push(ch);
+                in_whitespace = Some(is_whitespace);
+            }
+        }
+    }
+
+    flush(&mut spans, &mut current, &mut in_whitespace);
+    spans
+}
+
 #[cfg(test)]
 mod tests {
     use super::Composer;
@@ -379,5 +441,30 @@ mod tests {
 
         let submitted = composer.handle_key(key(KeyCode::Enter));
         assert_eq!(submitted.as_deref(), Some("foo bar"));
+    }
+
+    #[test]
+    fn highlight_composer_row_accents_skill_invocations() {
+        let spans = super::highlight_composer_row("$demo-skill next");
+        assert_eq!(spans.len(), 3);
+        assert_eq!(spans[0].content.as_ref(), "$demo-skill");
+        assert_eq!(spans[0].style.fg, Some(super::PI_ACCENT));
+        assert_eq!(spans[1].content.as_ref(), " ");
+        assert_eq!(spans[2].content.as_ref(), "next");
+    }
+
+    #[test]
+    fn dollar_prefixed_skill_invocation_remains_editable_plain_text() {
+        let mut composer = Composer::new();
+        for ch in "$demo-skill explain this".chars() {
+            assert!(
+                composer
+                    .handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE))
+                    .is_none()
+            );
+        }
+
+        let submitted = composer.handle_key(key(KeyCode::Enter));
+        assert_eq!(submitted.as_deref(), Some("$demo-skill explain this"));
     }
 }
