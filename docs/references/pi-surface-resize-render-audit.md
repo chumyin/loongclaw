@@ -40,6 +40,37 @@ fresh layout work while the terminal is still moving.
 so the pending-turn preview can rerender when the width changes, and
 `compact_observer_rerenders_preview_when_width_changes` locks that behavior in.
 
+### 3b. Live preview cadence is now pressure-aware instead of purely token-count based
+
+The newer `live_runtime.rs` path does more than simply emit every N characters.
+`should_emit_cli_chat_live_preview(...)` now promotes three useful operator
+behaviors that match the current maturity checkpoint better than this note's
+older framing:
+
+- large unstable suffix bursts force progress
+- wrapped visual-line backlog can enter a faster catch-up mode
+- newline / structural-token boundaries commit preview updates immediately
+
+That behavior is protected by tests such as:
+
+- `preview_emit_forces_progress_after_large_unstable_burst`
+- `preview_emit_mode_enters_catch_up_when_visual_backlog_grows`
+- `preview_emit_cadence_keeps_catch_up_faster_than_smooth`
+- `compact_observer_commits_preview_immediately_on_newline_boundary`
+
+### 3c. Structured preview and transcript rendering are now closer than this audit originally assumed
+
+`live_runtime.rs`, `cli_render.rs`, `markdown.rs`, and `message_list.rs` now
+share a clearer contract for structured content:
+
+- diff fences render as diff-oriented preview/transcript blocks
+- markdown tables render as grids and fall back to stacked rows at narrow widths
+- tool activity is compacted into calmer grouped children instead of replaying
+  every repeated request/detail/status line verbatim
+
+The preview path is still intentionally lighter than the final transcript, but
+that is now an explicit design choice rather than just an implementation gap.
+
 ### 4. Queue / restore / footer UX is already protected
 
 `app.rs` keeps queue and restore hints in dedicated footer builders, and the
@@ -134,3 +165,22 @@ separate from scroll policy and footer/composer behavior.
 - Do not regress provider-error or tool-activity rendering in the pending area.
 - Treat Toad's dirty-region refresh as the quality bar, but not as a reason to
   rewrite the entire Pi surface architecture in one pass.
+
+## Verification evidence for the current checkpoint
+
+The review above is grounded in the current `loong-app` test coverage for this
+branch:
+
+- `cargo test -p loong-app live_runtime -- --nocapture`
+- `cargo test -p loong-app pi_surface -- --nocapture`
+
+Key assertions worth keeping in mind when touching resize/render behavior:
+
+- `assistant_markdown_table_renders_as_structured_grid`
+- `renders_markdown_tables_as_stacked_rows_when_width_is_tight`
+- `tool_activity_burst_keeps_unique_request_children_per_called_group`
+- `rendered_lines_are_pre_padded_for_stable_cached_redraws`
+- `resize_preserves_top_visible_line_when_scrolled_up`
+- `width_resize_preserves_bottom_anchor_for_wrapped_tail_content`
+- `pending_footer_yields_to_queue_hint_when_draft_exists`
+- `width_resize_keeps_provider_error_and_footer_visible`
