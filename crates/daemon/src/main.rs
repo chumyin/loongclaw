@@ -61,6 +61,29 @@ fn redacted_command_name(command: &Commands) -> &'static str {
     command.command_kind_for_logging()
 }
 
+fn quiet_interactive_log_directive(
+    command: &Commands,
+    interactive_log_explicitly_configured: bool,
+) -> Option<&'static str> {
+    if interactive_log_explicitly_configured {
+        return None;
+    }
+
+    matches!(command, Commands::Chat { .. }).then_some("error")
+}
+
+fn interactive_log_explicitly_configured() -> bool {
+    ["LOONG_LOG", "RUST_LOG"].into_iter().any(|key| {
+        std::env::var_os(key)
+            .as_deref()
+            .is_some_and(|value| !value.is_empty())
+    })
+}
+
+fn suppress_env_compat_warning(command: &Commands) -> bool {
+    matches!(command, Commands::Chat { .. })
+}
+
 #[cfg(debug_assertions)]
 fn command_prefers_large_tokio_worker_stack(command: &Commands) -> bool {
     matches!(
@@ -168,10 +191,7 @@ fn check_legacy_home_migration() {
 
 fn main() {
     let _stdin_guard = StdinGuard;
-    init_tracing();
     mvp::config::set_active_cli_command_name(mvp::config::detect_invoked_cli_command_name());
-    loong_daemon::make_env_compatible();
-    check_legacy_home_migration();
     let cli = parse_cli();
     let command_source = if cli.command.is_some() {
         "explicit"
@@ -179,6 +199,13 @@ fn main() {
         "default"
     };
     let command = cli.command.unwrap_or_else(resolve_default_entry_command);
+    let interactive_log_explicitly_configured = interactive_log_explicitly_configured();
+    let directive_override =
+        quiet_interactive_log_directive(&command, interactive_log_explicitly_configured);
+    init_tracing_with_directive_override(directive_override);
+    let _ = suppress_env_compat_warning(&command);
+    loong_daemon::make_env_compatible();
+    check_legacy_home_migration();
     let command_kind = command.command_kind_for_logging();
     let redacted_command = redacted_command_name(&command);
     tracing::debug!(
@@ -545,9 +572,29 @@ async fn run_command(command: Commands) -> CliResult<()> {
 mod tests {
     use super::{
         DEBUG_TOKIO_WORKER_STACK_BYTES, MAX_TOKIO_WORKER_STACK_BYTES, TOKIO_WORKER_STACK_ENV,
-        error_code, redacted_command_name, resolve_tokio_worker_thread_stack_size,
+        error_code, quiet_interactive_log_directive, redacted_command_name,
+        resolve_tokio_worker_thread_stack_size, suppress_env_compat_warning,
     };
     use loong_daemon::{Commands, TurnCommands};
+
+    #[test]
+    fn interactive_chat_defaults_to_quiet_error_only_logging() {
+        let command = Commands::Chat {
+            config: None,
+            session: None,
+            acp: false,
+            acp_event_stream: false,
+            acp_bootstrap_mcp_server: Vec::new(),
+            acp_cwd: None,
+        };
+
+        assert_eq!(
+            quiet_interactive_log_directive(&command, false),
+            Some("error")
+        );
+        assert_eq!(quiet_interactive_log_directive(&command, true), None);
+        assert!(suppress_env_compat_warning(&command));
+    }
 
     #[test]
     fn command_kind_uses_stable_snake_case_labels() {

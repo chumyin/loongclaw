@@ -3,8 +3,8 @@ use pulldown_cmark::{Alignment, Event, HeadingLevel, Options, Parser, Tag, TagEn
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
-const MARKDOWN_TABLE_MAX_RENDER_WIDTH: usize = 72;
-const MARKDOWN_TABLE_MAX_CELL_WIDTH: usize = 20;
+const MARKDOWN_TABLE_DEFAULT_RENDER_WIDTH: usize = 96;
+const MARKDOWN_TABLE_MAX_CELL_WIDTH: usize = 36;
 const MARKDOWN_TABLE_MIN_CELL_WIDTH: usize = 3;
 
 #[derive(Debug, Default)]
@@ -106,8 +106,34 @@ pub fn render_markdown_to_lines_with_width(md: &str, width: Option<usize>) -> Ve
                     table_state = None;
                     continue;
                 }
-                Event::Start(Tag::Table(_)) => continue,
-                _ => {}
+                Event::Start(Tag::Table(_))
+                | Event::Start(Tag::Paragraph)
+                | Event::Start(Tag::Heading { .. })
+                | Event::Start(Tag::BlockQuote(_))
+                | Event::Start(Tag::CodeBlock(_))
+                | Event::Start(Tag::HtmlBlock)
+                | Event::Start(Tag::List(_))
+                | Event::Start(Tag::Item)
+                | Event::Start(Tag::FootnoteDefinition(_))
+                | Event::Start(Tag::DefinitionList)
+                | Event::Start(Tag::DefinitionListTitle)
+                | Event::Start(Tag::DefinitionListDefinition)
+                | Event::Start(Tag::Emphasis)
+                | Event::Start(Tag::Strong)
+                | Event::Start(Tag::Strikethrough)
+                | Event::Start(Tag::Superscript)
+                | Event::Start(Tag::Subscript)
+                | Event::Start(Tag::Link { .. })
+                | Event::Start(Tag::Image { .. })
+                | Event::Start(Tag::MetadataBlock(_))
+                | Event::End(_)
+                | Event::InlineMath(_)
+                | Event::DisplayMath(_)
+                | Event::Html(_)
+                | Event::InlineHtml(_)
+                | Event::FootnoteReference(_)
+                | Event::Rule
+                | Event::TaskListMarker(_) => continue,
             }
         }
 
@@ -130,10 +156,12 @@ pub fn render_markdown_to_lines_with_width(md: &str, width: Option<usize>) -> Ve
                     _ => "".to_string(),
                 };
                 in_code_block = true;
-                // Pi style: ```lang in dim gray
+                // chat-surface style: ```lang in dim gray
                 lines.push(Line::from(Span::styled(
                     format!("```{}", lang),
-                    Style::default().fg(PI_GRAY).add_modifier(Modifier::DIM),
+                    Style::default()
+                        .fg(SURFACE_GRAY)
+                        .add_modifier(Modifier::DIM),
                 )));
             }
             Event::End(TagEnd::CodeBlock) => {
@@ -145,14 +173,16 @@ pub fn render_markdown_to_lines_with_width(md: &str, width: Option<usize>) -> Ve
                     for l in content.lines() {
                         lines.push(Line::from(vec![
                             Span::raw("  "),
-                            Span::styled(l.to_string(), Style::default().fg(PI_GREEN)),
+                            Span::styled(l.to_string(), Style::default().fg(SURFACE_GREEN)),
                         ]));
                     }
                 }
                 in_code_block = false;
                 lines.push(Line::from(Span::styled(
                     "```",
-                    Style::default().fg(PI_GRAY).add_modifier(Modifier::DIM),
+                    Style::default()
+                        .fg(SURFACE_GRAY)
+                        .add_modifier(Modifier::DIM),
                 )));
             }
             Event::Start(Tag::Image { dest_url, .. }) => {
@@ -172,14 +202,16 @@ pub fn render_markdown_to_lines_with_width(md: &str, width: Option<usize>) -> Ve
                 lines.push(Line::from(vec![
                     Span::styled(
                         "[image] ",
-                        Style::default().fg(PI_CYAN).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(SURFACE_CYAN)
+                            .add_modifier(Modifier::BOLD),
                     ),
-                    Span::styled(alt, Style::default().fg(PI_ACCENT)),
+                    Span::styled(alt, Style::default().fg(SURFACE_ACCENT)),
                 ]));
                 if let Some(url) = image_url.take() {
                     lines.push(Line::from(vec![
                         Span::raw("  "),
-                        Span::styled(url, Style::default().fg(PI_DIM_GRAY)),
+                        Span::styled(url, Style::default().fg(SURFACE_DIM_GRAY)),
                     ]));
                 }
                 lines.push(Line::from(""));
@@ -188,7 +220,8 @@ pub fn render_markdown_to_lines_with_width(md: &str, width: Option<usize>) -> Ve
             Event::Start(Tag::BlockQuote(_)) => in_quote = true,
             Event::End(TagEnd::BlockQuote(_)) => {
                 if !current_spans.is_empty() {
-                    let mut line_spans = vec![Span::styled("┃ ", Style::default().fg(PI_GRAY))];
+                    let mut line_spans =
+                        vec![Span::styled("┃ ", Style::default().fg(SURFACE_GRAY))];
                     line_spans.extend(std::mem::take(&mut current_spans));
                     lines.push(Line::from(line_spans));
                 }
@@ -200,7 +233,7 @@ pub fn render_markdown_to_lines_with_width(md: &str, width: Option<usize>) -> Ve
                 let indent = "  ".repeat(list_depth.saturating_sub(1));
                 current_spans.push(Span::styled(
                     format!("{indent}• "),
-                    Style::default().fg(PI_ACCENT),
+                    Style::default().fg(SURFACE_ACCENT),
                 ));
             }
             Event::Start(Tag::Heading { level, .. }) => {
@@ -212,9 +245,13 @@ pub fn render_markdown_to_lines_with_width(md: &str, width: Option<usize>) -> Ve
                 };
                 current_spans.push(Span::styled(
                     prefix.to_string(),
-                    Style::default().fg(PI_HEADING).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(SURFACE_HEADING)
+                        .add_modifier(Modifier::BOLD),
                 ));
-                current_style = current_style.add_modifier(Modifier::BOLD).fg(PI_HEADING);
+                current_style = current_style
+                    .add_modifier(Modifier::BOLD)
+                    .fg(SURFACE_HEADING);
             }
             Event::End(TagEnd::Heading(_)) => {
                 current_style = current_style
@@ -236,7 +273,7 @@ pub fn render_markdown_to_lines_with_width(md: &str, width: Option<usize>) -> Ve
             Event::Code(text) => {
                 current_spans.push(Span::styled(
                     text.to_string(),
-                    Style::default().fg(PI_ACCENT),
+                    Style::default().fg(SURFACE_ACCENT),
                 ));
             }
             Event::Text(text) => {
@@ -249,12 +286,12 @@ pub fn render_markdown_to_lines_with_width(md: &str, width: Option<usize>) -> Ve
                         if i > 0 {
                             lines.push(Line::from(vec![
                                 Span::raw("  "),
-                                Span::styled(line.to_string(), Style::default().fg(PI_GREEN)),
+                                Span::styled(line.to_string(), Style::default().fg(SURFACE_GREEN)),
                             ]));
                         } else {
                             current_spans.push(Span::styled(
                                 line.to_string(),
-                                Style::default().fg(PI_GREEN),
+                                Style::default().fg(SURFACE_GREEN),
                             ));
                         }
                     }
@@ -264,7 +301,8 @@ pub fn render_markdown_to_lines_with_width(md: &str, width: Option<usize>) -> Ve
             }
             Event::SoftBreak | Event::HardBreak => {
                 if in_quote {
-                    let mut line_spans = vec![Span::styled("┃ ", Style::default().fg(PI_GRAY))];
+                    let mut line_spans =
+                        vec![Span::styled("┃ ", Style::default().fg(SURFACE_GRAY))];
                     line_spans.extend(std::mem::take(&mut current_spans));
                     lines.push(Line::from(line_spans));
                 } else {
@@ -273,7 +311,8 @@ pub fn render_markdown_to_lines_with_width(md: &str, width: Option<usize>) -> Ve
             }
             Event::End(TagEnd::Paragraph) => {
                 if in_quote {
-                    let mut line_spans = vec![Span::styled("┃ ", Style::default().fg(PI_GRAY))];
+                    let mut line_spans =
+                        vec![Span::styled("┃ ", Style::default().fg(SURFACE_GRAY))];
                     line_spans.extend(std::mem::take(&mut current_spans));
                     lines.push(Line::from(line_spans));
                 } else {
@@ -329,23 +368,26 @@ fn render_markdown_table(
         .collect::<Vec<_>>();
     alignments.resize(column_count, Alignment::None);
 
+    let max_render_width = width.unwrap_or(MARKDOWN_TABLE_DEFAULT_RENDER_WIDTH).max(1);
+    let max_cell_width = markdown_table_max_cell_width(max_render_width, column_count);
     let mut widths = (0..column_count)
         .map(|index| {
-            let header_width = crate::presentation::display_width(&normalized_headers[index]);
+            let header_width = normalized_headers
+                .get(index)
+                .map(|header| crate::presentation::display_width(header))
+                .unwrap_or(0);
             let row_width = normalized_rows
                 .iter()
-                .map(|row| crate::presentation::display_width(&row[index]))
+                .filter_map(|row| row.get(index))
+                .map(|cell| crate::presentation::display_width(cell))
                 .max()
                 .unwrap_or(0);
             header_width
                 .max(row_width)
-                .clamp(MARKDOWN_TABLE_MIN_CELL_WIDTH, MARKDOWN_TABLE_MAX_CELL_WIDTH)
+                .clamp(MARKDOWN_TABLE_MIN_CELL_WIDTH, max_cell_width)
         })
         .collect::<Vec<_>>();
 
-    let max_render_width = width
-        .unwrap_or(MARKDOWN_TABLE_MAX_RENDER_WIDTH)
-        .min(MARKDOWN_TABLE_MAX_RENDER_WIDTH);
     if max_render_width < markdown_table_minimum_width(column_count) {
         return render_markdown_table_stacked(
             normalized_headers.as_slice(),
@@ -367,25 +409,36 @@ fn render_markdown_table(
     lines.push(Line::from(render_markdown_table_separator(
         '┌', '┬', '┐', &widths,
     )));
-    lines.push(Line::from(render_markdown_table_row(
+    lines.extend(render_markdown_table_row_lines(
         normalized_headers.as_slice(),
         widths.as_slice(),
         alignments.as_slice(),
-    )));
+    ));
     lines.push(Line::from(render_markdown_table_separator(
         '├', '┼', '┤', &widths,
     )));
     for row in &normalized_rows {
-        lines.push(Line::from(render_markdown_table_row(
+        lines.extend(render_markdown_table_row_lines(
             row.as_slice(),
             widths.as_slice(),
             alignments.as_slice(),
-        )));
+        ));
     }
     lines.push(Line::from(render_markdown_table_separator(
         '└', '┴', '┘', &widths,
     )));
     lines
+}
+
+fn markdown_table_max_cell_width(max_render_width: usize, column_count: usize) -> usize {
+    let decoration_width = column_count.saturating_mul(3).saturating_add(1);
+    let available_for_cells = max_render_width.saturating_sub(decoration_width);
+    let balanced_width = available_for_cells
+        .checked_div(column_count.max(1))
+        .unwrap_or(MARKDOWN_TABLE_MIN_CELL_WIDTH);
+    balanced_width
+        .saturating_add(8)
+        .clamp(MARKDOWN_TABLE_MIN_CELL_WIDTH, MARKDOWN_TABLE_MAX_CELL_WIDTH)
 }
 
 fn fit_markdown_table_widths(widths: &mut [usize], max_total_width: usize) {
@@ -401,7 +454,9 @@ fn fit_markdown_table_widths(widths: &mut [usize], max_total_width: usize) {
         if width <= MARKDOWN_TABLE_MIN_CELL_WIDTH {
             break;
         }
-        widths[index] = width.saturating_sub(1);
+        if let Some(entry) = widths.get_mut(index) {
+            *entry = width.saturating_sub(1);
+        }
     }
 }
 
@@ -432,30 +487,54 @@ fn render_markdown_table_separator(
     line
 }
 
-fn render_markdown_table_row(
+fn render_markdown_table_row_lines(
     cells: &[String],
     widths: &[usize],
     alignments: &[Alignment],
-) -> String {
-    let mut line = String::new();
-    line.push('│');
-    for ((cell, width), alignment) in cells
+) -> Vec<Line<'static>> {
+    let wrapped_cells = cells
         .iter()
         .zip(widths.iter().copied())
-        .zip(alignments.iter().copied())
-    {
-        let rendered_cell = truncate_markdown_table_cell(cell, width);
-        let rendered_width = crate::presentation::display_width(rendered_cell.as_str());
-        let (left_padding, right_padding) =
-            markdown_table_cell_padding(width, rendered_width, alignment);
-        line.push(' ');
-        line.push_str(&" ".repeat(left_padding));
-        line.push_str(rendered_cell.as_str());
-        line.push_str(&" ".repeat(right_padding));
-        line.push(' ');
-        line.push('│');
+        .map(|(cell, width)| wrap_markdown_table_cell(cell, width))
+        .collect::<Vec<_>>();
+    let row_height = wrapped_cells.iter().map(Vec::len).max().unwrap_or(1).max(1);
+
+    (0..row_height)
+        .map(|line_index| {
+            let mut line = String::new();
+            line.push('│');
+            for ((cell_lines, width), alignment) in wrapped_cells
+                .iter()
+                .zip(widths.iter().copied())
+                .zip(alignments.iter().copied())
+            {
+                let rendered_cell = cell_lines.get(line_index).map(String::as_str).unwrap_or("");
+                let rendered_width = crate::presentation::display_width(rendered_cell);
+                let (left_padding, right_padding) =
+                    markdown_table_cell_padding(width, rendered_width, alignment);
+                line.push(' ');
+                line.push_str(&" ".repeat(left_padding));
+                line.push_str(rendered_cell);
+                line.push_str(&" ".repeat(right_padding));
+                line.push(' ');
+                line.push('│');
+            }
+            Line::from(line)
+        })
+        .collect()
+}
+
+fn wrap_markdown_table_cell(cell: &str, width: usize) -> Vec<String> {
+    if cell.trim().is_empty() {
+        return vec![String::new()];
     }
-    line
+
+    let wrapped = crate::presentation::render_wrapped_display_line(cell.trim(), width.max(1));
+    if wrapped.is_empty() {
+        vec![String::new()]
+    } else {
+        wrapped
+    }
 }
 
 fn markdown_table_cell_padding(
@@ -471,18 +550,59 @@ fn markdown_table_cell_padding(
     }
 }
 
-fn truncate_markdown_table_cell(cell: &str, max_width: usize) -> String {
-    if crate::presentation::display_width(cell) <= max_width {
-        return cell.to_owned();
+fn render_markdown_table_stacked(
+    headers: &[String],
+    rows: &[Vec<String>],
+    max_width: usize,
+) -> Vec<Line<'static>> {
+    let content_width = max_width.max(1);
+    let mut rendered = Vec::new();
+    for (row_index, row) in rows.iter().enumerate() {
+        let row_marker = if row_index == 0 { '┌' } else { '├' };
+        rendered.push(Line::from(format!("{row_marker}─ row {} ─", row_index + 1)));
+        for (header, cell) in headers.iter().zip(row.iter()) {
+            let label = if header.trim().is_empty() {
+                "value"
+            } else {
+                header.trim()
+            };
+            let label = fit_markdown_table_label(label, content_width.saturating_sub(4).max(1));
+            let prefix = format!("  {label}: ");
+            let body_width = content_width
+                .saturating_sub(crate::presentation::display_width(prefix.as_str()))
+                .max(1);
+            let wrapped_cell =
+                crate::presentation::render_wrapped_display_line(cell.trim(), body_width);
+            if wrapped_cell.is_empty() {
+                rendered.push(Line::from(prefix));
+                continue;
+            }
+            for (line_index, wrapped) in wrapped_cell.into_iter().enumerate() {
+                if line_index == 0 {
+                    rendered.push(Line::from(format!("{prefix}{wrapped}")));
+                } else {
+                    rendered.push(Line::from(format!(
+                        "{}{wrapped}",
+                        " ".repeat(crate::presentation::display_width(prefix.as_str()))
+                    )));
+                }
+            }
+        }
     }
+    rendered
+}
 
+fn fit_markdown_table_label(label: &str, max_width: usize) -> String {
+    if crate::presentation::display_width(label) <= max_width {
+        return label.to_owned();
+    }
     if max_width <= 1 {
         return "…".to_owned();
     }
 
     let mut rendered = String::new();
     let mut used_width = 0usize;
-    for ch in cell.chars() {
+    for ch in label.chars() {
         let ch_width = crate::presentation::char_display_width(ch);
         if used_width.saturating_add(ch_width).saturating_add(1) > max_width {
             break;
@@ -494,40 +614,12 @@ fn truncate_markdown_table_cell(cell: &str, max_width: usize) -> String {
     rendered
 }
 
-fn render_markdown_table_stacked(
-    headers: &[String],
-    rows: &[Vec<String>],
-    max_width: usize,
-) -> Vec<Line<'static>> {
-    let content_width = max_width.max(1);
-    let mut rendered = Vec::new();
-    for row in rows {
-        rendered.push(Line::from("┌─ row ─"));
-        for (header, cell) in headers.iter().zip(row.iter()) {
-            let label = if header.trim().is_empty() {
-                "value"
-            } else {
-                header.trim()
-            };
-            let body = format!("{label}: {}", cell.trim());
-            for wrapped in
-                crate::presentation::render_wrapped_display_line(body.as_str(), content_width)
-            {
-                rendered.push(Line::from(wrapped));
-            }
-        }
-    }
-    rendered
-}
-
 #[cfg(test)]
 mod tests {
     use super::{render_markdown_to_lines, render_markdown_to_lines_with_width};
 
-    #[test]
-    fn renders_markdown_images_as_placeholder_lines() {
-        let lines = render_markdown_to_lines("before\n\n![diagram](https://example.com/a.png)\n");
-        let joined = lines
+    fn lines_to_strings(lines: Vec<ratatui::text::Line<'static>>) -> Vec<String> {
+        lines
             .into_iter()
             .map(|line| {
                 line.spans
@@ -535,8 +627,37 @@ mod tests {
                     .map(|span| span.content.into_owned())
                     .collect::<String>()
             })
-            .collect::<Vec<_>>()
-            .join("\n");
+            .collect()
+    }
+
+    fn non_blank_lines(lines: Vec<ratatui::text::Line<'static>>) -> Vec<String> {
+        lines_to_strings(lines)
+            .into_iter()
+            .filter(|line| !line.trim().is_empty())
+            .collect()
+    }
+
+    fn assert_uniform_display_width(lines: &[String]) {
+        let Some(first_width) = lines
+            .first()
+            .map(|line| crate::presentation::display_width(line))
+        else {
+            return;
+        };
+
+        for line in lines {
+            assert_eq!(
+                crate::presentation::display_width(line),
+                first_width,
+                "table line has a different display width: {line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn renders_markdown_images_as_placeholder_lines() {
+        let lines = render_markdown_to_lines("before\n\n![diagram](https://example.com/a.png)\n");
+        let joined = lines_to_strings(lines).join("\n");
 
         assert!(joined.contains("[image] diagram"));
         assert!(joined.contains("https://example.com/a.png"));
@@ -547,16 +668,7 @@ mod tests {
         let lines = render_markdown_to_lines(
             "| 指标 | 数值 |\n| --- | --- |\n| 覆盖率 | 68% |\n| 平均响应时间 | 220ms |",
         );
-        let joined = lines
-            .into_iter()
-            .map(|line| {
-                line.spans
-                    .into_iter()
-                    .map(|span| span.content.into_owned())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
+        let joined = lines_to_strings(lines).join("\n");
 
         assert!(joined.contains("┌"));
         assert!(joined.contains("┬"));
@@ -566,24 +678,63 @@ mod tests {
     }
 
     #[test]
+    fn renders_markdown_tables_with_stable_padding_and_borders() {
+        let lines = non_blank_lines(render_markdown_to_lines_with_width(
+            "| Name | Value |\n| --- | --- |\n| A | 1 |\n| B | 2 |",
+            Some(32),
+        ));
+
+        assert_eq!(
+            lines,
+            vec![
+                "┌──────┬───────┐".to_owned(),
+                "│ Name │ Value │".to_owned(),
+                "├──────┼───────┤".to_owned(),
+                "│ A    │ 1     │".to_owned(),
+                "│ B    │ 2     │".to_owned(),
+                "└──────┴───────┘".to_owned(),
+            ]
+        );
+        assert_uniform_display_width(lines.as_slice());
+    }
+
+    #[test]
+    fn renders_cjk_markdown_tables_with_uniform_display_widths() {
+        let lines = non_blank_lines(render_markdown_to_lines_with_width(
+            "| 指标 | 数值 |\n| --- | --- |\n| 覆盖率 | 68% |\n| 平均响应时间 | 220ms |",
+            Some(40),
+        ));
+
+        assert!(lines.iter().any(|line| line.contains("覆盖率")));
+        assert!(lines.iter().any(|line| line.contains("220ms")));
+        assert_uniform_display_width(lines.as_slice());
+    }
+
+    #[test]
     fn renders_markdown_tables_as_stacked_rows_when_width_is_tight() {
         let lines = render_markdown_to_lines_with_width(
             "| 指标 | 数值 |\n| --- | --- |\n| 覆盖率 | 68% |\n| 平均响应时间 | 220ms |",
             Some(12),
         );
-        let joined = lines
-            .into_iter()
-            .map(|line| {
-                line.spans
-                    .into_iter()
-                    .map(|span| span.content.into_owned())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
+        let joined = lines_to_strings(lines).join("\n");
 
-        assert!(joined.contains("┌─ row ─"));
-        assert!(joined.contains("指标: 覆盖率"));
+        assert!(joined.contains("┌─ row 1 ─"));
+        assert!(joined.contains("指标:"));
+        assert!(joined.contains("覆盖"));
+        assert!(joined.contains("率"));
         assert!(joined.contains("数值: 68%"));
+    }
+
+    #[test]
+    fn wraps_markdown_table_cells_instead_of_truncating_values() {
+        let lines = render_markdown_to_lines_with_width(
+            "| key | value |\n| --- | --- |\n| status | this value should wrap without losing the important trailing words |",
+            Some(42),
+        );
+        let joined = lines_to_strings(lines).join("\n");
+
+        assert!(joined.contains("important"));
+        assert!(joined.contains("trailing words"));
+        assert!(!joined.contains('…'));
     }
 }

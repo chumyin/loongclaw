@@ -54,7 +54,7 @@ fn resolve_default_entry_command_ignores_legacy_home_when_config_is_missing() {
 }
 
 #[test]
-fn resolve_default_entry_command_routes_to_welcome_when_default_config_exists() {
+fn resolve_default_entry_command_routes_to_chat_when_default_config_exists() {
     let (_env, _home) = isolated_home("loongclaw-default-entry-present");
     let config_path = mvp::config::default_config_path();
     mvp::config::write(
@@ -65,8 +65,8 @@ fn resolve_default_entry_command_routes_to_welcome_when_default_config_exists() 
     .expect("write default config");
 
     assert!(
-        matches!(resolve_default_entry_command(), Commands::Welcome),
-        "present config should route to welcome"
+        matches!(resolve_default_entry_command(), Commands::Chat { .. }),
+        "present config should route directly to chat"
     );
 }
 
@@ -92,7 +92,7 @@ fn resolve_default_entry_command_ignores_loongclaw_config_path_without_compat_sh
 }
 
 #[test]
-fn resolve_default_entry_command_honors_loong_config_path_override() {
+fn resolve_default_entry_command_routes_to_chat_for_loong_config_path_override() {
     let mut env = ScopedEnv::new();
     let config_path = unique_temp_dir("loong-default-entry-env").join("custom-config.toml");
     if let Some(parent) = config_path.parent() {
@@ -107,8 +107,8 @@ fn resolve_default_entry_command_honors_loong_config_path_override() {
     env.set("LOONG_CONFIG_PATH", &config_path);
 
     assert!(
-        matches!(resolve_default_entry_command(), Commands::Welcome),
-        "new env override config should route to welcome"
+        matches!(resolve_default_entry_command(), Commands::Chat { .. }),
+        "new env override config should route directly to chat"
     );
 }
 

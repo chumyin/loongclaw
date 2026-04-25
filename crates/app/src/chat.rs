@@ -15,6 +15,7 @@ use crate::acp::{
     AcpConversationTurnOptions, AcpTurnEventSink, AcpTurnProvenance, JsonlAcpTurnEventSink,
 };
 
+mod chat_surface;
 mod cli_input;
 mod cli_render;
 mod control_plane;
@@ -23,7 +24,6 @@ mod control_plane;
 mod latest_session_selector_tests;
 mod live_runtime;
 mod operator_surfaces;
-mod pi_surface;
 mod render_support;
 
 use self::cli_input::ConcurrentCliInputReader;
@@ -298,8 +298,11 @@ pub async fn run_cli_chat(
     options: &CliChatOptions,
 ) -> CliResult<()> {
     ensure_cli_channel_enabled_for_entrypoint(config_path)?;
-    if pi_surface::interactive_terminal_surface_supported() {
-        return pi_surface::run_cli_chat_surface(config_path, session_hint, options).await;
+    if maybe_run_missing_config_onboarding(config_path)? {
+        return Ok(());
+    }
+    if chat_surface::interactive_terminal_surface_supported() {
+        return chat_surface::run_cli_chat_surface(config_path, session_hint, options).await;
     }
 
     run_cli_chat_repl(config_path, session_hint, options).await
@@ -311,50 +314,7 @@ async fn run_cli_chat_repl(
     session_hint: Option<&str>,
     options: &CliChatOptions,
 ) -> CliResult<()> {
-    let resolved_config_path = config_path
-        .map(config::expand_path)
-        .unwrap_or_else(config::default_config_path);
-    let config_exists = resolved_config_path.try_exists().map_err(|error| {
-        format!(
-            "failed to access config path {}: {error}",
-            resolved_config_path.display()
-        )
-    })?;
-
-    if !config_exists {
-        let onboard_hint = format_onboard_command_hint(config_path, &resolved_config_path);
-        let render_width = detect_cli_chat_render_width();
-        let rendered_lines =
-            render_cli_chat_missing_config_lines_with_width(&onboard_hint, render_width);
-
-        print_rendered_cli_chat_lines(&rendered_lines);
-
-        let mut input = String::new();
-        let read = io::stdin()
-            .read_line(&mut input)
-            .map_err(|e| format!("read stdin failed: {e}"))?;
-        let should_run_onboard = should_run_missing_config_onboard(read, &input);
-
-        if should_run_onboard {
-            let mut onboard = build_onboard_command(config_path, &resolved_config_path)?;
-
-            let exit_status = onboard
-                .spawn()
-                .map_err(|e| format!("failed to spawn onboard: {e}"))?
-                .wait()
-                .map_err(|e| format!("failed to wait for onboard: {e}"))?;
-
-            if !exit_status.success() {
-                return Err(format!("onboard exited with code {:?}", exit_status.code()));
-            }
-        } else {
-            let rendered_lines = render_cli_chat_missing_config_decline_lines_with_width(
-                &onboard_hint,
-                render_width,
-            );
-
-            print_rendered_cli_chat_lines(&rendered_lines);
-        }
+    if maybe_run_missing_config_onboarding(config_path)? {
         return Ok(());
     }
 
@@ -403,6 +363,56 @@ async fn run_cli_chat_repl(
     Ok(())
 }
 
+fn maybe_run_missing_config_onboarding(config_path: Option<&str>) -> CliResult<bool> {
+    let resolved_config_path = config_path
+        .map(config::expand_path)
+        .unwrap_or_else(config::default_config_path);
+    let config_exists = resolved_config_path.try_exists().map_err(|error| {
+        format!(
+            "failed to access config path {}: {error}",
+            resolved_config_path.display()
+        )
+    })?;
+
+    if config_exists {
+        return Ok(false);
+    }
+
+    let onboard_hint = format_onboard_command_hint(config_path, &resolved_config_path);
+    let render_width = detect_cli_chat_render_width();
+    let rendered_lines =
+        render_cli_chat_missing_config_lines_with_width(&onboard_hint, render_width);
+
+    print_rendered_cli_chat_lines(&rendered_lines);
+
+    let mut input = String::new();
+    let read = io::stdin()
+        .read_line(&mut input)
+        .map_err(|e| format!("read stdin failed: {e}"))?;
+    let should_run_onboard = should_run_missing_config_onboard(read, &input);
+
+    if should_run_onboard {
+        let mut onboard = build_onboard_command(config_path, &resolved_config_path)?;
+
+        let exit_status = onboard
+            .spawn()
+            .map_err(|e| format!("failed to spawn onboard: {e}"))?
+            .wait()
+            .map_err(|e| format!("failed to wait for onboard: {e}"))?;
+
+        if !exit_status.success() {
+            return Err(format!("onboard exited with code {:?}", exit_status.code()));
+        }
+    } else {
+        let rendered_lines =
+            render_cli_chat_missing_config_decline_lines_with_width(&onboard_hint, render_width);
+
+        print_rendered_cli_chat_lines(&rendered_lines);
+    }
+
+    Ok(true)
+}
+
 #[allow(clippy::print_stdout)] // CLI output
 pub async fn run_cli_ask(
     config_path: Option<&str>,
@@ -438,8 +448,8 @@ pub fn run_concurrent_cli_host(options: &ConcurrentCliHostOptions) -> CliResult<
     if options.session_id.trim().is_empty() {
         return Err("concurrent CLI host requires an explicit session id".to_owned());
     }
-    if pi_surface::interactive_terminal_surface_supported() {
-        return pi_surface::run_concurrent_cli_host_surface(options);
+    if chat_surface::interactive_terminal_surface_supported() {
+        return chat_surface::run_concurrent_cli_host_surface(options);
     }
 
     run_concurrent_cli_host_repl(options)
@@ -2952,6 +2962,10 @@ mod tests {
 
     #[test]
     fn cli_chat_options_detect_explicit_acp_requests() {
+        let working_directory = std::env::current_dir()
+            .expect("current dir")
+            .join("explicit-acp-project");
+
         assert!(
             CliChatOptions {
                 acp_requested: true,
@@ -2970,7 +2984,7 @@ mod tests {
 
         assert!(
             CliChatOptions {
-                acp_working_directory: Some(PathBuf::from("/workspace/project")),
+                acp_working_directory: Some(working_directory),
                 ..CliChatOptions::default()
             }
             .requests_explicit_acp()
@@ -3909,6 +3923,9 @@ mod tests {
 
     #[test]
     fn render_cli_chat_startup_lines_surface_explicit_acp_overrides() {
+        let working_directory = PathBuf::from("project").join("explicit-acp-project");
+        let working_directory_display = working_directory.display().to_string();
+
         let lines = render_cli_chat_startup_lines_with_width(
             &CliChatStartupSummary {
                 config_path: "/tmp/loong.toml".to_owned(),
@@ -3930,7 +3947,7 @@ mod tests {
                 explicit_acp_request: true,
                 event_stream_enabled: true,
                 bootstrap_mcp_servers: vec!["filesystem".to_owned()],
-                working_directory: Some("/workspace/project".to_owned()),
+                working_directory: Some(working_directory_display),
             },
             80,
         );
@@ -3950,8 +3967,23 @@ mod tests {
         assert!(
             lines
                 .iter()
-                .any(|line| line.contains("- working directory: /workspace/project")),
+                .any(|line| line.contains("- working directory:")),
             "chat startup should still surface the working directory override: {lines:#?}"
+        );
+        assert!(
+            lines
+                .join("")
+                .chars()
+                .filter(|ch| !ch.is_whitespace())
+                .collect::<String>()
+                .contains("explicit-acp-project"),
+            "chat startup should still surface the dynamic working directory tail: {lines:#?}"
+        );
+        assert!(
+            lines
+                .first()
+                .is_some_and(|line| line.starts_with("LOONG  v") && !line.contains(" · ")),
+            "chat startup should keep the product header free of branch and commit metadata: {lines:#?}"
         );
     }
 

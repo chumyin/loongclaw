@@ -56,13 +56,21 @@ fn redacted_command_name(command: &Commands) -> &'static str {
 
 fn quiet_interactive_log_directive(
     command: &Commands,
-    loongclaw_log_explicitly_configured: bool,
+    interactive_log_explicitly_configured: bool,
 ) -> Option<&'static str> {
-    if loongclaw_log_explicitly_configured {
+    if interactive_log_explicitly_configured {
         return None;
     }
 
     matches!(command, Commands::Chat { .. }).then_some("error")
+}
+
+fn interactive_log_explicitly_configured() -> bool {
+    ["LOONG_LOG", "RUST_LOG"].into_iter().any(|key| {
+        std::env::var_os(key)
+            .as_deref()
+            .is_some_and(|value| !value.is_empty())
+    })
 }
 
 fn suppress_env_compat_warning(command: &Commands) -> bool {
@@ -105,11 +113,9 @@ async fn main() {
         "default"
     };
     let command = cli.command.unwrap_or_else(resolve_default_entry_command);
-    let loongclaw_log_explicitly_configured = std::env::var_os("LOONGCLAW_LOG")
-        .as_deref()
-        .is_some_and(|value| !value.is_empty());
+    let interactive_log_explicitly_configured = interactive_log_explicitly_configured();
     let directive_override =
-        quiet_interactive_log_directive(&command, loongclaw_log_explicitly_configured);
+        quiet_interactive_log_directive(&command, interactive_log_explicitly_configured);
     init_tracing_with_directive_override(directive_override);
     loongclaw_daemon::make_env_compatible_with_warnings(!suppress_env_compat_warning(&command));
     check_legacy_home_migration();

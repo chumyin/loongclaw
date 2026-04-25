@@ -537,7 +537,7 @@ impl ApprovalSurfaceSummary {
             .collect::<Vec<_>>();
 
         TuiScreenSpec {
-            header_style: TuiHeaderStyle::Compact,
+            header_style: TuiHeaderStyle::ProductCompact,
             subtitle: self.subtitle.clone(),
             title: Some(self.title.clone()),
             progress_line: None,
@@ -2772,7 +2772,7 @@ impl ChatSessionSurface {
         let total_height = usize::from(height_u16);
         let total_width = usize::from(width_u16);
         let state = self.lock_state().clone();
-        let header_lines = crate::presentation::render_compact_brand_header(
+        let header_lines = crate::presentation::render_compact_product_brand_header(
             total_width.saturating_sub(2),
             &crate::presentation::BuildVersionInfo::current(),
             Some(session_surface_subtitle(&state)),
@@ -3574,7 +3574,7 @@ impl ChatSessionSurface {
         let (height, width) = self.term.size();
         let total_height = usize::from(height);
         let total_width = usize::from(width);
-        let header_lines = crate::presentation::render_compact_brand_header(
+        let header_lines = crate::presentation::render_compact_product_brand_header(
             total_width.saturating_sub(2),
             &crate::presentation::BuildVersionInfo::current(),
             Some(session_surface_subtitle(state)),
@@ -4251,7 +4251,7 @@ fn render_live_update(term: Term, state: Arc<Mutex<SurfaceState>>) -> CliResult<
     let (height_u16, width_u16) = term.size();
     let total_height = usize::from(height_u16);
     let total_width = usize::from(width_u16);
-    let header_lines = crate::presentation::render_compact_brand_header(
+    let header_lines = crate::presentation::render_compact_product_brand_header(
         total_width.saturating_sub(2),
         &crate::presentation::BuildVersionInfo::current(),
         Some(session_surface_subtitle(&snapshot_state)),
@@ -5035,7 +5035,7 @@ mod tests {
         assert_eq!(current_overlay_label(&state), "none");
         state.overlay = Some(SurfaceOverlay::Welcome {
             screen: TuiScreenSpec {
-                header_style: TuiHeaderStyle::Compact,
+                header_style: TuiHeaderStyle::ProductCompact,
                 subtitle: Some("interactive chat".to_owned()),
                 title: Some("operator cockpit ready".to_owned()),
                 progress_line: None,
@@ -5168,7 +5168,7 @@ mod tests {
         let mut state = sample_surface_state();
         state.overlay = Some(SurfaceOverlay::Welcome {
             screen: TuiScreenSpec {
-                header_style: TuiHeaderStyle::Compact,
+                header_style: TuiHeaderStyle::ProductCompact,
                 subtitle: Some("interactive chat".to_owned()),
                 title: Some("operator cockpit ready".to_owned()),
                 progress_line: None,

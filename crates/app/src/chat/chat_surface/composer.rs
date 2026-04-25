@@ -26,6 +26,11 @@ impl Composer {
         wrapped_height(&self.input, width).clamp(1, 10)
     }
 
+    pub fn height_for_area(&self, width: u16, terminal_height: u16) -> u16 {
+        let max_height = composer_max_height_for_terminal(terminal_height);
+        wrapped_height(&self.input, width).clamp(1, max_height)
+    }
+
     pub fn is_empty(&self) -> bool {
         self.input.trim().is_empty()
     }
@@ -53,6 +58,19 @@ impl Composer {
         self.input = input;
     }
 
+    pub fn insert_text(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        self.input.insert_str(self.cursor, text);
+        self.cursor += text.len();
+    }
+
+    pub fn insert_paste(&mut self, text: &str) {
+        let normalized = normalize_paste_text(text);
+        self.insert_text(normalized.as_str());
+    }
+
     pub fn take_input(&mut self) -> String {
         let input = self.input.clone();
         self.clear();
@@ -61,7 +79,7 @@ impl Composer {
 
     pub fn render(&mut self, f: &mut Frame, area: Rect, focused: bool) {
         let prefix_style = Style::default()
-            .fg(if focused { PI_CYAN } else { PI_GRAY })
+            .fg(if focused { SURFACE_CYAN } else { SURFACE_GRAY })
             .add_modifier(Modifier::BOLD);
         let rows = wrapped_rows(&self.input, area.width);
         let mut lines = Vec::with_capacity(rows.len().max(1));
@@ -161,8 +179,8 @@ impl Composer {
                 self.input.replace_range(self.cursor..end, "");
             }
             KeyCode::Char(c) => {
-                self.input.insert(self.cursor, c);
-                self.cursor += c.len_utf8();
+                let mut buffer = [0; 4];
+                self.insert_text(c.encode_utf8(&mut buffer));
             }
             KeyCode::Backspace => {
                 if self.cursor > 0 {
@@ -212,6 +230,10 @@ impl Composer {
         }
         None
     }
+}
+
+fn normalize_paste_text(text: &str) -> String {
+    text.replace("\r\n", "\n").replace('\r', "\n")
 }
 
 fn previous_grapheme_boundary(text: &str, cursor: usize) -> usize {
@@ -281,6 +303,15 @@ fn display_width(grapheme: &str) -> usize {
     crate::presentation::display_width(grapheme).max(1)
 }
 
+fn composer_max_height_for_terminal(terminal_height: u16) -> u16 {
+    let proportional = terminal_height.saturating_div(4).clamp(3, 14);
+    if terminal_height < 16 {
+        proportional.min(4)
+    } else {
+        proportional
+    }
+}
+
 fn wrapped_height(text: &str, width: u16) -> u16 {
     wrapped_rows(text, width).len().max(1) as u16
 }
@@ -333,7 +364,9 @@ fn highlight_composer_row(row: &str) -> Vec<Span<'static>> {
             } else if text.starts_with('$') && text.len() > 1 {
                 spans.push(Span::styled(
                     text,
-                    Style::default().fg(PI_ACCENT).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(SURFACE_ACCENT)
+                        .add_modifier(Modifier::BOLD),
                 ));
             } else {
                 spans.push(Span::raw(text));
@@ -409,6 +442,16 @@ mod tests {
     }
 
     #[test]
+    fn height_for_area_uses_terminal_height_without_unbounded_growth() {
+        let mut composer = Composer::new();
+        composer.set_input("line\n".repeat(40));
+
+        assert_eq!(composer.height_for_area(80, 12), 3);
+        assert_eq!(composer.height_for_area(80, 80), 14);
+        assert_eq!(composer.height_for_width(80), 10);
+    }
+
+    #[test]
     fn wrapped_render_keeps_continuation_rows_indented_under_prompt() {
         let mut composer = Composer::new();
         composer.set_input("abcdefg".to_owned());
@@ -448,7 +491,7 @@ mod tests {
         let spans = super::highlight_composer_row("$demo-skill next");
         assert_eq!(spans.len(), 3);
         assert_eq!(spans[0].content.as_ref(), "$demo-skill");
-        assert_eq!(spans[0].style.fg, Some(super::PI_ACCENT));
+        assert_eq!(spans[0].style.fg, Some(super::SURFACE_ACCENT));
         assert_eq!(spans[1].content.as_ref(), " ");
         assert_eq!(spans[2].content.as_ref(), "next");
     }
@@ -466,5 +509,17 @@ mod tests {
 
         let submitted = composer.handle_key(key(KeyCode::Enter));
         assert_eq!(submitted.as_deref(), Some("$demo-skill explain this"));
+    }
+
+    #[test]
+    fn paste_inserts_at_cursor_and_normalizes_line_endings() {
+        let mut composer = Composer::new();
+        composer.set_input("ab".to_owned());
+        assert!(composer.handle_key(key(KeyCode::Left)).is_none());
+
+        composer.insert_paste("你\r\n好");
+
+        assert_eq!(composer.text(), "a你\n好b");
+        assert_eq!(composer.cursor(), "a你\n好".len());
     }
 }

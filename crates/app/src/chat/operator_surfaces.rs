@@ -330,7 +330,7 @@ fn build_cli_chat_missing_config_screen_spec(onboard_hint: &str) -> TuiScreenSpe
     let footer_lines = vec!["Press Enter to accept y.".to_owned()];
 
     TuiScreenSpec {
-        header_style: TuiHeaderStyle::Compact,
+        header_style: TuiHeaderStyle::ProductCompact,
         subtitle: Some("interactive chat".to_owned()),
         title: Some("setup required".to_owned()),
         progress_line: None,
@@ -438,7 +438,7 @@ pub(super) fn build_cli_chat_startup_screen_spec(summary: &CliChatStartupSummary
     sections.extend(runtime_sections);
 
     TuiScreenSpec {
-        header_style: TuiHeaderStyle::Compact,
+        header_style: TuiHeaderStyle::ProductCompact,
         subtitle: Some("interactive chat".to_owned()),
         title: Some("operator cockpit ready".to_owned()),
         progress_line: None,

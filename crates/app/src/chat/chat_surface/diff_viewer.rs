@@ -13,9 +13,11 @@ pub fn render_diff_to_lines(diff: &str) -> Vec<Line<'static>> {
         let Some(current) = raw_lines.get(index).copied() else {
             break;
         };
-        if let Some(removed) = current.strip_prefix('-')
+        if is_removed_content_line(current)
+            && let Some(removed) = current.strip_prefix('-')
             && let Some(next) = raw_lines
                 .get(index + 1)
+                .filter(|line| is_added_content_line(line))
                 .and_then(|line| line.strip_prefix('+'))
         {
             let (removed_line, added_line) = render_intraline_pair(removed, next);
@@ -38,6 +40,43 @@ pub fn render_diff_to_lines(diff: &str) -> Vec<Line<'static>> {
 }
 
 fn render_plain_diff_line(raw_line: &str) -> Line<'static> {
+    if let Some(path) = diff_file_path(raw_line) {
+        return Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                "file ",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                path,
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]);
+    }
+
+    if raw_line.starts_with("@@") {
+        return Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                raw_line.to_owned(),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]);
+    }
+
+    if let Some(rest) = raw_line.strip_prefix("--- ") {
+        return file_marker_line("old ", rest, Color::Rgb(255, 120, 120));
+    }
+    if let Some(rest) = raw_line.strip_prefix("+++ ") {
+        return file_marker_line("new ", rest, Color::Rgb(120, 255, 120));
+    }
+
     let (style, prefix, text) = if let Some(rest) = raw_line.strip_prefix('+') {
         (
             Style::default().fg(Color::Rgb(100, 255, 100)),
@@ -64,6 +103,38 @@ fn render_plain_diff_line(raw_line: &str) -> Line<'static> {
     ])
 }
 
+fn is_removed_content_line(raw_line: &str) -> bool {
+    raw_line.starts_with('-') && !raw_line.starts_with("--- ")
+}
+
+fn is_added_content_line(raw_line: &str) -> bool {
+    raw_line.starts_with('+') && !raw_line.starts_with("+++ ")
+}
+
+fn diff_file_path(raw_line: &str) -> Option<String> {
+    let rest = raw_line.strip_prefix("diff --git ")?;
+    let path = rest
+        .split_whitespace()
+        .nth(1)
+        .or_else(|| rest.split_whitespace().next())?;
+    Some(
+        path.trim_start_matches("b/")
+            .trim_start_matches("a/")
+            .to_owned(),
+    )
+}
+
+fn file_marker_line(label: &str, path: &str, color: Color) -> Line<'static> {
+    Line::from(vec![
+        Span::raw("  "),
+        Span::styled(
+            label.to_owned(),
+            Style::default().fg(color).add_modifier(Modifier::DIM),
+        ),
+        Span::styled(path.to_owned(), Style::default().fg(color)),
+    ])
+}
+
 fn render_intraline_pair(removed: &str, added: &str) -> (Vec<Span<'static>>, Vec<Span<'static>>) {
     let base_removed = Style::default().fg(Color::Rgb(255, 100, 100));
     let base_added = Style::default().fg(Color::Rgb(100, 255, 100));
@@ -74,7 +145,7 @@ fn render_intraline_pair(removed: &str, added: &str) -> (Vec<Span<'static>>, Vec
     let mut added_spans = Vec::new();
 
     for change in diff.iter_all_changes() {
-        let text = change.to_string();
+        let text = change.to_string().replace('\n', "");
         match change.tag() {
             ChangeTag::Delete => removed_spans.push(Span::styled(text, highlight_removed)),
             ChangeTag::Insert => added_spans.push(Span::styled(text, highlight_added)),
@@ -148,6 +219,35 @@ mod tests {
         assert_eq!(
             lines.last().map(String::as_str),
             Some("     trailing context")
+        );
+    }
+
+    #[test]
+    fn renders_file_and_hunk_headers_without_treating_markers_as_edits() {
+        let lines = render_diff_to_lines(
+            "diff --git a/src/lib.rs b/src/lib.rs
+index 111..222 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,2 +1,2 @@
+-old value
++new value",
+        )
+        .into_iter()
+        .map(line_texts())
+        .collect::<Vec<_>>();
+
+        assert!(lines.iter().any(|line| line.contains("file src/lib.rs")));
+        assert!(lines.iter().any(|line| line.contains("old a/src/lib.rs")));
+        assert!(lines.iter().any(|line| line.contains("new b/src/lib.rs")));
+        assert!(lines.iter().any(|line| line.contains("@@ -1,2 +1,2 @@")));
+        assert!(
+            lines.iter().any(|line| line.contains("old value")),
+            "{lines:?}"
+        );
+        assert!(
+            lines.iter().any(|line| line.contains("new value")),
+            "{lines:?}"
         );
     }
 }

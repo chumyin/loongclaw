@@ -109,9 +109,9 @@ pub const AUTONOMY_PROFILE_VALID_VALUES: &str =
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum AutonomyProfile {
-    #[default]
     DiscoveryOnly,
     GuidedAcquisition,
+    #[default]
     BoundedAutonomous,
 }
 
@@ -488,8 +488,9 @@ const fn default_runtime_self_max_total_chars() -> usize {
 
 /// Default allow list used when the config file omits `shell_allow`.
 ///
-/// Empty by design: Loong starts in broad YOLO mode via `shell_default_mode = "allow"`,
-/// and `shell_allow` is reserved for users who later want an explicit allowlist.
+/// Empty by design: Loong starts in broad YOLO mode via `shell_default_mode = "allow"`
+/// plus bounded autonomous capability acquisition, and `shell_allow` is reserved
+/// for users who later want an explicit allowlist.
 ///
 /// Also used by `ToolRuntimeConfig::default()` so the runtime fallback
 /// and a freshly-parsed config file agree on the initial allow set.
@@ -1438,7 +1439,7 @@ mod tests {
         assert!(config.shell_allow.is_empty());
         assert!(config.shell_deny.is_empty());
         assert_eq!(config.shell_default_mode, "allow");
-        assert_eq!(config.autonomy_profile, AutonomyProfile::DiscoveryOnly);
+        assert_eq!(config.autonomy_profile, AutonomyProfile::BoundedAutonomous);
         assert_eq!(config.consent.default_mode, ToolConsentMode::Full);
         assert_eq!(config.approval.mode, GovernedToolApprovalMode::Disabled);
         assert!(config.approval.approved_calls.is_empty());
@@ -2128,12 +2129,12 @@ blocked_domains = ["internal.example", " INTERNAL.EXAMPLE "]
         env.set("USERPROFILE", home.path());
 
         let config = ToolConfig {
-            file_root: Some("~/workspace-root".to_owned()),
+            file_root: Some("~/project-root".to_owned()),
             ..ToolConfig::default()
         };
 
         let configured_file_root = config.configured_file_root();
-        let expected_file_root = expand_path("~/workspace-root");
+        let expected_file_root = expand_path("~/project-root");
 
         assert_eq!(configured_file_root, Some(expected_file_root));
     }

@@ -146,6 +146,10 @@ impl BuildVersionInfo {
         }
         parts.join(" · ")
     }
+
+    pub fn render_product_version_line(&self) -> String {
+        format!("v{}", self.version)
+    }
 }
 
 pub fn render_brand_banner_lines(width: usize) -> Vec<&'static str> {
@@ -190,16 +194,36 @@ pub fn render_compact_brand_header(
     build: &BuildVersionInfo,
     subtitle: Option<&str>,
 ) -> Vec<BrandLine> {
+    render_compact_brand_header_with_version(width, &build.render_version_line(), subtitle)
+}
+
+pub fn render_compact_product_brand_header(
+    width: usize,
+    build: &BuildVersionInfo,
+    subtitle: Option<&str>,
+) -> Vec<BrandLine> {
+    render_compact_brand_header_with_version(width, &build.render_product_version_line(), subtitle)
+}
+
+fn render_compact_brand_header_with_version(
+    width: usize,
+    version: &str,
+    subtitle: Option<&str>,
+) -> Vec<BrandLine> {
     let brand = "LOONG";
-    let version = build.render_version_line();
     let width = width.max(display_width(brand));
+    let version = if width <= 24 {
+        version.replace(" · ", " - ")
+    } else {
+        version.to_owned()
+    };
     let combined = format!("{brand}  {version}");
     let mut lines = if display_width(&combined) <= width {
         vec![BrandLine::new(BrandLineRole::Banner, combined)]
     } else {
         let mut compact_lines = vec![BrandLine::new(BrandLineRole::Banner, brand)];
         compact_lines.extend(
-            render_wrapped_text_line("", &version, width)
+            render_wrapped_text_line("", version.as_str(), width)
                 .into_iter()
                 .filter(|line| !line.is_empty())
                 .map(|line| BrandLine::new(BrandLineRole::Version, line)),
@@ -613,6 +637,13 @@ mod tests {
     }
 
     #[test]
+    fn presentation_product_version_line_omits_dev_trace_metadata() {
+        let build = BuildVersionInfo::new_for_test("0.1.2", Some("dev"), Some("1a2b3c4"), false);
+
+        assert_eq!(build.render_product_version_line(), "v0.1.2");
+    }
+
+    #[test]
     fn presentation_current_build_surfaces_embedded_git_trace_metadata_when_available() {
         let release_build = option_env!("LOONG_RELEASE_BUILD")
             .or(option_env!("LOONG_RELEASE_BUILD"))
@@ -698,6 +729,17 @@ mod tests {
     }
 
     #[test]
+    fn presentation_compact_product_brand_header_keeps_product_header_clean() {
+        let build = BuildVersionInfo::new_for_test("0.1.2", Some("dev"), Some("1a2b3c4"), false);
+
+        let lines = render_compact_product_brand_header(80, &build, Some("choose model"));
+
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].text, "LOONG  v0.1.2");
+        assert_eq!(lines[1].text, "choose model");
+    }
+
+    #[test]
     fn presentation_compact_brand_header_wraps_on_narrow_width() {
         let build = BuildVersionInfo::new_for_test("0.1.2", Some("dev"), Some("1a2b3c4"), false);
 
@@ -747,15 +789,15 @@ mod tests {
     fn presentation_wraps_text_lines_for_narrow_width() {
         let lines = render_wrapped_text_line(
             "source: ",
-            "Codex config at ~/.codex/agents/loong/config.toml",
+            "global config at ~/.loong/agents/loong/config.toml",
             48,
         );
 
         assert_eq!(
             lines,
             vec![
-                "source: Codex config at".to_owned(),
-                "  ~/.codex/agents/loong/config.toml".to_owned(),
+                "source: global config at".to_owned(),
+                "  ~/.loong/agents/loong/config.toml".to_owned(),
             ]
         );
     }
@@ -785,15 +827,15 @@ mod tests {
     #[test]
     fn presentation_wraps_display_line_with_label_prefix() {
         let lines = render_wrapped_display_line(
-            "    source: Codex config at ~/.codex/agents/loong/config.toml",
+            "    source: global config at ~/.loong/agents/loong/config.toml",
             48,
         );
 
         assert_eq!(
             lines,
             vec![
-                "    source: Codex config at".to_owned(),
-                "      ~/.codex/agents/loong/config.toml".to_owned(),
+                "    source: global config at".to_owned(),
+                "      ~/.loong/agents/loong/config.toml".to_owned(),
             ]
         );
     }

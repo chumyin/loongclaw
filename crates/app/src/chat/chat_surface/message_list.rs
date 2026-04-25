@@ -1,6 +1,6 @@
 use super::utils::*;
-use crate::chat::pi_surface::diff_viewer::render_diff_to_lines;
-use crate::chat::pi_surface::markdown;
+use crate::chat::chat_surface::diff_viewer::render_diff_to_lines;
+use crate::chat::chat_surface::markdown;
 use crate::conversation::is_compacted_summary_content;
 use crate::tui_surface::TuiSectionSpec;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -12,10 +12,110 @@ use ratatui::{
     widgets::Paragraph,
 };
 use serde_json::Value;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
+use std::time::{Duration, Instant};
 
 const PROVIDER_ERROR_REPLY_PREFIX: &str = "[provider_error] ";
 static EMPTY_RENDER_LINES: LazyLock<Vec<Line<'static>>> = LazyLock::new(Vec::new);
+const STARTUP_WORDMARK: &[&str] = &[
+    "░███░         ░████████░    ░████████░   ░█████████░    ░████████░",
+    "░███░        ░███    ███░  ░███    ███░  ░███    ███░  ░███    ███░",
+    "░███░        ░███    ███░  ░███    ███░  ░███    ███░  ░███",
+    "░███░        ░███    ███░  ░███    ███░  ░███    ███░  ░███  █████░",
+    "░███░        ░███    ███░  ░███    ███░  ░███    ███░  ░███    ███░",
+    "░███░        ░███    ███░  ░███    ███░  ░███    ███░  ░███    ███░",
+    "░██████████   ░████████░    ░████████░   ░███    ███░   ░████████░",
+];
+type StartupEyeFrame = [&'static str; STARTUP_EYE_INTERIOR_ROWS];
+const STARTUP_EYE_INTERIOR_ROWS: usize = 5;
+const STARTUP_EYE_INTERIOR_WIDTH: usize = 4;
+const STARTUP_EYE_CAVITY: &str = "░███    ███░";
+const STARTUP_EYE_FRAMES: &[StartupEyeFrame] = &[
+    ["    ", "    ", " █  ", "    ", "    "],
+    ["    ", "    ", " ▆  ", "    ", "    "],
+    ["    ", "    ", "▄   ", "    ", "    "],
+    ["    ", "    ", "█   ", "    ", "    "],
+    ["▒▒▒▒", "    ", "█   ", "    ", "    "],
+    ["▓▓▓▓", "▒▒▒▒", "█   ", "    ", "    "],
+    ["▓▓▓▓", "▓▓▓▓", "▓▓▓▓", "    ", "    "],
+    ["▒▒▒▒", "    ", "█   ", "    ", "    "],
+    ["    ", "    ", "█   ", "    ", "    "],
+    ["    ", "    ", "▄   ", "    ", "    "],
+    ["    ", "    ", " ▂  ", "    ", "    "],
+    ["    ", "    ", "  ▄ ", "    ", "    "],
+    ["    ", "    ", "   ▆", "    ", "    "],
+    ["    ", "    ", "   █", "    ", "    "],
+    ["    ", "   ▂", "   █", "    ", "    "],
+    ["    ", "   ▄", "  ██", "    ", "    "],
+    ["    ", "  ██", "  ██", "    ", "    "],
+    ["    ", "  ██", "  ██", "    ", "    "],
+    ["    ", "  ██", "  ██", "    ", "    "],
+    ["    ", "  ██", "  ██", "    ", "    "],
+    ["    ", "  ▄▄", "  ██", "    ", "    "],
+    ["    ", "    ", "   █", "    ", "    "],
+    ["    ", "    ", "   ▄", "    ", "    "],
+    ["    ", "    ", "  ▂ ", "    ", "    "],
+    ["    ", "    ", " █  ", "    ", "    "],
+    ["    ", "    ", " ▃  ", " ▆  ", "    "],
+    ["    ", "    ", "    ", " █  ", "    "],
+    ["    ", "    ", "    ", " █  ", "    "],
+    ["    ", "    ", "    ", " █  ", "    "],
+    ["▒▒▒▒", "    ", "    ", " █  ", "    "],
+    ["▓▓▓▓", "▒▒▒▒", "    ", " █  ", "    "],
+    ["▓▓▓▓", "▓▓▓▓", "▒▒▒▒", " █  ", "    "],
+    ["▓▓▓▓", "▓▓▓▓", "▓▓▓▓", "▒▒▒▒", "    "],
+    ["▓▓▓▓", "▓▓▓▓", "▓▓▓▓", "▓▓▓▓", "    "],
+    ["▓▓▓▓", "▓▓▓▓", "▓▓▓▓", "▓▓▓▓", "    "],
+    ["▓▓▓▓", "▓▓▓▓", "▓▓▓▓", "▓▓▓▓", "    "],
+    ["▓▓▓▓", "▓▓▓▓", "▒▒▒▒", " █  ", "    "],
+    ["▓▓▓▓", "▒▒▒▒", "    ", " █  ", "    "],
+    ["▒▒▒▒", "    ", "    ", " █  ", "    "],
+    ["    ", "    ", "    ", " █  ", "    "],
+    ["    ", "    ", " ▂  ", " ▇  ", "    "],
+    ["    ", "    ", " ▄  ", " ▅  ", "    "],
+    ["    ", "    ", " ▆  ", " ▃  ", "    "],
+    ["    ", "    ", " █  ", "    ", "    "],
+    ["    ", " ▂  ", " ▇  ", "    ", "    "],
+    ["    ", " ▄  ", " ▄  ", "    ", "    "],
+    ["    ", " ▆  ", " ▂  ", "    ", "    "],
+    ["    ", "█   ", "    ", "    ", "    "],
+    ["▒▒▒▒", "█   ", "    ", "    ", "    "],
+    ["▓▓▓▓", "▒▒▒▒", "    ", "    ", "    "],
+    ["▒▒▒▒", "█   ", "    ", "    ", "    "],
+    ["▓▓▓▓", "▒▒▒▒", "    ", "    ", "    "],
+    ["    ", "█   ", "    ", "    ", "    "],
+    ["    ", " ▄  ", "    ", "    ", "    "],
+    ["    ", "    ", " █  ", "    ", "    "],
+    ["    ", "    ", " ▂  ", "    ", "    "],
+    ["    ", "    ", " ▄  ", "    ", "    "],
+    ["    ", "    ", " ▆  ", "    ", "    "],
+    ["    ", "    ", " █  ", "    ", "    "],
+    ["    ", "    ", " █  ", "    ", "    "],
+];
+const STARTUP_COMPACT_WORDMARK: &[&str] = &[
+    "╷  ╭─╮╭─╮╭╮╷╭─╴",
+    "│  │ ││ ││╰┤│╶╮",
+    "╰─╴╰─╯╰─╯╵ ╵╰─╯",
+    "",
+    "",
+    "",
+];
+const STARTUP_FULL_WORDMARK_MARGIN: usize = 8;
+const STARTUP_COMPACT_WORDMARK_MARGIN: usize = 4;
+const STARTUP_LOGO_EYE_FRAME_MS: u64 = 80;
+const STARTUP_TIP_HOLD_MS: u64 = 2600;
+const STARTUP_TIP_FADE_MS: u64 = 420;
+const STARTUP_TIP_FRAME_MS: u64 = 70;
+const STARTUP_TIP_INTENSITY_STEPS: u64 = 6;
+const PROVIDER_ERROR_MAX_DETAIL_ITEMS: usize = 3;
+const PROVIDER_ERROR_MAX_WRAPPED_LINES_PER_DETAIL: usize = 2;
+const IMAGE_PREVIEW_MAX_BYTES: u64 = 12 * 1024 * 1024;
+const IMAGE_PREVIEW_MAX_COLUMNS: u32 = 64;
+const IMAGE_PREVIEW_MAX_ROWS: u32 = 12;
+const READ_TEXT_PREVIEW_MAX_LINES: usize = 6;
+const TOOL_STREAM_PREVIEW_MAX_LINES: usize = 4;
 
 pub enum MessageContent {
     RenderedLines(Vec<String>),
@@ -47,6 +147,7 @@ pub enum MessageContent {
         version: String,
         tutorial: String,
         sections: Vec<(String, Vec<String>)>,
+        tips: Vec<String>,
     },
 }
 
@@ -73,11 +174,24 @@ pub struct MessageList {
     snap_scroll_on_next_render: bool,
     render_revision: u64,
     render_cache: Option<RenderCache>,
+    viewport_cache: Option<ViewportRenderCache>,
+    startup_animation_started_at: Instant,
+    last_startup_animation_signature: Option<u64>,
 }
 
 struct RenderCache {
     width: u16,
     revision: u64,
+    lines: Vec<Line<'static>>,
+}
+
+#[derive(Clone)]
+struct ViewportRenderCache {
+    width: u16,
+    revision: u64,
+    height: u16,
+    scroll_start: usize,
+    top_padding: usize,
     lines: Vec<Line<'static>>,
 }
 
@@ -94,6 +208,9 @@ impl MessageList {
             snap_scroll_on_next_render: true,
             render_revision: 0,
             render_cache: None,
+            viewport_cache: None,
+            startup_animation_started_at: Instant::now(),
+            last_startup_animation_signature: None,
         }
     }
 
@@ -125,18 +242,72 @@ impl MessageList {
         self.invalidate_render_cache();
     }
 
+    pub fn clear_transcript(&mut self) {
+        self.messages.clear();
+        self.scroll_offset = 0;
+        self.last_scroll_start = 0;
+        self.follow_tail = true;
+        self.snap_scroll_on_next_render = true;
+        self.last_startup_animation_signature = None;
+        self.invalidate_render_cache();
+    }
+
+    pub fn latest_copy_text(&self) -> Option<String> {
+        self.messages
+            .iter()
+            .rev()
+            .filter(|message| message.role != "System")
+            .filter_map(message_plain_text)
+            .find(|text| !text.trim().is_empty())
+            .or_else(|| {
+                self.messages
+                    .iter()
+                    .rev()
+                    .filter_map(message_plain_text)
+                    .find(|text| !text.trim().is_empty())
+            })
+    }
+
+    pub fn export_markdown(&self) -> String {
+        let mut sections = Vec::new();
+        for message in &self.messages {
+            let Some(body) = message_plain_text(message) else {
+                continue;
+            };
+            if body.trim().is_empty() {
+                continue;
+            }
+            sections.push(format!("## {}\n\n{}", message.role, body.trim_end()));
+        }
+        sections.join("\n\n")
+    }
+
+    #[cfg(test)]
     pub fn add_startup_header(
         &mut self,
         version: String,
         tutorial: String,
         sections: Vec<(String, Vec<String>)>,
     ) {
+        self.add_startup_header_with_tips(version, tutorial, sections, Vec::new());
+    }
+
+    pub fn add_startup_header_with_tips(
+        &mut self,
+        version: String,
+        tutorial: String,
+        sections: Vec<(String, Vec<String>)>,
+        tips: Vec<String>,
+    ) {
+        self.startup_animation_started_at = Instant::now();
+        self.last_startup_animation_signature = None;
         self.messages.push(Message {
             role: "System".to_string(),
             contents: vec![MessageContent::StartupHeader {
                 version,
                 tutorial,
                 sections,
+                tips,
             }],
         });
         self.scroll_offset = 0;
@@ -215,37 +386,19 @@ impl MessageList {
                         version,
                         tutorial,
                         sections,
+                        tips,
                     } => {
-                        text_lines.extend(render_startup_version_lines(version, width));
-                        for wrapped in crate::presentation::render_wrapped_display_line(
+                        let elapsed = self.startup_animation_started_at.elapsed();
+                        let tip_state = startup_tip_render_state(tips, elapsed);
+                        let logo_frame = startup_logo_eye_frame_index(elapsed);
+                        text_lines.extend(render_startup_header_lines(
+                            version,
                             tutorial,
-                            width as usize,
-                        ) {
-                            text_lines.push(Line::from(vec![Span::styled(
-                                wrapped,
-                                Style::default().fg(PI_DIM_GRAY),
-                            )]));
-                        }
-                        text_lines.push(Line::from(""));
-
-                        for (title, values) in sections {
-                            text_lines.push(Line::from(vec![Span::styled(
-                                format!("[{title}]"),
-                                Style::default().fg(PI_HEADING),
-                            )]));
-                            for value in values {
-                                for wrapped in crate::presentation::render_wrapped_display_line(
-                                    format!("  {value}").as_str(),
-                                    width as usize,
-                                ) {
-                                    text_lines.push(Line::from(vec![Span::styled(
-                                        wrapped,
-                                        Style::default().fg(PI_GRAY).add_modifier(Modifier::DIM),
-                                    )]));
-                                }
-                            }
-                            text_lines.push(Line::from(""));
-                        }
+                            sections,
+                            tip_state.as_ref(),
+                            logo_frame,
+                            width,
+                        ));
                     }
                     MessageContent::Markdown(md) => {
                         let is_user = msg.role == "You";
@@ -257,7 +410,7 @@ impl MessageList {
                             let mut padding =
                                 Line::from(vec![Span::raw(" ".repeat(width as usize))]);
                             for span in &mut padding.spans {
-                                span.style = span.style.bg(PI_USER_MSG_BG);
+                                span.style = span.style.bg(SURFACE_USER_MSG_BG);
                             }
                             text_lines.push(padding);
 
@@ -267,7 +420,7 @@ impl MessageList {
                             let mut padding =
                                 Line::from(vec![Span::raw(" ".repeat(width as usize))]);
                             for span in &mut padding.spans {
-                                span.style = span.style.bg(PI_USER_MSG_BG);
+                                span.style = span.style.bg(SURFACE_USER_MSG_BG);
                             }
                             text_lines.push(padding);
                         } else {
@@ -322,15 +475,15 @@ impl MessageList {
             let is_user_bg = line
                 .spans
                 .iter()
-                .any(|span| span.style.bg == Some(PI_USER_MSG_BG));
+                .any(|span| span.style.bg == Some(SURFACE_USER_MSG_BG));
             let is_compaction_bg = line
                 .spans
                 .iter()
-                .any(|span| span.style.bg == Some(PI_COMPACTION_BG));
+                .any(|span| span.style.bg == Some(SURFACE_COMPACTION_BG));
             let background = if is_user_bg {
-                Some(PI_USER_MSG_BG)
+                Some(SURFACE_USER_MSG_BG)
             } else if is_compaction_bg {
-                Some(PI_COMPACTION_BG)
+                Some(SURFACE_COMPACTION_BG)
             } else {
                 None
             };
@@ -347,6 +500,7 @@ impl MessageList {
     fn invalidate_render_cache(&mut self) {
         self.render_revision = self.render_revision.saturating_add(1);
         self.render_cache = None;
+        self.viewport_cache = None;
         if self.follow_tail {
             self.snap_scroll_on_next_render = true;
         }
@@ -368,16 +522,28 @@ impl MessageList {
 
         self.page_step = page_step_for_height(area.height);
         self.mouse_step = mouse_step_for_height(area.height);
-        let text_lines = self.get_rendered_lines(area.width);
+        let startup_mode = self.startup_mode_active();
+        let (rendered_line_count, top_padding) = {
+            let rendered_lines = self.ensure_render_cache(area.width);
+            let top_padding = if startup_mode {
+                startup_top_padding(rendered_lines.len(), area.height)
+            } else {
+                0
+            };
+            (rendered_lines.len(), top_padding)
+        };
 
-        let total_lines = text_lines.len();
+        let total_lines = rendered_line_count.saturating_add(top_padding);
         if total_lines == 0 {
             self.last_render_height = area.height;
             self.last_scroll_start = 0;
             self.scroll_offset = 0;
             self.follow_tail = true;
             self.snap_scroll_on_next_render = false;
-            f.render_widget(Paragraph::new(Text::from(text_lines)), area);
+            f.render_widget(
+                Paragraph::new(Text::from(Vec::<Line<'static>>::new())),
+                area,
+            );
             return;
         }
         let max_scroll_start = total_lines.saturating_sub(area.height as usize);
@@ -387,7 +553,13 @@ impl MessageList {
         } else if !self.snap_scroll_on_next_render {
             self.last_scroll_start.min(max_scroll_start)
         } else {
-            adjust_scroll_start_for_message_boundary(&text_lines, raw_scroll_val)
+            let text_lines = self.get_rendered_lines(area.width);
+            let centered_lines = if startup_mode {
+                vertically_center_startup_lines(text_lines, area.height)
+            } else {
+                text_lines
+            };
+            adjust_scroll_start_for_message_boundary(&centered_lines, raw_scroll_val)
         };
         scroll_start = scroll_start.min(max_scroll_start);
         self.last_scroll_start = scroll_start;
@@ -396,9 +568,54 @@ impl MessageList {
         self.scroll_offset = max_scroll_start.saturating_sub(scroll_start) as u16;
         self.snap_scroll_on_next_render = false;
 
-        let paragraph = Paragraph::new(Text::from(text_lines)).scroll((scroll_start as u16, 0));
+        let visible_lines = self.viewport_lines(area.width, area.height, scroll_start, top_padding);
+        let paragraph = Paragraph::new(Text::from(visible_lines));
 
         f.render_widget(paragraph, area);
+    }
+
+    fn viewport_lines(
+        &mut self,
+        width: u16,
+        height: u16,
+        scroll_start: usize,
+        top_padding: usize,
+    ) -> Vec<Line<'static>> {
+        if let Some(cache) = self.viewport_cache.as_ref()
+            && cache.width == width
+            && cache.revision == self.render_revision
+            && cache.height == height
+            && cache.scroll_start == scroll_start
+            && cache.top_padding == top_padding
+        {
+            return cache.lines.clone();
+        }
+
+        let visible_end = scroll_start.saturating_add(height as usize);
+        let lines = {
+            let rendered_lines = self.ensure_render_cache(width);
+            (scroll_start..visible_end)
+                .filter_map(|visual_index| {
+                    if visual_index < top_padding {
+                        Some(Line::from(""))
+                    } else {
+                        rendered_lines
+                            .get(visual_index.saturating_sub(top_padding))
+                            .cloned()
+                    }
+                })
+                .collect::<Vec<_>>()
+        };
+
+        self.viewport_cache = Some(ViewportRenderCache {
+            width,
+            revision: self.render_revision,
+            height,
+            scroll_start,
+            top_padding,
+            lines: lines.clone(),
+        });
+        lines
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) {
@@ -465,6 +682,86 @@ impl MessageList {
 
     pub fn is_following_tail(&self) -> bool {
         self.follow_tail
+    }
+
+    pub fn refresh_startup_animation(&mut self) -> bool {
+        if reduced_motion_enabled() {
+            self.last_startup_animation_signature = None;
+            return false;
+        }
+        let signature = self.startup_animation_signature();
+        if signature == self.last_startup_animation_signature {
+            return false;
+        }
+        self.last_startup_animation_signature = signature;
+        if signature.is_some() {
+            self.invalidate_render_cache();
+            return true;
+        }
+        false
+    }
+
+    pub fn startup_animation_active(&self) -> bool {
+        self.startup_animation_signature().is_some()
+    }
+
+    fn startup_animation_signature(&self) -> Option<u64> {
+        if reduced_motion_enabled() {
+            return None;
+        }
+        if !self.startup_mode_active() {
+            return None;
+        }
+
+        let elapsed = self.startup_animation_started_at.elapsed();
+        let logo_frame = startup_logo_eye_frame_index(elapsed) as u64;
+        let tip_signature = self
+            .startup_tips()
+            .and_then(|tips| {
+                let tip_count = tips.len();
+                let (_, intensity_step) = startup_tip_cycle_state(tip_count, elapsed)?;
+                let tip_index = startup_tip_index(tip_count, elapsed)?;
+                Some(((tip_index as u64) << 8) | intensity_step)
+            })
+            .unwrap_or(0);
+
+        Some((logo_frame << 16) | tip_signature)
+    }
+
+    fn startup_tips(&self) -> Option<&[String]> {
+        if self
+            .messages
+            .iter()
+            .any(|message| message.role == "You" || message.role == "Assistant")
+        {
+            return None;
+        }
+
+        self.messages
+            .iter()
+            .flat_map(|message| message.contents.iter())
+            .find_map(|content| match content {
+                MessageContent::StartupHeader { tips, .. } if !tips.is_empty() => {
+                    Some(tips.as_slice())
+                }
+                MessageContent::RenderedLines(_)
+                | MessageContent::Markdown(_)
+                | MessageContent::Diff { .. }
+                | MessageContent::Image { .. }
+                | MessageContent::ToolCall { .. }
+                | MessageContent::Error { .. }
+                | MessageContent::Compaction { .. }
+                | MessageContent::StartupHeader { .. } => None,
+            })
+    }
+
+    fn startup_mode_active(&self) -> bool {
+        self.messages.iter().all(|message| message.role == "System")
+            && self
+                .messages
+                .iter()
+                .flat_map(|message| message.contents.iter())
+                .any(|content| matches!(content, MessageContent::StartupHeader { .. }))
     }
 }
 
@@ -555,23 +852,23 @@ fn dominant_block_bg(line: &Line<'static>) -> Option<Color> {
     if line
         .spans
         .iter()
-        .any(|span| span.style.bg == Some(PI_USER_MSG_BG))
+        .any(|span| span.style.bg == Some(SURFACE_USER_MSG_BG))
     {
-        return Some(PI_USER_MSG_BG);
+        return Some(SURFACE_USER_MSG_BG);
     }
     if line
         .spans
         .iter()
-        .any(|span| span.style.bg == Some(PI_TOOL_BG))
+        .any(|span| span.style.bg == Some(SURFACE_TOOL_BG))
     {
-        return Some(PI_TOOL_BG);
+        return Some(SURFACE_TOOL_BG);
     }
     if line
         .spans
         .iter()
-        .any(|span| span.style.bg == Some(PI_COMPACTION_BG))
+        .any(|span| span.style.bg == Some(SURFACE_COMPACTION_BG))
     {
-        return Some(PI_COMPACTION_BG);
+        return Some(SURFACE_COMPACTION_BG);
     }
     None
 }
@@ -610,9 +907,11 @@ fn render_rendered_system_line(line: &str, width: u16) -> Vec<Line<'static>> {
     }
 
     let style = if line.trim_start().starts_with("… +") {
-        Style::default().fg(PI_GRAY).add_modifier(Modifier::DIM)
+        Style::default()
+            .fg(SURFACE_GRAY)
+            .add_modifier(Modifier::DIM)
     } else {
-        Style::default().fg(PI_DARK_GRAY)
+        Style::default().fg(SURFACE_DARK_GRAY)
     };
 
     crate::presentation::render_wrapped_display_line(line, content_width)
@@ -629,7 +928,9 @@ fn render_system_activity_headline(line: &str, content_width: usize) -> Option<V
         (
             "Ran",
             body,
-            Style::default().fg(PI_ACCENT).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(SURFACE_ACCENT)
+                .add_modifier(Modifier::BOLD),
         )
     } else if let Some(body) = rest.strip_prefix("Explored ") {
         (
@@ -643,13 +944,17 @@ fn render_system_activity_headline(line: &str, content_width: usize) -> Option<V
         (
             "Called",
             body,
-            Style::default().fg(PI_ACCENT).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(SURFACE_ACCENT)
+                .add_modifier(Modifier::BOLD),
         )
     } else if let Some(body) = rest.strip_prefix("Closed ") {
         (
             "Closed",
             body,
-            Style::default().fg(PI_GRAY).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(SURFACE_GRAY)
+                .add_modifier(Modifier::BOLD),
         )
     } else {
         return None;
@@ -667,7 +972,7 @@ fn render_system_activity_headline(line: &str, content_width: usize) -> Option<V
             .map(|(index, wrapped_line)| {
                 if index == 0 {
                     Line::from(vec![
-                        Span::styled("• ", Style::default().fg(PI_GREEN)),
+                        Span::styled("• ", Style::default().fg(SURFACE_GREEN)),
                         Span::styled(format!("{label} "), label_style),
                         Span::styled(
                             wrapped_line,
@@ -720,9 +1025,11 @@ fn render_system_activity_child(line: &str, content_width: usize) -> Option<Vec<
                         Span::raw("  "),
                         Span::styled(
                             "└ ",
-                            Style::default().fg(PI_GRAY).add_modifier(Modifier::DIM),
+                            Style::default()
+                                .fg(SURFACE_GRAY)
+                                .add_modifier(Modifier::DIM),
                         ),
-                        Span::styled(format!("{label} "), Style::default().fg(PI_ACCENT)),
+                        Span::styled(format!("{label} "), Style::default().fg(SURFACE_ACCENT)),
                         Span::styled(
                             wrapped_line,
                             Style::default().fg(ratatui::style::Color::White),
@@ -756,30 +1063,533 @@ fn content_renders_colored_block(role: &str, content: &MessageContent) -> bool {
     }
 }
 
-fn render_startup_version_lines(version: &str, width: u16) -> Vec<Line<'static>> {
-    crate::presentation::render_wrapped_text_line("", &format!("loong {version}"), width as usize)
+fn render_startup_header_lines(
+    version: &str,
+    tutorial: &str,
+    sections: &[(String, Vec<String>)],
+    tip_state: Option<&StartupTipRenderState>,
+    logo_frame: usize,
+    width: u16,
+) -> Vec<Line<'static>> {
+    let mut rendered = Vec::new();
+
+    rendered.push(Line::from(""));
+    rendered.push(Line::from(""));
+    rendered.extend(render_centered_logo_lines(width, logo_frame));
+    rendered.push(Line::from(""));
+    rendered.extend(render_centered_startup_text_lines(
+        version,
+        width,
+        Style::default()
+            .fg(SURFACE_ACCENT)
+            .add_modifier(Modifier::BOLD),
+    ));
+
+    let startup_status = sections
+        .iter()
+        .filter_map(|(title, values)| {
+            values.first().map(|value| StartupStatusItem {
+                title: title.clone(),
+                value: value.clone(),
+                count: value.parse::<usize>().ok(),
+            })
+        })
+        .collect::<Vec<_>>();
+    if !startup_status.is_empty() {
+        rendered.push(Line::from(""));
+        rendered.extend(render_startup_status_lines(&startup_status, width));
+    }
+
+    rendered.push(Line::from(""));
+    let mut rendered_tip = false;
+    if let Some(tip_state) = tip_state {
+        rendered.extend(render_startup_tip_lines(tip_state, width));
+        rendered_tip = true;
+    } else if !tutorial.trim().is_empty() {
+        let fallback_tip = StartupTipRenderState::steady(format!("• {tutorial}"));
+        rendered.extend(render_startup_tip_lines(&fallback_tip, width));
+        rendered_tip = true;
+    }
+    if rendered_tip {
+        rendered.push(Line::from(""));
+    }
+
+    rendered
+}
+
+#[derive(Debug, Clone)]
+struct StartupStatusItem {
+    title: String,
+    value: String,
+    count: Option<usize>,
+}
+
+impl StartupStatusItem {
+    fn display_width(&self) -> usize {
+        crate::presentation::display_width(self.label_text().as_str())
+            + self
+                .marker_text()
+                .map_or(0, |marker| 1 + crate::presentation::display_width(marker))
+    }
+
+    fn label_text(&self) -> String {
+        self.count.map_or_else(
+            || format!("{} · {}", self.title, self.value),
+            |count| format!("{} ({count})", self.title),
+        )
+    }
+
+    fn marker_text(&self) -> Option<&'static str> {
+        self.count.map(|count| if count > 0 { "✓" } else { "✗" })
+    }
+
+    fn marker_style(&self) -> Style {
+        let color = self
+            .count
+            .map(|count| {
+                if count > 0 {
+                    SURFACE_GREEN
+                } else {
+                    SURFACE_RED
+                }
+            })
+            .unwrap_or(SURFACE_GRAY);
+        Style::default().fg(color).add_modifier(Modifier::BOLD)
+    }
+
+    fn spans(&self) -> Vec<Span<'static>> {
+        let mut spans = vec![Span::styled(
+            self.label_text(),
+            Style::default()
+                .fg(SURFACE_GRAY)
+                .add_modifier(Modifier::BOLD),
+        )];
+        if let Some(marker) = self.marker_text() {
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(marker, self.marker_style()));
+        }
+        spans
+    }
+}
+
+fn render_startup_status_lines(items: &[StartupStatusItem], width: u16) -> Vec<Line<'static>> {
+    const GAP: &str = "   ";
+    let width = width as usize;
+    let gap_width = crate::presentation::display_width(GAP);
+    let joined_width = items
+        .iter()
+        .map(StartupStatusItem::display_width)
+        .sum::<usize>()
+        + gap_width.saturating_mul(items.len().saturating_sub(1));
+
+    if joined_width <= width {
+        let mut spans = vec![Span::raw(" ".repeat((width - joined_width) / 2))];
+        for (index, item) in items.iter().enumerate() {
+            if index > 0 {
+                spans.push(Span::raw(GAP));
+            }
+            spans.extend(item.spans());
+        }
+        return vec![Line::from(spans)];
+    }
+
+    items
+        .iter()
+        .map(|item| {
+            let item_width = item.display_width();
+            let mut spans = vec![Span::raw(" ".repeat(width.saturating_sub(item_width) / 2))];
+            spans.extend(item.spans());
+            Line::from(spans)
+        })
+        .collect()
+}
+
+fn render_centered_logo_lines(width: u16, logo_frame: usize) -> Vec<Line<'static>> {
+    let max_logo_width = STARTUP_WORDMARK
+        .iter()
+        .map(|line| crate::presentation::display_width(line))
+        .max()
+        .unwrap_or(0);
+    let compact_logo_width = STARTUP_COMPACT_WORDMARK
+        .iter()
+        .map(|line| crate::presentation::display_width(line))
+        .max()
+        .unwrap_or(0);
+
+    let available_full_logo_width = width as usize;
+    let (logo_lines, base_logo_lines): (Vec<String>, Vec<String>) =
+        if max_logo_width.saturating_add(STARTUP_FULL_WORDMARK_MARGIN) <= available_full_logo_width
+        {
+            (
+                startup_wordmark_eye_frame(logo_frame),
+                STARTUP_WORDMARK
+                    .iter()
+                    .map(|line| (*line).to_owned())
+                    .collect(),
+            )
+        } else if compact_logo_width.saturating_add(STARTUP_COMPACT_WORDMARK_MARGIN)
+            <= available_full_logo_width
+        {
+            (
+                STARTUP_COMPACT_WORDMARK
+                    .iter()
+                    .map(|line| (*line).to_owned())
+                    .collect(),
+                STARTUP_COMPACT_WORDMARK
+                    .iter()
+                    .map(|line| (*line).to_owned())
+                    .collect(),
+            )
+        } else {
+            (vec!["LOONG".to_owned()], vec!["LOONG".to_owned()])
+        };
+    let target_width = logo_lines
+        .iter()
+        .map(|line| crate::presentation::display_width(line))
+        .max()
+        .unwrap_or(0);
+
+    logo_lines
         .into_iter()
-        .map(|wrapped| {
-            if let Some(rest) = wrapped.strip_prefix("loong ") {
+        .zip(base_logo_lines)
+        .map(|(line, base_line)| {
+            let centered = center_text_for_width(
+                pad_text_to_display_width(line.as_str(), target_width).as_str(),
+                width as usize,
+            );
+            let centered_base = center_text_for_width(
+                pad_text_to_display_width(base_line.as_str(), target_width).as_str(),
+                width as usize,
+            );
+            startup_logo_line_spans(centered, centered_base)
+        })
+        .collect()
+}
+
+fn startup_wordmark_eye_frame(frame_index: usize) -> Vec<String> {
+    let Some(frame) = STARTUP_EYE_FRAMES
+        .get(frame_index)
+        .or_else(|| STARTUP_EYE_FRAMES.first())
+    else {
+        return STARTUP_WORDMARK
+            .iter()
+            .map(|line| (*line).to_owned())
+            .collect();
+    };
+
+    STARTUP_WORDMARK
+        .iter()
+        .enumerate()
+        .map(|(line_index, line)| {
+            let Some(interior_row_index) = line_index.checked_sub(1) else {
+                return (*line).to_owned();
+            };
+            let Some(pattern) = frame.get(interior_row_index) else {
+                return (*line).to_owned();
+            };
+            apply_startup_eye_pattern(line, pattern)
+        })
+        .collect()
+}
+
+fn startup_logo_eye_frame_index(elapsed: Duration) -> usize {
+    if reduced_motion_enabled() {
+        return 0;
+    }
+    if STARTUP_EYE_FRAMES.is_empty() {
+        return 0;
+    }
+
+    let sequence_step = elapsed.as_millis() as u64 / STARTUP_LOGO_EYE_FRAME_MS.max(1);
+    sequence_step as usize % STARTUP_EYE_FRAMES.len()
+}
+
+fn apply_startup_eye_pattern(line: &str, pattern: &str) -> String {
+    debug_assert_eq!(
+        pattern.chars().count(),
+        STARTUP_EYE_INTERIOR_WIDTH,
+        "startup eye pattern width must remain fixed"
+    );
+
+    let mut characters = line.chars().collect::<Vec<_>>();
+    let cavity = STARTUP_EYE_CAVITY.chars().collect::<Vec<_>>();
+    let pattern = pattern.chars().collect::<Vec<_>>();
+    let mut search_from = 0;
+
+    for _ in 0..2 {
+        let Some(cavity_start) = find_startup_eye_cavity(&characters, &cavity, search_from) else {
+            break;
+        };
+        let interior_start = cavity_start + 4;
+        for (offset, character) in pattern.iter().copied().enumerate() {
+            if let Some(slot) = characters.get_mut(interior_start + offset) {
+                *slot = character;
+            }
+        }
+        search_from = cavity_start + cavity.len();
+    }
+
+    characters.into_iter().collect()
+}
+
+fn find_startup_eye_cavity(haystack: &[char], needle: &[char], from: usize) -> Option<usize> {
+    if needle.is_empty() || haystack.len() < needle.len() || from >= haystack.len() {
+        return None;
+    }
+
+    haystack
+        .get(from..)
+        .and_then(|tail| {
+            tail.windows(needle.len())
+                .position(|window| window == needle)
+        })
+        .map(|offset| from + offset)
+}
+
+fn startup_logo_line_spans(line: String, base_line: String) -> Line<'static> {
+    let logo_style = Style::default()
+        .fg(SURFACE_ACCENT)
+        .add_modifier(Modifier::BOLD);
+    let mut spans = Vec::new();
+
+    for (character, base_character) in line.chars().zip(base_line.chars()) {
+        if character == ' ' {
+            spans.push(Span::raw(" "));
+        } else if base_character == ' ' && character != ' ' {
+            spans.push(Span::styled(
+                character.to_string(),
+                startup_logo_eye_style(character),
+            ));
+        } else {
+            spans.push(Span::styled(character.to_string(), logo_style));
+        }
+    }
+
+    Line::from(spans)
+}
+
+fn startup_logo_eye_style(character: char) -> Style {
+    let color = match character {
+        '░' | '▁' | '▂' => SURFACE_DIM_GRAY,
+        '▒' | '▃' | '▄' => SURFACE_GRAY,
+        '▓' | '▅' | '▆' => SURFACE_ACCENT,
+        '█' | '▇' => Color::White,
+        _ => Color::White,
+    };
+
+    Style::default().fg(color).add_modifier(Modifier::BOLD)
+}
+
+fn render_centered_startup_text_lines(text: &str, width: u16, style: Style) -> Vec<Line<'static>> {
+    let content_width = width.saturating_sub(4).max(1) as usize;
+    crate::presentation::render_wrapped_display_line(text, content_width)
+        .into_iter()
+        .map(|line| {
+            let centered = center_text_for_width(line.as_str(), width as usize);
+            Line::from(vec![Span::styled(centered, style)])
+        })
+        .collect()
+}
+
+fn center_text_for_width(text: &str, width: usize) -> String {
+    let text_width = crate::presentation::display_width(text);
+    if text_width >= width {
+        return text.to_owned();
+    }
+    let left_pad = (width - text_width) / 2;
+    format!("{}{}", " ".repeat(left_pad), text)
+}
+
+fn pad_text_to_display_width(text: &str, width: usize) -> String {
+    let text_width = crate::presentation::display_width(text);
+    if text_width >= width {
+        return text.to_owned();
+    }
+    format!("{}{}", text, " ".repeat(width - text_width))
+}
+
+#[derive(Debug, Clone)]
+struct StartupTipRenderState {
+    text: String,
+    bullet_color: Color,
+    text_color: Color,
+    emphasize: bool,
+}
+
+impl StartupTipRenderState {
+    fn steady(text: String) -> Self {
+        Self {
+            text,
+            bullet_color: SURFACE_ACCENT,
+            text_color: Color::White,
+            emphasize: true,
+        }
+    }
+}
+
+fn render_startup_tip_lines(tip_state: &StartupTipRenderState, width: u16) -> Vec<Line<'static>> {
+    let content_width = width.saturating_sub(6).max(1) as usize;
+    crate::presentation::render_wrapped_display_line(tip_state.text.as_str(), content_width)
+        .into_iter()
+        .map(|line| {
+            let centered = center_text_for_width(line.as_str(), width as usize);
+            let text_style = if tip_state.emphasize {
+                Style::default()
+                    .fg(tip_state.text_color)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(tip_state.text_color)
+            };
+            let indent_width = centered.len().saturating_sub(centered.trim_start().len());
+            let (indent, body) = centered.split_at(indent_width);
+            if let Some(rest) = body.strip_prefix("• ") {
                 Line::from(vec![
-                    Span::styled(
-                        "loong",
-                        Style::default().fg(PI_ACCENT).add_modifier(Modifier::BOLD),
-                    ),
-                    Span::raw(" "),
-                    Span::styled(
-                        rest.to_owned(),
-                        Style::default().fg(PI_GRAY).add_modifier(Modifier::DIM),
-                    ),
+                    Span::raw(indent.to_owned()),
+                    Span::styled("• ", Style::default().fg(tip_state.bullet_color)),
+                    Span::styled(rest.to_owned(), text_style),
                 ])
             } else {
-                Line::from(vec![Span::styled(
-                    wrapped,
-                    Style::default().fg(PI_GRAY).add_modifier(Modifier::DIM),
-                )])
+                Line::from(vec![Span::styled(centered, text_style)])
             }
         })
         .collect()
+}
+
+fn startup_tip_render_state(tips: &[String], elapsed: Duration) -> Option<StartupTipRenderState> {
+    let tip_count = tips.len();
+    if reduced_motion_enabled() {
+        return tips
+            .first()
+            .map(|tip| StartupTipRenderState::steady(format!("• {tip}")));
+    }
+    let tip_index = startup_tip_index(tip_count, elapsed)?;
+    let (_, intensity_step) = startup_tip_cycle_state(tip_count, elapsed)?;
+    let max_step = STARTUP_TIP_INTENSITY_STEPS.max(1);
+    let tip_text = format!("• {}", tips.get(tip_index)?);
+    let text_color =
+        interpolate_rgb_color(SURFACE_DIM_GRAY, Color::White, intensity_step, max_step);
+    let bullet_color =
+        interpolate_rgb_color(SURFACE_GRAY, SURFACE_ACCENT, intensity_step, max_step);
+
+    Some(StartupTipRenderState {
+        text: tip_text,
+        bullet_color,
+        text_color,
+        emphasize: intensity_step >= max_step.saturating_sub(1),
+    })
+}
+
+fn startup_tip_index(tip_count: usize, elapsed: Duration) -> Option<usize> {
+    let tip_count = tip_count.max(1) as u64;
+    let cycle_ms = STARTUP_TIP_HOLD_MS
+        .saturating_add(STARTUP_TIP_FADE_MS)
+        .saturating_add(STARTUP_TIP_FADE_MS);
+    let cycle_index = elapsed.as_millis() as u64 / cycle_ms.max(1);
+    let cycle_phase = elapsed.as_millis() as u64 % cycle_ms.max(1);
+    let current = cycle_index % tip_count;
+
+    if cycle_phase < STARTUP_TIP_HOLD_MS.saturating_add(STARTUP_TIP_FADE_MS) {
+        Some(current as usize)
+    } else {
+        Some(((current + 1) % tip_count) as usize)
+    }
+}
+
+fn startup_tip_cycle_state(tip_count: usize, elapsed: Duration) -> Option<(usize, u64)> {
+    if tip_count == 0 {
+        return None;
+    }
+
+    let cycle_ms = STARTUP_TIP_HOLD_MS
+        .saturating_add(STARTUP_TIP_FADE_MS)
+        .saturating_add(STARTUP_TIP_FADE_MS);
+    let animation_ms = elapsed.as_millis() as u64 / STARTUP_TIP_FRAME_MS.max(1);
+    let cycle_index = animation_ms.saturating_mul(STARTUP_TIP_FRAME_MS) / cycle_ms.max(1);
+    let cycle_phase = animation_ms.saturating_mul(STARTUP_TIP_FRAME_MS) % cycle_ms.max(1);
+    let current_index = (cycle_index % tip_count as u64) as usize;
+    let intensity = if cycle_phase < STARTUP_TIP_HOLD_MS {
+        STARTUP_TIP_INTENSITY_STEPS
+    } else if cycle_phase < STARTUP_TIP_HOLD_MS.saturating_add(STARTUP_TIP_FADE_MS) {
+        let fade_progress = cycle_phase.saturating_sub(STARTUP_TIP_HOLD_MS);
+        STARTUP_TIP_INTENSITY_STEPS.saturating_sub(
+            fade_progress.saturating_mul(STARTUP_TIP_INTENSITY_STEPS) / STARTUP_TIP_FADE_MS.max(1),
+        )
+    } else {
+        let fade_progress = cycle_phase
+            .saturating_sub(STARTUP_TIP_HOLD_MS)
+            .saturating_sub(STARTUP_TIP_FADE_MS);
+        fade_progress.saturating_mul(STARTUP_TIP_INTENSITY_STEPS) / STARTUP_TIP_FADE_MS.max(1)
+    };
+
+    Some((current_index, intensity.min(STARTUP_TIP_INTENSITY_STEPS)))
+}
+
+fn interpolate_rgb_color(from: Color, to: Color, numerator: u64, denominator: u64) -> Color {
+    let (from_r, from_g, from_b) = rgb_channels(from);
+    let (to_r, to_g, to_b) = rgb_channels(to);
+    let denominator = denominator.max(1);
+
+    let blend = |start: u8, end: u8| -> u8 {
+        let start = start as i64;
+        let end = end as i64;
+        let delta = end - start;
+        let step = start + delta * numerator as i64 / denominator as i64;
+        step.clamp(0, 255) as u8
+    };
+
+    Color::Rgb(
+        blend(from_r, to_r),
+        blend(from_g, to_g),
+        blend(from_b, to_b),
+    )
+}
+
+fn rgb_channels(color: Color) -> (u8, u8, u8) {
+    match color {
+        Color::Rgb(r, g, b) => (r, g, b),
+        Color::Reset => (255, 255, 255),
+        Color::Red => (255, 0, 0),
+        Color::Green => (0, 128, 0),
+        Color::Yellow => (255, 255, 0),
+        Color::Blue => (0, 0, 255),
+        Color::Magenta => (255, 0, 255),
+        Color::Cyan => (0, 255, 255),
+        Color::White => (255, 255, 255),
+        Color::Black => (0, 0, 0),
+        Color::Gray => (128, 128, 128),
+        Color::DarkGray => (64, 64, 64),
+        Color::LightRed => (255, 102, 102),
+        Color::LightGreen => (144, 238, 144),
+        Color::LightYellow => (255, 255, 153),
+        Color::LightBlue => (173, 216, 230),
+        Color::LightMagenta => (238, 130, 238),
+        Color::LightCyan => (224, 255, 255),
+        Color::Indexed(index) => (index, index, index),
+    }
+}
+
+fn vertically_center_startup_lines(
+    mut lines: Vec<Line<'static>>,
+    available_height: u16,
+) -> Vec<Line<'static>> {
+    let top_padding = startup_top_padding(lines.len(), available_height);
+    if top_padding == 0 {
+        return lines;
+    }
+
+    let mut centered = Vec::with_capacity(lines.len() + top_padding);
+    centered.extend((0..top_padding).map(|_| Line::from("")));
+    centered.append(&mut lines);
+    centered
+}
+
+fn startup_top_padding(line_count: usize, available_height: u16) -> usize {
+    let available_height = available_height as usize;
+    if line_count == 0 || line_count >= available_height {
+        return 0;
+    }
+
+    ((available_height - line_count) / 2).max(2)
 }
 
 fn wrap_assistant_markdown_lines(lines: Vec<Line<'static>>, width: u16) -> Vec<Line<'static>> {
@@ -854,16 +1664,60 @@ fn wrap_assistant_markdown_lines(lines: Vec<Line<'static>>, width: u16) -> Vec<L
         }
 
         flush_paragraph(&mut rendered, &mut paragraph_buffer, content_width);
-        rendered.extend(render_assistant_plain_line(
-            plain.as_str(),
-            content_width,
-            assistant_line_style(&plain),
-        ));
+        if is_assistant_table_line(plain.as_str()) {
+            rendered.extend(render_assistant_table_line(plain.as_str(), content_width));
+        } else {
+            rendered.extend(render_assistant_plain_line(
+                plain.as_str(),
+                content_width,
+                assistant_line_style(&plain),
+            ));
+        }
     }
 
     flush_paragraph(&mut rendered, &mut paragraph_buffer, content_width);
 
     rendered
+}
+
+fn is_assistant_table_line(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.starts_with('┌')
+        || trimmed.starts_with('├')
+        || trimmed.starts_with('└')
+        || trimmed.starts_with('│')
+}
+
+fn render_assistant_table_line(line: &str, content_width: usize) -> Vec<Line<'static>> {
+    if crate::presentation::display_width(line) > content_width {
+        return render_assistant_plain_line(line, content_width, assistant_line_style(line));
+    }
+
+    let border_style = Style::default().fg(SURFACE_DIM_GRAY);
+    let cell_style = Style::default().fg(Color::White);
+    let separator_line = line
+        .trim()
+        .chars()
+        .all(|ch| ch.is_whitespace() || is_table_border_char(ch));
+    let mut spans = vec![Span::raw("  ")];
+
+    for ch in line.chars() {
+        let style = if separator_line || is_table_border_char(ch) {
+            border_style
+        } else {
+            cell_style
+        };
+        spans.push(Span::styled(ch.to_string(), style));
+    }
+
+    vec![Line::from(spans)]
+}
+
+fn is_table_border_char(ch: char) -> bool {
+    matches!(
+        ch,
+        '┌' | '┬' | '┐' | '├' | '┼' | '┤' | '└' | '┴' | '┘' | '─' | '│'
+    )
 }
 
 fn render_assistant_plain_line(
@@ -878,7 +1732,7 @@ fn render_assistant_plain_line(
 }
 
 fn render_assistant_code_line(line: &str, content_width: usize) -> Vec<Line<'static>> {
-    let code_style = Style::default().fg(PI_GREEN);
+    let code_style = Style::default().fg(SURFACE_GREEN);
     let (gutter, code) = line
         .strip_prefix("  ")
         .map_or(("", line), |rest| ("  ", rest));
@@ -1016,9 +1870,11 @@ fn contains_cjk(text: &str) -> bool {
 fn assistant_line_style(line: &str) -> Style {
     let trimmed = line.trim_start();
     if trimmed.starts_with('#') {
-        Style::default().fg(PI_HEADING).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(SURFACE_HEADING)
+            .add_modifier(Modifier::BOLD)
     } else if trimmed.starts_with("```") {
-        Style::default().fg(PI_DIM_GRAY)
+        Style::default().fg(SURFACE_DIM_GRAY)
     } else if trimmed.starts_with('┌')
         || trimmed.starts_with('├')
         || trimmed.starts_with('└')
@@ -1026,12 +1882,12 @@ fn assistant_line_style(line: &str) -> Style {
         || trimmed.starts_with("┃")
         || trimmed.starts_with('>')
     {
-        Style::default().fg(PI_GRAY)
+        Style::default().fg(SURFACE_GRAY)
     } else if trimmed.starts_with("- ") || trimmed.starts_with("* ") || trimmed.starts_with("• ")
     {
         Style::default().fg(ratatui::style::Color::White)
     } else if trimmed.starts_with("[image]") {
-        Style::default().fg(PI_ACCENT)
+        Style::default().fg(SURFACE_ACCENT)
     } else {
         Style::default().fg(ratatui::style::Color::White)
     }
@@ -1041,12 +1897,12 @@ fn user_block_line(mut line: Line<'static>) -> Line<'static> {
     line.spans.insert(0, Span::raw("  "));
     if line.spans.is_empty() {
         line.spans
-            .push(Span::styled("", Style::default().bg(PI_USER_MSG_BG)));
+            .push(Span::styled("", Style::default().bg(SURFACE_USER_MSG_BG)));
         return line;
     }
 
     for span in &mut line.spans {
-        span.style = span.style.bg(PI_USER_MSG_BG);
+        span.style = span.style.bg(SURFACE_USER_MSG_BG);
     }
     line
 }
@@ -1461,6 +2317,67 @@ fn parse_compaction_content(text: &str) -> MessageContent {
     }
 }
 
+fn message_plain_text(message: &Message) -> Option<String> {
+    let parts = message
+        .contents
+        .iter()
+        .filter_map(content_plain_text)
+        .filter(|part| !part.trim().is_empty())
+        .collect::<Vec<_>>();
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("\n\n"))
+    }
+}
+
+fn content_plain_text(content: &MessageContent) -> Option<String> {
+    match content {
+        MessageContent::RenderedLines(lines) => Some(lines.join("\n")),
+        MessageContent::Markdown(text) => Some(text.clone()),
+        MessageContent::Diff { title, content } => {
+            let mut rendered = Vec::new();
+            if let Some(title) = title {
+                rendered.push(format!("### {title}"));
+            }
+            rendered.push("```diff".to_owned());
+            rendered.push(content.clone());
+            rendered.push("```".to_owned());
+            Some(rendered.join("\n"))
+        }
+        MessageContent::Image { alt, url } => Some(format!("![{alt}]({url})")),
+        MessageContent::ToolCall {
+            title,
+            lines,
+            status,
+        } => {
+            let status = match status {
+                ToolStatus::Pending => "pending",
+                ToolStatus::Success => "success",
+                ToolStatus::Error => "error",
+            };
+            let mut rendered = vec![format!("### {title} ({status})")];
+            rendered.extend(lines.iter().cloned());
+            Some(rendered.join("\n"))
+        }
+        MessageContent::Error {
+            title,
+            summary,
+            details,
+        } => {
+            let mut rendered = vec![format!("### {title}"), summary.clone()];
+            rendered.extend(details.iter().map(|detail| format!("- {detail}")));
+            Some(rendered.join("\n"))
+        }
+        MessageContent::Compaction {
+            turn_count,
+            summary,
+            ..
+        } => Some(format!("### Compaction ({turn_count} turns)\n{summary}")),
+        MessageContent::StartupHeader { .. } => None,
+    }
+}
+
 fn infer_tool_status(lines: &[String]) -> ToolStatus {
     let lower = lines.join("\n").to_ascii_lowercase();
     if lower.contains("[failed]")
@@ -1587,17 +2504,1344 @@ fn render_section_markdown(section: &TuiSectionSpec) -> String {
 fn render_tool_block_lines(
     _title: &str,
     lines: &[String],
-    _status: ToolStatus,
+    status: ToolStatus,
     width: u16,
 ) -> Vec<Line<'static>> {
     let mut rendered = Vec::new();
     let lines = dedupe_tool_activity_detail_lines(lines);
+    if let Some(read_preview) = read_tool_preview_from_lines(&lines) {
+        return render_read_tool_preview_block(&read_preview, width);
+    }
+    if let Some(run_preview) = run_tool_preview_from_lines(&lines, status) {
+        return render_run_tool_preview_block(&run_preview, width);
+    }
+    if let Some(inspect_preview) = inspect_tool_preview_from_lines(&lines, status) {
+        return render_inspect_tool_preview_block(&inspect_preview, width);
+    }
     rendered.push(Line::from(""));
     for line in &lines {
         rendered.extend(render_tool_detail_lines(line, width));
     }
     rendered.push(Line::from(""));
     rendered
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReadToolPreview {
+    display_path: Option<String>,
+    local_path: Option<PathBuf>,
+    mime: Option<String>,
+    summary: Option<String>,
+    is_image: bool,
+    text_excerpt: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReadToolRequest {
+    path: String,
+    offset: Option<u64>,
+    limit: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RunToolPreview {
+    tool_name: String,
+    command: String,
+    status: ToolStatus,
+    stdout: ToolStreamPreview,
+    stderr: ToolStreamPreview,
+    metrics: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InspectToolPreview {
+    kind: &'static str,
+    tool_name: String,
+    primary: String,
+    status: ToolStatus,
+    stdout: ToolStreamPreview,
+    stderr: ToolStreamPreview,
+    metrics: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct ToolStreamPreview {
+    lines: Vec<String>,
+    omitted_count: usize,
+    truncated_from_start: bool,
+}
+
+fn read_tool_preview_from_lines(lines: &[String]) -> Option<ReadToolPreview> {
+    let read_tool_name = lines
+        .iter()
+        .filter_map(|line| activity_tool_name(line))
+        .find(|name| is_read_activity_tool_name(name))
+        .map(normalized_activity_tool_name);
+    let has_read_tool = read_tool_name.is_some();
+    let summary = lines
+        .iter()
+        .find_map(|line| extract_read_image_summary(line));
+    let mime = summary
+        .as_deref()
+        .and_then(extract_image_mime)
+        .or_else(|| lines.iter().find_map(|line| extract_image_mime(line)));
+    let request = lines
+        .iter()
+        .find_map(|line| extract_read_tool_request(line));
+    let source_path = request
+        .as_ref()
+        .map(|request| request.path.clone())
+        .or_else(|| lines.iter().find_map(|line| extract_tool_path(line)));
+    let display_path = request
+        .as_ref()
+        .map(format_read_request_display)
+        .or_else(|| source_path.as_deref().map(shorten_display_path));
+    let local_path = source_path
+        .as_deref()
+        .and_then(resolve_local_renderable_image_path);
+    let path_looks_like_image = local_path.as_deref().is_some_and(path_has_image_extension);
+    let output_is_image = mime
+        .as_deref()
+        .is_some_and(|mime| mime.starts_with("image/"));
+
+    if !(has_read_tool || output_is_image || path_looks_like_image) {
+        return None;
+    }
+    let is_image = output_is_image || path_looks_like_image;
+    if !is_image && display_path.is_none() {
+        return None;
+    }
+
+    Some(ReadToolPreview {
+        display_path,
+        local_path,
+        mime,
+        summary,
+        is_image,
+        text_excerpt: if is_image {
+            Vec::new()
+        } else {
+            extract_read_text_excerpt(lines)
+        },
+    })
+}
+
+fn run_tool_preview_from_lines(lines: &[String], status: ToolStatus) -> Option<RunToolPreview> {
+    let tool_name = lines
+        .iter()
+        .filter_map(|line| activity_tool_name(line))
+        .find_map(|name| {
+            let normalized = normalized_activity_tool_name(name);
+            is_run_activity_tool_name(normalized.as_str()).then_some(normalized)
+        })?;
+    let command = lines.iter().find_map(|line| extract_tool_command(line))?;
+    let stdout = extract_tool_stream_tail_preview(lines, "stdout");
+    let stderr = extract_tool_stream_tail_preview(lines, "stderr");
+    let metrics = lines
+        .iter()
+        .find_map(|line| extract_tool_metrics_line(line.as_str()));
+
+    Some(RunToolPreview {
+        tool_name,
+        command,
+        status,
+        stdout,
+        stderr,
+        metrics,
+    })
+}
+
+fn inspect_tool_preview_from_lines(
+    lines: &[String],
+    status: ToolStatus,
+) -> Option<InspectToolPreview> {
+    let tool_name = lines
+        .iter()
+        .filter_map(|line| activity_tool_name(line))
+        .map(normalized_activity_tool_name)
+        .find(|name| {
+            is_search_activity_tool_name(name.as_str())
+                || is_list_activity_tool_name(name.as_str())
+                || is_glob_activity_tool_name(name.as_str())
+        })?;
+
+    let (kind, primary) = if is_search_activity_tool_name(tool_name.as_str()) {
+        ("search", extract_search_tool_summary(lines)?)
+    } else if is_list_activity_tool_name(tool_name.as_str()) {
+        ("list", extract_list_tool_summary(lines)?)
+    } else if is_glob_activity_tool_name(tool_name.as_str()) {
+        ("glob", extract_glob_tool_summary(lines)?)
+    } else {
+        return None;
+    };
+
+    let stdout = extract_tool_stream_preview(lines, "stdout");
+    let stderr = extract_tool_stream_preview(lines, "stderr");
+    let metrics = lines
+        .iter()
+        .find_map(|line| extract_tool_metrics_line(line.as_str()));
+
+    Some(InspectToolPreview {
+        kind,
+        tool_name,
+        primary,
+        status,
+        stdout,
+        stderr,
+        metrics,
+    })
+}
+
+fn normalized_activity_tool_name(name: &str) -> String {
+    name.trim_matches(|ch: char| ch == '`' || ch == '"' || ch == '\'')
+        .rsplit(['.', '/', ':'])
+        .next()
+        .unwrap_or(name)
+        .to_owned()
+}
+
+fn is_run_activity_tool_name(name: &str) -> bool {
+    matches!(
+        name,
+        "bash" | "shell" | "sh" | "exec_command" | "run_command" | "terminal" | "cmd"
+    )
+}
+
+fn is_search_activity_tool_name(name: &str) -> bool {
+    matches!(name, "grep" | "ripgrep" | "rg" | "find" | "find_text")
+}
+
+fn is_list_activity_tool_name(name: &str) -> bool {
+    matches!(
+        name,
+        "ls" | "list_directory" | "list_dir" | "read_dir" | "dir"
+    )
+}
+
+fn is_glob_activity_tool_name(name: &str) -> bool {
+    matches!(name, "glob" | "find_files" | "find_file" | "walk")
+}
+
+fn extract_tool_command(line: &str) -> Option<String> {
+    extract_tool_command_from_json(line)
+        .or_else(|| extract_tool_key_value(line, "cmd"))
+        .or_else(|| extract_tool_key_value(line, "command"))
+        .map(|command| command.trim().to_owned())
+        .filter(|command| !command.is_empty())
+}
+
+fn extract_tool_string_value(line: &str, keys: &[&str]) -> Option<String> {
+    extract_tool_string_value_from_json(line, keys).or_else(|| {
+        keys.iter()
+            .find_map(|key| extract_tool_key_value(line, key))
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+    })
+}
+
+fn extract_tool_string_value_from_json(line: &str, keys: &[&str]) -> Option<String> {
+    let start = line.find('{')?;
+    let end = line.rfind('}')?;
+    if end <= start {
+        return None;
+    }
+    let value = serde_json::from_str::<Value>(&line[start..=end]).ok()?;
+    first_string_field_recursive(&value, keys, 0)
+}
+
+fn extract_search_tool_summary(lines: &[String]) -> Option<String> {
+    let query = lines.iter().find_map(|line| {
+        extract_tool_string_value(line, &["query", "pattern", "needle", "text"])
+    })?;
+    let query = truncate_middle_display(query.as_str(), 48);
+    let path = lines
+        .iter()
+        .find_map(|line| extract_tool_path(line))
+        .map(|path| shorten_display_path(path.as_str()));
+
+    Some(if let Some(path) = path {
+        format!("\"{query}\" in {path}")
+    } else {
+        format!("\"{query}\"")
+    })
+}
+
+fn extract_list_tool_summary(lines: &[String]) -> Option<String> {
+    lines
+        .iter()
+        .find_map(|line| extract_tool_path(line))
+        .map(|path| shorten_display_path(path.as_str()))
+}
+
+fn extract_glob_tool_summary(lines: &[String]) -> Option<String> {
+    let pattern = lines.iter().find_map(|line| {
+        extract_tool_string_value(line, &["glob", "pattern", "query", "pathspec"])
+    })?;
+    let pattern = truncate_middle_display(pattern.as_str(), 48);
+    let path = lines
+        .iter()
+        .find_map(|line| extract_tool_path(line))
+        .map(|path| shorten_display_path(path.as_str()));
+
+    Some(if let Some(path) = path {
+        format!("{pattern} in {path}")
+    } else {
+        pattern
+    })
+}
+
+fn extract_tool_command_from_json(line: &str) -> Option<String> {
+    let start = line.find('{')?;
+    let end = line.rfind('}')?;
+    if end <= start {
+        return None;
+    }
+    let value = serde_json::from_str::<Value>(&line[start..=end]).ok()?;
+    first_string_field_recursive(&value, &["cmd", "command", "script"], 0)
+}
+
+fn first_string_field_recursive(value: &Value, keys: &[&str], depth: usize) -> Option<String> {
+    if depth > 3 {
+        return None;
+    }
+    match value {
+        Value::Object(object) => {
+            for key in keys {
+                if let Some(text) = object.get(*key).and_then(Value::as_str)
+                    && !text.trim().is_empty()
+                {
+                    return Some(text.trim().to_owned());
+                }
+            }
+            object
+                .values()
+                .find_map(|value| first_string_field_recursive(value, keys, depth + 1))
+        }
+        Value::Array(items) => items
+            .iter()
+            .find_map(|value| first_string_field_recursive(value, keys, depth + 1)),
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => None,
+    }
+}
+
+fn extract_tool_stream_preview(lines: &[String], label: &str) -> ToolStreamPreview {
+    let mut preview = ToolStreamPreview::default();
+    for line in lines {
+        let Some(body) = extract_tool_stream_line(line, label) else {
+            continue;
+        };
+        let body = normalize_tool_stream_preview_text(body);
+        if body.is_empty() {
+            continue;
+        }
+        if preview.lines.len() < TOOL_STREAM_PREVIEW_MAX_LINES {
+            preview.lines.push(body);
+        } else {
+            preview.omitted_count += 1;
+        }
+    }
+    preview
+}
+
+fn extract_tool_stream_tail_preview(lines: &[String], label: &str) -> ToolStreamPreview {
+    let mut collected = lines
+        .iter()
+        .filter_map(|line| extract_tool_stream_line(line, label))
+        .map(normalize_tool_stream_preview_text)
+        .filter(|body| !body.is_empty())
+        .collect::<Vec<_>>();
+
+    let omitted_count = collected
+        .len()
+        .saturating_sub(TOOL_STREAM_PREVIEW_MAX_LINES);
+    if omitted_count > 0 {
+        collected = collected.split_off(omitted_count);
+    }
+
+    ToolStreamPreview {
+        lines: collected,
+        omitted_count,
+        truncated_from_start: omitted_count > 0,
+    }
+}
+
+fn extract_tool_stream_line<'a>(line: &'a str, label: &str) -> Option<&'a str> {
+    let trimmed = line.trim_start();
+    trimmed
+        .strip_prefix(&format!("{label}:"))
+        .or_else(|| trimmed.strip_prefix(&format!("{label} ")))
+        .or_else(|| trimmed.strip_prefix(&format!("↳ {label} ")))
+        .map(str::trim_start)
+}
+
+fn normalize_tool_stream_preview_text(text: &str) -> String {
+    text.replace('\t', "    ").trim_end().to_owned()
+}
+
+fn extract_tool_metrics_line(line: &str) -> Option<String> {
+    let trimmed = line.trim_start();
+    trimmed
+        .strip_prefix("metrics:")
+        .or_else(|| trimmed.strip_prefix("metrics "))
+        .or_else(|| trimmed.strip_prefix("↳ metrics "))
+        .map(str::trim)
+        .filter(|metrics| !metrics.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn activity_tool_name(line: &str) -> Option<&str> {
+    let trimmed = line.trim();
+    let trimmed = trimmed.strip_prefix("• ").unwrap_or(trimmed);
+    let rest = if let Some(status_rest) = trimmed.strip_prefix('[') {
+        status_rest.split_once("] ")?.1
+    } else if let Some(rest) = trimmed.strip_prefix("Called ") {
+        rest
+    } else if let Some(rest) = trimmed.strip_prefix("Closed ") {
+        rest
+    } else if let Some(rest) = trimmed.strip_prefix("Approval ") {
+        rest
+    } else if let Some(rest) = trimmed.strip_prefix("Denied ") {
+        rest
+    } else if trimmed == "read" || trimmed.starts_with("read ") {
+        trimmed
+    } else {
+        return None;
+    };
+
+    let name = rest
+        .split(|ch: char| ch.is_whitespace() || ch == '(' || ch == ':' || ch == ',')
+        .next()
+        .filter(|name| !name.is_empty())?;
+    Some(name)
+}
+
+fn is_read_activity_tool_name(name: &str) -> bool {
+    let normalized = normalized_activity_tool_name(name);
+    matches!(
+        normalized.as_str(),
+        "read" | "read_file" | "read-file" | "readfile" | "open_file" | "open-file" | "cat"
+    )
+}
+
+fn extract_read_tool_request(line: &str) -> Option<ReadToolRequest> {
+    extract_read_tool_request_from_json(line).or_else(|| extract_read_tool_request_from_text(line))
+}
+
+fn extract_read_tool_request_from_json(line: &str) -> Option<ReadToolRequest> {
+    let start = line.find('{')?;
+    let end = line.rfind('}')?;
+    if end <= start {
+        return None;
+    }
+    let value = serde_json::from_str::<Value>(&line[start..=end]).ok()?;
+    let path = first_path_field(&value)?;
+    Some(ReadToolRequest {
+        path,
+        offset: numeric_json_field(&value, "offset"),
+        limit: numeric_json_field(&value, "limit"),
+    })
+}
+
+fn numeric_json_field(value: &Value, key: &str) -> Option<u64> {
+    numeric_json_field_recursive(value, key, 0)
+}
+
+fn numeric_json_field_recursive(value: &Value, key: &str, depth: usize) -> Option<u64> {
+    if depth > 3 {
+        return None;
+    }
+    match value {
+        Value::Object(object) => object.get(key).and_then(json_value_as_u64).or_else(|| {
+            object
+                .values()
+                .find_map(|value| numeric_json_field_recursive(value, key, depth + 1))
+        }),
+        Value::Array(items) => items
+            .iter()
+            .find_map(|value| numeric_json_field_recursive(value, key, depth + 1)),
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => None,
+    }
+}
+
+fn json_value_as_u64(value: &Value) -> Option<u64> {
+    value
+        .as_u64()
+        .or_else(|| value.as_str()?.trim().parse::<u64>().ok())
+}
+
+fn extract_read_tool_request_from_text(line: &str) -> Option<ReadToolRequest> {
+    let path = extract_tool_path(line)?;
+    Some(ReadToolRequest {
+        path,
+        offset: extract_tool_numeric_key_value(line, "offset"),
+        limit: extract_tool_numeric_key_value(line, "limit"),
+    })
+}
+
+fn extract_tool_numeric_key_value(line: &str, key: &str) -> Option<u64> {
+    let marker = format!("{key}=");
+    let start = line.find(marker.as_str())? + marker.len();
+    let rest = &line[start..];
+    let end = rest
+        .find(" · ")
+        .or_else(|| rest.find(", "))
+        .or_else(|| rest.find('}'))
+        .unwrap_or(rest.len());
+    rest[..end]
+        .trim()
+        .trim_matches(',')
+        .trim_matches('"')
+        .trim_matches('\'')
+        .parse::<u64>()
+        .ok()
+}
+
+fn format_read_request_display(request: &ReadToolRequest) -> String {
+    let mut display = shorten_display_path(request.path.as_str());
+    if let Some(offset) = request.offset {
+        display.push_str(format_read_line_range(offset, request.limit).as_str());
+    }
+    display
+}
+
+fn format_read_line_range(offset: u64, limit: Option<u64>) -> String {
+    let start = offset.max(1);
+    match limit.and_then(|limit| limit.checked_sub(1)) {
+        Some(limit_tail) if limit_tail > 0 => format!(":{start}-{}", start + limit_tail),
+        _ => format!(":{start}"),
+    }
+}
+
+fn shorten_display_path(path: &str) -> String {
+    let path = path.trim();
+    if let Some(home) = std::env::var_os("HOME").and_then(|home| home.into_string().ok())
+        && !home.is_empty()
+        && let Some(rest) = path.strip_prefix(home.as_str())
+        && (rest.is_empty() || rest.starts_with('/'))
+    {
+        return format!("~{rest}");
+    }
+    path.to_owned()
+}
+
+fn extract_read_image_summary(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    let start = trimmed.find("Read image file [")?;
+    Some(trimmed[start..].to_owned())
+}
+
+fn extract_image_mime(text: &str) -> Option<String> {
+    let start = text.find("[image/")? + 1;
+    let rest = &text[start..];
+    let end = rest.find(']')?;
+    Some(rest[..end].to_owned())
+}
+
+fn extract_read_text_excerpt(lines: &[String]) -> Vec<String> {
+    let mut excerpt = Vec::new();
+    for line in lines {
+        let trimmed = line.trim_start();
+        let candidate = trimmed
+            .strip_prefix("stdout:")
+            .or_else(|| trimmed.strip_prefix("stdout "))
+            .or_else(|| trimmed.strip_prefix("↳ stdout "))
+            .or_else(|| line.strip_prefix("    "))
+            .map(str::trim);
+        let Some(candidate) = candidate else {
+            continue;
+        };
+        if candidate.is_empty()
+            || candidate.starts_with("Read image file [")
+            || looks_like_tool_output_summary(candidate)
+        {
+            continue;
+        }
+        excerpt.push(candidate.to_owned());
+        if excerpt.len() >= READ_TEXT_PREVIEW_MAX_LINES {
+            break;
+        }
+    }
+    excerpt
+}
+
+fn looks_like_tool_output_summary(candidate: &str) -> bool {
+    let mut parts = candidate.split(" · ");
+    let Some(line_part) = parts.next() else {
+        return false;
+    };
+    let Some(byte_part) = parts.next() else {
+        return false;
+    };
+    if parts.next().is_some() {
+        return false;
+    }
+
+    let line_tokens = line_part.split_whitespace().collect::<Vec<_>>();
+    let byte_tokens = byte_part.split_whitespace().collect::<Vec<_>>();
+    let line_summary = matches!(
+        line_tokens.as_slice(),
+        [count, "line" | "lines"] if count.chars().all(|ch| ch.is_ascii_digit())
+    );
+    let byte_summary = matches!(
+        byte_tokens.as_slice(),
+        [count, "byte" | "bytes"] if count.chars().all(|ch| ch.is_ascii_digit())
+    );
+
+    line_summary && byte_summary
+}
+
+fn extract_tool_path(line: &str) -> Option<String> {
+    extract_tool_path_from_json(line)
+        .or_else(|| extract_tool_key_value(line, "path"))
+        .or_else(|| extract_tool_key_value(line, "file_path"))
+        .or_else(|| extract_tool_key_value(line, "absolute_path"))
+        .or_else(|| extract_raw_path_line(line))
+}
+
+fn extract_tool_path_from_json(line: &str) -> Option<String> {
+    let start = line.find('{')?;
+    let end = line.rfind('}')?;
+    if end <= start {
+        return None;
+    }
+    let value = serde_json::from_str::<Value>(&line[start..=end]).ok()?;
+    first_path_field(&value)
+}
+
+fn first_path_field(value: &Value) -> Option<String> {
+    first_path_field_recursive(value, 0)
+}
+
+fn first_path_field_recursive(value: &Value, depth: usize) -> Option<String> {
+    if depth > 3 {
+        return None;
+    }
+    match value {
+        Value::Object(object) => {
+            for key in ["path", "file_path", "absolute_path", "source", "url"] {
+                if let Some(value) = object.get(key).and_then(Value::as_str)
+                    && !value.trim().is_empty()
+                {
+                    return Some(value.trim().to_owned());
+                }
+            }
+            object
+                .values()
+                .find_map(|value| first_path_field_recursive(value, depth + 1))
+        }
+        Value::Array(items) => items
+            .iter()
+            .find_map(|value| first_path_field_recursive(value, depth + 1)),
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => None,
+    }
+}
+
+fn extract_tool_key_value(line: &str, key: &str) -> Option<String> {
+    let marker = format!("{key}=");
+    let start = line.find(marker.as_str())? + marker.len();
+    let rest = &line[start..];
+    let end = rest
+        .find(" · ")
+        .or_else(|| rest.find(", "))
+        .or_else(|| rest.find('}'))
+        .unwrap_or(rest.len());
+    let value = rest[..end]
+        .trim()
+        .trim_matches(',')
+        .trim_matches('"')
+        .trim_matches('\'')
+        .to_owned();
+    (!value.is_empty()).then_some(value)
+}
+
+fn extract_raw_path_line(line: &str) -> Option<String> {
+    let trimmed = line.trim().trim_matches('"').trim_matches('\'');
+    if trimmed.starts_with('/')
+        || trimmed.starts_with("~/")
+        || trimmed.starts_with("./")
+        || trimmed.starts_with("../")
+        || trimmed.starts_with("file://")
+    {
+        Some(trimmed.to_owned())
+    } else {
+        None
+    }
+}
+
+fn resolve_local_renderable_image_path(source: &str) -> Option<PathBuf> {
+    let source = source.trim().trim_matches('"').trim_matches('\'');
+    let source = if let Some(rest) = source.strip_prefix("file://") {
+        percent_decode_path(rest)
+    } else {
+        source.to_owned()
+    };
+    if source.starts_with("http://")
+        || source.starts_with("https://")
+        || source.starts_with("data:")
+        || source.is_empty()
+    {
+        return None;
+    }
+
+    let path = if let Some(rest) = source.strip_prefix("~/") {
+        std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .map(|home| home.join(rest))?
+    } else {
+        PathBuf::from(source)
+    };
+
+    let path = if path.is_absolute() {
+        path
+    } else {
+        std::env::current_dir().ok()?.join(path)
+    };
+    path_has_image_extension(path.as_path()).then_some(path)
+}
+
+fn path_has_image_extension(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "png" | "jpg" | "jpeg" | "gif" | "webp"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn percent_decode_path(path: &str) -> String {
+    let bytes = path.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0usize;
+    while let Some(&byte) = bytes.get(index) {
+        if byte == b'%'
+            && let (Some(&high_byte), Some(&low_byte)) =
+                (bytes.get(index + 1), bytes.get(index + 2))
+            && let (Some(high), Some(low)) = (hex_value(high_byte), hex_value(low_byte))
+        {
+            decoded.push(high * 16 + low);
+            index += 3;
+            continue;
+        }
+        decoded.push(byte);
+        index += 1;
+    }
+    String::from_utf8(decoded).unwrap_or_else(|_| path.to_owned())
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn render_run_tool_preview_block(preview: &RunToolPreview, width: u16) -> Vec<Line<'static>> {
+    let bg = SURFACE_TOOL_BG;
+    let mut rendered = Vec::new();
+    rendered.push(background_line(width, bg));
+
+    let content_width = width.saturating_sub(8).max(1) as usize;
+    let command = truncate_middle_display(preview.command.as_str(), content_width);
+    rendered.push(pad_preserving_backgrounds(
+        Line::from(vec![
+            Span::styled(" ", Style::default().bg(bg)),
+            Span::styled(
+                "run ",
+                Style::default()
+                    .fg(SURFACE_DARK_GRAY)
+                    .bg(bg)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(command, Style::default().fg(SURFACE_DARK_GRAY).bg(bg)),
+            Span::styled(" ", Style::default().bg(bg)),
+            Span::styled(
+                tool_status_label(preview.status),
+                Style::default()
+                    .fg(tool_status_color(preview.status))
+                    .bg(bg),
+            ),
+        ]),
+        width,
+        bg,
+    ));
+
+    rendered.push(pad_preserving_backgrounds(
+        Line::from(vec![
+            Span::styled(" ", Style::default().bg(bg)),
+            Span::styled("tool: ", Style::default().fg(SURFACE_GRAY).bg(bg)),
+            Span::styled(
+                preview.tool_name.clone(),
+                Style::default().fg(SURFACE_DARK_GRAY).bg(bg),
+            ),
+        ]),
+        width,
+        bg,
+    ));
+
+    rendered.extend(render_tool_stream_preview_section(
+        "stdout",
+        &preview.stdout,
+        width,
+        bg,
+    ));
+    rendered.extend(render_tool_stream_preview_section(
+        "stderr",
+        &preview.stderr,
+        width,
+        bg,
+    ));
+
+    if let Some(metrics) = preview.metrics.as_deref() {
+        for wrapped in crate::presentation::render_wrapped_display_line(
+            metrics,
+            width.saturating_sub(12).max(1) as usize,
+        ) {
+            rendered.push(pad_preserving_backgrounds(
+                Line::from(vec![
+                    Span::styled("  ", Style::default().bg(bg)),
+                    Span::styled("metrics ", Style::default().fg(SURFACE_GRAY).bg(bg)),
+                    Span::styled(wrapped, Style::default().fg(SURFACE_DARK_GRAY).bg(bg)),
+                ]),
+                width,
+                bg,
+            ));
+        }
+    }
+
+    rendered.push(background_line(width, bg));
+    rendered
+}
+
+fn render_inspect_tool_preview_block(
+    preview: &InspectToolPreview,
+    width: u16,
+) -> Vec<Line<'static>> {
+    let bg = SURFACE_TOOL_BG;
+    let mut rendered = Vec::new();
+    rendered.push(background_line(width, bg));
+
+    let content_width = width.saturating_sub(12).max(1) as usize;
+    let primary = truncate_middle_display(preview.primary.as_str(), content_width);
+    rendered.push(pad_preserving_backgrounds(
+        Line::from(vec![
+            Span::styled(" ", Style::default().bg(bg)),
+            Span::styled(
+                format!("{} ", preview.kind),
+                Style::default()
+                    .fg(SURFACE_DARK_GRAY)
+                    .bg(bg)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(primary, Style::default().fg(SURFACE_DARK_GRAY).bg(bg)),
+            Span::styled(" ", Style::default().bg(bg)),
+            Span::styled(
+                tool_status_label(preview.status),
+                Style::default()
+                    .fg(tool_status_color(preview.status))
+                    .bg(bg),
+            ),
+        ]),
+        width,
+        bg,
+    ));
+
+    rendered.push(pad_preserving_backgrounds(
+        Line::from(vec![
+            Span::styled(" ", Style::default().bg(bg)),
+            Span::styled("tool: ", Style::default().fg(SURFACE_GRAY).bg(bg)),
+            Span::styled(
+                preview.tool_name.clone(),
+                Style::default().fg(SURFACE_DARK_GRAY).bg(bg),
+            ),
+        ]),
+        width,
+        bg,
+    ));
+
+    rendered.extend(render_tool_stream_preview_section(
+        "stdout",
+        &preview.stdout,
+        width,
+        bg,
+    ));
+    rendered.extend(render_tool_stream_preview_section(
+        "stderr",
+        &preview.stderr,
+        width,
+        bg,
+    ));
+
+    if let Some(metrics) = preview.metrics.as_deref() {
+        for wrapped in crate::presentation::render_wrapped_display_line(
+            metrics,
+            width.saturating_sub(12).max(1) as usize,
+        ) {
+            rendered.push(pad_preserving_backgrounds(
+                Line::from(vec![
+                    Span::styled("  ", Style::default().bg(bg)),
+                    Span::styled("metrics ", Style::default().fg(SURFACE_GRAY).bg(bg)),
+                    Span::styled(wrapped, Style::default().fg(SURFACE_DARK_GRAY).bg(bg)),
+                ]),
+                width,
+                bg,
+            ));
+        }
+    }
+
+    rendered.push(background_line(width, bg));
+    rendered
+}
+
+fn tool_status_label(status: ToolStatus) -> &'static str {
+    match status {
+        ToolStatus::Pending => "working",
+        ToolStatus::Success => "ok",
+        ToolStatus::Error => "failed",
+    }
+}
+
+fn tool_status_color(status: ToolStatus) -> Color {
+    match status {
+        ToolStatus::Pending => SURFACE_CYAN,
+        ToolStatus::Success => SURFACE_GREEN,
+        ToolStatus::Error => SURFACE_RED,
+    }
+}
+
+fn render_tool_stream_preview_section(
+    label: &str,
+    preview: &ToolStreamPreview,
+    width: u16,
+    bg: Color,
+) -> Vec<Line<'static>> {
+    if preview.lines.is_empty() && preview.omitted_count == 0 {
+        return Vec::new();
+    }
+
+    let mut rendered = Vec::new();
+    let label_style = match label {
+        "stderr" => Style::default()
+            .fg(SURFACE_RED)
+            .bg(bg)
+            .add_modifier(Modifier::BOLD),
+        _ => Style::default()
+            .fg(SURFACE_GREEN)
+            .bg(bg)
+            .add_modifier(Modifier::BOLD),
+    };
+    let body_style = match label {
+        "stderr" => Style::default().fg(SURFACE_RED).bg(bg),
+        _ => Style::default().fg(SURFACE_DARK_GRAY).bg(bg),
+    };
+    let label_text = format!("{label} ");
+    let body_width = width
+        .saturating_sub((4 + crate::presentation::display_width(label_text.as_str())) as u16)
+        .max(1) as usize;
+
+    for line in &preview.lines {
+        let mut wrapped =
+            crate::presentation::render_wrapped_display_line(line.as_str(), body_width);
+        if wrapped.is_empty() {
+            wrapped.push(String::new());
+        }
+        for (index, wrapped_line) in wrapped.into_iter().enumerate() {
+            let label_span = if index == 0 {
+                Span::styled(label_text.clone(), label_style)
+            } else {
+                Span::styled(
+                    " ".repeat(crate::presentation::display_width(label_text.as_str())),
+                    label_style,
+                )
+            };
+            rendered.push(pad_preserving_backgrounds(
+                Line::from(vec![
+                    Span::styled("  ", Style::default().bg(bg)),
+                    label_span,
+                    Span::styled(wrapped_line, body_style),
+                ]),
+                width,
+                bg,
+            ));
+        }
+    }
+
+    if preview.omitted_count > 0 {
+        let overflow_text = if preview.truncated_from_start {
+            format!("… +{} earlier lines", preview.omitted_count)
+        } else {
+            format!("… +{} more lines", preview.omitted_count)
+        };
+        let overflow_line = pad_preserving_backgrounds(
+            Line::from(vec![
+                Span::styled("  ", Style::default().bg(bg)),
+                Span::styled(label_text, label_style),
+                Span::styled(overflow_text, Style::default().fg(SURFACE_GRAY).bg(bg)),
+            ]),
+            width,
+            bg,
+        );
+        if preview.truncated_from_start {
+            rendered.insert(0, overflow_line);
+        } else {
+            rendered.push(overflow_line);
+        }
+    }
+
+    rendered
+}
+
+fn render_read_tool_preview_block(preview: &ReadToolPreview, width: u16) -> Vec<Line<'static>> {
+    let mut rendered = Vec::new();
+    let bg = SURFACE_TOOL_BG;
+    rendered.push(background_line(width, bg));
+
+    let path = preview.display_path.clone().or_else(|| {
+        preview
+            .local_path
+            .as_deref()
+            .map(|path| path.to_string_lossy().into_owned())
+    });
+    let path = path
+        .as_deref()
+        .unwrap_or(if preview.is_image { "image" } else { "file" });
+    let content_width = width.saturating_sub(7).max(1) as usize;
+    let compact_path = truncate_middle_display(path, content_width);
+    rendered.push(pad_preserving_backgrounds(
+        Line::from(vec![
+            Span::raw(" "),
+            Span::styled(
+                "read ",
+                Style::default()
+                    .fg(SURFACE_DARK_GRAY)
+                    .bg(bg)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(compact_path, Style::default().fg(SURFACE_DARK_GRAY).bg(bg)),
+        ]),
+        width,
+        bg,
+    ));
+
+    if let Some(summary) = preview.summary.as_deref() {
+        for line in render_read_preview_text_line(summary, width) {
+            rendered.push(line);
+        }
+    } else if let Some(mime) = preview.mime.as_deref() {
+        for line in render_read_preview_text_line(&format!("Read image file [{mime}]"), width) {
+            rendered.push(line);
+        }
+    } else if !preview.is_image {
+        for line in render_read_preview_text_line("Read file", width) {
+            rendered.push(line);
+        }
+    }
+
+    if preview.is_image
+        && let Some(path) = preview.local_path.as_deref()
+    {
+        rendered.extend(render_local_image_preview_lines(
+            path,
+            preview.mime.as_deref(),
+            width,
+            bg,
+        ));
+    } else if !preview.text_excerpt.is_empty() {
+        rendered.extend(render_read_text_excerpt_lines(
+            preview.text_excerpt.as_slice(),
+            width,
+            bg,
+        ));
+    }
+
+    rendered.push(background_line(width, bg));
+    rendered
+}
+
+fn render_read_text_excerpt_lines(excerpt: &[String], width: u16, bg: Color) -> Vec<Line<'static>> {
+    let mut rendered = Vec::new();
+    rendered.push(pad_preserving_backgrounds(
+        Line::from(vec![
+            Span::styled(" ", Style::default().bg(bg)),
+            Span::styled("preview:", Style::default().fg(SURFACE_GRAY).bg(bg)),
+        ]),
+        width,
+        bg,
+    ));
+
+    let content_width = width.saturating_sub(5).max(1) as usize;
+    for line in excerpt {
+        for (index, wrapped) in
+            crate::presentation::render_wrapped_display_line(line.as_str(), content_width)
+                .into_iter()
+                .enumerate()
+        {
+            let marker = if index == 0 { "│ " } else { "  " };
+            rendered.push(pad_preserving_backgrounds(
+                Line::from(vec![
+                    Span::styled("  ", Style::default().bg(bg)),
+                    Span::styled(marker, Style::default().fg(SURFACE_ACCENT).bg(bg)),
+                    Span::styled(wrapped, Style::default().fg(SURFACE_DARK_GRAY).bg(bg)),
+                ]),
+                width,
+                bg,
+            ));
+        }
+    }
+
+    rendered
+}
+
+fn render_read_preview_text_line(text: &str, width: u16) -> Vec<Line<'static>> {
+    let content_width = width.saturating_sub(2).max(1) as usize;
+    crate::presentation::render_wrapped_display_line(text, content_width)
+        .into_iter()
+        .map(|wrapped| {
+            pad_preserving_backgrounds(
+                Line::from(vec![
+                    Span::styled(" ", Style::default().bg(SURFACE_TOOL_BG)),
+                    Span::styled(
+                        wrapped,
+                        Style::default().fg(SURFACE_GRAY).bg(SURFACE_TOOL_BG),
+                    ),
+                ]),
+                width,
+                SURFACE_TOOL_BG,
+            )
+        })
+        .collect()
+}
+
+fn render_local_image_preview_lines(
+    path: &Path,
+    mime: Option<&str>,
+    width: u16,
+    bg: Color,
+) -> Vec<Line<'static>> {
+    match load_image_preview(path, mime, width, bg) {
+        Ok(lines) => lines,
+        Err(error) => vec![pad_preserving_backgrounds(
+            Line::from(vec![
+                Span::styled(" ", Style::default().bg(bg)),
+                Span::styled(
+                    format!("preview unavailable: {error}"),
+                    Style::default().fg(SURFACE_GRAY).bg(bg),
+                ),
+            ]),
+            width,
+            bg,
+        )],
+    }
+}
+
+fn load_image_preview(
+    path: &Path,
+    mime: Option<&str>,
+    width: u16,
+    bg: Color,
+) -> Result<Vec<Line<'static>>, String> {
+    let metadata =
+        fs::metadata(path).map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+    if metadata.len() > IMAGE_PREVIEW_MAX_BYTES {
+        return Err(format!(
+            "image is {} (limit {})",
+            format_bytes(metadata.len()),
+            format_bytes(IMAGE_PREVIEW_MAX_BYTES)
+        ));
+    }
+
+    let reader = image::ImageReader::open(path)
+        .map_err(|error| format!("cannot open {}: {error}", path.display()))?
+        .with_guessed_format()
+        .map_err(|error| format!("cannot detect image format: {error}"))?;
+    let image = reader
+        .decode()
+        .map_err(|error| format!("cannot decode image: {error}"))?;
+    let rgba = image.to_rgba8();
+    let (source_width, source_height) = rgba.dimensions();
+    if source_width == 0 || source_height == 0 {
+        return Err("empty image".to_owned());
+    }
+
+    let available_columns = u32::from(width)
+        .saturating_sub(4)
+        .clamp(1, IMAGE_PREVIEW_MAX_COLUMNS);
+    let max_pixel_height = IMAGE_PREVIEW_MAX_ROWS.saturating_mul(2).max(2);
+    let width_scale = available_columns as f32 / source_width as f32;
+    let height_scale = max_pixel_height as f32 / source_height as f32;
+    let scale = width_scale.min(height_scale).clamp(0.01, 1.0);
+    let target_width =
+        ((source_width as f32 * scale).round() as u32).clamp(1, available_columns.max(1));
+    let target_height = ((source_height as f32 * scale).round() as u32).clamp(1, max_pixel_height);
+    let resized = image::imageops::resize(
+        &rgba,
+        target_width,
+        target_height,
+        image::imageops::FilterType::Triangle,
+    );
+
+    let mut rendered = Vec::new();
+    let mime = mime
+        .map(ToOwned::to_owned)
+        .or_else(|| image_mime_from_path(path).map(ToOwned::to_owned))
+        .unwrap_or_else(|| "image".to_owned());
+    let header = format!(
+        "preview: {}×{} · {} · {}",
+        source_width,
+        source_height,
+        mime,
+        format_bytes(metadata.len())
+    );
+    rendered.push(pad_preserving_backgrounds(
+        Line::from(vec![
+            Span::styled(" ", Style::default().bg(bg)),
+            Span::styled(header, Style::default().fg(SURFACE_GRAY).bg(bg)),
+        ]),
+        width,
+        bg,
+    ));
+
+    let terminal_rows = target_height.div_ceil(2);
+    for row in 0..terminal_rows {
+        let upper_y = row * 2;
+        let lower_y = upper_y + 1;
+        let mut spans = vec![Span::styled("  ", Style::default().bg(bg))];
+        for x in 0..target_width {
+            let upper = rgba_pixel_as_rgb(resized.get_pixel(x, upper_y).0, bg);
+            let lower = if lower_y < target_height {
+                rgba_pixel_as_rgb(resized.get_pixel(x, lower_y).0, bg)
+            } else {
+                color_to_rgb(bg)
+            };
+            spans.push(Span::styled(
+                "▀",
+                Style::default()
+                    .fg(Color::Rgb(upper.0, upper.1, upper.2))
+                    .bg(Color::Rgb(lower.0, lower.1, lower.2)),
+            ));
+        }
+        rendered.push(pad_preserving_backgrounds(Line::from(spans), width, bg));
+    }
+
+    Ok(rendered)
+}
+
+fn image_mime_from_path(path: &Path) -> Option<&'static str> {
+    match path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("png") => Some("image/png"),
+        Some("jpg" | "jpeg") => Some("image/jpeg"),
+        Some("gif") => Some("image/gif"),
+        Some("webp") => Some("image/webp"),
+        _ => None,
+    }
+}
+
+fn rgba_pixel_as_rgb(pixel: [u8; 4], bg: Color) -> (u8, u8, u8) {
+    let (bg_r, bg_g, bg_b) = color_to_rgb(bg);
+    let alpha = u16::from(pixel[3]);
+    let blend = |foreground: u8, background: u8| -> u8 {
+        let foreground = u16::from(foreground);
+        let background = u16::from(background);
+        ((foreground * alpha + background * (255 - alpha)) / 255) as u8
+    };
+    (
+        blend(pixel[0], bg_r),
+        blend(pixel[1], bg_g),
+        blend(pixel[2], bg_b),
+    )
+}
+
+fn color_to_rgb(color: Color) -> (u8, u8, u8) {
+    match color {
+        Color::Rgb(r, g, b) => (r, g, b),
+        Color::Black => (0, 0, 0),
+        Color::Red => (255, 0, 0),
+        Color::Green => (0, 255, 0),
+        Color::Yellow => (255, 255, 0),
+        Color::Blue => (0, 0, 255),
+        Color::Magenta => (255, 0, 255),
+        Color::Cyan => (0, 255, 255),
+        Color::Gray => (128, 128, 128),
+        Color::DarkGray => (64, 64, 64),
+        Color::LightRed => (255, 128, 128),
+        Color::LightGreen => (128, 255, 128),
+        Color::LightYellow => (255, 255, 128),
+        Color::LightBlue => (128, 128, 255),
+        Color::LightMagenta => (255, 128, 255),
+        Color::LightCyan => (128, 255, 255),
+        Color::White => (255, 255, 255),
+        Color::Indexed(_) | Color::Reset => (0, 0, 0),
+    }
+}
+
+fn pad_preserving_backgrounds(mut line: Line<'static>, width: u16, bg: Color) -> Line<'static> {
+    let line_len: usize = line.spans.iter().map(|span| span.width()).sum();
+    let pad_len = (width as usize).saturating_sub(line_len);
+    if pad_len > 0 {
+        line.spans
+            .push(Span::styled(" ".repeat(pad_len), Style::default().bg(bg)));
+    }
+    line
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    if bytes < 1024 {
+        format!("{bytes} B")
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1} KB", bytes as f64 / KB)
+    } else {
+        format!("{:.1} MB", bytes as f64 / MB)
+    }
+}
+
+fn truncate_middle_display(text: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    if crate::presentation::display_width(text) <= width {
+        return text.to_owned();
+    }
+    if width == 1 {
+        return "…".to_owned();
+    }
+
+    let prefix_target = width.saturating_sub(1) / 2;
+    let suffix_target = width.saturating_sub(1).saturating_sub(prefix_target);
+    let mut prefix = String::new();
+    let mut prefix_width = 0usize;
+    for ch in text.chars() {
+        let ch_width = crate::presentation::char_display_width(ch);
+        if prefix_width + ch_width > prefix_target {
+            break;
+        }
+        prefix.push(ch);
+        prefix_width += ch_width;
+    }
+
+    let mut suffix_chars = Vec::new();
+    let mut suffix_width = 0usize;
+    for ch in text.chars().rev() {
+        let ch_width = crate::presentation::char_display_width(ch);
+        if suffix_width + ch_width > suffix_target {
+            break;
+        }
+        suffix_chars.push(ch);
+        suffix_width += ch_width;
+    }
+    suffix_chars.reverse();
+    let suffix = suffix_chars.into_iter().collect::<String>();
+    format!("{prefix}…{suffix}")
 }
 
 fn dedupe_tool_activity_detail_lines(lines: &[String]) -> Vec<String> {
@@ -1753,28 +3997,51 @@ fn render_tool_detail_lines(line: &str, width: u16) -> Vec<Line<'static>> {
         } else {
             body.to_owned()
         };
+        let (label, body) = body
+            .split_once(' ')
+            .map(|(label, body)| (label, body.trim_start()))
+            .unwrap_or((body.as_str(), ""));
+        let label_text = if body.is_empty() {
+            String::new()
+        } else {
+            format!("{label} ")
+        };
+        let (label_style, body_style) = tool_child_styles(label);
         let body_width = content_width
-            .saturating_sub(crate::presentation::display_width(prefix))
+            .saturating_sub(
+                crate::presentation::display_width(prefix)
+                    + crate::presentation::display_width(label_text.as_str()),
+            )
             .max(1);
-        let wrapped = crate::presentation::render_wrapped_display_line(&body, body_width);
+        let mut wrapped = crate::presentation::render_wrapped_display_line(body, body_width);
+        if wrapped.is_empty() {
+            wrapped.push(String::new());
+        }
         return wrapped
             .into_iter()
             .enumerate()
             .map(|(index, wrapped_line)| {
                 if index == 0 {
-                    Line::from(vec![
+                    let mut spans = vec![
                         Span::raw("  "),
-                        Span::styled(prefix, Style::default().fg(PI_ACCENT)),
-                        Span::styled(wrapped_line, Style::default().fg(PI_DARK_GRAY)),
-                    ])
+                        Span::styled(prefix, Style::default().fg(SURFACE_ACCENT)),
+                    ];
+                    if !label_text.is_empty() {
+                        spans.push(Span::styled(label_text.clone(), label_style));
+                    }
+                    spans.push(Span::styled(wrapped_line, body_style));
+                    Line::from(spans)
                 } else {
                     Line::from(vec![
                         Span::raw("  "),
                         Span::styled(
-                            " ".repeat(crate::presentation::display_width(prefix)),
-                            Style::default().fg(PI_ACCENT),
+                            " ".repeat(
+                                crate::presentation::display_width(prefix)
+                                    + crate::presentation::display_width(label_text.as_str()),
+                            ),
+                            Style::default().fg(SURFACE_ACCENT),
                         ),
-                        Span::styled(wrapped_line, Style::default().fg(PI_DARK_GRAY)),
+                        Span::styled(wrapped_line, body_style),
                     ])
                 }
             })
@@ -1813,20 +4080,28 @@ fn render_tool_detail_lines(line: &str, width: u16) -> Vec<Line<'static>> {
         return render_tool_detail_lines(&format!("↳ metrics {}", metrics.trim_start()), width);
     }
 
+    if let Some(rendered) = render_tool_sample_detail_lines(line, content_width) {
+        return rendered;
+    }
+
     if let Some((prefix, body)) = line.split_once(':') {
         let prefix = format!("{prefix}: ");
         let (prefix_style, body_style) = match prefix.trim_end() {
             "stdout:" => (
-                Style::default().fg(PI_GREEN).add_modifier(Modifier::BOLD),
-                Style::default().fg(PI_DARK_GRAY),
+                Style::default()
+                    .fg(SURFACE_GREEN)
+                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(SURFACE_DARK_GRAY),
             ),
             "stderr:" => (
-                Style::default().fg(PI_RED).add_modifier(Modifier::BOLD),
-                Style::default().fg(PI_DARK_GRAY),
+                Style::default()
+                    .fg(SURFACE_RED)
+                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(SURFACE_DARK_GRAY),
             ),
             _ => (
-                Style::default().fg(PI_GRAY),
-                Style::default().fg(PI_DARK_GRAY),
+                Style::default().fg(SURFACE_GRAY),
+                Style::default().fg(SURFACE_DARK_GRAY),
             ),
         };
         let body_width = content_width
@@ -1858,10 +4133,84 @@ fn render_tool_detail_lines(line: &str, width: u16) -> Vec<Line<'static>> {
         .map(|wrapped_line| {
             Line::from(vec![
                 Span::raw("  "),
-                Span::styled(wrapped_line, Style::default().fg(PI_DARK_GRAY)),
+                Span::styled(wrapped_line, Style::default().fg(SURFACE_DARK_GRAY)),
             ])
         })
         .collect()
+}
+
+fn tool_child_styles(label: &str) -> (Style, Style) {
+    match label {
+        "stdout" => (
+            Style::default()
+                .fg(SURFACE_GREEN)
+                .add_modifier(Modifier::BOLD),
+            Style::default().fg(SURFACE_DARK_GRAY),
+        ),
+        "stderr" => (
+            Style::default()
+                .fg(SURFACE_RED)
+                .add_modifier(Modifier::BOLD),
+            Style::default().fg(SURFACE_RED).add_modifier(Modifier::DIM),
+        ),
+        "file" => (
+            Style::default()
+                .fg(SURFACE_CYAN)
+                .add_modifier(Modifier::BOLD),
+            Style::default().fg(SURFACE_DARK_GRAY),
+        ),
+        "metrics" => (
+            Style::default()
+                .fg(SURFACE_GRAY)
+                .add_modifier(Modifier::BOLD),
+            Style::default().fg(SURFACE_DARK_GRAY),
+        ),
+        "request" | "args" => (
+            Style::default()
+                .fg(SURFACE_ACCENT)
+                .add_modifier(Modifier::BOLD),
+            Style::default().fg(SURFACE_DARK_GRAY),
+        ),
+        _ => (
+            Style::default().fg(SURFACE_ACCENT),
+            Style::default().fg(SURFACE_DARK_GRAY),
+        ),
+    }
+}
+
+fn render_tool_sample_detail_lines(line: &str, content_width: usize) -> Option<Vec<Line<'static>>> {
+    if !line.starts_with("    ") {
+        return None;
+    }
+
+    let sample = line.trim_start();
+    if sample.is_empty() {
+        return None;
+    }
+
+    let sample_style = if sample.starts_with('+') {
+        Style::default().fg(SURFACE_GREEN)
+    } else if sample.starts_with('-') {
+        Style::default().fg(SURFACE_RED)
+    } else {
+        Style::default().fg(SURFACE_DARK_GRAY)
+    };
+    let sample_width = content_width.saturating_sub(4).max(1);
+
+    Some(
+        crate::presentation::render_wrapped_display_line(sample, sample_width)
+            .into_iter()
+            .enumerate()
+            .map(|(index, wrapped_line)| {
+                let guide = if index == 0 { "    " } else { "      " };
+                Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(guide, Style::default().fg(SURFACE_DARK_GRAY)),
+                    Span::styled(wrapped_line, sample_style),
+                ])
+            })
+            .collect(),
+    )
 }
 
 fn render_named_activity_line(line: &str, content_width: usize) -> Option<Vec<Line<'static>>> {
@@ -1871,25 +4220,33 @@ fn render_named_activity_line(line: &str, content_width: usize) -> Option<Vec<Li
     {
         (
             "Called",
-            Style::default().fg(PI_CYAN).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(SURFACE_CYAN)
+                .add_modifier(Modifier::BOLD),
             rest,
         )
     } else if let Some(rest) = trimmed.strip_prefix("Closed ") {
         (
             "Closed",
-            Style::default().fg(PI_GRAY).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(SURFACE_GRAY)
+                .add_modifier(Modifier::BOLD),
             rest,
         )
     } else if let Some(rest) = trimmed.strip_prefix("Approval ") {
         (
             "Approval",
-            Style::default().fg(PI_ACCENT).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(SURFACE_ACCENT)
+                .add_modifier(Modifier::BOLD),
             rest,
         )
     } else if let Some(rest) = trimmed.strip_prefix("Denied ") {
         (
             "Denied",
-            Style::default().fg(PI_RED).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(SURFACE_RED)
+                .add_modifier(Modifier::BOLD),
             rest,
         )
     } else {
@@ -1919,9 +4276,9 @@ fn render_named_activity_line(line: &str, content_width: usize) -> Option<Vec<Li
             .map(|(index, wrapped_line)| {
                 if index == 0 {
                     Line::from(vec![
-                        Span::styled("• ", Style::default().fg(PI_GRAY)),
+                        Span::styled("• ", Style::default().fg(SURFACE_GRAY)),
                         Span::styled(format!("{headline_label} "), headline_style),
-                        Span::styled(wrapped_line, Style::default().fg(PI_DARK_GRAY)),
+                        Span::styled(wrapped_line, Style::default().fg(SURFACE_DARK_GRAY)),
                     ])
                 } else {
                     Line::from(vec![
@@ -1930,7 +4287,7 @@ fn render_named_activity_line(line: &str, content_width: usize) -> Option<Vec<Li
                             " ".repeat(crate::presentation::display_width(headline_label) + 1),
                             headline_style,
                         ),
-                        Span::styled(wrapped_line, Style::default().fg(PI_DARK_GRAY)),
+                        Span::styled(wrapped_line, Style::default().fg(SURFACE_DARK_GRAY)),
                     ])
                 }
             })
@@ -1946,19 +4303,27 @@ fn render_status_activity_line(line: &str, content_width: usize) -> Option<Vec<L
     let (headline_label, headline_style) = match status {
         "running" | "pending" => (
             "Called",
-            Style::default().fg(PI_CYAN).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(SURFACE_CYAN)
+                .add_modifier(Modifier::BOLD),
         ),
         "completed" | "failed" | "interrupted" => (
             "Closed",
-            Style::default().fg(PI_GRAY).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(SURFACE_GRAY)
+                .add_modifier(Modifier::BOLD),
         ),
         "needs_approval" => (
             "Approval",
-            Style::default().fg(PI_ACCENT).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(SURFACE_ACCENT)
+                .add_modifier(Modifier::BOLD),
         ),
         "denied" => (
             "Denied",
-            Style::default().fg(PI_RED).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(SURFACE_RED)
+                .add_modifier(Modifier::BOLD),
         ),
         _ => return None,
     };
@@ -1982,9 +4347,9 @@ fn render_status_activity_line(line: &str, content_width: usize) -> Option<Vec<L
             .map(|(index, wrapped_line)| {
                 if index == 0 {
                     Line::from(vec![
-                        Span::styled("• ", Style::default().fg(PI_GRAY)),
+                        Span::styled("• ", Style::default().fg(SURFACE_GRAY)),
                         Span::styled(format!("{headline_label} "), headline_style),
-                        Span::styled(wrapped_line, Style::default().fg(PI_DARK_GRAY)),
+                        Span::styled(wrapped_line, Style::default().fg(SURFACE_DARK_GRAY)),
                     ])
                 } else {
                     Line::from(vec![
@@ -1993,7 +4358,7 @@ fn render_status_activity_line(line: &str, content_width: usize) -> Option<Vec<L
                             " ".repeat(crate::presentation::display_width(headline_label) + 1),
                             headline_style,
                         ),
-                        Span::styled(wrapped_line, Style::default().fg(PI_DARK_GRAY)),
+                        Span::styled(wrapped_line, Style::default().fg(SURFACE_DARK_GRAY)),
                     ])
                 }
             })
@@ -2024,12 +4389,11 @@ fn render_error_block_lines(
 ) -> Vec<Line<'static>> {
     let title_label = format!("[{title}]");
     let summary = summary.trim();
-    let details_body = details
+    let detail_segments = details
         .iter()
         .map(|detail| detail.trim())
         .filter(|segment| !segment.is_empty())
-        .collect::<Vec<_>>()
-        .join(" · ");
+        .collect::<Vec<_>>();
 
     let mut rendered = Vec::new();
 
@@ -2044,20 +4408,24 @@ fn render_error_block_lines(
     if inline_width <= width as usize {
         let mut spans = vec![Span::styled(
             title_label,
-            Style::default().fg(PI_RED).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(SURFACE_RED)
+                .add_modifier(Modifier::BOLD),
         )];
         if !summary.is_empty() {
             spans.push(Span::raw(" "));
             spans.push(Span::styled(
                 summary.to_owned(),
-                Style::default().fg(PI_RED).add_modifier(Modifier::DIM),
+                Style::default().fg(SURFACE_RED).add_modifier(Modifier::DIM),
             ));
         }
         rendered.push(Line::from(spans));
     } else {
         rendered.push(Line::from(vec![Span::styled(
             title_label,
-            Style::default().fg(PI_RED).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(SURFACE_RED)
+                .add_modifier(Modifier::BOLD),
         )]));
 
         if !summary.is_empty() {
@@ -2065,20 +4433,54 @@ fn render_error_block_lines(
             {
                 rendered.push(Line::from(vec![Span::styled(
                     wrapped,
-                    Style::default().fg(PI_RED).add_modifier(Modifier::DIM),
+                    Style::default().fg(SURFACE_RED).add_modifier(Modifier::DIM),
                 )]));
             }
         }
     }
 
-    if !details_body.is_empty() {
-        for wrapped in
-            crate::presentation::render_wrapped_display_line(&details_body, width as usize)
-        {
-            rendered.push(Line::from(vec![Span::styled(
-                wrapped,
-                Style::default().fg(PI_RED).add_modifier(Modifier::DIM),
-            )]));
+    if !detail_segments.is_empty() {
+        let detail_width = width.saturating_sub(4).max(1) as usize;
+        let displayed_detail_count = detail_segments.len().min(PROVIDER_ERROR_MAX_DETAIL_ITEMS);
+        for detail in detail_segments.iter().take(PROVIDER_ERROR_MAX_DETAIL_ITEMS) {
+            let wrapped_lines =
+                crate::presentation::render_wrapped_display_line(detail, detail_width);
+            let wrapped_count = wrapped_lines.len();
+            for (line_index, wrapped) in wrapped_lines
+                .into_iter()
+                .take(PROVIDER_ERROR_MAX_WRAPPED_LINES_PER_DETAIL)
+                .enumerate()
+            {
+                let prefix = if line_index == 0 { "  ↳ " } else { "    " };
+                rendered.push(Line::from(vec![
+                    Span::raw(prefix),
+                    Span::styled(
+                        wrapped,
+                        Style::default().fg(SURFACE_RED).add_modifier(Modifier::DIM),
+                    ),
+                ]));
+            }
+            if wrapped_count > PROVIDER_ERROR_MAX_WRAPPED_LINES_PER_DETAIL {
+                rendered.push(Line::from(vec![
+                    Span::raw("    "),
+                    Span::styled(
+                        "…",
+                        Style::default().fg(SURFACE_RED).add_modifier(Modifier::DIM),
+                    ),
+                ]));
+            }
+        }
+        if detail_segments.len() > displayed_detail_count {
+            rendered.push(Line::from(vec![
+                Span::raw("  ↳ "),
+                Span::styled(
+                    format!(
+                        "… +{} more details",
+                        detail_segments.len() - displayed_detail_count
+                    ),
+                    Style::default().fg(SURFACE_RED).add_modifier(Modifier::DIM),
+                ),
+            ]));
         }
     }
 
@@ -2093,7 +4495,7 @@ fn render_compaction_block_lines(
     width: u16,
 ) -> Vec<Line<'static>> {
     let mut rendered = Vec::new();
-    rendered.push(background_line(width, PI_COMPACTION_BG));
+    rendered.push(background_line(width, SURFACE_COMPACTION_BG));
     rendered.push(styled_background_line(
         vec![
             Span::raw(" "),
@@ -2105,7 +4507,7 @@ fn render_compaction_block_lines(
             ),
         ],
         width,
-        PI_COMPACTION_BG,
+        SURFACE_COMPACTION_BG,
     ));
     if expanded {
         rendered.push(styled_background_line(
@@ -2113,20 +4515,20 @@ fn render_compaction_block_lines(
                 Span::raw("  "),
                 Span::styled(
                     format!("Compacted from {turn_count} earlier turns"),
-                    Style::default().fg(PI_GRAY),
+                    Style::default().fg(SURFACE_GRAY),
                 ),
             ],
             width,
-            PI_COMPACTION_BG,
+            SURFACE_COMPACTION_BG,
         ));
         for line in summary.lines() {
             rendered.push(styled_background_line(
                 vec![
                     Span::raw("  "),
-                    Span::styled(line.to_owned(), Style::default().fg(PI_GRAY)),
+                    Span::styled(line.to_owned(), Style::default().fg(SURFACE_GRAY)),
                 ],
                 width,
-                PI_COMPACTION_BG,
+                SURFACE_COMPACTION_BG,
             ));
         }
     } else {
@@ -2135,37 +4537,39 @@ fn render_compaction_block_lines(
                 Span::raw("  "),
                 Span::styled(
                     format!("Compacted from {turn_count} earlier turns (Ctrl+O to expand)"),
-                    Style::default().fg(PI_GRAY),
+                    Style::default().fg(SURFACE_GRAY),
                 ),
             ],
             width,
-            PI_COMPACTION_BG,
+            SURFACE_COMPACTION_BG,
         ));
     }
-    rendered.push(background_line(width, PI_COMPACTION_BG));
+    rendered.push(background_line(width, SURFACE_COMPACTION_BG));
     rendered
 }
 
 fn render_diff_block_lines(title: Option<&str>, diff: &str, width: u16) -> Vec<Line<'static>> {
     let mut rendered = Vec::new();
-    rendered.push(background_line(width, PI_TOOL_BG));
+    rendered.push(background_line(width, SURFACE_TOOL_BG));
     rendered.push(styled_background_line(
         vec![
             Span::raw(" "),
             Span::styled(
                 format!("[{}]", title.unwrap_or("diff")),
-                Style::default().fg(PI_CYAN).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(SURFACE_CYAN)
+                    .add_modifier(Modifier::BOLD),
             ),
         ],
         width,
-        PI_TOOL_BG,
+        SURFACE_TOOL_BG,
     ));
     for line in render_diff_to_lines(diff) {
         let mut line = line;
-        pad_and_bg(&mut line, width, PI_TOOL_BG);
+        pad_and_bg(&mut line, width, SURFACE_TOOL_BG);
         rendered.push(line);
     }
-    rendered.push(background_line(width, PI_TOOL_BG));
+    rendered.push(background_line(width, SURFACE_TOOL_BG));
     rendered
 }
 
@@ -2174,26 +4578,77 @@ fn render_image_block_lines(alt: &str, url: &str, width: u16) -> Vec<Line<'stati
     let alt_text = if alt.trim().is_empty() {
         "image".to_owned()
     } else {
-        alt.to_owned()
+        alt.trim().to_owned()
     };
-    rendered.push(Line::from(vec![
-        Span::styled(
-            "[image] ",
-            Style::default().fg(PI_CYAN).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(alt_text, Style::default().fg(PI_ACCENT)),
-    ]));
-    rendered.push(Line::from(vec![
-        Span::raw("  "),
-        Span::styled(url.to_owned(), Style::default().fg(PI_DIM_GRAY)),
-    ]));
-    rendered.push(Line::from(vec![
-        Span::raw("  "),
-        Span::styled(
-            "inline preview unavailable in this terminal surface",
-            Style::default().fg(PI_GRAY),
-        ),
-    ]));
+    let source = url.trim();
+    let content_width = width.saturating_sub(10).max(1) as usize;
+
+    for (index, wrapped) in
+        crate::presentation::render_wrapped_display_line(alt_text.as_str(), content_width)
+            .into_iter()
+            .enumerate()
+    {
+        let mut spans = Vec::new();
+        if index == 0 {
+            spans.push(Span::styled(
+                "[image] ",
+                Style::default()
+                    .fg(SURFACE_CYAN)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        } else {
+            spans.push(Span::raw("        "));
+        }
+        spans.push(Span::styled(wrapped, Style::default().fg(SURFACE_ACCENT)));
+        rendered.push(Line::from(spans));
+    }
+
+    if !source.is_empty() {
+        let source_width = width.saturating_sub(10).max(1) as usize;
+        let source_lines = crate::presentation::render_wrapped_display_line(source, source_width);
+        for (index, wrapped) in source_lines.iter().take(2).enumerate() {
+            let label = if index == 0 { "source: " } else { "        " };
+            rendered.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(label, Style::default().fg(SURFACE_GRAY)),
+                Span::styled(wrapped.clone(), Style::default().fg(SURFACE_DIM_GRAY)),
+            ]));
+        }
+        if source_lines.len() > 2 {
+            rendered.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled("        …", Style::default().fg(SURFACE_DIM_GRAY)),
+            ]));
+        }
+
+        if let Some(path) = resolve_local_renderable_image_path(source) {
+            rendered.extend(render_local_image_preview_lines(
+                path.as_path(),
+                image_mime_from_path(path.as_path()),
+                width,
+                Color::Reset,
+            ));
+        }
+    }
+
+    let action_text = if source.is_empty() {
+        "media card"
+    } else {
+        "open source · copy url"
+    };
+    let action_width = width.saturating_sub(11).max(1) as usize;
+    for (index, wrapped) in
+        crate::presentation::render_wrapped_display_line(action_text, action_width)
+            .into_iter()
+            .enumerate()
+    {
+        let label = if index == 0 { "actions: " } else { "         " };
+        rendered.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(label, Style::default().fg(SURFACE_GRAY)),
+            Span::styled(wrapped, Style::default().fg(SURFACE_GRAY)),
+        ]));
+    }
     for line in &mut rendered {
         let current_width: usize = line.spans.iter().map(|span| span.width()).sum();
         if current_width < width as usize {
@@ -2221,12 +4676,19 @@ fn styled_background_line(spans: Vec<Span<'static>>, width: u16, bg: Color) -> L
 #[cfg(test)]
 mod tests {
     use super::{
-        MessageContent, MessageList, ToolStatus, adjust_scroll_start_for_message_boundary,
-        build_assistant_contents, dominant_block_bg,
+        MessageContent, MessageList, ReadToolRequest, STARTUP_COMPACT_WORDMARK, STARTUP_EYE_FRAMES,
+        STARTUP_TIP_FADE_MS, STARTUP_TIP_HOLD_MS, STARTUP_WORDMARK, ToolStatus,
+        adjust_scroll_start_for_message_boundary, build_assistant_contents, dominant_block_bg,
+        format_read_request_display, startup_logo_eye_frame_index, startup_logo_eye_style,
+        startup_tip_render_state, startup_wordmark_eye_frame,
     };
-    use crate::chat::pi_surface::utils::{PI_ACCENT, PI_GRAY, PI_GREEN, PI_USER_MSG_BG};
+    use crate::chat::chat_surface::utils::{
+        SURFACE_ACCENT, SURFACE_DIM_GRAY, SURFACE_GRAY, SURFACE_GREEN, SURFACE_RED,
+        SURFACE_TOOL_BG, SURFACE_USER_MSG_BG,
+    };
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
-    use ratatui::{Terminal, backend::TestBackend};
+    use ratatui::{Terminal, backend::TestBackend, style::Color};
+    use std::time::Duration;
 
     #[test]
     fn assistant_reply_promotes_diff_fences_to_diff_content() {
@@ -2979,6 +5441,110 @@ mod tests {
     }
 
     #[test]
+    fn run_tool_activity_renders_command_and_bounded_stream_preview_card() {
+        let mut list = MessageList::new();
+        list.add_assistant_message(
+            "### Tool activity\n> [completed] bash (id=call-1) - ok\n> args: {\"cmd\":\"cargo test --workspace --all-features\"}\n> stdout: first line\n> stdout: second line\n> stdout: third line\n> stdout: fourth line\n> stdout: fifth line\n> stderr: warning: slow\n> metrics: 842ms · exit=0"
+                .to_owned(),
+        );
+
+        let rendered = list
+            .get_rendered_lines(72)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        let joined = rendered.join("\n");
+
+        assert!(joined.contains("run cargo test --workspace --all-features ok"));
+        assert!(joined.contains("tool: bash"));
+        assert!(joined.contains("stdout … +1 earlier lines"));
+        assert!(joined.contains("stdout second line"));
+        assert!(joined.contains("stdout fifth line"));
+        assert!(joined.contains("stderr warning: slow"));
+        assert!(joined.contains("metrics 842ms · exit=0"));
+    }
+
+    #[test]
+    fn search_tool_activity_renders_semantic_preview_card() {
+        let mut list = MessageList::new();
+        list.add_assistant_message(
+            "### Tool activity\n> Called grep\n> args: {\"query\":\"稳定|wenjian|robust|stable\",\"path\":\"~/chat\"}\n> stdout: match one\n> stdout: match two"
+                .to_owned(),
+        );
+
+        let rendered = list
+            .get_rendered_lines(80)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        let joined = rendered.join("\n");
+
+        assert!(joined.contains("search \"稳定|wenjian|robust|stable\" in ~/chat"));
+        assert!(joined.contains("tool: grep"));
+        assert!(joined.contains("stdout match one"));
+    }
+
+    #[test]
+    fn list_tool_activity_renders_semantic_preview_card() {
+        let mut list = MessageList::new();
+        list.add_assistant_message(
+            "### Tool activity\n> Called list_directory\n> args: {\"path\":\"~/chat/.omx\"}\n> stdout: agents\n> stdout: logs"
+                .to_owned(),
+        );
+
+        let rendered = list
+            .get_rendered_lines(72)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        let joined = rendered.join("\n");
+
+        assert!(joined.contains("list ~/chat/.omx"));
+        assert!(joined.contains("tool: list_directory"));
+        assert!(joined.contains("stdout agents"));
+    }
+
+    #[test]
+    fn read_tool_preview_recognizes_namespaced_alias_and_nested_request_path() {
+        let mut list = MessageList::new();
+        list.add_assistant_message(
+            "### Tool activity\n> Called filesystem.open_file\n> request: {\"arguments\":{\"path\":\"src/main.rs\",\"offset\":5,\"limit\":2}}\n> stdout: fn main() {}"
+                .to_owned(),
+        );
+
+        let rendered = list
+            .get_rendered_lines(64)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        let joined = rendered.join("\n");
+
+        assert!(joined.contains("read src/main.rs:5-6"));
+        assert!(joined.contains("preview:"));
+        assert!(joined.contains("fn main() {}"));
+    }
+
+    #[test]
     fn tool_activity_burst_keeps_unique_request_children_per_called_group() {
         let mut list = MessageList::new();
         list.add_assistant_message(
@@ -3113,6 +5679,34 @@ mod tests {
     }
 
     #[test]
+    fn provider_error_rendering_bounds_detail_noise() {
+        let mut list = MessageList::new();
+        list.add_assistant_message(
+            "[provider_error] status 500 · model · attempt 1/3: {\"code\":\"SERVER\",\"message\":\"temporary failure\",\"request_id\":\"abc\",\"debug\":\"very long diagnostic payload that should not flood the transcript\"} | route=primary | retry_after=none | trace=hidden".to_owned(),
+        );
+
+        let rendered = list
+            .get_rendered_lines(44)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        let detail_rows = rendered.iter().filter(|line| line.contains("↳")).count();
+
+        assert!(detail_rows <= super::PROVIDER_ERROR_MAX_DETAIL_ITEMS + 1);
+        assert!(rendered.iter().any(|line| line.contains("more details")));
+        assert!(
+            rendered
+                .iter()
+                .all(|line| crate::presentation::display_width(line) <= 44)
+        );
+    }
+
+    #[test]
     fn inserts_blank_spacer_between_adjacent_colored_blocks() {
         let mut list = MessageList::new();
         list.add_user_message("hi".to_owned());
@@ -3121,7 +5715,7 @@ mod tests {
         let rendered = list.get_rendered_lines(40);
         let last_user_block_row = rendered
             .iter()
-            .rposition(|line| dominant_block_bg(line) == Some(PI_USER_MSG_BG))
+            .rposition(|line| dominant_block_bg(line) == Some(SURFACE_USER_MSG_BG))
             .expect("user block row");
         let first_tool_block_row = rendered
             .iter()
@@ -3194,6 +5788,145 @@ mod tests {
     }
 
     #[test]
+    fn image_block_renders_bounded_source_and_media_actions() {
+        let mut list = MessageList::new();
+        list.add_assistant_message(
+            "![long diagram](https://example.com/a/very/long/path/that/needs/wrapping/diagram.png)"
+                .to_owned(),
+        );
+
+        let rendered = list
+            .get_rendered_lines(36)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        assert!(rendered.iter().any(|line| line.contains("[image]")));
+        assert!(rendered.iter().any(|line| line.contains("source:")));
+        assert!(rendered.iter().any(|line| line.contains("actions:")));
+        assert!(rendered.iter().any(|line| line.contains("copy url")));
+        assert!(
+            !rendered
+                .iter()
+                .any(|line| line.contains("not available") || line.contains("unavailable"))
+        );
+        assert!(
+            rendered
+                .iter()
+                .all(|line| crate::presentation::display_width(line) <= 36)
+        );
+    }
+
+    #[test]
+    fn read_tool_image_activity_renders_preview_card() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let path = tempdir.path().join("sample.png");
+        let image = image::RgbaImage::from_fn(2, 2, |x, y| {
+            if (x + y) % 2 == 0 {
+                image::Rgba([255, 0, 0, 255])
+            } else {
+                image::Rgba([0, 0, 255, 255])
+            }
+        });
+        image.save(path.as_path()).expect("write png");
+
+        let mut list = MessageList::new();
+        list.add_assistant_message(format!(
+            "### Tool activity\n> Called read\n> args: {{\"path\":\"{}\"}}\n> stdout: Read image file [image/png]",
+            path.display()
+        ));
+
+        let rendered = list.get_rendered_lines(72);
+        let text = rendered
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        assert!(text.iter().any(|line| line.contains("read ")));
+        assert!(text.join("").contains("sample.png"));
+        assert!(
+            text.iter()
+                .any(|line| line.contains("Read image file [image/png]"))
+        );
+        assert!(
+            text.iter()
+                .any(|line| line.contains("preview: 2×2 · image/png"))
+        );
+        assert!(text.iter().any(|line| line.contains('▀')));
+        assert!(
+            rendered
+                .iter()
+                .any(|line| dominant_block_bg(line) == Some(SURFACE_TOOL_BG))
+        );
+    }
+
+    #[test]
+    fn read_tool_text_activity_renders_path_and_excerpt_card() {
+        let mut list = MessageList::new();
+        list.add_assistant_message(
+            "### Tool activity\n> Called read_file\n> args: {\"path\":\"docs/notes.md\",\"offset\":10,\"limit\":3}\n> stdout: # Notes\n> stdout: The quick brown fox jumps over the lazy dog."
+                .to_owned(),
+        );
+
+        let rendered = list.get_rendered_lines(64);
+        let text = rendered
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        assert!(text.iter().any(|line| line.contains("read ")));
+        assert!(text.join("").contains("docs/notes.md:10-12"));
+        assert!(text.iter().any(|line| line.contains("Read file")));
+        assert!(text.iter().any(|line| line.contains("preview:")));
+        assert!(text.iter().any(|line| line.contains("# Notes")));
+        assert!(
+            text.iter()
+                .any(|line| line.contains("quick brown fox jumps"))
+        );
+        assert!(!text.iter().any(|line| line.contains('▀')));
+        assert!(
+            rendered
+                .iter()
+                .any(|line| dominant_block_bg(line) == Some(SURFACE_TOOL_BG))
+        );
+    }
+
+    #[test]
+    fn read_tool_request_display_shortens_home_and_single_line_range() {
+        let Some(home) = std::env::var_os("HOME").and_then(|home| home.into_string().ok()) else {
+            return;
+        };
+        if home.is_empty() {
+            return;
+        }
+        let request = ReadToolRequest {
+            path: format!("{home}/project/src/lib.rs"),
+            offset: Some(42),
+            limit: Some(1),
+        };
+
+        assert_eq!(
+            format_read_request_display(&request),
+            "~/project/src/lib.rs:42"
+        );
+    }
+
+    #[test]
     fn assistant_markdown_table_renders_as_structured_grid() {
         let mut list = MessageList::new();
         list.add_assistant_message(
@@ -3263,8 +5996,8 @@ let beta = alpha + 1;
             .find(|span| span.content.contains("let beta = alpha + 1;"))
             .expect("beta span");
 
-        assert_eq!(alpha_span.style.fg, Some(PI_GREEN));
-        assert_eq!(beta_span.style.fg, Some(PI_GREEN));
+        assert_eq!(alpha_span.style.fg, Some(SURFACE_GREEN));
+        assert_eq!(beta_span.style.fg, Some(SURFACE_GREEN));
     }
 
     #[test]
@@ -3616,6 +6349,33 @@ cargo test -p loong-app --lib
     }
 
     #[test]
+    fn latest_copy_text_prefers_latest_assistant_content() {
+        let mut list = MessageList::new();
+        list.add_user_message("question".to_owned());
+        list.add_assistant_message("answer with details".to_owned());
+
+        assert_eq!(
+            list.latest_copy_text().as_deref(),
+            Some("answer with details")
+        );
+    }
+
+    #[test]
+    fn export_markdown_includes_roles_and_structured_blocks() {
+        let mut list = MessageList::new();
+        list.add_user_message("show diff".to_owned());
+        list.add_assistant_message("```diff\n- old\n+ new\n```".to_owned());
+
+        let exported = list.export_markdown();
+
+        assert!(exported.contains("## You"));
+        assert!(exported.contains("show diff"));
+        assert!(exported.contains("## Assistant"));
+        assert!(exported.contains("```diff"));
+        assert!(exported.contains("+ new"));
+    }
+
+    #[test]
     fn width_resize_preserves_bottom_anchor_for_wrapped_tail_content() {
         let backend = TestBackend::new(48, 8);
         let mut terminal = Terminal::new(backend).expect("terminal");
@@ -3716,7 +6476,44 @@ cargo test -p loong-app --lib
             })
             .collect::<Vec<_>>();
 
-        assert!(rendered.first().is_some_and(|line| line.contains("loong")));
+        assert!(rendered.iter().any(|line| {
+            line.contains("LOONG")
+                || line.contains("░███")
+                || line.contains("╭─╮")
+                || line.contains("╰─╯")
+        }));
+        assert!(
+            rendered
+                .iter()
+                .find(|line| !line.trim().is_empty())
+                .is_some_and(|line| {
+                    line.contains("LOONG")
+                        || line.contains("░███")
+                        || line.contains("╭─╮")
+                        || line.contains("╰─╯")
+                })
+        );
+    }
+
+    #[test]
+    fn clear_transcript_removes_messages_and_resets_scroll_state() {
+        let mut list = MessageList::new();
+        list.add_startup_header("0.1.0".to_owned(), "help".to_owned(), Vec::new());
+        list.add_user_message("hello".to_owned());
+        list.add_rendered_lines(vec!["system card".to_owned()]);
+        let _ = list.get_rendered_lines(80);
+        list.scroll_offset = 6;
+        list.last_scroll_start = 2;
+        list.snap_scroll_on_next_render = false;
+
+        list.clear_transcript();
+
+        assert!(list.messages.is_empty());
+        assert_eq!(list.scroll_offset, 0);
+        assert_eq!(list.last_scroll_start, 0);
+        assert!(list.follow_tail);
+        assert!(list.snap_scroll_on_next_render);
+        assert!(list.render_cache.is_none());
     }
 
     #[test]
@@ -3725,10 +6522,7 @@ cargo test -p loong-app --lib
         list.add_startup_header(
             "0.1.0".to_owned(),
             "help".to_owned(),
-            vec![(
-                "Skills".to_owned(),
-                vec!["demo-skill, demo-helper, browser-preview, docx-helper".to_owned()],
-            )],
+            vec![("Skills".to_owned(), vec!["12".to_owned()])],
         );
 
         let rendered = list
@@ -3747,15 +6541,231 @@ cargo test -p loong-app --lib
                 .iter()
                 .all(|line| crate::presentation::display_width(line) <= 28)
         );
-        assert!(rendered.iter().any(|line| line.contains("demo-skill")));
-        assert!(rendered.iter().any(|line| line.contains("docx-helper")));
+        assert!(rendered.iter().any(|line| line.contains("Skills (12)")));
+    }
+
+    #[test]
+    fn startup_status_markers_use_state_colors() {
+        let mut list = MessageList::new();
+        list.add_startup_header(
+            "0.1.0".to_owned(),
+            "help".to_owned(),
+            vec![
+                ("Skills".to_owned(), vec!["0".to_owned()]),
+                ("MCP".to_owned(), vec!["2".to_owned()]),
+            ],
+        );
+
+        let rendered = list.get_rendered_lines(80);
+        let has_missing_marker = rendered
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .any(|span| span.content.as_ref() == "✗" && span.style.fg == Some(SURFACE_RED));
+        let has_ready_marker = rendered
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .any(|span| span.content.as_ref() == "✓" && span.style.fg == Some(SURFACE_GREEN));
+
+        assert!(has_missing_marker);
+        assert!(has_ready_marker);
+    }
+
+    #[test]
+    fn startup_tip_keeps_blank_row_below_tip() {
+        let mut list = MessageList::new();
+        list.add_startup_header_with_tips(
+            "0.1.0".to_owned(),
+            "fallback".to_owned(),
+            Vec::new(),
+            vec!["rotating tip".to_owned()],
+        );
+
+        let rendered = list
+            .get_rendered_lines(80)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        let tip_index = rendered
+            .iter()
+            .position(|line| line.contains("rotating tip"))
+            .expect("startup tip line");
+
+        assert!(
+            rendered
+                .get(tip_index + 1)
+                .is_some_and(|line| line.trim().is_empty())
+        );
+    }
+
+    #[test]
+    fn startup_wordmarks_match_brand_art() {
+        assert_eq!(
+            STARTUP_WORDMARK,
+            &[
+                "░███░         ░████████░    ░████████░   ░█████████░    ░████████░",
+                "░███░        ░███    ███░  ░███    ███░  ░███    ███░  ░███    ███░",
+                "░███░        ░███    ███░  ░███    ███░  ░███    ███░  ░███",
+                "░███░        ░███    ███░  ░███    ███░  ░███    ███░  ░███  █████░",
+                "░███░        ░███    ███░  ░███    ███░  ░███    ███░  ░███    ███░",
+                "░███░        ░███    ███░  ░███    ███░  ░███    ███░  ░███    ███░",
+                "░██████████   ░████████░    ░████████░   ░███    ███░   ░████████░",
+            ]
+        );
+        assert_eq!(
+            STARTUP_COMPACT_WORDMARK,
+            &[
+                "╷  ╭─╮╭─╮╭╮╷╭─╴",
+                "│  │ ││ ││╰┤│╶╮",
+                "╰─╴╰─╯╰─╯╵ ╵╰─╯",
+                "",
+                "",
+                "",
+            ]
+        );
+    }
+
+    #[test]
+    fn startup_wordmark_eye_frames_animate_the_two_o_letters() {
+        assert_eq!(startup_logo_eye_frame_index(Duration::ZERO), 0);
+        assert_eq!(STARTUP_EYE_FRAMES.len(), 60);
+
+        let first_glance = startup_wordmark_eye_frame(0).join(
+            "
+",
+        );
+        let upper_wash = startup_wordmark_eye_frame(6).join(
+            "
+",
+        );
+        let far_right = startup_wordmark_eye_frame(16).join(
+            "
+",
+        );
+        let lower_glance = startup_wordmark_eye_frame(26).join(
+            "
+",
+        );
+        let shimmer = startup_wordmark_eye_frame(32).join(
+            "
+",
+        );
+        let vertical_sweep = startup_wordmark_eye_frame(40).join(
+            "
+",
+        );
+
+        assert!(first_glance.contains("░███ █  ███░  ░███ █  ███░"));
+        assert!(upper_wash.contains("░███▓▓▓▓███░  ░███▓▓▓▓███░"));
+        assert!(far_right.contains("░███  █████░  ░███  █████░"));
+        assert!(lower_glance.contains("░███ █  ███░  ░███ █  ███░"));
+        assert!(shimmer.contains("░███▒▒▒▒███░  ░███▒▒▒▒███░"));
+        assert!(vertical_sweep.contains("░███ ▂  ███░  ░███ ▂  ███░"));
+        assert_ne!(
+            first_glance,
+            STARTUP_WORDMARK.join(
+                "
+"
+            )
+        );
+        assert_ne!(first_glance, far_right);
+    }
+
+    #[test]
+    fn startup_wordmark_eye_frames_keep_fixed_geometry() {
+        for frame_index in 0..STARTUP_EYE_FRAMES.len() {
+            let frame = startup_wordmark_eye_frame(frame_index);
+            assert_eq!(frame.len(), STARTUP_WORDMARK.len());
+            for (line, base_line) in frame.iter().zip(STARTUP_WORDMARK.iter()) {
+                assert_eq!(
+                    crate::presentation::display_width(line),
+                    crate::presentation::display_width(base_line),
+                    "{line}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn startup_eye_shadow_blocks_use_layered_intensity() {
+        assert_eq!(startup_logo_eye_style('░').fg, Some(SURFACE_DIM_GRAY));
+        assert_eq!(startup_logo_eye_style('▒').fg, Some(SURFACE_GRAY));
+        assert_eq!(startup_logo_eye_style('▓').fg, Some(SURFACE_ACCENT));
+        assert_eq!(startup_logo_eye_style('█').fg, Some(Color::White));
+    }
+
+    #[test]
+    fn startup_header_uses_full_logo_when_viewport_is_wide() {
+        let mut list = MessageList::new();
+        list.add_startup_header("0.1.0".to_owned(), "help".to_owned(), Vec::new());
+
+        let rendered = list
+            .get_rendered_lines(120)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(rendered.contains("░███░         ░████████░"));
+        assert!(rendered.contains("░██████████   ░████████░"));
+        assert!(!rendered.contains("╷  ╭─╮╭─╮╭╮╷╭─╴"));
+    }
+
+    #[test]
+    fn startup_header_uses_compact_logo_when_viewport_is_narrow() {
+        let mut list = MessageList::new();
+        list.add_startup_header("0.1.0".to_owned(), "help".to_owned(), Vec::new());
+
+        let rendered = list
+            .get_rendered_lines(24)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(rendered.contains("╷  ╭─╮╭─╮╭╮╷╭─╴"));
+        assert!(!rendered.contains("░████████░"));
+    }
+
+    #[test]
+    fn startup_tip_animation_fades_to_next_tip_after_cycle_boundary() {
+        let tips = vec!["first tip".to_owned(), "second tip".to_owned()];
+        let elapsed = Duration::from_millis(
+            STARTUP_TIP_HOLD_MS + STARTUP_TIP_FADE_MS + (STARTUP_TIP_FADE_MS / 2),
+        );
+
+        let render_state =
+            startup_tip_render_state(tips.as_slice(), elapsed).expect("startup tip render state");
+
+        if super::reduced_motion_enabled() {
+            assert!(render_state.text.contains("first tip"));
+            return;
+        }
+
+        assert!(render_state.text.contains("second tip"));
+        assert_ne!(render_state.text_color, Color::White);
+        assert_ne!(render_state.bullet_color, SURFACE_ACCENT);
     }
 
     #[test]
     fn startup_header_wraps_version_and_tutorial_to_viewport_width() {
         let mut list = MessageList::new();
         list.add_startup_header(
-            "0.1.0-alpha.3 · feat/ui-ux-droid-parity-final-20260414 · 4fd18d6".to_owned(),
+            "v0.1.0-alpha.3".to_owned(),
             "escape interrupt · : deck · / commands · ctrl+o compaction".to_owned(),
             Vec::new(),
         );
@@ -3776,7 +6786,7 @@ cargo test -p loong-app --lib
                 .iter()
                 .all(|line| crate::presentation::display_width(line) <= 24)
         );
-        assert!(rendered.iter().any(|line| line.contains("loong ")));
+        assert!(rendered.iter().any(|line| line.contains("0.1.0-alpha.3")));
         assert!(rendered.iter().any(|line| line.contains("compaction")));
     }
 
@@ -3797,8 +6807,8 @@ cargo test -p loong-app --lib
             .collect::<Vec<_>>()
             .join("\n");
 
-        assert!(rendered.contains("loong v0.1.0-alpha.3"));
-        assert!(!rendered.contains("loong vv0.1.0-alpha.3"));
+        assert!(rendered.contains("v0.1.0-alpha.3"));
+        assert!(!rendered.contains("vv0.1.0-alpha.3"));
     }
 
     #[test]
@@ -3819,8 +6829,8 @@ cargo test -p loong-app --lib
             .collect::<Vec<_>>()
             .join("\n");
 
-        assert!(rendered.contains(format!("loong {version}").as_str()));
-        assert!(!rendered.contains(format!("loong v{version}").as_str()));
+        assert!(rendered.contains(version.as_str()));
+        assert!(!rendered.contains(format!("v{version}").as_str()));
     }
 
     #[test]
@@ -3888,9 +6898,9 @@ cargo test -p loong-app --lib
             .expect("system activity line");
 
         assert_eq!(line.spans[0].content.as_ref(), "• ");
-        assert_eq!(line.spans[0].style.fg, Some(PI_GREEN));
+        assert_eq!(line.spans[0].style.fg, Some(SURFACE_GREEN));
         assert_eq!(line.spans[1].content.as_ref(), "Ran ");
-        assert_eq!(line.spans[1].style.fg, Some(PI_ACCENT));
+        assert_eq!(line.spans[1].style.fg, Some(SURFACE_ACCENT));
     }
 
     #[test]
@@ -3910,9 +6920,9 @@ cargo test -p loong-app --lib
 
         assert_eq!(line.spans[0].content.as_ref(), "  ");
         assert_eq!(line.spans[1].content.as_ref(), "└ ");
-        assert_eq!(line.spans[1].style.fg, Some(PI_GRAY));
+        assert_eq!(line.spans[1].style.fg, Some(SURFACE_GRAY));
         assert_eq!(line.spans[2].content.as_ref(), "Read ");
-        assert_eq!(line.spans[2].style.fg, Some(PI_ACCENT));
+        assert_eq!(line.spans[2].style.fg, Some(SURFACE_ACCENT));
     }
 
     #[test]

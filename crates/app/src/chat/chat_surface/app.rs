@@ -10,12 +10,15 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
 };
 use serde::Deserialize;
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
+use std::fs;
 use std::hash::{Hash, Hasher};
-use std::path::Path;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::task::JoinHandle;
 
 use crate::CliResult;
@@ -24,9 +27,9 @@ use crate::chat::CliTurnRuntime;
 use crate::chat::control_plane::ChatControlPlaneStore;
 use crate::tui_surface::{TuiCalloutTone, TuiKeyValueSpec, TuiMessageSpec, TuiSectionSpec};
 
-use super::command_palette::{CommandAction, CommandPalette, SkillEntry};
+use super::command_palette::{CommandAction, CommandPalette, SkillEntry, slash_command_specs};
 use super::composer::Composer;
-use super::i18n::{I18nService, PiCopy, resolve_default_language};
+use super::i18n::{I18nService, SurfaceCopy, resolve_default_language};
 use super::message_list::MessageList;
 use super::utils::*;
 
@@ -39,6 +42,23 @@ pub enum Focus {
 
 const FOOTER_BOTTOM_BREATHING_HEIGHT: u16 = 1;
 const FOOTER_HORIZONTAL_INDENT: u16 = 2;
+const PENDING_TOOL_ANIMATION_FRAME_MS: u64 = 90;
+const PENDING_TOOL_LABEL_COLORS: [Color; 6] = [
+    SURFACE_DIM_GRAY,
+    SURFACE_GRAY,
+    SURFACE_ACCENT,
+    SURFACE_CYAN,
+    Color::White,
+    SURFACE_CYAN,
+];
+const PENDING_TOOL_BODY_COLORS: [Color; 6] = [
+    SURFACE_GRAY,
+    SURFACE_ACCENT,
+    SURFACE_CYAN,
+    Color::White,
+    SURFACE_CYAN,
+    SURFACE_ACCENT,
+];
 
 #[derive(Clone)]
 struct PendingRenderCache {
@@ -72,6 +92,7 @@ pub struct App {
     pub last_palette_area: Rect,
     pub cwd: String,
     pub model: String,
+    pub title: Option<String>,
     pub i18n: I18nService,
 }
 
@@ -82,7 +103,8 @@ impl App {
         render_width: usize,
     ) -> CliResult<Self> {
         let language = resolve_default_language();
-        let detected_skills = detect_repo_skills(runtime.effective_working_directory.as_deref());
+        let detected_skills =
+            detect_available_skills(runtime.effective_working_directory.as_deref());
         let mut app = Self {
             message_list: MessageList::new(),
             composer: Composer::new(),
@@ -108,13 +130,14 @@ impl App {
             last_palette_area: Rect::default(),
             cwd: format_cwd(runtime),
             model: runtime.config.provider.model.clone(),
+            title: None,
             i18n: I18nService::new(language),
         };
 
-        let (version, tutorial, sections) =
-            build_pi_startup_content(runtime, options, render_width, &app.i18n);
+        let (version, tutorial, sections, tips) =
+            build_chat_startup_content(runtime, options, render_width, &app.i18n);
         app.message_list
-            .add_startup_header(version, tutorial, sections);
+            .add_startup_header_with_tips(version, tutorial, sections, tips);
 
         Ok(app)
     }
@@ -123,7 +146,7 @@ impl App {
         let size = f.area();
         self.last_render_width = size.width;
         self.last_render_height = size.height;
-        let composer_height = self.composer.height_for_width(size.width);
+        let composer_height = self.composer.height_for_area(size.width, size.height);
         let palette_visible =
             matches!(self.focus, Focus::CommandPalette) || self.inline_skill_popup_active;
         let palette_height = if palette_visible {
@@ -202,7 +225,7 @@ impl App {
             f.render_widget(Paragraph::new(pending_lines), *pending_area);
         }
 
-        let line_color = PI_COTTON_CANDY;
+        let line_color = SURFACE_COTTON_CANDY;
         let composer_separator_is_blank =
             !self.pending_turn && self.message_list.trailing_colored_block(size.width);
         if composer_separator_is_blank {
@@ -454,7 +477,6 @@ pub async fn run_app<B: Backend>(
     let mut startup_release_task = Some(tokio::spawn(load_startup_release_lines(render_width)));
     let mut dirty = true;
     let mut last_resize_at: Option<std::time::Instant> = None;
-    let mut last_resize_requires_quiet = false;
     let mut pending_live_resize_rerender = false;
 
     loop {
@@ -471,6 +493,10 @@ pub async fn run_app<B: Backend>(
             dirty = true;
         }
 
+        if app.message_list.refresh_startup_animation() {
+            dirty = true;
+        }
+
         if app.pending_turn {
             let signature = pending_render_signature(&app);
             if signature != app.last_pending_signature {
@@ -481,38 +507,34 @@ pub async fn run_app<B: Backend>(
             app.last_pending_signature = None;
         }
 
-        let resize_ready = redraw_throttle_ready(
-            last_resize_requires_quiet,
+        if resize_live_rerender_ready(
+            pending_live_resize_rerender,
             last_resize_at.map(|instant| instant.elapsed()),
-        );
-        if dirty && resize_ready {
-            if pending_live_resize_rerender {
-                if let Some(rerender) = app.live_rerender.as_ref() {
-                    rerender();
-                }
-                pending_live_resize_rerender = false;
+        ) {
+            if let Some(rerender) = app.live_rerender.as_ref() {
+                rerender();
             }
+            pending_live_resize_rerender = false;
+            last_resize_at = None;
+            dirty = true;
+        }
+
+        if dirty {
             terminal
                 .draw(|f| app.render(f))
                 .map_err(|e| format!("draw error: {}", e))?;
             dirty = false;
-            if last_resize_requires_quiet {
-                if last_resize_at
-                    .map(|instant| instant.elapsed() >= Duration::from_millis(70))
-                    .unwrap_or(true)
-                {
-                    last_resize_at = None;
-                    last_resize_requires_quiet = false;
-                }
-            } else {
+            if !pending_live_resize_rerender {
                 last_resize_at = None;
             }
         }
 
-        let poll_timeout = if dirty && last_resize_requires_quiet && !resize_ready {
+        let poll_timeout = if pending_live_resize_rerender {
             Duration::from_millis(16)
         } else if app.pending_turn {
             Duration::from_millis(80)
+        } else if app.message_list.startup_animation_active() {
+            Duration::from_millis(70)
         } else {
             Duration::from_millis(250)
         };
@@ -580,11 +602,14 @@ pub async fn run_app<B: Backend>(
                                 {
                                     app.command_palette.show_commands(":");
                                     app.focus = Focus::CommandPalette;
+                                } else if should_focus_composer_for_transcript_key(key) {
+                                    pending_submission =
+                                        route_transcript_key_to_composer(&mut app, key);
                                 } else {
                                     app.message_list.handle_key(key);
-                                }
-                                if key.code == KeyCode::Esc || key.code == KeyCode::Enter {
-                                    app.focus = Focus::Composer;
+                                    if key.code == KeyCode::Esc || key.code == KeyCode::Enter {
+                                        app.focus = Focus::Composer;
+                                    }
                                 }
                             }
                             Focus::CommandPalette => {
@@ -686,6 +711,8 @@ pub async fn run_app<B: Backend>(
                         Focus::MessageList => {
                             if key.code == KeyCode::Tab {
                                 app.focus = Focus::Composer;
+                            } else if should_focus_composer_for_transcript_key(key) {
+                                submitted_message = route_transcript_key_to_composer(&mut app, key);
                             } else {
                                 app.message_list.handle_key(key);
                                 if key.code == KeyCode::Esc || key.code == KeyCode::Enter {
@@ -739,9 +766,15 @@ pub async fn run_app<B: Backend>(
                         continue;
                     }
                     let width_changed = last_known_size.width != new_size.width;
-                    last_resize_requires_quiet =
-                        resize_reflow_required(last_known_size.width, new_size.width);
-                    last_resize_at = last_resize_requires_quiet.then(std::time::Instant::now);
+                    let layout_changed = resize_reflow_required(
+                        last_known_size.width,
+                        last_known_size.height,
+                        new_size.width,
+                        new_size.height,
+                    );
+                    if layout_changed {
+                        last_resize_at = Some(std::time::Instant::now());
+                    }
                     last_known_size = new_size;
                     app.last_render_width = new_size.width;
                     app.last_render_height = new_size.height;
@@ -752,11 +785,27 @@ pub async fn run_app<B: Backend>(
                     }
                     dirty = true;
                 }
-                Event::FocusGained | Event::FocusLost | Event::Paste(_) => {}
+                Event::Paste(text) => {
+                    paste_into_composer(&mut app, text.as_str());
+                    dirty = true;
+                }
+                Event::FocusGained | Event::FocusLost => {}
             }
         }
     }
     Ok(())
+}
+
+fn paste_into_composer(app: &mut App, text: &str) {
+    if text.is_empty() {
+        return;
+    }
+    app.composer.insert_paste(text);
+    app.focus = Focus::Composer;
+    if app.pending_turn && !app.composer.is_empty() {
+        app.composer_follow_up_intent = true;
+    }
+    app.sync_inline_skill_popup();
 }
 
 async fn run_surface_command<B: Backend>(
@@ -766,11 +815,534 @@ async fn run_surface_command<B: Backend>(
     options: &CliChatOptions,
     input: &str,
 ) -> CliResult<()> {
+    let trimmed = input.trim();
+    let (command, args) = split_surface_command(trimmed);
     let width = current_render_width(terminal)?;
-    let lines = build_command_lines(runtime, options, input, width).await?;
-    app.message_list.add_rendered_lines(lines);
-    app.focus = Focus::Composer;
+
+    match command {
+        "/clear" => {
+            app.message_list.clear_transcript();
+            app.focus = Focus::Composer;
+            Ok(())
+        }
+        "/new" => {
+            app.message_list.clear_transcript();
+            app.message_list
+                .add_rendered_lines(render_new_conversation_lines_with_width(width));
+            app.focus = Focus::Composer;
+            Ok(())
+        }
+        "/copy" => {
+            let copy_result = copy_command_text(app, args)
+                .and_then(|text| copy_to_system_clipboard(text.as_str()).map(|()| text));
+            app.message_list
+                .add_rendered_lines(render_copy_command_lines_with_width(copy_result, width));
+            app.focus = Focus::Composer;
+            Ok(())
+        }
+        "/diff" => {
+            let cwd = current_working_directory(runtime);
+            let lines = render_git_diff_command_lines_with_width(cwd.as_path(), width);
+            app.message_list.add_rendered_lines(lines);
+            app.focus = Focus::Composer;
+            Ok(())
+        }
+        "/export" | "/share" => {
+            let cwd = current_working_directory(runtime);
+            let markdown = app.message_list.export_markdown();
+            let result = write_transcript_export(
+                cwd.as_path(),
+                runtime.session_id.as_str(),
+                command.trim_start_matches('/'),
+                markdown.as_str(),
+            );
+            app.message_list
+                .add_rendered_lines(render_export_command_lines_with_width(
+                    command, result, width,
+                ));
+            app.focus = Focus::Composer;
+            Ok(())
+        }
+        "/import" => {
+            if args.trim().is_empty() {
+                let lines = build_command_lines(runtime, options, input, width).await?;
+                app.message_list.add_rendered_lines(lines);
+            } else {
+                let cwd = current_working_directory(runtime);
+                let result = import_context_into_composer(app, cwd.as_path(), args);
+                app.message_list
+                    .add_rendered_lines(render_import_command_lines_with_width(result, width));
+            }
+            app.focus = Focus::Composer;
+            Ok(())
+        }
+        "/simplify" => {
+            let result = stage_simplify_prompt(app, args);
+            app.message_list
+                .add_rendered_lines(render_prompt_staging_lines_with_width(
+                    "simplify", result, width,
+                ));
+            app.focus = Focus::Composer;
+            Ok(())
+        }
+        "/plan" => {
+            let result = stage_plan_prompt(app, args);
+            app.message_list
+                .add_rendered_lines(render_prompt_staging_lines_with_width(
+                    "plan", result, width,
+                ));
+            app.focus = Focus::Composer;
+            Ok(())
+        }
+        "/title" | "/rename" => {
+            if !args.trim().is_empty() {
+                app.title = Some(args.trim().to_owned());
+            }
+            let lines = render_title_command_lines_with_width(command, args, width);
+            app.message_list.add_rendered_lines(lines);
+            app.focus = Focus::Composer;
+            Ok(())
+        }
+        "/feedback" => {
+            let result = stage_feedback_prompt(app, args);
+            app.message_list
+                .add_rendered_lines(render_prompt_staging_lines_with_width(
+                    "feedback", result, width,
+                ));
+            app.focus = Focus::Composer;
+            Ok(())
+        }
+        _ => {
+            let lines = build_command_lines(runtime, options, input, width).await?;
+            app.message_list.add_rendered_lines(lines);
+            app.focus = Focus::Composer;
+            Ok(())
+        }
+    }
+}
+
+fn split_surface_command(input: &str) -> (&str, &str) {
+    let trimmed = input.trim();
+    if let Some((command, rest)) = trimmed.split_once(char::is_whitespace) {
+        (command, rest.trim())
+    } else {
+        (trimmed, "")
+    }
+}
+
+fn current_working_directory(runtime: &CliTurnRuntime) -> PathBuf {
+    runtime
+        .effective_working_directory
+        .clone()
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn render_new_conversation_lines_with_width(width: usize) -> Vec<String> {
+    let message_spec = TuiMessageSpec {
+        role: "new".to_owned(),
+        caption: Some("fresh conversation".to_owned()),
+        sections: vec![TuiSectionSpec::Callout {
+            tone: TuiCalloutTone::Info,
+            title: Some("ready".to_owned()),
+            lines: vec![
+                "The visible transcript has been cleared and the composer is ready for the next turn."
+                    .to_owned(),
+            ],
+        }],
+        footer_lines: vec!["Type immediately; no extra focus step is needed.".to_owned()],
+    };
+    super::super::render_cli_chat_message_spec_with_width(&message_spec, width)
+}
+
+fn copy_command_text(app: &App, args: &str) -> Result<String, String> {
+    if !args.trim().is_empty() {
+        return Ok(args.trim().to_owned());
+    }
+    app.message_list
+        .latest_copy_text()
+        .ok_or_else(|| "nothing copyable yet".to_owned())
+}
+
+fn copy_to_system_clipboard(text: &str) -> Result<(), String> {
+    let candidates: &[(&str, &[&str])] = if cfg!(target_os = "macos") {
+        &[("pbcopy", &[])]
+    } else {
+        &[("wl-copy", &[]), ("xclip", &["-selection", "clipboard"])]
+    };
+
+    let mut last_error = "no clipboard command attempted".to_owned();
+    for (program, args) in candidates {
+        let spawn_result = Command::new(program)
+            .args(*args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn();
+        let Ok(mut child) = spawn_result else {
+            last_error = format!("{program} unavailable");
+            continue;
+        };
+        if let Some(stdin) = child.stdin.as_mut()
+            && let Err(error) = stdin.write_all(text.as_bytes())
+        {
+            last_error = format!("{program} write failed: {error}");
+            let _ = child.kill();
+            continue;
+        }
+        let output = child
+            .wait_with_output()
+            .map_err(|error| format!("{program} wait failed: {error}"))?;
+        if output.status.success() {
+            return Ok(());
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        last_error = if stderr.is_empty() {
+            format!("{program} exited with {}", output.status)
+        } else {
+            format!("{program}: {stderr}")
+        };
+    }
+    Err(last_error)
+}
+
+fn render_copy_command_lines_with_width(
+    result: Result<String, String>,
+    width: usize,
+) -> Vec<String> {
+    let (tone, title, lines) = match result {
+        Ok(text) => {
+            let char_count = text.chars().count();
+            (
+                TuiCalloutTone::Info,
+                "copied".to_owned(),
+                vec![format!(
+                    "Copied {char_count} character(s) to the system clipboard."
+                )],
+            )
+        }
+        Err(error) => (
+            TuiCalloutTone::Warning,
+            "copy unavailable".to_owned(),
+            vec![error],
+        ),
+    };
+    let message_spec = TuiMessageSpec {
+        role: "copy".to_owned(),
+        caption: Some("clipboard".to_owned()),
+        sections: vec![TuiSectionSpec::Callout {
+            tone,
+            title: Some(title),
+            lines,
+        }],
+        footer_lines: vec![
+            "/copy copies the latest reply, or /copy <text> copies explicit text.".to_owned(),
+        ],
+    };
+    super::super::render_cli_chat_message_spec_with_width(&message_spec, width)
+}
+
+fn run_git_capture(cwd: &Path, args: &[&str]) -> Result<String, String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(args)
+        .output()
+        .map_err(|error| format!("git failed to start: {error}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    if output.status.success() {
+        Ok(stdout)
+    } else if stderr.is_empty() {
+        Err(format!("git exited with {}", output.status))
+    } else {
+        Err(stderr)
+    }
+}
+
+fn render_git_diff_command_lines_with_width(cwd: &Path, width: usize) -> Vec<String> {
+    let status = run_git_capture(cwd, &["status", "--short"]);
+    let stat = run_git_capture(cwd, &["diff", "--stat"]);
+    let shortstat = run_git_capture(cwd, &["diff", "--shortstat"]);
+
+    let mut sections = Vec::new();
+    match (status, stat, shortstat) {
+        (Ok(status), Ok(stat), Ok(shortstat)) => {
+            let status_lines = if status.trim().is_empty() {
+                vec!["working tree clean".to_owned()]
+            } else {
+                status.lines().map(ToOwned::to_owned).collect()
+            };
+            sections.push(TuiSectionSpec::Preformatted {
+                title: Some("status".to_owned()),
+                language: None,
+                lines: status_lines,
+            });
+            if !stat.trim().is_empty() {
+                sections.push(TuiSectionSpec::Preformatted {
+                    title: Some("diff stat".to_owned()),
+                    language: None,
+                    lines: stat.lines().map(ToOwned::to_owned).collect(),
+                });
+            }
+            if !shortstat.trim().is_empty() {
+                sections.push(TuiSectionSpec::Narrative {
+                    title: Some("summary".to_owned()),
+                    lines: vec![shortstat],
+                });
+            }
+        }
+        (status, stat, shortstat) => {
+            let errors = [status.err(), stat.err(), shortstat.err()]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>();
+            sections.push(TuiSectionSpec::Callout {
+                tone: TuiCalloutTone::Warning,
+                title: Some("git diff unavailable".to_owned()),
+                lines: if errors.is_empty() {
+                    vec!["git did not return diff information".to_owned()]
+                } else {
+                    errors
+                },
+            });
+        }
+    }
+
+    let message_spec = TuiMessageSpec {
+        role: "diff".to_owned(),
+        caption: Some("working tree".to_owned()),
+        sections,
+        footer_lines: vec![format!("cwd: {}", cwd.display())],
+    };
+    super::super::render_cli_chat_message_spec_with_width(&message_spec, width)
+}
+
+fn safe_file_component(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .chars()
+        .take(64)
+        .collect::<String>()
+}
+
+fn write_transcript_export(
+    cwd: &Path,
+    session_id: &str,
+    label: &str,
+    markdown: &str,
+) -> Result<PathBuf, String> {
+    if markdown.trim().is_empty() {
+        return Err("transcript is empty".to_owned());
+    }
+    let export_dir = cwd.join(".loong").join("exports");
+    fs::create_dir_all(export_dir.as_path())
+        .map_err(|error| format!("failed to create export directory: {error}"))?;
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| format!("clock error: {error}"))?
+        .as_secs();
+    let session = safe_file_component(session_id);
+    let label = safe_file_component(label);
+    let file_name = format!("{label}-{session}-{timestamp}.md");
+    let path = export_dir.join(file_name);
+    fs::write(path.as_path(), markdown)
+        .map_err(|error| format!("failed to write export: {error}"))?;
+    Ok(path)
+}
+
+fn render_export_command_lines_with_width(
+    command: &str,
+    result: Result<PathBuf, String>,
+    width: usize,
+) -> Vec<String> {
+    let (tone, title, lines) = match result {
+        Ok(path) => (
+            TuiCalloutTone::Info,
+            "written".to_owned(),
+            vec![format!("{} wrote {}", command, path.display())],
+        ),
+        Err(error) => (
+            TuiCalloutTone::Warning,
+            "not written".to_owned(),
+            vec![error],
+        ),
+    };
+    let message_spec = TuiMessageSpec {
+        role: command.trim_start_matches('/').to_owned(),
+        caption: Some("transcript artifact".to_owned()),
+        sections: vec![TuiSectionSpec::Callout {
+            tone,
+            title: Some(title),
+            lines,
+        }],
+        footer_lines: vec![
+            "Artifacts stay local until you explicitly move or publish them.".to_owned(),
+        ],
+    };
+    super::super::render_cli_chat_message_spec_with_width(&message_spec, width)
+}
+
+fn resolve_import_path(cwd: &Path, input: &str) -> PathBuf {
+    let trimmed = input.trim().trim_matches('"').trim_matches('\'');
+    let path = PathBuf::from(trimmed);
+    if path.is_absolute() {
+        path
+    } else {
+        cwd.join(path)
+    }
+}
+
+fn import_context_into_composer(app: &mut App, cwd: &Path, args: &str) -> Result<PathBuf, String> {
+    let path = resolve_import_path(cwd, args);
+    let content = fs::read_to_string(path.as_path())
+        .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
+    let clipped = if content.chars().count() > 20_000 {
+        let prefix = content.chars().take(20_000).collect::<String>();
+        format!("{prefix}\n\n[import truncated to first 20000 characters]")
+    } else {
+        content
+    };
+    app.composer.set_input(format!(
+        "Use this imported context from {}:\n\n{}",
+        path.display(),
+        clipped
+    ));
+    Ok(path)
+}
+
+fn render_import_command_lines_with_width(
+    result: Result<PathBuf, String>,
+    width: usize,
+) -> Vec<String> {
+    let (tone, title, lines) = match result {
+        Ok(path) => (
+            TuiCalloutTone::Info,
+            "staged".to_owned(),
+            vec![format!(
+                "Imported {} into the composer draft.",
+                path.display()
+            )],
+        ),
+        Err(error) => (
+            TuiCalloutTone::Warning,
+            "import failed".to_owned(),
+            vec![error],
+        ),
+    };
+    let message_spec = TuiMessageSpec {
+        role: "import".to_owned(),
+        caption: Some("composer context".to_owned()),
+        sections: vec![TuiSectionSpec::Callout {
+            tone,
+            title: Some(title),
+            lines,
+        }],
+        footer_lines: vec![
+            "Review the staged draft before sending if the file is large.".to_owned(),
+        ],
+    };
+    super::super::render_cli_chat_message_spec_with_width(&message_spec, width)
+}
+
+fn latest_text_or_args(app: &App, args: &str) -> Result<String, String> {
+    if !args.trim().is_empty() {
+        return Ok(args.trim().to_owned());
+    }
+    app.message_list
+        .latest_copy_text()
+        .ok_or_else(|| "no previous content to use".to_owned())
+}
+
+fn stage_simplify_prompt(app: &mut App, args: &str) -> Result<(), String> {
+    let source = latest_text_or_args(app, args)?;
+    app.composer.set_input(format!(
+        "Please simplify and clarify the following content without losing important details:\n\n{source}"
+    ));
     Ok(())
+}
+
+fn stage_plan_prompt(app: &mut App, args: &str) -> Result<(), String> {
+    let subject = if args.trim().is_empty() {
+        "the current task".to_owned()
+    } else {
+        args.trim().to_owned()
+    };
+    app.composer.set_input(format!(
+        "Create a concise implementation plan for {subject}. Include risks, verification, and the smallest safe sequence."
+    ));
+    Ok(())
+}
+
+fn stage_feedback_prompt(app: &mut App, args: &str) -> Result<(), String> {
+    let body = if args.trim().is_empty() {
+        "Feedback: ".to_owned()
+    } else {
+        format!("Feedback: {}", args.trim())
+    };
+    app.composer.set_input(body);
+    Ok(())
+}
+
+fn render_prompt_staging_lines_with_width(
+    role: &str,
+    result: Result<(), String>,
+    width: usize,
+) -> Vec<String> {
+    let (tone, title, lines) = match result {
+        Ok(()) => (
+            TuiCalloutTone::Info,
+            "draft staged".to_owned(),
+            vec!["The composer has been populated; edit or press Enter to send.".to_owned()],
+        ),
+        Err(error) => (
+            TuiCalloutTone::Warning,
+            "not staged".to_owned(),
+            vec![error],
+        ),
+    };
+    let message_spec = TuiMessageSpec {
+        role: role.to_owned(),
+        caption: Some("composer draft".to_owned()),
+        sections: vec![TuiSectionSpec::Callout {
+            tone,
+            title: Some(title),
+            lines,
+        }],
+        footer_lines: vec!["Typing continues in the composer immediately.".to_owned()],
+    };
+    super::super::render_cli_chat_message_spec_with_width(&message_spec, width)
+}
+
+fn render_title_command_lines_with_width(command: &str, args: &str, width: usize) -> Vec<String> {
+    let lines = if args.trim().is_empty() {
+        vec![format!("Usage: {command} <title>")]
+    } else {
+        vec![format!(
+            "Title noted for this local chat surface: {}",
+            args.trim()
+        )]
+    };
+    let message_spec = TuiMessageSpec {
+        role: command.trim_start_matches('/').to_owned(),
+        caption: Some("local title".to_owned()),
+        sections: vec![TuiSectionSpec::Callout {
+            tone: TuiCalloutTone::Info,
+            title: Some("title".to_owned()),
+            lines,
+        }],
+        footer_lines: vec!["The title is reflected in the footer for this TUI session.".to_owned()],
+    };
+    super::super::render_cli_chat_message_spec_with_width(&message_spec, width)
 }
 
 async fn submit_user_turn<B: Backend>(
@@ -864,12 +1436,36 @@ fn is_transcript_navigation_key(key: crossterm::event::KeyEvent) -> bool {
             | KeyCode::PageDown
             | KeyCode::Home
             | KeyCode::End
-            | KeyCode::Char('j')
-            | KeyCode::Char('k')
-    ) || (matches!(key.code, KeyCode::Char(' '))
-        && !key
-            .modifiers
-            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER))
+    )
+}
+
+fn should_focus_composer_for_transcript_key(key: crossterm::event::KeyEvent) -> bool {
+    if key
+        .modifiers
+        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
+    {
+        return false;
+    }
+
+    matches!(
+        key.code,
+        KeyCode::Char(_)
+            | KeyCode::Backspace
+            | KeyCode::Delete
+            | KeyCode::Enter
+            | KeyCode::Left
+            | KeyCode::Right
+    )
+}
+
+fn route_transcript_key_to_composer(
+    app: &mut App,
+    key: crossterm::event::KeyEvent,
+) -> Option<String> {
+    app.focus = Focus::Composer;
+    let submitted = app.composer.handle_key(key);
+    app.sync_inline_skill_popup();
+    submitted
 }
 
 fn should_route_composer_key_to_transcript(app: &App, key: crossterm::event::KeyEvent) -> bool {
@@ -1020,6 +1616,10 @@ fn build_status_footer_line(cwd: &str, model: &str, width: u16) -> Line<'static>
         return Line::from(String::new());
     }
 
+    if width <= 24 {
+        return single_footer_span(model, width, Style::default().fg(SURFACE_GRAY));
+    }
+
     let mut model_text = model.to_owned();
     let mut cwd_text = cwd.to_owned();
     let mut model_width = display_columns(&model_text);
@@ -1049,10 +1649,19 @@ fn build_status_footer_line(cwd: &str, model: &str, width: u16) -> Line<'static>
     }
 
     Line::from(vec![
-        Span::styled(cwd_text, Style::default().fg(PI_GRAY)),
+        Span::styled(cwd_text, Style::default().fg(SURFACE_GRAY)),
         Span::raw(" ".repeat(spacer_width)),
-        Span::styled(model_text, Style::default().fg(PI_GRAY)),
+        Span::styled(model_text, Style::default().fg(SURFACE_GRAY)),
     ])
+}
+
+fn single_footer_span(text: &str, width: usize, style: Style) -> Line<'static> {
+    let mut rendered = truncate_right_for_width(text, width);
+    let rendered_width = display_columns(&rendered);
+    if rendered_width < width {
+        rendered.push_str(&" ".repeat(width - rendered_width));
+    }
+    Line::from(vec![Span::styled(rendered, style)])
 }
 
 fn footer_content_area(area: Rect) -> Rect {
@@ -1069,28 +1678,47 @@ fn footer_content_area(area: Rect) -> Rect {
 }
 
 fn build_queue_footer_line(i18n: &I18nService, queued: usize, width: u16) -> Line<'static> {
-    let hint = i18n.text(PiCopy::FooterQueueHint).to_owned();
-    let short_hint = i18n.text(PiCopy::FooterQueueShort).to_owned();
+    let max_width = width as usize;
+    if max_width == 0 {
+        return Line::from(String::new());
+    }
+    if max_width <= 18 {
+        let text = if queued > 0 {
+            format!("queued ×{queued}")
+        } else {
+            i18n.text(SurfaceCopy::FooterQueueShort).to_owned()
+        };
+        return single_footer_span(
+            text.as_str(),
+            max_width,
+            Style::default().fg(SURFACE_ACCENT),
+        );
+    }
+
+    let hint = i18n.text(SurfaceCopy::FooterQueueHint).to_owned();
+    let short_hint = i18n.text(SurfaceCopy::FooterQueueShort).to_owned();
     let suffix = if queued > 0 {
         format!(" · queued ×{queued}")
     } else {
         String::new()
     };
-    let max_width = width as usize;
     let total_width = display_columns(&hint) + display_columns(&suffix);
     if total_width <= max_width {
-        let mut spans = vec![Span::styled(hint, Style::default().fg(PI_ACCENT))];
+        let mut spans = vec![Span::styled(hint, Style::default().fg(SURFACE_ACCENT))];
         if !suffix.is_empty() {
-            spans.push(Span::styled(suffix, Style::default().fg(PI_GRAY)));
+            spans.push(Span::styled(suffix, Style::default().fg(SURFACE_GRAY)));
         }
         return Line::from(spans);
     }
 
     let short_total_width = display_columns(&short_hint) + display_columns(&suffix);
     if short_total_width <= max_width {
-        let mut spans = vec![Span::styled(short_hint, Style::default().fg(PI_ACCENT))];
+        let mut spans = vec![Span::styled(
+            short_hint,
+            Style::default().fg(SURFACE_ACCENT),
+        )];
         if !suffix.is_empty() {
-            spans.push(Span::styled(suffix, Style::default().fg(PI_GRAY)));
+            spans.push(Span::styled(suffix, Style::default().fg(SURFACE_GRAY)));
         }
         return Line::from(spans);
     }
@@ -1098,31 +1726,43 @@ fn build_queue_footer_line(i18n: &I18nService, queued: usize, width: u16) -> Lin
     if display_columns(&short_hint) >= max_width {
         return Line::from(vec![Span::styled(
             truncate_right_for_width(&short_hint, max_width),
-            Style::default().fg(PI_ACCENT),
+            Style::default().fg(SURFACE_ACCENT),
         )]);
     }
 
     let remaining = max_width.saturating_sub(display_columns(&short_hint));
     Line::from(vec![
-        Span::styled(short_hint, Style::default().fg(PI_ACCENT)),
+        Span::styled(short_hint, Style::default().fg(SURFACE_ACCENT)),
         Span::styled(
             truncate_right_for_width(&suffix, remaining),
-            Style::default().fg(PI_GRAY),
+            Style::default().fg(SURFACE_GRAY),
         ),
     ])
 }
 
 fn build_restore_footer_line(i18n: &I18nService, queued: usize, width: u16) -> Line<'static> {
+    let max_width = width as usize;
+    if max_width == 0 {
+        return Line::from(String::new());
+    }
+    if max_width <= 18 {
+        return single_footer_span(
+            format!("restore ×{queued}").as_str(),
+            max_width,
+            Style::default().fg(SURFACE_GRAY),
+        );
+    }
+
     let full_text = format!(
         "{} {} · queued ×{}",
         queue_restore_shortcut_label(),
-        i18n.text(PiCopy::FooterRestoreQueued),
+        i18n.text(SurfaceCopy::FooterRestoreQueued),
         queued
     );
     let short_text = format!(
         "{} {} · ×{}",
         queue_restore_shortcut_label(),
-        i18n.text(PiCopy::FooterRestoreShort),
+        i18n.text(SurfaceCopy::FooterRestoreShort),
         queued
     );
     let selected = if display_columns(&full_text) <= width as usize {
@@ -1131,8 +1771,8 @@ fn build_restore_footer_line(i18n: &I18nService, queued: usize, width: u16) -> L
         short_text
     };
     Line::from(vec![Span::styled(
-        truncate_right_for_width(&selected, width as usize),
-        Style::default().fg(PI_GRAY),
+        truncate_right_for_width(&selected, max_width),
+        Style::default().fg(SURFACE_GRAY),
     )])
 }
 
@@ -1141,9 +1781,16 @@ fn build_follow_footer_line(i18n: &I18nService, model: &str, width: u16) -> Line
     if max_width == 0 {
         return Line::from(String::new());
     }
+    if max_width <= 24 {
+        return single_footer_span(
+            i18n.text(SurfaceCopy::FooterFollowShort),
+            max_width,
+            Style::default().fg(SURFACE_ACCENT),
+        );
+    }
 
-    let full_hint = i18n.text(PiCopy::FooterFollowHint).to_owned();
-    let short_hint = i18n.text(PiCopy::FooterFollowShort).to_owned();
+    let full_hint = i18n.text(SurfaceCopy::FooterFollowHint).to_owned();
+    let short_hint = i18n.text(SurfaceCopy::FooterFollowShort).to_owned();
     let hint = if display_columns(&full_hint) <= max_width {
         full_hint
     } else {
@@ -1153,7 +1800,7 @@ fn build_follow_footer_line(i18n: &I18nService, model: &str, width: u16) -> Line
     if display_columns(&hint) >= max_width {
         return Line::from(vec![Span::styled(
             truncate_right_for_width(&hint, max_width),
-            Style::default().fg(PI_ACCENT),
+            Style::default().fg(SURFACE_ACCENT),
         )]);
     }
 
@@ -1163,9 +1810,9 @@ fn build_follow_footer_line(i18n: &I18nService, model: &str, width: u16) -> Line
         max_width.saturating_sub(display_columns(&hint) + display_columns(&model_text));
 
     Line::from(vec![
-        Span::styled(hint, Style::default().fg(PI_ACCENT)),
+        Span::styled(hint, Style::default().fg(SURFACE_ACCENT)),
         Span::raw(" ".repeat(spacer_width)),
-        Span::styled(model_text, Style::default().fg(PI_GRAY)),
+        Span::styled(model_text, Style::default().fg(SURFACE_GRAY)),
     ])
 }
 
@@ -1186,7 +1833,7 @@ async fn build_command_lines(
     let trimmed = input.trim();
 
     match trimmed {
-        super::super::CLI_CHAT_HELP_COMMAND => Ok(render_pi_surface_help_lines_with_width(width)),
+        super::super::CLI_CHAT_HELP_COMMAND => Ok(render_chat_surface_help_lines_with_width(width)),
         super::super::CLI_CHAT_STATUS_COMMAND => {
             let summary =
                 super::super::operator_surfaces::build_cli_chat_startup_summary(runtime, options)?;
@@ -1255,6 +1902,15 @@ async fn build_command_lines(
                 )
             }
         }
+        "/model" => Ok(render_model_command_lines_with_width(runtime, width)),
+        "/permissions" => Ok(render_permissions_command_lines_with_width(width)),
+        "/experimental" => Ok(render_experimental_command_lines_with_width(width)),
+        "/themes" => Ok(render_themes_command_lines_with_width(width)),
+        "/cwd" => Ok(render_cwd_command_lines_with_width(runtime, width)),
+        "/language" => Ok(render_language_command_lines_with_width(width)),
+        "/mcp" => Ok(render_mcp_command_lines_with_width(runtime, width)),
+        "/skills" => Ok(render_skills_command_lines_with_width(runtime, width)),
+        "/usage" => Ok(render_slash_command_usage_lines_with_width(width)),
         "/fast_lane_summary" => {
             #[cfg(feature = "memory-sqlite")]
             {
@@ -1390,7 +2046,7 @@ async fn build_command_lines(
                 )
             }
         }
-        "/workers" => {
+        "/subagents" | "/workers" => {
             #[cfg(feature = "memory-sqlite")]
             {
                 Ok(render_workers_lines(runtime, width)?)
@@ -1422,7 +2078,7 @@ async fn build_command_lines(
                 )
             }
         }
-        "/mission" => {
+        "/missions" | "/mission" => {
             #[cfg(feature = "memory-sqlite")]
             {
                 Ok(render_mission_lines(runtime, width)?)
@@ -1438,13 +2094,386 @@ async fn build_command_lines(
                 )
             }
         }
-        _ => Ok(
-            super::super::render_cli_chat_command_usage_lines_with_width(
-                "usage: /help | /status | /history | /compact | /sessions | /workers | /review | /mission | /exit",
-                width,
-            ),
-        ),
+        _ => {
+            if let Some(spec) = slash_command_specs()
+                .iter()
+                .find(|spec| spec.command == trimmed)
+            {
+                Ok(render_slash_command_detail_lines_with_width(spec, width))
+            } else {
+                Ok(render_slash_command_usage_lines_with_width(width))
+            }
+        }
     }
+}
+
+fn render_slash_command_usage_lines_with_width(width: usize) -> Vec<String> {
+    let command_items = slash_command_specs()
+        .iter()
+        .map(|spec| TuiKeyValueSpec::Plain {
+            key: spec.command.to_owned(),
+            value: slash_command_help_value(spec),
+        })
+        .collect::<Vec<_>>();
+
+    let message_spec = TuiMessageSpec {
+        role: "usage".to_owned(),
+        caption: Some("slash commands".to_owned()),
+        sections: vec![
+            TuiSectionSpec::KeyValues {
+                title: Some("commands".to_owned()),
+                items: command_items,
+            },
+            TuiSectionSpec::Narrative {
+                title: Some("navigation".to_owned()),
+                lines: vec![
+                    "Open this deck with / or : from an empty composer.".to_owned(),
+                    "Every command stays visible in the same product order so muscle memory keeps working across releases."
+                        .to_owned(),
+                ],
+            },
+        ],
+        footer_lines: vec![
+            "Enter runs the command or opens its detail card without permission ceremony.".to_owned(),
+        ],
+    };
+    super::super::render_cli_chat_message_spec_with_width(&message_spec, width)
+}
+
+fn render_slash_command_detail_lines_with_width(
+    spec: &super::command_palette::SlashCommandSpec,
+    width: usize,
+) -> Vec<String> {
+    let message_spec = TuiMessageSpec {
+        role: "command".to_owned(),
+        caption: Some(spec.command.trim_start_matches('/').to_owned()),
+        sections: vec![
+            TuiSectionSpec::Callout {
+                tone: TuiCalloutTone::Info,
+                title: Some("enabled".to_owned()),
+                lines: vec![format!(
+                    "{} is available in the command deck and keeps a stable slot in the local TUI.",
+                    spec.command
+                )],
+            },
+            TuiSectionSpec::Narrative {
+                title: Some("intent".to_owned()),
+                lines: vec![spec.description.to_owned()],
+            },
+        ],
+        footer_lines: vec!["Use /usage to see the complete command deck.".to_owned()],
+    };
+    super::super::render_cli_chat_message_spec_with_width(&message_spec, width)
+}
+
+fn slash_command_help_value(spec: &super::command_palette::SlashCommandSpec) -> String {
+    spec.description.to_owned()
+}
+
+fn render_model_command_lines_with_width(runtime: &CliTurnRuntime, width: usize) -> Vec<String> {
+    let provider = &runtime.config.provider;
+    let active_profile = runtime
+        .config
+        .active_provider_id()
+        .unwrap_or("legacy provider");
+    let reasoning_effort = provider
+        .reasoning_effort
+        .map(|effort| format!("{effort:?}").to_ascii_lowercase())
+        .unwrap_or_else(|| "default".to_owned());
+
+    let message_spec = TuiMessageSpec {
+        role: "model".to_owned(),
+        caption: Some("active model".to_owned()),
+        sections: vec![TuiSectionSpec::KeyValues {
+            title: Some("provider".to_owned()),
+            items: vec![
+                TuiKeyValueSpec::Plain {
+                    key: "profile".to_owned(),
+                    value: active_profile.to_owned(),
+                },
+                TuiKeyValueSpec::Plain {
+                    key: "provider".to_owned(),
+                    value: provider.kind.display_name().to_owned(),
+                },
+                TuiKeyValueSpec::Plain {
+                    key: "model".to_owned(),
+                    value: provider.model.clone(),
+                },
+                TuiKeyValueSpec::Plain {
+                    key: "wire api".to_owned(),
+                    value: format!("{:?}", provider.wire_api).to_ascii_lowercase(),
+                },
+                TuiKeyValueSpec::Plain {
+                    key: "reasoning".to_owned(),
+                    value: reasoning_effort,
+                },
+            ],
+        }],
+        footer_lines: vec![
+            "Use /model <selector> to switch when you want a different model.".to_owned(),
+        ],
+    };
+    super::super::render_cli_chat_message_spec_with_width(&message_spec, width)
+}
+
+fn render_permissions_command_lines_with_width(width: usize) -> Vec<String> {
+    let message_spec = TuiMessageSpec {
+        role: "permissions".to_owned(),
+        caption: Some("YOLO".to_owned()),
+        sections: vec![
+            TuiSectionSpec::Callout {
+                tone: TuiCalloutTone::Info,
+                title: Some("YOLO by default".to_owned()),
+                lines: vec![
+                    "Hey yo, you only live once, take care.".to_owned(),
+                ],
+            },
+            TuiSectionSpec::KeyValues {
+                title: Some("default posture".to_owned()),
+                items: vec![
+                    TuiKeyValueSpec::Plain {
+                        key: "mode".to_owned(),
+                        value: "YOLO".to_owned(),
+                    },
+                    TuiKeyValueSpec::Plain {
+                        key: "commands".to_owned(),
+                        value: "enabled".to_owned(),
+                    },
+                    TuiKeyValueSpec::Plain {
+                        key: "tools".to_owned(),
+                        value: "enabled".to_owned(),
+                    },
+                    TuiKeyValueSpec::Plain {
+                        key: "slash deck".to_owned(),
+                        value: "enabled".to_owned(),
+                    },
+                    TuiKeyValueSpec::Plain {
+                        key: "permission prompts".to_owned(),
+                        value: "not part of the happy path".to_owned(),
+                    },
+                ],
+            },
+            TuiSectionSpec::Narrative {
+                title: Some("behavior".to_owned()),
+                lines: vec![
+                    "This screen stays intentionally simple; it does not show allow/deny tables or ask the user to negotiate routine actions."
+                        .to_owned(),
+                ],
+            },
+        ],
+        footer_lines: vec!["The default local TUI stays open; stricter deployments can still configure policy explicitly."
+            .to_owned()],
+    };
+    super::super::render_cli_chat_message_spec_with_width(&message_spec, width)
+}
+
+fn render_experimental_command_lines_with_width(width: usize) -> Vec<String> {
+    let message_spec = TuiMessageSpec {
+        role: "experimental".to_owned(),
+        caption: Some("experimental features".to_owned()),
+        sections: vec![TuiSectionSpec::KeyValues {
+            title: Some("enabled surface work".to_owned()),
+            items: vec![
+                TuiKeyValueSpec::Plain {
+                    key: "streaming renderer".to_owned(),
+                    value: "enabled".to_owned(),
+                },
+                TuiKeyValueSpec::Plain {
+                    key: "startup animation".to_owned(),
+                    value: "enabled".to_owned(),
+                },
+                TuiKeyValueSpec::Plain {
+                    key: "markdown/diff/table preview".to_owned(),
+                    value: "enabled".to_owned(),
+                },
+                TuiKeyValueSpec::Plain {
+                    key: "resize smoothing".to_owned(),
+                    value: "enabled".to_owned(),
+                },
+                TuiKeyValueSpec::Plain {
+                    key: "slash command deck".to_owned(),
+                    value: "enabled".to_owned(),
+                },
+                TuiKeyValueSpec::Plain {
+                    key: "tool activity compaction".to_owned(),
+                    value: "enabled".to_owned(),
+                },
+            ],
+        }],
+        footer_lines: vec!["No toggle ceremony in the default TUI path.".to_owned()],
+    };
+    super::super::render_cli_chat_message_spec_with_width(&message_spec, width)
+}
+
+fn render_themes_command_lines_with_width(width: usize) -> Vec<String> {
+    let message_spec = TuiMessageSpec {
+        role: "themes".to_owned(),
+        caption: Some("theme".to_owned()),
+        sections: vec![
+            TuiSectionSpec::KeyValues {
+                title: Some("current surface".to_owned()),
+                items: vec![
+                    TuiKeyValueSpec::Plain {
+                        key: "palette".to_owned(),
+                        value: "terminal-adaptive dark surface".to_owned(),
+                    },
+                    TuiKeyValueSpec::Plain {
+                        key: "accent".to_owned(),
+                        value: "startup blue with semantic red/green/yellow states".to_owned(),
+                    },
+                    TuiKeyValueSpec::Plain {
+                        key: "resize".to_owned(),
+                        value: "layout recalculates from viewport on every draw".to_owned(),
+                    },
+                ],
+            },
+            TuiSectionSpec::Narrative {
+                title: Some("behavior".to_owned()),
+                lines: vec![
+                    "The default theme path is already active: dark, terminal-adaptive, and readable without extra setup."
+                        .to_owned(),
+                ],
+            },
+        ],
+        footer_lines: vec!["The terminal-adaptive theme is active for this session.".to_owned()],
+    };
+    super::super::render_cli_chat_message_spec_with_width(&message_spec, width)
+}
+
+fn render_cwd_command_lines_with_width(runtime: &CliTurnRuntime, width: usize) -> Vec<String> {
+    let cwd = runtime
+        .effective_working_directory
+        .as_deref()
+        .unwrap_or(runtime.resolved_path.as_path())
+        .display()
+        .to_string();
+    let message_spec = TuiMessageSpec {
+        role: "cwd".to_owned(),
+        caption: Some("working directory".to_owned()),
+        sections: vec![TuiSectionSpec::KeyValues {
+            title: Some("current scope".to_owned()),
+            items: vec![
+                TuiKeyValueSpec::Plain {
+                    key: "cwd".to_owned(),
+                    value: cwd,
+                },
+                TuiKeyValueSpec::Plain {
+                    key: "session".to_owned(),
+                    value: runtime.session_id.clone(),
+                },
+            ],
+        }],
+        footer_lines: vec!["Use /cwd <path> to move the chat working directory.".to_owned()],
+    };
+    super::super::render_cli_chat_message_spec_with_width(&message_spec, width)
+}
+
+fn render_language_command_lines_with_width(width: usize) -> Vec<String> {
+    let language = resolve_default_language();
+    let message_spec = TuiMessageSpec {
+        role: "language".to_owned(),
+        caption: Some("language".to_owned()),
+        sections: vec![TuiSectionSpec::KeyValues {
+            title: Some("current language".to_owned()),
+            items: vec![TuiKeyValueSpec::Plain {
+                key: "detected".to_owned(),
+                value: language_label(language).to_owned(),
+            }],
+        }],
+        footer_lines: vec!["Use /language <locale> to switch the UI language.".to_owned()],
+    };
+    super::super::render_cli_chat_message_spec_with_width(&message_spec, width)
+}
+
+fn language_label(language: super::i18n::Language) -> &'static str {
+    match language {
+        super::i18n::Language::En => "English",
+        super::i18n::Language::ZhCn => "简体中文",
+        super::i18n::Language::ZhTw => "繁體中文",
+        super::i18n::Language::Ja => "日本語",
+        super::i18n::Language::Ru => "Русский",
+    }
+}
+
+fn render_mcp_command_lines_with_width(runtime: &CliTurnRuntime, width: usize) -> Vec<String> {
+    let mut items = runtime
+        .effective_bootstrap_mcp_servers
+        .iter()
+        .map(|server| TuiKeyValueSpec::Plain {
+            key: server.clone(),
+            value: "enabled for this chat".to_owned(),
+        })
+        .collect::<Vec<_>>();
+
+    if items.is_empty() {
+        items.push(TuiKeyValueSpec::Plain {
+            key: "configured".to_owned(),
+            value: "0".to_owned(),
+        });
+    }
+
+    let message_spec = TuiMessageSpec {
+        role: "mcp".to_owned(),
+        caption: Some("MCP".to_owned()),
+        sections: vec![TuiSectionSpec::KeyValues {
+            title: Some(format!(
+                "servers ({})",
+                runtime.effective_bootstrap_mcp_servers.len()
+            )),
+            items,
+        }],
+        footer_lines: vec![
+            "Startup keeps this compact; /mcp shows the details on demand.".to_owned(),
+        ],
+    };
+    super::super::render_cli_chat_message_spec_with_width(&message_spec, width)
+}
+
+fn render_skills_command_lines_with_width(runtime: &CliTurnRuntime, width: usize) -> Vec<String> {
+    let skills = detect_available_skills(runtime.effective_working_directory.as_deref());
+    let mut items = skills
+        .iter()
+        .take(14)
+        .map(|skill| {
+            let key = if let Some(alias) = skill.source_alias.as_deref() {
+                format!("${} ({alias})", skill.name)
+            } else {
+                format!("${}", skill.name)
+            };
+            TuiKeyValueSpec::Plain {
+                key,
+                value: skill.description.clone(),
+            }
+        })
+        .collect::<Vec<_>>();
+
+    if items.is_empty() {
+        items.push(TuiKeyValueSpec::Plain {
+            key: "available".to_owned(),
+            value: "0".to_owned(),
+        });
+    }
+
+    let hidden_count = skills.len().saturating_sub(items.len());
+    let mut footer_lines =
+        vec!["Type $skill-name directly in the composer to invoke a skill.".to_owned()];
+    if hidden_count > 0 {
+        footer_lines.push(format!(
+            "Showing 14 of {}; keep typing to filter.",
+            skills.len()
+        ));
+    }
+
+    let message_spec = TuiMessageSpec {
+        role: "skills".to_owned(),
+        caption: Some("skills".to_owned()),
+        sections: vec![TuiSectionSpec::KeyValues {
+            title: Some(format!("available ({})", skills.len())),
+            items,
+        }],
+        footer_lines,
+    };
+    super::super::render_cli_chat_message_spec_with_width(&message_spec, width)
 }
 
 #[cfg(feature = "memory-sqlite")]
@@ -2056,12 +3085,14 @@ fn build_pending_lines(
         Span::styled(
             format!("{} ", focus_ring_frame(start)),
             Style::default()
-                .fg(Color::White)
+                .fg(SURFACE_CYAN)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             format!("{}...", get_spinner_verb_with_seed(start, spinner_seed)),
-            Style::default().fg(PI_CYAN).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(SURFACE_CYAN)
+                .add_modifier(Modifier::BOLD),
         ),
     ];
 
@@ -2088,18 +3119,18 @@ fn build_pending_lines(
         }
 
         let style = if in_reasoning_block {
-            Style::default().fg(PI_GRAY).add_modifier(Modifier::DIM)
+            Style::default()
+                .fg(SURFACE_GRAY)
+                .add_modifier(Modifier::DIM)
         } else {
             Style::default().fg(ratatui::style::Color::White)
         };
-        for wrapped in
-            crate::presentation::render_wrapped_display_line(line.as_str(), content_width)
-        {
-            lines.push(Line::from(vec![
-                Span::raw("  "),
-                Span::styled(wrapped, style),
-            ]));
-        }
+        lines.extend(render_pending_live_line(
+            line.as_str(),
+            content_width,
+            style,
+            start,
+        ));
     }
     append_pending_input_preview_lines(
         &mut lines,
@@ -2111,6 +3142,265 @@ fn build_pending_lines(
     lines.push(Line::from(""));
     lines.push(Line::from(spinner_spans));
     lines
+}
+
+fn render_pending_live_line(
+    line: &str,
+    content_width: usize,
+    default_style: Style,
+    start: std::time::Instant,
+) -> Vec<Line<'static>> {
+    if let Some(lines) = render_pending_tool_headline_line(line, content_width, start) {
+        return lines;
+    }
+
+    if let Some(lines) = render_pending_tool_child_line(line, content_width) {
+        return lines;
+    }
+
+    if let Some(lines) = render_pending_tool_sample_line(line, content_width) {
+        return lines;
+    }
+
+    crate::presentation::render_wrapped_display_line(line, content_width)
+        .into_iter()
+        .map(|wrapped| Line::from(vec![Span::raw("  "), Span::styled(wrapped, default_style)]))
+        .collect()
+}
+
+fn render_pending_tool_headline_line(
+    line: &str,
+    content_width: usize,
+    start: std::time::Instant,
+) -> Option<Vec<Line<'static>>> {
+    let trimmed = line.trim_start();
+    let trimmed = trimmed.strip_prefix("• ").unwrap_or(trimmed);
+    let (label, rest, label_style, body_style) = pending_tool_headline_parts(trimmed, start)?;
+    let label_text = format!("{label} ");
+    let prefix_width = 2 + crate::presentation::display_width(label_text.as_str());
+    let body_width = content_width.saturating_sub(prefix_width).max(1);
+    let mut wrapped = crate::presentation::render_wrapped_display_line(rest.trim(), body_width);
+    if wrapped.is_empty() {
+        wrapped.push(String::new());
+    }
+
+    Some(
+        wrapped
+            .into_iter()
+            .enumerate()
+            .map(|(index, wrapped_line)| {
+                if index == 0 {
+                    Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled("• ", Style::default().fg(SURFACE_GRAY)),
+                        Span::styled(label_text.clone(), label_style),
+                        Span::styled(wrapped_line, body_style),
+                    ])
+                } else {
+                    Line::from(vec![
+                        Span::raw("  "),
+                        Span::raw(" ".repeat(prefix_width)),
+                        Span::styled(wrapped_line, body_style),
+                    ])
+                }
+            })
+            .collect(),
+    )
+}
+
+fn pending_tool_headline_parts(
+    trimmed: &str,
+    start: std::time::Instant,
+) -> Option<(&'static str, &str, Style, Style)> {
+    if let Some(rest) = trimmed.strip_prefix("Called ") {
+        return Some((
+            "Called",
+            rest,
+            Style::default()
+                .fg(pending_tool_label_color(start))
+                .add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(pending_tool_body_color(start))
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+
+    if let Some(rest) = trimmed.strip_prefix("Closed ") {
+        return Some((
+            "Closed",
+            rest,
+            Style::default()
+                .fg(SURFACE_GRAY)
+                .add_modifier(Modifier::BOLD),
+            Style::default().fg(SURFACE_GRAY),
+        ));
+    }
+
+    if let Some(rest) = trimmed.strip_prefix("Approval ") {
+        return Some((
+            "Approval",
+            rest,
+            Style::default()
+                .fg(SURFACE_ACCENT)
+                .add_modifier(Modifier::BOLD),
+            Style::default().fg(Color::White),
+        ));
+    }
+
+    if let Some(rest) = trimmed.strip_prefix("Denied ") {
+        return Some((
+            "Denied",
+            rest,
+            Style::default()
+                .fg(SURFACE_RED)
+                .add_modifier(Modifier::BOLD),
+            Style::default().fg(SURFACE_RED),
+        ));
+    }
+
+    None
+}
+
+fn pending_tool_animation_frame(start: std::time::Instant) -> usize {
+    if reduced_motion_enabled() {
+        return PENDING_TOOL_LABEL_COLORS.len().saturating_sub(2);
+    }
+    pending_tool_animation_frame_for_elapsed(start.elapsed())
+}
+
+fn pending_tool_animation_frame_for_elapsed(elapsed: Duration) -> usize {
+    let frame_count = PENDING_TOOL_LABEL_COLORS.len().max(1) as u64;
+    ((elapsed.as_millis() as u64 / PENDING_TOOL_ANIMATION_FRAME_MS.max(1)) % frame_count) as usize
+}
+
+fn pending_tool_label_color(start: std::time::Instant) -> Color {
+    let frame = pending_tool_animation_frame(start);
+    *PENDING_TOOL_LABEL_COLORS
+        .get(frame)
+        .unwrap_or(&SURFACE_CYAN)
+}
+
+fn pending_tool_body_color(start: std::time::Instant) -> Color {
+    let frame = pending_tool_animation_frame(start);
+    *PENDING_TOOL_BODY_COLORS.get(frame).unwrap_or(&Color::White)
+}
+
+fn render_pending_tool_child_line(line: &str, content_width: usize) -> Option<Vec<Line<'static>>> {
+    let trimmed = line.trim_start();
+    let body = trimmed.strip_prefix("↳ ")?;
+    let (label, rest) = body.split_once(' ').unwrap_or((body, ""));
+    let label_text = if rest.is_empty() {
+        String::new()
+    } else {
+        format!("{label} ")
+    };
+    let (label_style, body_style) = pending_tool_child_styles(label);
+    let prefix_width = 2 + crate::presentation::display_width(label_text.as_str());
+    let body_width = content_width.saturating_sub(prefix_width).max(1);
+    let mut wrapped = crate::presentation::render_wrapped_display_line(rest.trim(), body_width);
+    if wrapped.is_empty() {
+        wrapped.push(String::new());
+    }
+
+    Some(
+        wrapped
+            .into_iter()
+            .enumerate()
+            .map(|(index, wrapped_line)| {
+                if index == 0 {
+                    let mut spans = vec![
+                        Span::raw("  "),
+                        Span::styled("↳ ", Style::default().fg(SURFACE_ACCENT)),
+                    ];
+                    if !label_text.is_empty() {
+                        spans.push(Span::styled(label_text.clone(), label_style));
+                    }
+                    spans.push(Span::styled(wrapped_line, body_style));
+                    Line::from(spans)
+                } else {
+                    Line::from(vec![
+                        Span::raw("  "),
+                        Span::raw(" ".repeat(prefix_width)),
+                        Span::styled(wrapped_line, body_style),
+                    ])
+                }
+            })
+            .collect(),
+    )
+}
+
+fn pending_tool_child_styles(label: &str) -> (Style, Style) {
+    match label {
+        "stdout" => (
+            Style::default()
+                .fg(SURFACE_GREEN)
+                .add_modifier(Modifier::BOLD),
+            Style::default().fg(SURFACE_DARK_GRAY),
+        ),
+        "stderr" => (
+            Style::default()
+                .fg(SURFACE_RED)
+                .add_modifier(Modifier::BOLD),
+            Style::default().fg(SURFACE_RED).add_modifier(Modifier::DIM),
+        ),
+        "file" => (
+            Style::default()
+                .fg(SURFACE_CYAN)
+                .add_modifier(Modifier::BOLD),
+            Style::default().fg(SURFACE_DARK_GRAY),
+        ),
+        "metrics" => (
+            Style::default()
+                .fg(SURFACE_GRAY)
+                .add_modifier(Modifier::BOLD),
+            Style::default().fg(SURFACE_DARK_GRAY),
+        ),
+        "request" | "args" => (
+            Style::default()
+                .fg(SURFACE_ACCENT)
+                .add_modifier(Modifier::BOLD),
+            Style::default().fg(SURFACE_DARK_GRAY),
+        ),
+        _ => (
+            Style::default().fg(SURFACE_ACCENT),
+            Style::default().fg(SURFACE_DARK_GRAY),
+        ),
+    }
+}
+
+fn render_pending_tool_sample_line(line: &str, content_width: usize) -> Option<Vec<Line<'static>>> {
+    if !line.starts_with("    ") {
+        return None;
+    }
+
+    let sample = line.trim_start();
+    if sample.is_empty() {
+        return None;
+    }
+
+    let sample_style = if sample.starts_with('+') {
+        Style::default().fg(SURFACE_GREEN)
+    } else if sample.starts_with('-') {
+        Style::default().fg(SURFACE_RED)
+    } else {
+        Style::default().fg(SURFACE_DARK_GRAY)
+    };
+    let sample_width = content_width.saturating_sub(4).max(1);
+
+    Some(
+        crate::presentation::render_wrapped_display_line(sample, sample_width)
+            .into_iter()
+            .enumerate()
+            .map(|(index, wrapped_line)| {
+                let guide = if index == 0 { "    " } else { "      " };
+                Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(guide, Style::default().fg(SURFACE_DARK_GRAY)),
+                    Span::styled(wrapped_line, sample_style),
+                ])
+            })
+            .collect(),
+    )
 }
 
 fn append_pending_input_preview_lines(
@@ -2145,7 +3435,9 @@ fn append_pending_input_preview_lines(
             .map(|message| {
                 (
                     message.as_str(),
-                    Style::default().fg(PI_CYAN).add_modifier(Modifier::DIM),
+                    Style::default()
+                        .fg(SURFACE_CYAN)
+                        .add_modifier(Modifier::DIM),
                 )
             })
             .collect::<Vec<_>>();
@@ -2170,7 +3462,7 @@ fn append_pending_input_preview_lines(
                 (
                     message.as_str(),
                     Style::default()
-                        .fg(PI_GRAY)
+                        .fg(SURFACE_GRAY)
                         .add_modifier(Modifier::DIM | Modifier::ITALIC),
                 )
             })
@@ -2195,22 +3487,30 @@ fn push_pending_input_header(
     let mut spans = vec![
         Span::styled(
             "• ",
-            Style::default().fg(PI_GRAY).add_modifier(Modifier::DIM),
+            Style::default()
+                .fg(SURFACE_GRAY)
+                .add_modifier(Modifier::DIM),
         ),
-        Span::styled(title.to_owned(), Style::default().fg(PI_GRAY)),
+        Span::styled(title.to_owned(), Style::default().fg(SURFACE_GRAY)),
     ];
     if let Some(key_hint) = key_hint {
         spans.push(Span::styled(
             " (press ".to_owned(),
-            Style::default().fg(PI_GRAY).add_modifier(Modifier::DIM),
+            Style::default()
+                .fg(SURFACE_GRAY)
+                .add_modifier(Modifier::DIM),
         ));
         spans.push(Span::styled(
             key_hint.to_owned(),
-            Style::default().fg(PI_ACCENT).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(SURFACE_ACCENT)
+                .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled(
             format!(" {suffix})"),
-            Style::default().fg(PI_GRAY).add_modifier(Modifier::DIM),
+            Style::default()
+                .fg(SURFACE_GRAY)
+                .add_modifier(Modifier::DIM),
         ));
     }
     for (line_index, wrapped) in crate::presentation::render_wrapped_text_line(
@@ -2227,7 +3527,9 @@ fn push_pending_input_header(
         let prefix = if line_index == 0 { "" } else { "  " };
         lines.push(Line::from(vec![Span::styled(
             format!("{prefix}{wrapped}"),
-            Style::default().fg(PI_GRAY).add_modifier(Modifier::DIM),
+            Style::default()
+                .fg(SURFACE_GRAY)
+                .add_modifier(Modifier::DIM),
         )]));
     }
 }
@@ -2270,7 +3572,9 @@ fn push_pending_input_lines(
             Span::raw("      "),
             Span::styled(
                 format!("… +{remaining_messages} more"),
-                Style::default().fg(PI_GRAY).add_modifier(Modifier::DIM),
+                Style::default()
+                    .fg(SURFACE_GRAY)
+                    .add_modifier(Modifier::DIM),
             ),
         ]));
     }
@@ -2327,100 +3631,208 @@ fn format_cwd(runtime: &CliTurnRuntime) -> String {
         .unwrap_or_else(|_| "~".to_owned())
 }
 
-fn build_pi_startup_content(
+fn build_chat_startup_content(
     runtime: &CliTurnRuntime,
-    options: &CliChatOptions,
+    _options: &CliChatOptions,
     _render_width: usize,
     i18n: &I18nService,
-) -> (String, String, Vec<(String, Vec<String>)>) {
-    let version = crate::presentation::BuildVersionInfo::current().render_version_line();
-    let mcp_servers = if runtime.effective_bootstrap_mcp_servers.is_empty() {
-        vec!["none configured".to_owned()]
-    } else {
-        runtime.effective_bootstrap_mcp_servers.clone()
-    };
-    let skills = detect_repo_skills(runtime.effective_working_directory.as_deref());
-    let skills = format_repo_skill_summary(&skills, 3);
+) -> (String, String, Vec<(String, Vec<String>)>, Vec<String>) {
+    let version = startup_version_line();
+    let mcp_count = runtime.effective_bootstrap_mcp_servers.len();
+    let skills = detect_available_skills(runtime.effective_working_directory.as_deref());
+    let skill_count = skills.len();
 
-    let tutorial = i18n.text(PiCopy::Tutorial).to_owned();
-    let mut sections = vec![
-        (i18n.text(PiCopy::StartupSectionMcp).to_owned(), mcp_servers),
-        (i18n.text(PiCopy::StartupSectionSkills).to_owned(), skills),
+    let tutorial = i18n.text(SurfaceCopy::Tutorial).to_owned();
+    let sections = vec![
+        (
+            i18n.text(SurfaceCopy::StartupSectionSkills).to_owned(),
+            vec![skill_count.to_string()],
+        ),
+        (
+            i18n.text(SurfaceCopy::StartupSectionMcp).to_owned(),
+            vec![mcp_count.to_string()],
+        ),
     ];
 
-    if options.acp_event_stream || runtime.explicit_acp_request {
-        sections.push((
-            i18n.text(PiCopy::StartupSectionAcp).to_owned(),
-            vec![format!(
-                "requested={} · event_stream={}",
-                runtime.explicit_acp_request, options.acp_event_stream
-            )],
-        ));
-    }
+    let tips = vec![
+        tutorial.clone(),
+        i18n.text(SurfaceCopy::StartupTipCommands).to_owned(),
+        i18n.text(SurfaceCopy::StartupTipSkills).to_owned(),
+        i18n.text(SurfaceCopy::StartupTipQueue).to_owned(),
+        i18n.text(SurfaceCopy::StartupTipHistory).to_owned(),
+    ];
 
-    (version, tutorial, sections)
+    (version, tutorial, sections, tips)
 }
 
-fn detect_repo_skills(root: Option<&Path>) -> Vec<SkillEntry> {
-    let skills_dir = root
-        .map(|path| path.join("skills"))
-        .unwrap_or_else(|| Path::new("skills").to_path_buf());
-    let Ok(entries) = std::fs::read_dir(skills_dir) else {
-        return Vec::new();
-    };
-    let mut skills = entries
-        .filter_map(|entry| entry.ok())
-        .filter_map(|entry| {
-            entry.file_type().ok().and_then(|kind| {
-                if kind.is_dir() {
-                    let folder_name = entry.file_name().to_string_lossy().to_string();
-                    Some(read_repo_skill_metadata(
-                        folder_name,
-                        entry.path().join("SKILL.md"),
-                    ))
-                } else {
-                    None
-                }
-            })
-        })
-        .collect::<Vec<_>>();
-    skills.sort_by(|left, right| left.name.cmp(&right.name));
+fn startup_version_line() -> String {
+    format!("v{}", env!("CARGO_PKG_VERSION"))
+}
+
+fn detect_available_skills(root: Option<&Path>) -> Vec<SkillEntry> {
+    let mut seen_dirs = HashSet::new();
+    let mut seen_names = HashSet::new();
+    let mut skills = Vec::new();
+
+    for source in skill_search_roots(root) {
+        let normalized_dir = source
+            .directory
+            .canonicalize()
+            .unwrap_or_else(|_| source.directory.clone());
+        if !seen_dirs.insert(normalized_dir) {
+            continue;
+        }
+
+        for skill_dir in skill_dirs_in(source.directory.as_path()) {
+            let folder_name = skill_dir
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+                .unwrap_or_else(|| "skill".to_owned());
+            let skill = read_skill_metadata(
+                folder_name,
+                skill_dir.join("SKILL.md"),
+                source.category_tag,
+                source.search_label,
+            );
+            let name_key = skill.name.to_ascii_lowercase();
+            if seen_names.insert(name_key) {
+                skills.push(skill);
+            }
+        }
+    }
+
+    skills.sort_by(|left, right| {
+        skill_source_priority(left.category_tag.as_str())
+            .cmp(&skill_source_priority(right.category_tag.as_str()))
+            .then_with(|| left.name.cmp(&right.name))
+    });
     skills
 }
 
-fn read_repo_skill_metadata(folder_name: String, skill_doc_path: std::path::PathBuf) -> SkillEntry {
+struct SkillSearchRoot {
+    directory: std::path::PathBuf,
+    category_tag: &'static str,
+    search_label: &'static str,
+}
+
+fn skill_search_roots(root: Option<&Path>) -> Vec<SkillSearchRoot> {
+    let mut roots = Vec::new();
+    let repo_skills_dir = root
+        .map(|path| path.join("skills"))
+        .unwrap_or_else(|| Path::new("skills").to_path_buf());
+    roots.push(SkillSearchRoot {
+        directory: repo_skills_dir,
+        category_tag: "[Repo]",
+        search_label: "repo",
+    });
+
+    if let Some(codex_home) = std::env::var_os("CODEX_HOME") {
+        roots.push(SkillSearchRoot {
+            directory: std::path::PathBuf::from(codex_home).join("skills"),
+            category_tag: "[Skill]",
+            search_label: "global",
+        });
+    }
+
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = std::path::PathBuf::from(home);
+        roots.push(SkillSearchRoot {
+            directory: home.join(".codex").join("skills"),
+            category_tag: "[Skill]",
+            search_label: "global",
+        });
+        roots.push(SkillSearchRoot {
+            directory: home.join(".agents").join("skills"),
+            category_tag: "[Skill]",
+            search_label: "agent",
+        });
+    }
+
+    roots
+}
+
+fn skill_dirs_in(skills_dir: &Path) -> Vec<std::path::PathBuf> {
+    let Ok(entries) = std::fs::read_dir(skills_dir) else {
+        return Vec::new();
+    };
+
+    let mut skill_dirs = Vec::new();
+    for entry in entries.filter_map(|entry| entry.ok()) {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_dir() {
+            continue;
+        }
+        let path = entry.path();
+        if path.join("SKILL.md").is_file() {
+            skill_dirs.push(path);
+            continue;
+        }
+        let Ok(children) = std::fs::read_dir(path) else {
+            continue;
+        };
+        skill_dirs.extend(
+            children
+                .filter_map(|child| child.ok())
+                .filter(|child| child.file_type().map(|kind| kind.is_dir()).unwrap_or(false))
+                .map(|child| child.path())
+                .filter(|child| child.join("SKILL.md").is_file()),
+        );
+    }
+    skill_dirs
+}
+
+fn skill_source_priority(category_tag: &str) -> u8 {
+    match category_tag {
+        "[Repo]" => 0,
+        "[Skill]" => 1,
+        _ => 2,
+    }
+}
+
+fn read_skill_metadata(
+    folder_name: String,
+    skill_doc_path: std::path::PathBuf,
+    category_tag: &'static str,
+    search_label: &'static str,
+) -> SkillEntry {
     let Ok(contents) = std::fs::read_to_string(skill_doc_path) else {
         return SkillEntry {
             name: folder_name.clone(),
-            description: "repo-local skill".to_owned(),
-            search_terms: build_repo_skill_search_terms(folder_name.as_str(), folder_name.as_str()),
-            category_tag: "[Skill]".to_owned(),
+            description: "available skill".to_owned(),
+            search_terms: build_skill_search_terms(
+                folder_name.as_str(),
+                folder_name.as_str(),
+                search_label,
+            ),
+            category_tag: category_tag.to_owned(),
             source_alias: None,
         };
     };
 
-    let name = parse_repo_skill_frontmatter_value(contents.as_str(), "name")
+    let name = parse_skill_frontmatter_value(contents.as_str(), "name")
         .filter(|value| !value.is_empty())
         .unwrap_or(folder_name.clone());
-    let description = parse_repo_skill_frontmatter_value(contents.as_str(), "description")
+    let description = parse_skill_frontmatter_value(contents.as_str(), "description")
         .filter(|value| !value.is_empty())
-        .or_else(|| fallback_repo_skill_description(contents.as_str()))
-        .unwrap_or_else(|| "repo-local skill".to_owned());
-    let search_terms = build_repo_skill_search_terms(folder_name.as_str(), name.as_str());
+        .or_else(|| fallback_skill_description(contents.as_str()))
+        .unwrap_or_else(|| "available skill".to_owned());
+    let search_terms = build_skill_search_terms(folder_name.as_str(), name.as_str(), search_label);
     let source_alias = (folder_name != name).then_some(folder_name);
 
     SkillEntry {
         name,
         description,
         search_terms,
-        category_tag: "[Skill]".to_owned(),
+        category_tag: category_tag.to_owned(),
         source_alias,
     }
 }
 
-fn build_repo_skill_search_terms(folder_name: &str, name: &str) -> Vec<String> {
+fn build_skill_search_terms(folder_name: &str, name: &str, source_label: &str) -> Vec<String> {
     let mut terms = Vec::new();
-    for value in [folder_name, name] {
+    for value in [folder_name, name, source_label] {
         if !terms.iter().any(|term| term == value) {
             terms.push(value.to_owned());
         }
@@ -2434,7 +3846,7 @@ fn build_repo_skill_search_terms(folder_name: &str, name: &str) -> Vec<String> {
     terms
 }
 
-fn parse_repo_skill_frontmatter_value(contents: &str, key: &str) -> Option<String> {
+fn parse_skill_frontmatter_value(contents: &str, key: &str) -> Option<String> {
     let lines = contents.lines().collect::<Vec<_>>();
     let mut inside_frontmatter = false;
     let mut frontmatter_consumed = false;
@@ -2459,7 +3871,7 @@ fn parse_repo_skill_frontmatter_value(contents: &str, key: &str) -> Option<Strin
     None
 }
 
-fn fallback_repo_skill_description(contents: &str) -> Option<String> {
+fn fallback_skill_description(contents: &str) -> Option<String> {
     contents
         .lines()
         .map(str::trim)
@@ -2467,81 +3879,27 @@ fn fallback_repo_skill_description(contents: &str) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-fn format_repo_skill_summary(skills: &[SkillEntry], max_items: usize) -> Vec<String> {
-    if skills.is_empty() {
-        return vec!["none detected".to_owned()];
-    }
-
-    let mut lines = skills
+fn render_chat_surface_help_lines_with_width(width: usize) -> Vec<String> {
+    let queue_restore_shortcut = queue_restore_shortcut_label();
+    let mut slash_command_items = slash_command_specs()
         .iter()
-        .take(max_items)
-        .map(|skill| {
-            let name = if let Some(alias) = skill.source_alias.as_deref() {
-                format!("{} ({alias})", skill.name)
-            } else {
-                skill.name.clone()
-            };
-            format!("{name} — {}", skill.description)
+        .map(|spec| TuiKeyValueSpec::Plain {
+            key: spec.command.to_owned(),
+            value: slash_command_help_value(spec),
         })
         .collect::<Vec<_>>();
-    let remaining = skills.len().saturating_sub(lines.len());
-    if remaining > 0 {
-        lines.push(format!("… +{remaining} more"));
-    }
-    lines
-}
+    slash_command_items.push(TuiKeyValueSpec::Plain {
+        key: "$skill-name <request>".to_owned(),
+        value: "type an available skill invocation directly in the composer".to_owned(),
+    });
 
-fn render_pi_surface_help_lines_with_width(width: usize) -> Vec<String> {
-    let queue_restore_shortcut = queue_restore_shortcut_label();
     let message_spec = TuiMessageSpec {
         role: "help".to_owned(),
-        caption: Some("pi surface".to_owned()),
+        caption: Some("chat surface".to_owned()),
         sections: vec![
             TuiSectionSpec::KeyValues {
                 title: Some("slash commands".to_owned()),
-                items: vec![
-                    TuiKeyValueSpec::Plain {
-                        key: "/help".to_owned(),
-                        value: "show pi_surface keyboard and command guidance".to_owned(),
-                    },
-                    TuiKeyValueSpec::Plain {
-                        key: "/status".to_owned(),
-                        value: "inspect runtime posture and continuity settings".to_owned(),
-                    },
-                    TuiKeyValueSpec::Plain {
-                        key: "/history".to_owned(),
-                        value: "show the current transcript window".to_owned(),
-                    },
-                    TuiKeyValueSpec::Plain {
-                        key: "/compact".to_owned(),
-                        value: "create a manual continuity checkpoint".to_owned(),
-                    },
-                    TuiKeyValueSpec::Plain {
-                        key: "/sessions".to_owned(),
-                        value: "inspect visible sessions in the current scope".to_owned(),
-                    },
-                    TuiKeyValueSpec::Plain {
-                        key: "/workers".to_owned(),
-                        value: "inspect visible delegate worker sessions".to_owned(),
-                    },
-                    TuiKeyValueSpec::Plain {
-                        key: "/review".to_owned(),
-                        value: "inspect the latest approval and review queue".to_owned(),
-                    },
-                    TuiKeyValueSpec::Plain {
-                        key: "/mission".to_owned(),
-                        value: "inspect mission-control lane counts and phase state".to_owned(),
-                    },
-                    TuiKeyValueSpec::Plain {
-                        key: "$skill-name <request>".to_owned(),
-                        value: "type a repo-local skill invocation directly in the composer"
-                            .to_owned(),
-                    },
-                    TuiKeyValueSpec::Plain {
-                        key: "/exit".to_owned(),
-                        value: "leave interactive chat".to_owned(),
-                    },
-                ],
+                items: slash_command_items,
             },
             TuiSectionSpec::Narrative {
                 title: Some("surface controls".to_owned()),
@@ -2562,16 +3920,17 @@ fn render_pi_surface_help_lines_with_width(width: usize) -> Vec<String> {
                     format!(
                         "Tab moves between composer and transcript. While a turn is running, Tab queues the current draft and {queue_restore_shortcut} restores the latest queued message."
                     ),
-                    "PgUp / PgDn, Home / End, and j / k scroll the transcript.".to_owned(),
+                    "PgUp / PgDn and Home / End scroll the transcript; printable keys return to the composer immediately."
+                        .to_owned(),
                 ],
             },
             TuiSectionSpec::Callout {
                 tone: TuiCalloutTone::Info,
                 title: Some("mouse".to_owned()),
                 lines: vec![
-                    "Mouse wheel scrolls the transcript.".to_owned(),
-                    "When the command palette is open, mouse wheel scrolls the palette and left-click selects an entry."
+                    "Mouse wheel scrolls the transcript where terminal alternate-scroll is supported."
                         .to_owned(),
+                    "Native terminal drag-selection remains available by default.".to_owned(),
                 ],
             },
             TuiSectionSpec::Callout {
@@ -2579,15 +3938,15 @@ fn render_pi_surface_help_lines_with_width(width: usize) -> Vec<String> {
                 title: Some("usage notes".to_owned()),
                 lines: vec![
                     "Type any non-command text to send a normal assistant turn.".to_owned(),
-                    "Repo-local skill names shown at startup come from the current workspace skills/ directory."
+                    "Available skill names can be invoked directly with $skill-name."
                         .to_owned(),
-                    "Use Ctrl+C or /exit to leave chat.".to_owned(),
+                    "Use Ctrl+C to leave chat.".to_owned(),
                 ],
             },
         ],
         footer_lines: vec![
             "Send normal text to continue the transcript.".to_owned(),
-            "Use /status, /history, or /compact when you need to inspect or stabilize the current session."
+            "Use /usage, /review, or /compact when you need to inspect or stabilize the current session."
                 .to_owned(),
         ],
     };
@@ -2605,7 +3964,7 @@ struct GithubRelease {
 async fn load_startup_release_lines(width: usize) -> Option<Vec<String>> {
     let current = format!("v{}", env!("CARGO_PKG_VERSION"));
     let client = reqwest::Client::builder()
-        .user_agent("loongclaw-pi-surface")
+        .user_agent("loongclaw-chat-surface")
         .build()
         .ok()?;
     let response = tokio::time::timeout(
@@ -2679,28 +4038,35 @@ fn normalize_tag(tag: &str) -> String {
     tag.trim().trim_start_matches('v').to_ascii_lowercase()
 }
 
-fn resize_reflow_required(previous_width: u16, next_width: u16) -> bool {
-    previous_width != next_width
+fn resize_reflow_required(
+    previous_width: u16,
+    previous_height: u16,
+    next_width: u16,
+    next_height: u16,
+) -> bool {
+    previous_width != next_width || previous_height != next_height
 }
 
-fn redraw_throttle_ready(
-    resize_requires_throttle: bool,
-    since_last_draw: Option<Duration>,
+fn resize_live_rerender_ready(
+    pending_live_resize_rerender: bool,
+    since_last_resize: Option<Duration>,
 ) -> bool {
-    !resize_requires_throttle
-        || since_last_draw
-            .map(|elapsed| elapsed >= Duration::from_millis(16))
+    pending_live_resize_rerender
+        && since_last_resize
+            .map(|elapsed| elapsed >= Duration::from_millis(70))
             .unwrap_or(true)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{App, Focus};
-    use crate::chat::pi_surface::command_palette::{CommandAction, CommandPalette, SkillEntry};
-    use crate::chat::pi_surface::composer::Composer;
-    use crate::chat::pi_surface::i18n::{I18nService, Language};
-    use crate::chat::pi_surface::message_list::MessageList;
-    use crate::chat::pi_surface::utils::PI_USER_MSG_BG;
+    use crate::chat::chat_surface::command_palette::{
+        CommandAction, CommandPalette, SkillEntry, slash_command_specs,
+    };
+    use crate::chat::chat_surface::composer::Composer;
+    use crate::chat::chat_surface::i18n::{I18nService, Language};
+    use crate::chat::chat_surface::message_list::MessageList;
+    use crate::chat::chat_surface::utils::SURFACE_USER_MSG_BG;
     use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
     use ratatui::{Terminal, backend::TestBackend, layout::Rect};
     use std::sync::atomic::AtomicUsize;
@@ -2733,6 +4099,7 @@ mod tests {
             last_palette_area: Rect::default(),
             cwd: "/tmp/example".to_owned(),
             model: "gpt-test".to_owned(),
+            title: None,
             i18n: I18nService::new(Language::En),
         }
     }
@@ -2757,23 +4124,40 @@ mod tests {
     }
 
     #[test]
-    fn resize_reflow_only_requires_quiet_window_for_width_changes() {
-        assert!(super::resize_reflow_required(80, 72));
-        assert!(!super::resize_reflow_required(80, 80));
+    fn resize_reflow_tracks_width_and_height_changes() {
+        assert!(super::resize_reflow_required(80, 24, 72, 24));
+        assert!(super::resize_reflow_required(80, 24, 80, 32));
+        assert!(!super::resize_reflow_required(80, 24, 80, 24));
     }
 
     #[test]
-    fn redraw_throttle_only_delays_rapid_width_resize_frames() {
-        assert!(super::redraw_throttle_ready(false, None));
-        assert!(super::redraw_throttle_ready(true, None));
-        assert!(!super::redraw_throttle_ready(
+    fn resize_live_rerender_waits_for_quiet_window() {
+        assert!(!super::resize_live_rerender_ready(false, None));
+        assert!(super::resize_live_rerender_ready(true, None));
+        assert!(!super::resize_live_rerender_ready(
             true,
-            Some(Duration::from_millis(8))
+            Some(Duration::from_millis(32))
         ));
-        assert!(super::redraw_throttle_ready(
+        assert!(super::resize_live_rerender_ready(
             true,
-            Some(Duration::from_millis(16))
+            Some(Duration::from_millis(70))
         ));
+    }
+
+    #[test]
+    fn pending_tool_animation_frames_cycle_between_dim_and_bright_states() {
+        let early = super::pending_tool_animation_frame_for_elapsed(Duration::from_millis(0));
+        let bright = super::pending_tool_animation_frame_for_elapsed(Duration::from_millis(360));
+
+        assert_ne!(early, bright);
+        assert_eq!(
+            super::PENDING_TOOL_LABEL_COLORS[early],
+            super::SURFACE_DIM_GRAY
+        );
+        assert_eq!(
+            super::PENDING_TOOL_LABEL_COLORS[bright],
+            super::Color::White
+        );
     }
 
     fn sample_release() -> super::GithubRelease {
@@ -2825,11 +4209,12 @@ mod tests {
 
     #[test]
     fn status_footer_truncates_long_cwd_from_the_left() {
-        let line = super::build_status_footer_line(
-            "/Users/chum/.paseo/worktrees/07om2gl0/ui-ux-parity-final-20260414",
-            "gpt-5.4",
-            32,
-        );
+        let cwd = std::env::current_dir()
+            .expect("current dir")
+            .join("nested")
+            .join("session-tail-for-footer-test");
+        let cwd = cwd.to_string_lossy();
+        let line = super::build_status_footer_line(cwd.as_ref(), "gpt-5.4", 32);
         let rendered = line
             .spans
             .iter()
@@ -2839,20 +4224,8 @@ mod tests {
         assert_eq!(crate::presentation::display_width(&rendered), 32);
         assert!(rendered.contains("gpt-5.4"));
         assert!(rendered.contains("…"));
-        assert!(
-            rendered.contains(
-                "ui-ux-parity-final-20260414"
-                    .chars()
-                    .rev()
-                    .take(10)
-                    .collect::<String>()
-                    .chars()
-                    .rev()
-                    .collect::<String>()
-                    .as_str()
-            )
-        );
-        assert!(rendered.contains("/Users"));
+        assert!(rendered.contains("footer-test"));
+        assert_eq!(rendered.chars().next(), cwd.chars().next());
     }
 
     #[test]
@@ -2884,10 +4257,15 @@ mod tests {
 
     #[test]
     fn middle_truncation_preserves_both_path_ends() {
-        let truncated =
-            super::truncate_middle_for_width("/Users/chum/worktrees/project-name/session", 20);
+        let path = std::env::current_dir()
+            .expect("current dir")
+            .join("worktrees")
+            .join("project-name")
+            .join("session");
+        let path = path.to_string_lossy();
+        let truncated = super::truncate_middle_for_width(path.as_ref(), 20);
 
-        assert!(truncated.starts_with("/Users"));
+        assert_eq!(truncated.chars().next(), path.chars().next());
         assert!(truncated.ends_with("session"));
         assert_eq!(crate::presentation::display_width(&truncated), 20);
     }
@@ -2928,6 +4306,14 @@ mod tests {
     }
 
     #[test]
+    fn startup_version_line_is_product_only() {
+        let version = super::startup_version_line();
+
+        assert_eq!(version, format!("v{}", env!("CARGO_PKG_VERSION")));
+        assert!(!version.contains(" · "));
+    }
+
+    #[test]
     fn queue_footer_truncates_to_available_width() {
         let line = super::build_queue_footer_line(&I18nService::new(Language::En), 12, 14);
         let rendered = line
@@ -2937,7 +4323,7 @@ mod tests {
             .collect::<String>();
 
         assert_eq!(crate::presentation::display_width(&rendered), 14);
-        assert!(rendered.contains("…"));
+        assert!(rendered.contains("queued ×12"));
     }
 
     #[test]
@@ -2963,7 +4349,7 @@ mod tests {
             .collect::<String>();
 
         assert_eq!(crate::presentation::display_width(&rendered), 14);
-        assert!(rendered.contains("…"));
+        assert!(rendered.contains("restore ×12"));
     }
 
     #[test]
@@ -3047,7 +4433,7 @@ mod tests {
     }
 
     #[test]
-    fn footer_content_uses_codex_like_left_indent_when_space_allows() {
+    fn footer_content_uses_left_indent_when_space_allows() {
         let backend = TestBackend::new(50, 18);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = blank_app();
@@ -3163,15 +4549,95 @@ mod tests {
     }
 
     #[test]
-    fn help_lines_match_pi_surface_controls() {
-        let rendered = super::render_pi_surface_help_lines_with_width(80).join("\n");
+    fn split_surface_command_preserves_arguments() {
+        assert_eq!(
+            super::split_surface_command("/copy explicit text"),
+            ("/copy", "explicit text")
+        );
+        assert_eq!(super::split_surface_command("  /diff  "), ("/diff", ""));
+    }
+
+    #[test]
+    fn staging_commands_populate_composer_drafts() {
+        let mut app = blank_app();
+        app.message_list
+            .add_assistant_message("existing answer".to_owned());
+
+        super::stage_simplify_prompt(&mut app, "").expect("simplify stage");
+        assert!(app.composer.text().contains("existing answer"));
+        assert!(app.composer.text().contains("simplify"));
+
+        super::stage_plan_prompt(&mut app, "the rollout").expect("plan stage");
+        assert!(app.composer.text().contains("the rollout"));
+    }
+
+    #[test]
+    fn export_filename_components_are_safe() {
+        assert_eq!(super::safe_file_component("abc-DEF_123"), "abc-DEF_123");
+        assert_eq!(super::safe_file_component("a/b:c"), "a-b-c");
+    }
+
+    #[test]
+    fn help_lines_match_chat_surface_controls() {
+        let rendered = super::render_chat_surface_help_lines_with_width(80).join("\n");
 
         assert!(rendered.contains("Shift+Enter inserts a new line"));
         assert!(rendered.contains("Use / or : from an empty composer"));
         assert!(rendered.contains("Type $skill-name directly in the composer"));
+        assert!(rendered.contains("printable keys return"));
+        assert!(rendered.contains("Native terminal drag-selection remains available"));
+        assert!(!rendered.contains("coming soon"));
         assert!(!rendered.contains("A trailing \\\\ keeps composing"));
         assert!(!rendered.contains("control deck"));
         assert!(!rendered.contains("Esc from an empty composer"));
+    }
+
+    #[test]
+    fn slash_usage_and_detail_cards_are_enabled_without_placeholder_copy() {
+        let usage = super::render_slash_command_usage_lines_with_width(90).join("\n");
+        assert!(usage.contains("Every command stays visible"));
+        assert!(!usage.contains("coming soon"));
+        assert!(!usage.contains("placeholder"));
+        assert!(!usage.contains("not wired"));
+
+        let share_spec = slash_command_specs()
+            .iter()
+            .find(|spec| spec.command == "/share")
+            .expect("/share spec");
+        let detail = super::render_slash_command_detail_lines_with_width(share_spec, 90).join("\n");
+        assert!(detail.contains("enabled"));
+        assert!(detail.contains("/share is available"));
+        assert!(detail.contains("write a local transcript artifact"));
+        assert!(!detail.contains("coming soon"));
+        assert!(!detail.contains("placeholder"));
+        assert!(!detail.contains("not wired"));
+    }
+
+    #[test]
+    fn permissions_command_keeps_yolo_default_copy_simple() {
+        let rendered = super::render_permissions_command_lines_with_width(80).join("\n");
+
+        assert!(rendered.contains("YOLO by default"));
+        assert!(rendered.contains("Hey yo, you only live once, take care."));
+        assert!(rendered.contains("commands"));
+        assert!(rendered.contains("enabled"));
+        assert!(rendered.contains("not part of the happy path"));
+        assert!(!rendered.contains("current policy"));
+        assert!(!rendered.contains("shell allow"));
+        assert!(!rendered.contains("shell deny"));
+        assert!(!rendered.contains("file root"));
+    }
+
+    #[test]
+    fn experimental_command_reports_enabled_surface_features() {
+        let rendered = super::render_experimental_command_lines_with_width(80).join("\n");
+
+        assert!(rendered.contains("streaming renderer"));
+        assert!(rendered.contains("startup animation"));
+        assert!(rendered.contains("resize smoothing"));
+        assert!(rendered.contains("enabled"));
+        assert!(!rendered.contains("disabled"));
+        assert!(!rendered.contains("toggles remain config-driven"));
     }
 
     #[test]
@@ -3254,68 +4720,18 @@ mod tests {
     }
 
     #[test]
-    fn repo_skill_summary_includes_names_and_descriptions() {
-        let lines = super::format_repo_skill_summary(
-            &[
-                skill("demo-skill"),
-                SkillEntry {
-                    name: "browser-companion".to_owned(),
-                    description: "preview browser automation flow".to_owned(),
-                    search_terms: vec!["browser-companion".to_owned(), "browser".to_owned()],
-                    category_tag: "[Skill]".to_owned(),
-                    source_alias: None,
-                },
-            ],
-            3,
-        );
-
-        assert_eq!(lines.len(), 2);
-        assert!(lines[0].contains("demo-skill"));
-        assert!(lines[0].contains("description"));
-        assert!(lines[1].contains("browser-companion"));
-        assert!(lines[1].contains("preview browser automation flow"));
-    }
-
-    #[test]
-    fn repo_skill_summary_adds_overflow_line_when_truncated() {
-        let lines = super::format_repo_skill_summary(
-            &[skill("one"), skill("two"), skill("three"), skill("four")],
-            2,
-        );
-
-        assert_eq!(lines.len(), 3);
-        assert_eq!(lines[2], "… +2 more");
-    }
-
-    #[test]
-    fn repo_skill_summary_surfaces_folder_alias_when_name_differs() {
-        let lines = super::format_repo_skill_summary(
-            &[SkillEntry {
-                name: "PR Babysitter".to_owned(),
-                description: "triage pull requests".to_owned(),
-                search_terms: vec!["PR Babysitter".to_owned(), "babysit-pr".to_owned()],
-                category_tag: "[Skill]".to_owned(),
-                source_alias: Some("babysit-pr".to_owned()),
-            }],
-            3,
-        );
-
-        assert_eq!(
-            lines[0],
-            "PR Babysitter (babysit-pr) — triage pull requests"
-        );
-    }
-
-    #[test]
-    fn read_repo_skill_metadata_prefers_frontmatter_name_and_description() {
-        let skill = super::read_repo_skill_metadata(
+    fn read_skill_metadata_prefers_frontmatter_name_and_description() {
+        let skill = super::read_skill_metadata(
             "folder-fallback".to_owned(),
             std::path::PathBuf::from("/tmp/nonexistent")
                 .with_file_name("skill.md")
                 .with_extension("tmp"),
+            "[Repo]",
+            "repo",
         );
         assert_eq!(skill.name, "folder-fallback");
-        assert_eq!(skill.description, "repo-local skill");
+        assert_eq!(skill.description, "available skill");
+        assert_eq!(skill.category_tag, "[Repo]");
 
         let contents = r#"---
 name: actual-skill
@@ -3325,7 +4741,7 @@ description: "actual description"
 # Skill
 "#;
         let dir = std::env::temp_dir().join(format!(
-            "loong-pi-skill-meta-{}",
+            "loong-chat-skill-meta-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("clock")
@@ -3335,18 +4751,24 @@ description: "actual description"
         let path = dir.join("SKILL.md");
         std::fs::write(&path, contents).expect("write");
 
-        let skill = super::read_repo_skill_metadata("folder-fallback".to_owned(), path.clone());
+        let skill = super::read_skill_metadata(
+            "folder-fallback".to_owned(),
+            path.clone(),
+            "[Repo]",
+            "repo",
+        );
         assert_eq!(skill.name, "actual-skill");
         assert_eq!(skill.description, "actual description");
+        assert!(skill.search_terms.iter().any(|term| term == "repo"));
 
         let _ = std::fs::remove_file(path);
         let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
-    fn detect_repo_skills_reads_skill_metadata_from_workspace() {
+    fn detect_available_skills_reads_skill_metadata_from_workspace() {
         let root = std::env::temp_dir().join(format!(
-            "loong-pi-skills-root-{}",
+            "loong-chat-skills-root-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("clock")
@@ -3371,27 +4793,36 @@ description: "actual description"
         )
         .expect("write beta");
 
-        let skills = super::detect_repo_skills(Some(root.as_path()));
+        let skills = super::detect_available_skills(Some(root.as_path()));
 
-        assert_eq!(skills.len(), 2);
-        assert_eq!(skills[0].name, "alpha-skill");
-        assert_eq!(skills[0].description, "alpha description");
-        assert!(skills[0].search_terms.iter().any(|term| term == "alpha"));
-        assert_eq!(skills[1].name, "beta");
-        assert_eq!(skills[1].description, "beta fallback description");
+        let alpha = skills
+            .iter()
+            .find(|skill| skill.name == "alpha-skill")
+            .expect("alpha skill");
+        assert_eq!(alpha.description, "alpha description");
+        assert_eq!(alpha.category_tag, "[Repo]");
+        assert!(alpha.search_terms.iter().any(|term| term == "alpha"));
+
+        let beta = skills
+            .iter()
+            .find(|skill| skill.name == "beta")
+            .expect("beta skill");
+        assert_eq!(beta.description, "beta fallback description");
+        assert_eq!(beta.category_tag, "[Repo]");
 
         let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
-    fn build_repo_skill_search_terms_includes_folder_and_name_segments() {
-        let terms = super::build_repo_skill_search_terms("babysit-pr", "PR Babysitter");
+    fn build_skill_search_terms_includes_folder_name_and_source_segments() {
+        let terms = super::build_skill_search_terms("babysit-pr", "PR Babysitter", "repo");
 
         assert!(terms.iter().any(|term| term == "babysit-pr"));
         assert!(terms.iter().any(|term| term == "babysit"));
         assert!(terms.iter().any(|term| term == "pr"));
         assert!(terms.iter().any(|term| term == "PR Babysitter"));
         assert!(terms.iter().any(|term| term == "Babysitter"));
+        assert!(terms.iter().any(|term| term == "repo"));
     }
 
     #[test]
@@ -3615,8 +5046,10 @@ description: "actual description"
                 KeyCode::Enter,
                 KeyModifiers::NONE,
             )) {
-            Some(CommandAction::RunCommand("/status")) => {}
-            other => panic!("expected palette mouse scroll to land on /status, got {other:?}"),
+            Some(CommandAction::RunCommand("/permissions")) => {}
+            other => {
+                panic!("expected palette mouse scroll to land on /permissions, got {other:?}")
+            }
         }
     }
 
@@ -3710,6 +5143,34 @@ description: "actual description"
     }
 
     #[test]
+    fn startup_tip_leaves_blank_row_before_composer_separator() {
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = blank_app();
+        app.message_list.add_startup_header_with_tips(
+            "0.1.0".to_owned(),
+            "fallback".to_owned(),
+            vec![
+                ("Skills".to_owned(), vec!["0".to_owned()]),
+                ("MCP".to_owned(), vec!["1".to_owned()]),
+            ],
+            vec!["rotating tip".to_owned()],
+        );
+
+        terminal.draw(|f| app.render(f)).expect("draw");
+        let lines = buffer_lines(&terminal);
+        let composer_separator_row = app.last_composer_area.y.saturating_sub(1) as usize;
+        let blank_row_before_separator = composer_separator_row.saturating_sub(1);
+
+        assert!(lines.iter().any(|line| line.contains("rotating tip")));
+        assert!(
+            lines
+                .get(blank_row_before_separator)
+                .is_some_and(|line| line.trim().is_empty())
+        );
+    }
+
+    #[test]
     fn startup_header_remains_visible_after_first_message() {
         let backend = TestBackend::new(70, 20);
         let mut terminal = Terminal::new(backend).expect("terminal");
@@ -3717,15 +5178,15 @@ description: "actual description"
         app.message_list.add_startup_header(
             "0.1.0".to_owned(),
             "tutorial".to_owned(),
-            vec![("MCP".to_owned(), vec!["none".to_owned()])],
+            vec![("MCP".to_owned(), vec!["0".to_owned()])],
         );
         app.message_list.add_user_message("hi".to_owned());
         app.message_list.add_assistant_message("hello".to_owned());
 
         terminal.draw(|f| app.render(f)).expect("draw");
         let lines = buffer_lines(&terminal).join("\n");
-        assert!(lines.contains("loong"));
-        assert!(lines.contains("[MCP]"));
+        assert!(lines.contains("0.1.0"));
+        assert!(lines.contains("MCP (0)"));
         assert!(lines.contains("hi"));
         assert!(lines.contains("hello"));
     }
@@ -3796,6 +5257,80 @@ description: "actual description"
         assert!(lines.contains("second streamed sentence"));
         assert!(!lines.contains("╭─"));
         assert!(!lines.contains("turn pipeline"));
+    }
+
+    #[test]
+    fn pending_preview_styles_tool_activity_without_flattening_it_into_plain_text() {
+        let lines = super::build_pending_lines(
+            Some(std::time::Instant::now()),
+            &[
+                "• Called read_file · working".to_owned(),
+                "  ↳ stderr 1 lines · 42 bytes".to_owned(),
+                "    - denied".to_owned(),
+            ],
+            1,
+            &std::collections::VecDeque::new(),
+            &std::collections::VecDeque::new(),
+            72,
+        );
+
+        let called_line = lines
+            .iter()
+            .find(|line| {
+                line.spans
+                    .iter()
+                    .any(|span| span.content.as_ref() == "Called ")
+            })
+            .expect("called line");
+        let called_label = called_line
+            .spans
+            .iter()
+            .find(|span| span.content.as_ref() == "Called ")
+            .expect("called label");
+        assert!(
+            super::PENDING_TOOL_LABEL_COLORS.contains(
+                &called_label
+                    .style
+                    .fg
+                    .expect("called label should have an animated foreground"),
+            )
+        );
+        assert!(
+            called_label
+                .style
+                .add_modifier
+                .contains(ratatui::style::Modifier::BOLD)
+        );
+
+        let stderr_line = lines
+            .iter()
+            .find(|line| {
+                line.spans
+                    .iter()
+                    .any(|span| span.content.as_ref() == "stderr ")
+            })
+            .expect("stderr line");
+        let stderr_label = stderr_line
+            .spans
+            .iter()
+            .find(|span| span.content.as_ref() == "stderr ")
+            .expect("stderr label");
+        assert_eq!(stderr_label.style.fg, Some(super::SURFACE_RED));
+
+        let sample_line = lines
+            .iter()
+            .find(|line| {
+                line.spans
+                    .iter()
+                    .any(|span| span.content.as_ref().contains("- denied"))
+            })
+            .expect("sample line");
+        let sample_span = sample_line
+            .spans
+            .iter()
+            .find(|span| span.content.as_ref().contains("- denied"))
+            .expect("sample span");
+        assert_eq!(sample_span.style.fg, Some(super::SURFACE_RED));
     }
 
     #[test]
@@ -4012,7 +5547,7 @@ description: "actual description"
 
         assert_eq!(
             buf[(2, reasoning_row)].fg,
-            crate::chat::pi_surface::utils::PI_GRAY
+            crate::chat::chat_surface::utils::SURFACE_GRAY
         );
         assert_eq!(buf[(2, visible_row)].fg, ratatui::style::Color::White);
     }
@@ -4103,21 +5638,93 @@ description: "actual description"
     }
 
     #[test]
-    fn transcript_navigation_key_helper_accepts_space_and_vim_scroll_keys() {
+    fn transcript_navigation_key_helper_keeps_printable_keys_for_composer() {
         assert!(super::is_transcript_navigation_key(
-            crossterm::event::KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE,)
+            crossterm::event::KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE,)
         ));
         assert!(super::is_transcript_navigation_key(
-            crossterm::event::KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE,)
-        ));
-        assert!(super::is_transcript_navigation_key(
-            crossterm::event::KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE,)
-        ));
-        assert!(super::is_transcript_navigation_key(
-            crossterm::event::KeyEvent::new(KeyCode::Char(' '), KeyModifiers::SHIFT,)
+            crossterm::event::KeyEvent::new(KeyCode::Home, KeyModifiers::NONE,)
         ));
         assert!(!super::is_transcript_navigation_key(
-            crossterm::event::KeyEvent::new(KeyCode::Char(' '), KeyModifiers::ALT,)
+            crossterm::event::KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE,)
+        ));
+        assert!(!super::is_transcript_navigation_key(
+            crossterm::event::KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE,)
+        ));
+    }
+
+    #[test]
+    fn transcript_focus_text_keys_enter_composer_immediately() {
+        let mut app = blank_app();
+        app.focus = Focus::MessageList;
+
+        let submitted = super::route_transcript_key_to_composer(
+            &mut app,
+            crossterm::event::KeyEvent::new(KeyCode::Char('你'), KeyModifiers::NONE),
+        );
+
+        assert!(submitted.is_none());
+        assert_eq!(app.focus, Focus::Composer);
+        assert_eq!(app.composer.text(), "你");
+    }
+
+    #[test]
+    fn paste_event_always_restores_composer_focus_and_inserts_text() {
+        let mut app = blank_app();
+        app.focus = Focus::MessageList;
+
+        super::paste_into_composer(&mut app, "alpha\r\nbeta");
+
+        assert_eq!(app.focus, Focus::Composer);
+        assert_eq!(app.composer.text(), "alpha\nbeta");
+        assert!(!app.composer_follow_up_intent);
+    }
+
+    #[test]
+    fn paste_event_marks_pending_draft_as_follow_up() {
+        let mut app = blank_app();
+        app.focus = Focus::CommandPalette;
+        app.pending_turn = true;
+
+        super::paste_into_composer(&mut app, "queued follow-up");
+
+        assert_eq!(app.focus, Focus::Composer);
+        assert_eq!(app.composer.text(), "queued follow-up");
+        assert!(app.composer_follow_up_intent);
+    }
+
+    #[test]
+    fn transcript_focus_enter_submits_existing_draft() {
+        let mut app = blank_app();
+        app.focus = Focus::MessageList;
+        app.composer.set_input("send me".to_owned());
+
+        let submitted = super::route_transcript_key_to_composer(
+            &mut app,
+            crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        );
+
+        assert_eq!(submitted.as_deref(), Some("send me"));
+        assert_eq!(app.focus, Focus::Composer);
+        assert!(app.composer.is_empty());
+    }
+
+    #[test]
+    fn transcript_focus_capture_helper_rejects_navigation_and_modified_keys() {
+        assert!(super::should_focus_composer_for_transcript_key(
+            crossterm::event::KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE,)
+        ));
+        assert!(super::should_focus_composer_for_transcript_key(
+            crossterm::event::KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE,)
+        ));
+        assert!(super::should_focus_composer_for_transcript_key(
+            crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE,)
+        ));
+        assert!(!super::should_focus_composer_for_transcript_key(
+            crossterm::event::KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE,)
+        ));
+        assert!(!super::should_focus_composer_for_transcript_key(
+            crossterm::event::KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL,)
         ));
     }
 
@@ -4542,7 +6149,7 @@ description: "actual description"
         let user_row = find_row(&terminal, "hi").expect("user row");
         assert!(user_row > 0);
         assert!(
-            row_has_background(&terminal, user_row - 1, PI_USER_MSG_BG),
+            row_has_background(&terminal, user_row - 1, SURFACE_USER_MSG_BG),
             "expected the row above the visible user text to be the user block top padding"
         );
     }
@@ -4577,11 +6184,15 @@ description: "actual description"
 
         terminal.draw(|f| app.render(f)).expect("draw");
         let user_row = find_row(&terminal, "nihao").expect("user row");
-        let pending_row = find_row(&terminal, "…")
+        let pending_row = find_row(&terminal, "...")
             .or_else(|| find_row(&terminal, "中"))
             .unwrap_or(0);
 
-        assert!(row_has_background(&terminal, user_row + 1, PI_USER_MSG_BG));
+        assert!(row_has_background(
+            &terminal,
+            user_row + 1,
+            SURFACE_USER_MSG_BG
+        ));
         assert!(pending_row > user_row);
     }
 
@@ -4621,7 +6232,11 @@ description: "actual description"
         let preview_row = find_row(&terminal, "pending reply").expect("preview row");
         let composer_row = find_row(&terminal, "›").expect("composer row");
 
-        assert!(row_has_background(&terminal, user_row - 1, PI_USER_MSG_BG));
+        assert!(row_has_background(
+            &terminal,
+            user_row - 1,
+            SURFACE_USER_MSG_BG
+        ));
         assert!(preview_row > user_row);
         assert!(preview_row < composer_row);
     }

@@ -18,6 +18,10 @@ fn display_line(prefix: &str, value: &str) -> String {
     format!("{prefix}{value}")
 }
 
+fn stacked_detail_width(width: usize) -> usize {
+    width.saturating_sub(2).max(1)
+}
+
 pub fn candidate_source_rollup_labels(candidate: &ImportCandidate) -> Vec<String> {
     let mut labels = Vec::new();
     let mut seen = BTreeSet::new();
@@ -78,7 +82,7 @@ fn render_stacked_domain_lines(domain: &super::DomainPreview, width: usize) -> V
     lines.extend(loong_app::presentation::render_wrapped_text_line(
         "  summary: ",
         &domain.summary,
-        width,
+        stacked_detail_width(width),
     ));
     lines
 }

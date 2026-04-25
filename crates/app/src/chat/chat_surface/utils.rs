@@ -1,6 +1,7 @@
 use crate::constants::spinners::*;
 use ratatui::style::Color;
 use serde_json::Value;
+use std::env;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 pub const FOCUS_RING_FRAMES: [&str; 18] = [
@@ -18,26 +19,45 @@ pub const LOONG_USER_HI_BG: Color = Color::Rgb(133, 180, 209); // #85B4D1 (The "
 pub const LOONG_TOOL_READ_BG: Color = Color::Rgb(197, 220, 169); // #C5DCA9 (The "read" block)
 pub const LOONG_COMPACTION_TAG: Color = Color::Rgb(168, 234, 235); // #A8EAEB (The "compaction" label)
 
-// Functional Aliases
-pub const PI_CYAN: Color = LOONG_MAYA_BLUE_FALLBACK;
-pub const PI_GREEN: Color = LOONG_EMERALD;
-pub const PI_RED: Color = Color::Rgb(255, 46, 0);
-pub const PI_HEADING: Color = LOONG_AMETHYST_SMOKE;
-pub const PI_ACCENT: Color = LOONG_POWDER_BLUE;
-pub const PI_GRAY: Color = Color::Rgb(128, 128, 128);
-pub const PI_DIM_GRAY: Color = Color::Rgb(102, 102, 102);
-pub const PI_DARK_GRAY: Color = Color::Rgb(40, 40, 40);
+// Surface palette
+pub const SURFACE_CYAN: Color = LOONG_MAYA_BLUE_FALLBACK;
+pub const SURFACE_GREEN: Color = LOONG_EMERALD;
+pub const SURFACE_RED: Color = Color::Rgb(255, 46, 0);
+pub const SURFACE_HEADING: Color = LOONG_AMETHYST_SMOKE;
+pub const SURFACE_ACCENT: Color = LOONG_POWDER_BLUE;
+pub const SURFACE_GRAY: Color = Color::Rgb(128, 128, 128);
+pub const SURFACE_DIM_GRAY: Color = Color::Rgb(102, 102, 102);
+pub const SURFACE_DARK_GRAY: Color = Color::Rgb(40, 40, 40);
 
 const LOONG_MAYA_BLUE_FALLBACK: Color = Color::Rgb(112, 193, 255);
 
 // Dynamic Backgrounds for blocks
-pub const PI_USER_MSG_BG: Color = LOONG_USER_HI_BG;
-pub const PI_TOOL_BG: Color = LOONG_TOOL_READ_BG;
-pub const PI_COMPACTION_BG: Color = Color::Rgb(40, 40, 50); // Muted base for the tag to sit on
-pub const PI_COTTON_CANDY: Color = LOONG_COTTON_CANDY;
+pub const SURFACE_USER_MSG_BG: Color = LOONG_USER_HI_BG;
+pub const SURFACE_TOOL_BG: Color = LOONG_TOOL_READ_BG;
+pub const SURFACE_COMPACTION_BG: Color = Color::Rgb(40, 40, 50); // Muted base for the tag to sit on
+pub const SURFACE_COTTON_CANDY: Color = LOONG_COTTON_CANDY;
+
+pub fn reduced_motion_enabled() -> bool {
+    env_truthy("LOONG_TUI_REDUCED_MOTION")
+        || env::var("TERM")
+            .map(|term| term.eq_ignore_ascii_case("dumb"))
+            .unwrap_or(false)
+}
+
+fn env_truthy(name: &str) -> bool {
+    env::var(name)
+        .map(|value| {
+            let normalized = value.trim().to_ascii_lowercase();
+            !matches!(normalized.as_str(), "" | "0" | "false" | "off" | "no")
+        })
+        .unwrap_or(false)
+}
 
 /// Dynamic Focus Ring Animation
 pub fn focus_ring_frame(start_time: Instant) -> &'static str {
+    if reduced_motion_enabled() {
+        return "•";
+    }
     let elapsed_ms = start_time.elapsed().as_millis() as u64;
     let current_interval = if elapsed_ms < 5000 {
         80 + (70 * elapsed_ms / 5000)
@@ -62,6 +82,9 @@ pub fn spinner_seed() -> u64 {
 
 /// Session-randomized "Working..." verb order while keeping time-based animation.
 pub fn get_spinner_verb_with_seed(start_time: Instant, seed: u64) -> &'static str {
+    if reduced_motion_enabled() {
+        return SPINNERS_ZH_CN.first().copied().unwrap_or("thinking");
+    }
     let elapsed_ms = start_time.elapsed().as_millis() as u64;
     let current_interval = if elapsed_ms < 5000 {
         80 + (70 * elapsed_ms / 5000)

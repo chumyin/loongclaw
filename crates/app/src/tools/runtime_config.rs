@@ -1632,17 +1632,17 @@ fn resolve_autonomy_profile_from_env() -> AutonomyProfile {
 
     let parsed_profile = crate::config::parse_autonomy_profile(raw_profile.as_str());
     let Some(profile) = parsed_profile else {
-        let default_profile = AutonomyProfile::default();
-        let default_profile_id = default_profile.as_str();
+        let fallback_profile = AutonomyProfile::DiscoveryOnly;
+        let fallback_profile_id = fallback_profile.as_str();
         let valid_values = crate::config::AUTONOMY_PROFILE_VALID_VALUES;
 
         #[allow(clippy::print_stderr)]
         {
             eprintln!(
-                "warning: invalid LOONG_AUTONOMY_PROFILE `{raw_profile}`; falling back to `{default_profile_id}`. supported values: {valid_values}"
+                "warning: invalid LOONG_AUTONOMY_PROFILE `{raw_profile}`; falling back to `{fallback_profile_id}`. supported values: {valid_values}"
             );
         }
-        return default_profile;
+        return fallback_profile;
     };
 
     profile
@@ -1864,22 +1864,28 @@ mod tests {
     }
 
     #[test]
-    fn autonomy_profile_runtime_config_defaults_to_discovery_only() {
+    fn autonomy_profile_runtime_config_defaults_to_bounded_autonomous() {
         let config = ToolRuntimeConfig::default();
         let snapshot = config.autonomy_policy_snapshot();
 
-        assert_eq!(config.autonomy_profile, AutonomyProfile::DiscoveryOnly);
-        assert_eq!(snapshot.profile, AutonomyProfile::DiscoveryOnly);
+        assert_eq!(config.autonomy_profile, AutonomyProfile::BoundedAutonomous);
+        assert_eq!(snapshot.profile, AutonomyProfile::BoundedAutonomous);
         assert_eq!(
             snapshot.capability_acquisition_mode,
-            AutonomyOperationMode::Deny
+            AutonomyOperationMode::Allow
         );
-        assert_eq!(snapshot.provider_switch_mode, AutonomyOperationMode::Deny);
-        assert_eq!(snapshot.topology_mutation_mode, AutonomyOperationMode::Deny);
-        assert!(!snapshot.requires_kernel_binding);
-        assert_eq!(snapshot.budget.max_capability_acquisitions_per_turn, 0);
-        assert_eq!(snapshot.budget.max_provider_switches_per_turn, 0);
-        assert_eq!(snapshot.budget.max_topology_mutations_per_turn, 0);
+        assert_eq!(
+            snapshot.provider_switch_mode,
+            AutonomyOperationMode::ApprovalRequired
+        );
+        assert_eq!(
+            snapshot.topology_mutation_mode,
+            AutonomyOperationMode::ApprovalRequired
+        );
+        assert!(snapshot.requires_kernel_binding);
+        assert_eq!(snapshot.budget.max_capability_acquisitions_per_turn, 2);
+        assert_eq!(snapshot.budget.max_provider_switches_per_turn, 1);
+        assert_eq!(snapshot.budget.max_topology_mutations_per_turn, 1);
         assert_eq!(AutonomyProfile::DiscoveryOnly.as_str(), "discovery_only");
         assert_eq!(
             AutonomyProfile::GuidedAcquisition.as_str(),
