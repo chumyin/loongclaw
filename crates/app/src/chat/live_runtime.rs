@@ -2641,6 +2641,39 @@ mod tests {
     }
 
     #[test]
+    fn compact_render_promotes_glob_request_into_primary_preview_line() {
+        let snapshot = CliChatLiveSurfaceSnapshot {
+            phase: ConversationTurnPhase::RunningTools,
+            provider_round: Some(1),
+            lane: Some(ExecutionLane::Fast),
+            tool_call_count: 1,
+            message_count: Some(3),
+            estimated_tokens: Some(900),
+            first_token_latency_ms: None,
+            draft_preview: None,
+            tools: vec![CliChatLiveToolSnapshot {
+                tool_call_id: "call-glob".to_owned(),
+                name: Some("find_files".to_owned()),
+                request_summary: None,
+                args: "{\"glob\":\"src/**/*.rs\",\"path\":\"~/chat\"}".to_owned(),
+                status: ConversationTurnToolState::Running,
+                detail: Some("working".to_owned()),
+                stdout: empty_output(),
+                stderr: empty_output(),
+                file_change: None,
+                duration_ms: None,
+                exit_code: None,
+            }],
+        };
+
+        let lines = render_cli_chat_live_compact_lines_with_width(&snapshot, 80);
+        let joined = lines.join("\n");
+
+        assert!(joined.contains("• Called find_files · working"));
+        assert!(joined.contains("↳ Glob src/**/*.rs in ~/chat"));
+    }
+
+    #[test]
     fn compact_render_compacts_stderr_and_file_children() {
         let snapshot = CliChatLiveSurfaceSnapshot {
             phase: ConversationTurnPhase::RunningTools,

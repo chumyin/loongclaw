@@ -2658,11 +2658,14 @@ fn inspect_tool_preview_from_lines(
     let tool_name = lines
         .iter()
         .filter_map(|line| activity_tool_name(line))
-        .map(normalized_activity_tool_name)
         .find(|name| {
-            is_search_activity_tool_name(name.as_str())
-                || is_list_activity_tool_name(name.as_str())
-                || is_glob_activity_tool_name(name.as_str())
+            is_search_activity_tool_name(name)
+                || is_list_activity_tool_name(name)
+                || is_glob_activity_tool_name(name)
+        })
+        .map(|name| {
+            name.trim_matches(|ch: char| ch == '`' || ch == '"' || ch == '\'')
+                .to_owned()
         })?;
 
     let (kind, primary) = if is_search_activity_tool_name(tool_name.as_str()) {
@@ -2708,13 +2711,16 @@ fn is_run_activity_tool_name(name: &str) -> bool {
 }
 
 fn is_search_activity_tool_name(name: &str) -> bool {
-    matches!(name, "grep" | "ripgrep" | "rg" | "find" | "find_text")
+    matches!(
+        name,
+        "search" | "grep" | "ripgrep" | "rg" | "find" | "find_text"
+    )
 }
 
 fn is_list_activity_tool_name(name: &str) -> bool {
     matches!(
         name,
-        "ls" | "list_directory" | "list_dir" | "read_dir" | "dir"
+        "list" | "ls" | "list_directory" | "list_dir" | "read_dir" | "dir"
     )
 }
 
@@ -5495,6 +5501,31 @@ mod tests {
     }
 
     #[test]
+    fn search_alias_tool_activity_renders_semantic_preview_card() {
+        let mut list = MessageList::new();
+        list.add_assistant_message(
+            "### Tool activity\n> Called search\n> args: {\"query\":\"rust\",\"path\":\"src\"}\n> stdout: match one"
+                .to_owned(),
+        );
+
+        let rendered = list
+            .get_rendered_lines(72)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        let joined = rendered.join("\n");
+
+        assert!(joined.contains("search \"rust\" in src"));
+        assert!(joined.contains("tool: search"));
+        assert!(joined.contains("stdout match one"));
+    }
+
+    #[test]
     fn list_tool_activity_renders_semantic_preview_card() {
         let mut list = MessageList::new();
         list.add_assistant_message(
@@ -5517,6 +5548,31 @@ mod tests {
         assert!(joined.contains("list ~/chat/.omx"));
         assert!(joined.contains("tool: list_directory"));
         assert!(joined.contains("stdout agents"));
+    }
+
+    #[test]
+    fn glob_tool_activity_renders_semantic_preview_card() {
+        let mut list = MessageList::new();
+        list.add_assistant_message(
+            "### Tool activity\n> Called find_files\n> args: {\"glob\":\"src/**/*.rs\",\"path\":\"~/chat\"}\n> stdout: src/main.rs\n> stdout: src/lib.rs"
+                .to_owned(),
+        );
+
+        let rendered = list
+            .get_rendered_lines(80)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        let joined = rendered.join("\n");
+
+        assert!(joined.contains("glob src/**/*.rs in ~/chat"));
+        assert!(joined.contains("tool: find_files"));
+        assert!(joined.contains("stdout src/main.rs"));
     }
 
     #[test]

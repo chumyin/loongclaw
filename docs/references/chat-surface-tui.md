@@ -45,6 +45,22 @@ This note documents the current operator-facing expectations for
 - **Control-plane surfaces** remain reachable from both the command palette and
   the startup surface: `/sessions`, `/workers`, `/review`, and `/mission`.
 
+## Pi / Codex-aligned maintainer principles
+
+- **Show useful progress before completion.** The pending area should expose
+  live text and grouped tool activity while a turn is running instead of making
+  operators wait for the settled transcript before they can infer progress.
+- **Keep preview calmer than history.** `live_runtime.rs` intentionally favors
+  pressure-aware, structure-aware incremental preview updates, while the final
+  transcript keeps the richer markdown/diff/image layout once the turn settles.
+- **Treat tool activity as progress narrative, not raw log replay.** Repeated
+  request/args/status/stdout/stderr bursts should compact into stable groups so
+  tool-heavy turns still read like Pi/Codex-style “working” feedback.
+- **Keep control-deck language consistent across surfaces.** The interactive
+  TUI, startup screen, `/help`, and non-interactive operator surfaces should all
+  describe the same command-deck, transcript, and queue concepts so operators
+  do not have to relearn the product by surface.
+
 ## Files to review when changing this surface
 
 - `crates/app/src/chat/chat_surface/app.rs` — overall layout, pending-turn panel,
@@ -68,8 +84,28 @@ This note documents the current operator-facing expectations for
   blocks.
 - `crates/app/src/chat/live_runtime.rs` — the live preview/tool-activity data
   that feeds the pending-turn surface, including structured-preview cadence.
+- `crates/app/src/chat/operator_surfaces.rs` — startup/help/status surfaces that
+  should stay semantically aligned with the interactive control deck and
+  transcript wording.
 - `docs/references/chat-surface-resize-render-audit.md` — resize flicker audit,
   current protections, and follow-up rendering recommendations.
+
+## Current overlap / risk hotspots
+
+- **Structured-content drift risk:** `live_runtime.rs`,
+  `chat_surface/markdown.rs`, `cli_render.rs`, and `message_list.rs` jointly
+  define how tables, diff fences, image blocks, and tool activity appear during
+  preview and after settlement. Changing only one of those layers can re-create
+  “raw first, formatted later” jumps.
+- **Resize polish is split across pending + transcript paths:** `app.rs` owns
+  width-rerender throttling and pending-preview geometry caching, while
+  `message_list.rs` owns transcript viewport reuse and scroll-anchor safety.
+  Resize work that ignores one side tends to fix one band while regressing the
+  other.
+- **Copy drift risk across operator surfaces:** `chat_surface/app.rs`,
+  `chat_surface/i18n.rs`, and `operator_surfaces.rs` all describe the control
+  deck, transcript navigation, queue/restore affordances, and runtime posture.
+  Product wording changes should be reviewed across those files together.
 
 ## Concrete findings on this branch
 
@@ -100,6 +136,11 @@ This note documents the current operator-facing expectations for
   enabled entries and no placeholder copy. Footer builders now prefer compact
   `queued ×n`, `restore ×n`, and model-only forms before resorting to noisy
   truncation on narrow terminals.
+- `crates/app/src/chat/operator_surfaces.rs` still reflects the same control
+  deck / transcript mental model in startup, help, and status output, which is
+  useful for maintainers because wording drift here would make the interactive
+  chat surface feel less Pi/Codex-aligned even if the render path stayed
+  correct.
 
 ## Current verification evidence
 
