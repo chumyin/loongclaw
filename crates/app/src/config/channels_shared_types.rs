@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::prompt::{
-    PromptPersonality, PromptRenderInput, render_default_system_prompt, render_system_prompt,
+    PromptPersonality, PromptRenderInput, render_base_system_prompt, render_default_system_prompt,
+    render_system_prompt,
 };
 
 use super::defaults::{
@@ -105,6 +106,8 @@ pub struct CliChannelConfig {
     #[serde(default = "default_prompt_personality")]
     pub personality: Option<PromptPersonality>,
     #[serde(default)]
+    pub personality_overlay_disabled: bool,
+    #[serde(default)]
     pub system_prompt_addendum: Option<String>,
     #[serde(default = "default_exit_commands")]
     pub exit_commands: Vec<String>,
@@ -117,6 +120,7 @@ impl Default for CliChannelConfig {
             system_prompt: default_system_prompt(),
             prompt_pack_id: default_prompt_pack_id(),
             personality: default_prompt_personality(),
+            personality_overlay_disabled: false,
             system_prompt_addendum: None,
             exit_commands: default_exit_commands(),
         }
@@ -140,10 +144,19 @@ impl CliChannelConfig {
     }
 
     pub fn rendered_native_system_prompt(&self) -> String {
-        render_system_prompt(PromptRenderInput {
-            personality: self.resolved_personality(),
-            addendum: self.system_prompt_addendum.clone(),
-        })
+        if self.personality_overlay_disabled {
+            render_base_system_prompt(self.system_prompt_addendum.clone())
+        } else if let Some(personality) = self.personality {
+            render_system_prompt(PromptRenderInput {
+                personality,
+                addendum: self.system_prompt_addendum.clone(),
+            })
+        } else {
+            render_system_prompt(PromptRenderInput {
+                personality: PromptPersonality::default(),
+                addendum: self.system_prompt_addendum.clone(),
+            })
+        }
     }
 
     pub fn resolved_system_prompt(&self) -> String {
@@ -163,6 +176,24 @@ impl CliChannelConfig {
         if self.uses_native_prompt_pack() {
             self.system_prompt = self.rendered_native_system_prompt();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CliChannelConfig;
+
+    #[test]
+    fn rendered_native_system_prompt_omits_overlay_when_personality_is_disabled() {
+        let config = CliChannelConfig {
+            personality_overlay_disabled: true,
+            ..Default::default()
+        };
+
+        let rendered = config.rendered_native_system_prompt();
+
+        assert!(rendered.contains("You are Loong"));
+        assert!(!rendered.contains("## Personality Overlay:"));
     }
 }
 

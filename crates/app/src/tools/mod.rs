@@ -48,6 +48,7 @@ mod config_import;
 pub(crate) mod delegate;
 mod direct_policy_preflight;
 pub(crate) mod download_guard;
+pub(crate) mod extension_runtime_tools;
 mod external_skills;
 mod external_skills_scan;
 mod external_skills_sources;

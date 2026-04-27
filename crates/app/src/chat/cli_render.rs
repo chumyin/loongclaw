@@ -1,3 +1,4 @@
+use super::chat_surface::utils::split_inline_list_runs;
 use super::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -299,14 +300,18 @@ pub(super) fn parse_cli_chat_markdown_sections(text: &str) -> Vec<TuiSectionSpec
             push_callout_section(&mut sections, &mut pending_title, &mut callout_lines);
         }
 
-        let normalized_line = normalize_markdown_display_line(trimmed_end);
-        let is_blank_line = normalized_line.trim().is_empty();
-
-        if is_blank_line && narrative_lines.is_empty() {
+        let normalized_lines = normalize_markdown_display_lines(trimmed_end);
+        if normalized_lines.is_empty() {
             continue;
         }
 
-        narrative_lines.push(normalized_line);
+        for normalized_line in normalized_lines {
+            let is_blank_line = normalized_line.trim().is_empty();
+            if is_blank_line && narrative_lines.is_empty() {
+                continue;
+            }
+            narrative_lines.push(normalized_line);
+        }
     }
 
     if inside_code_block {
@@ -336,15 +341,31 @@ fn refine_cli_chat_sections(sections: Vec<TuiSectionSpec>) -> Vec<TuiSectionSpec
     sections
         .into_iter()
         .map(|section| match section {
-            TuiSectionSpec::Narrative {
-                title: Some(title),
-                lines,
-            } if is_reasoning_section_title(title.as_str()) && !lines.is_empty() => {
-                TuiSectionSpec::Callout {
-                    tone: TuiCalloutTone::Info,
-                    title: Some("reasoning".to_owned()),
-                    lines,
+            TuiSectionSpec::Narrative { title, lines } => {
+                if !lines.is_empty()
+                    && let Some(items) = parse_plain_key_value_items(lines.as_slice())
+                {
+                    return TuiSectionSpec::KeyValues { title, items };
                 }
+
+                if title.as_deref().is_some_and(is_reasoning_section_title) && !lines.is_empty() {
+                    return TuiSectionSpec::Callout {
+                        tone: TuiCalloutTone::Info,
+                        title: Some("reasoning".to_owned()),
+                        lines,
+                    };
+                }
+
+                if title.as_deref().is_some_and(is_tool_activity_section_title) && !lines.is_empty()
+                {
+                    return TuiSectionSpec::Callout {
+                        tone: TuiCalloutTone::Info,
+                        title: Some("tool activity".to_owned()),
+                        lines,
+                    };
+                }
+
+                TuiSectionSpec::Narrative { title, lines }
             }
             TuiSectionSpec::Preformatted {
                 title,
@@ -355,24 +376,37 @@ fn refine_cli_chat_sections(sections: Vec<TuiSectionSpec>) -> Vec<TuiSectionSpec
                 language: Some(language),
                 lines,
             },
-            TuiSectionSpec::Narrative {
-                title: Some(title),
-                lines,
-            } if is_tool_activity_section_title(title.as_str()) && !lines.is_empty() => {
-                TuiSectionSpec::Callout {
-                    tone: TuiCalloutTone::Info,
-                    title: Some("tool activity".to_owned()),
-                    lines,
-                }
-            }
-            other @ TuiSectionSpec::Narrative { .. }
-            | other @ TuiSectionSpec::KeyValues { .. }
+            other @ TuiSectionSpec::KeyValues { .. }
             | other @ TuiSectionSpec::ActionGroup { .. }
             | other @ TuiSectionSpec::Checklist { .. }
             | other @ TuiSectionSpec::Callout { .. }
             | other @ TuiSectionSpec::Preformatted { .. } => other,
         })
         .collect()
+}
+
+fn parse_plain_key_value_items(lines: &[String]) -> Option<Vec<TuiKeyValueSpec>> {
+    let mut items = Vec::new();
+
+    for line in lines {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        let body = trimmed.strip_prefix("- ")?;
+        let (key, value) = body.split_once(": ")?;
+        let key = key.trim();
+        let value = value.trim();
+        if key.is_empty() || value.is_empty() {
+            return None;
+        }
+        items.push(TuiKeyValueSpec::Plain {
+            key: key.to_owned(),
+            value: value.to_owned(),
+        });
+    }
+
+    (!items.is_empty()).then_some(items)
 }
 
 fn is_reasoning_section_title(title: &str) -> bool {
@@ -550,7 +584,7 @@ fn parse_markdown_quote_line(line: &str) -> Option<String> {
     Some(normalized_text.to_owned())
 }
 
-fn normalize_markdown_display_line(line: &str) -> String {
+fn normalize_markdown_display_lines(line: &str) -> Vec<String> {
     let trimmed_end = line.trim_end();
     let leading_space_count = trimmed_end
         .chars()
@@ -560,12 +594,79 @@ fn normalize_markdown_display_line(line: &str) -> String {
     let trimmed_start = trimmed_end.get(leading_space_count..).unwrap_or("");
 
     if let Some(rest) = trimmed_start.strip_prefix("* ") {
-        return format!("{indent}- {rest}");
+        return vec![format!("{indent}- {rest}")];
     }
 
     if let Some(rest) = trimmed_start.strip_prefix("+ ") {
-        return format!("{indent}- {rest}");
+        return vec![format!("{indent}- {rest}")];
     }
 
-    trimmed_end.to_owned()
+    if let Some(items) = split_inline_list_runs(trimmed_start) {
+        return items
+            .into_iter()
+            .map(|item| format!("{indent}{item}"))
+            .collect();
+    }
+
+    vec![trimmed_end.to_owned()]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_cli_chat_markdown_sections;
+    use crate::tui_surface::TuiSectionSpec;
+
+    #[test]
+    fn parse_sections_split_inline_numbered_runs_into_narrative_lines() {
+        let sections = parse_cli_chat_markdown_sections(
+            "Here is the plan:\n1. inspect the repo 2. fix the bug 3. run tests",
+        );
+
+        let narrative = sections
+            .into_iter()
+            .find_map(|section| {
+                if let TuiSectionSpec::Narrative { lines, .. } = section {
+                    Some(lines)
+                } else {
+                    None
+                }
+            })
+            .expect("narrative section");
+
+        assert!(
+            narrative
+                .iter()
+                .any(|line| line.contains("1. inspect the repo"))
+        );
+        assert!(narrative.iter().any(|line| line.contains("2. fix the bug")));
+        assert!(narrative.iter().any(|line| line.contains("3. run tests")));
+    }
+
+    #[test]
+    fn parse_sections_promotes_plain_key_value_narrative_into_key_values() {
+        let sections = parse_cli_chat_markdown_sections(
+            "### experimental features\n- streaming renderer: enabled\n- startup animation: enabled",
+        );
+
+        let key_values = sections
+            .into_iter()
+            .find_map(|section| {
+                if let TuiSectionSpec::KeyValues { title, items } = section {
+                    Some((title, items))
+                } else {
+                    None
+                }
+            })
+            .expect("key value section");
+
+        assert_eq!(key_values.0.as_deref(), Some("experimental features"));
+        assert_eq!(key_values.1.len(), 2);
+        match &key_values.1[0] {
+            crate::tui_surface::TuiKeyValueSpec::Plain { key, value } => {
+                assert_eq!(key, "streaming renderer");
+                assert_eq!(value, "enabled");
+            }
+            other => panic!("expected plain key value, got {other:?}"),
+        }
+    }
 }

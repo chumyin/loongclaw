@@ -117,6 +117,7 @@ fn render_advisory_personalization(
     personalization: Option<&PersonalizationConfig>,
 ) -> Option<String> {
     let raw_personalization = personalization?;
+    let personalization_disabled = raw_personalization.suppresses_suggestions();
     let personalization = raw_personalization.normalized()?;
     let mut lines = Vec::new();
 
@@ -145,6 +146,10 @@ fn render_advisory_personalization(
 
     if let Some(locale) = personalization.locale {
         lines.push(format!("Locale: {locale}"));
+    }
+
+    if lines.is_empty() && personalization_disabled {
+        return Some("Personalization: disabled".to_owned());
     }
 
     if lines.is_empty() {
@@ -427,5 +432,19 @@ mod tests {
         assert!(rendered.contains("Timezone: Asia/Shanghai"));
         assert!(rendered.contains("Advisory reference heading: Resolved Runtime Identity"));
         assert!(!rendered.contains("\n## Resolved Runtime Identity\n"));
+    }
+
+    #[test]
+    fn render_session_profile_section_reports_suppressed_personalization() {
+        let personalization = crate::config::PersonalizationConfig {
+            prompt_state: crate::config::PersonalizationPromptState::Suppressed,
+            ..Default::default()
+        };
+
+        let rendered = render_session_profile_section(None, Some(&personalization))
+            .expect("suppressed personalization should still render");
+
+        assert!(rendered.contains("## Session Profile"));
+        assert!(rendered.contains("Personalization: disabled"));
     }
 }

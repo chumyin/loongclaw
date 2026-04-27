@@ -266,6 +266,18 @@ pub fn render_system_prompt(input: PromptRenderInput) -> String {
     sections.join("\n\n")
 }
 
+pub fn render_base_system_prompt(addendum: Option<String>) -> String {
+    let mut sections = vec![base_prompt().to_owned()];
+    let addendum = addendum.filter(|value| !value.trim().is_empty());
+
+    if let Some(addendum) = addendum {
+        let addendum_section = format!("## User Addendum\n{addendum}");
+        sections.push(addendum_section);
+    }
+
+    sections.join("\n\n")
+}
+
 pub fn render_default_system_prompt() -> String {
     render_system_prompt(PromptRenderInput {
         personality: PromptPersonality::default(),
@@ -492,6 +504,16 @@ mod tests {
         let rendered = render_default_system_prompt();
 
         assert!(rendered.contains("## Personality Overlay: Classicist"));
+    }
+
+    #[test]
+    fn render_base_prompt_omits_personality_overlay() {
+        let rendered = render_base_system_prompt(Some("Stay terse.".to_owned()));
+
+        assert!(rendered.contains("You are Loong"));
+        assert!(!rendered.contains("## Personality Overlay:"));
+        assert!(rendered.contains("## User Addendum"));
+        assert!(rendered.contains("Stay terse."));
     }
 
     #[test]

@@ -9,6 +9,8 @@ pub mod context;
 pub mod control_plane;
 pub mod conversation;
 pub mod crypto;
+#[doc(hidden)]
+pub mod extension_runtime_support;
 pub mod mcp;
 pub mod memory;
 pub mod migration;

@@ -21,8 +21,6 @@ pub enum SurfaceCopy {
     FooterQueueShort,
     FooterRestoreQueued,
     FooterRestoreShort,
-    FooterFollowHint,
-    FooterFollowShort,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,8 +33,22 @@ impl I18nService {
         Self { current_lang: lang }
     }
 
+    pub fn set_language(&mut self, lang: Language) {
+        self.current_lang = lang;
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn language(&self) -> Language {
+        self.current_lang
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn text(&self, key: SurfaceCopy) -> &'static str {
         text_for(self.current_lang, key)
+    }
+
+    pub fn spinner_verbs(&self) -> &'static [&'static str] {
+        spinner_verbs_for(self.current_lang)
     }
 }
 
@@ -71,6 +83,16 @@ fn text_for(lang: Language, key: SurfaceCopy) -> &'static str {
     }
 }
 
+pub fn spinner_verbs_for(lang: Language) -> &'static [&'static str] {
+    match lang {
+        Language::En => SPINNERS_EN_US,
+        Language::ZhCn => SPINNERS_ZH_CN,
+        Language::ZhTw => SPINNERS_ZH_TW,
+        Language::Ja => SPINNERS_JA_JP,
+        Language::Ru => SPINNERS_RU_RU,
+    }
+}
+
 fn en_text(key: SurfaceCopy) -> &'static str {
     match key {
         SurfaceCopy::Tutorial => {
@@ -87,8 +109,6 @@ fn en_text(key: SurfaceCopy) -> &'static str {
         SurfaceCopy::FooterQueueShort => "Tab to queue",
         SurfaceCopy::FooterRestoreQueued => "to restore queued message",
         SurfaceCopy::FooterRestoreShort => "restore queued",
-        SurfaceCopy::FooterFollowHint => "PgDn / End to latest reply",
-        SurfaceCopy::FooterFollowShort => "End to latest",
     }
 }
 
@@ -106,8 +126,6 @@ fn zh_cn_text(key: SurfaceCopy) -> &'static str {
         SurfaceCopy::FooterQueueShort => "Tab 加入队列",
         SurfaceCopy::FooterRestoreQueued => "可恢复排队消息",
         SurfaceCopy::FooterRestoreShort => "恢复队列",
-        SurfaceCopy::FooterFollowHint => "PgDn / End 跳到最新回复",
-        SurfaceCopy::FooterFollowShort => "End 到最新",
     }
 }
 
@@ -125,8 +143,6 @@ fn zh_tw_text(key: SurfaceCopy) -> &'static str {
         SurfaceCopy::FooterQueueShort => "Tab 加入佇列",
         SurfaceCopy::FooterRestoreQueued => "可還原排隊訊息",
         SurfaceCopy::FooterRestoreShort => "還原佇列",
-        SurfaceCopy::FooterFollowHint => "PgDn / End 跳到最新回覆",
-        SurfaceCopy::FooterFollowShort => "End 到最新",
     }
 }
 
@@ -148,8 +164,6 @@ fn ja_text(key: SurfaceCopy) -> &'static str {
         SurfaceCopy::FooterQueueShort => "Tab でキューへ",
         SurfaceCopy::FooterRestoreQueued => "でキュー済みメッセージを復元",
         SurfaceCopy::FooterRestoreShort => "キュー復元",
-        SurfaceCopy::FooterFollowHint => "PgDn / End で最新返信へ",
-        SurfaceCopy::FooterFollowShort => "End で最新へ",
     }
 }
 
@@ -171,7 +185,8 @@ fn ru_text(key: SurfaceCopy) -> &'static str {
         SurfaceCopy::FooterQueueShort => "Tab — в очередь",
         SurfaceCopy::FooterRestoreQueued => "чтобы вернуть сообщение из очереди",
         SurfaceCopy::FooterRestoreShort => "вернуть очередь",
-        SurfaceCopy::FooterFollowHint => "PgDn / End к последнему ответу",
-        SurfaceCopy::FooterFollowShort => "End к последнему",
     }
 }
+use crate::constants::spinners::{
+    SPINNERS_EN_US, SPINNERS_JA_JP, SPINNERS_RU_RU, SPINNERS_ZH_CN, SPINNERS_ZH_TW,
+};

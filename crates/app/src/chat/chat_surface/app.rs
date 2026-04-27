@@ -27,10 +27,16 @@ use crate::chat::CliTurnRuntime;
 use crate::chat::control_plane::ChatControlPlaneStore;
 use crate::tui_surface::{TuiCalloutTone, TuiKeyValueSpec, TuiMessageSpec, TuiSectionSpec};
 
-use super::command_palette::{CommandAction, CommandPalette, SkillEntry, slash_command_specs};
+use super::command_palette::{
+    CommandAction, CommandPalette, SkillEntry, find_slash_command_spec, slash_command_specs,
+};
 use super::composer::Composer;
 use super::i18n::{I18nService, SurfaceCopy, resolve_default_language};
-use super::message_list::MessageList;
+use super::message_list::{MessageList, StartupEyeAnimation, StartupEyeFocus, StartupPanel};
+use super::onboarding::{
+    RepoOptionalSkill, StartupOnboardingController, StartupQuickstartFocus, StartupSurfaceSnapshot,
+    startup_palette_eye_focus,
+};
 use super::utils::*;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -67,6 +73,12 @@ struct PendingRenderCache {
     lines: Vec<Line<'static>>,
 }
 
+#[derive(Clone, Copy)]
+struct StartupEyeFeedback {
+    animation: StartupEyeAnimation,
+    until: std::time::Instant,
+}
+
 pub struct App {
     pub message_list: MessageList,
     pub composer: Composer,
@@ -94,21 +106,34 @@ pub struct App {
     pub model: String,
     pub title: Option<String>,
     pub i18n: I18nService,
+    startup_eye_feedback: Option<StartupEyeFeedback>,
+    startup_onboarding: StartupOnboardingController,
 }
 
 impl App {
     pub fn new(
         runtime: &CliTurnRuntime,
-        options: &CliChatOptions,
+        _options: &CliChatOptions,
         render_width: usize,
     ) -> CliResult<Self> {
         let language = resolve_default_language();
         let detected_skills =
             detect_available_skills(runtime.effective_working_directory.as_deref());
+        let onboarding_optional_skills =
+            detect_onboarding_optional_repo_skills(runtime.effective_working_directory.as_deref());
+        let startup_mcp_count = runtime.effective_bootstrap_mcp_servers.len();
+        let startup_onboarding = StartupOnboardingController::new(
+            Some(runtime.resolved_path.clone()),
+            runtime.effective_working_directory.clone(),
+            onboarding_optional_skills,
+            startup_mcp_count,
+        );
+        let mut command_palette = CommandPalette::new(language, detected_skills);
+        refresh_command_palette_extension_commands(&mut command_palette, runtime);
         let mut app = Self {
             message_list: MessageList::new(),
             composer: Composer::new(),
-            command_palette: CommandPalette::new(language, detected_skills),
+            command_palette,
             focus: Focus::Composer,
             pending_turn: false,
             turn_start: None,
@@ -132,23 +157,39 @@ impl App {
             model: runtime.config.provider.model.clone(),
             title: None,
             i18n: I18nService::new(language),
+            startup_eye_feedback: None,
+            startup_onboarding,
         };
 
-        let (version, tutorial, sections, tips) =
-            build_chat_startup_content(runtime, options, render_width, &app.i18n);
-        app.message_list
-            .add_startup_header_with_tips(version, tutorial, sections, tips);
+        let (version, tutorial, sections, tips) = app.startup_onboarding.startup_content(&app.i18n);
+        app.message_list.add_startup_header_with_tips_and_eye(
+            version,
+            tutorial,
+            sections,
+            tips,
+            StartupEyeAnimation::Ambient,
+        );
 
         Ok(app)
     }
 
     pub fn render(&mut self, f: &mut Frame) {
+        let startup_eye_animation = self.startup_eye_animation();
+        self.message_list
+            .set_latest_startup_eye_animation(startup_eye_animation);
+        self.message_list
+            .set_latest_startup_panel(self.startup_panel());
         let size = f.area();
         self.last_render_width = size.width;
         self.last_render_height = size.height;
-        let composer_height = self.composer.height_for_area(size.width, size.height);
         let palette_visible =
             matches!(self.focus, Focus::CommandPalette) || self.inline_skill_popup_active;
+        let history_browse_mode = should_use_history_browse_layout(self, palette_visible);
+        let composer_height = if history_browse_mode {
+            0
+        } else {
+            self.composer.height_for_area(size.width, size.height)
+        };
         let palette_height = if palette_visible {
             self.command_palette.desired_height() as u16
         } else {
@@ -162,17 +203,23 @@ impl App {
             0
         };
         let transcript_line_count = self.message_list.rendered_line_count(size.width) as u16;
+        let composer_separator_height = if composer_height > 0 { 1 } else { 0 };
+        let palette_separator_height = if palette_height > 0 { 1 } else { 0 };
+        let footer_separator_height = if history_browse_mode { 0 } else { 1 };
+        let footer_height = if history_browse_mode { 0 } else { 1 };
+        let footer_bottom_spacing_height = if history_browse_mode {
+            0
+        } else {
+            FOOTER_BOTTOM_BREATHING_HEIGHT
+        };
         let bottom_band_height = pending_height
-            + 1
+            + composer_separator_height
             + composer_height
-            + if palette_height > 0 {
-                1 + palette_height
-            } else {
-                0
-            }
-            + 1
-            + 1
-            + FOOTER_BOTTOM_BREATHING_HEIGHT;
+            + palette_separator_height
+            + palette_height
+            + footer_separator_height
+            + footer_height
+            + footer_bottom_spacing_height;
         let available_transcript_height = size.height.saturating_sub(bottom_band_height).max(1);
         let transcript_height = if self.message_list.messages.is_empty() {
             0
@@ -185,13 +232,13 @@ impl App {
                 Constraint::Length(transcript_height),
                 Constraint::Length(0),
                 Constraint::Length(pending_height),
-                Constraint::Length(1),
+                Constraint::Length(composer_separator_height),
                 Constraint::Length(composer_height),
-                Constraint::Length(if palette_height > 0 { 1 } else { 0 }),
+                Constraint::Length(palette_separator_height),
                 Constraint::Length(palette_height),
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Length(FOOTER_BOTTOM_BREATHING_HEIGHT),
+                Constraint::Length(footer_separator_height),
+                Constraint::Length(footer_height),
+                Constraint::Length(footer_bottom_spacing_height),
             ])
             .split(size);
 
@@ -212,7 +259,11 @@ impl App {
         };
 
         self.last_transcript_area = *transcript_area;
-        self.last_composer_area = *composer_area;
+        self.last_composer_area = if composer_height > 0 {
+            *composer_area
+        } else {
+            Rect::default()
+        };
         self.last_palette_area = if palette_visible {
             *palette_area
         } else {
@@ -226,24 +277,33 @@ impl App {
         }
 
         let line_color = SURFACE_COTTON_CANDY;
-        let composer_separator_is_blank =
-            !self.pending_turn && self.message_list.trailing_colored_block(size.width);
-        if composer_separator_is_blank {
-            f.render_widget(Paragraph::new(""), *composer_separator_area);
-        } else {
-            f.render_widget(
-                Block::default()
-                    .borders(Borders::TOP)
-                    .border_style(Style::default().fg(line_color)),
-                *composer_separator_area,
-            );
-        }
+        if composer_height > 0 {
+            let composer_separator_is_blank =
+                !self.pending_turn && self.message_list.trailing_colored_block(size.width);
+            if composer_separator_is_blank {
+                f.render_widget(Paragraph::new(""), *composer_separator_area);
+            } else {
+                f.render_widget(
+                    Block::default()
+                        .borders(Borders::TOP)
+                        .border_style(Style::default().fg(line_color)),
+                    *composer_separator_area,
+                );
+            }
 
-        self.composer
-            .render(f, *composer_area, matches!(self.focus, Focus::Composer));
-        if matches!(self.focus, Focus::Composer) {
-            let (x, y) = self.composer.cursor_position(*composer_area);
-            f.set_cursor_position((x, y));
+            let composer_preview_override = matches!(self.focus, Focus::CommandPalette)
+                .then(|| self.command_palette.composer_preview_text())
+                .flatten();
+            self.composer.render(
+                f,
+                *composer_area,
+                matches!(self.focus, Focus::Composer),
+                composer_preview_override.as_deref(),
+            );
+            if matches!(self.focus, Focus::Composer) {
+                let (x, y) = self.composer.cursor_position(*composer_area);
+                f.set_cursor_position((x, y));
+            }
         }
 
         if palette_visible {
@@ -256,41 +316,188 @@ impl App {
             self.command_palette.render(f, *palette_area);
         }
 
-        f.render_widget(
-            Block::default()
-                .borders(Borders::TOP)
-                .border_style(Style::default().fg(line_color)),
-            *footer_separator_area,
-        );
+        if footer_height > 0 {
+            f.render_widget(
+                Block::default()
+                    .borders(Borders::TOP)
+                    .border_style(Style::default().fg(line_color)),
+                *footer_separator_area,
+            );
 
-        let footer_content_area = footer_content_area(*footer_area);
-        let footer_line = if self.pending_turn && !self.composer.is_empty() {
-            build_queue_footer_line(
-                &self.i18n,
-                self.pending_queue.len(),
-                footer_content_area.width,
-            )
-        } else if self.pending_turn && !self.pending_queue.is_empty() {
-            build_restore_footer_line(
-                &self.i18n,
-                self.pending_queue.len(),
-                footer_content_area.width,
-            )
-        } else if !self.message_list.is_following_tail() {
-            build_follow_footer_line(&self.i18n, &self.model, footer_content_area.width)
-        } else {
-            build_status_footer_line(&self.cwd, &self.model, footer_content_area.width)
-        };
-        f.render_widget(Paragraph::new(footer_line), footer_content_area);
-        f.render_widget(Paragraph::new(""), *footer_bottom_spacing_area);
+            let footer_content_area = footer_content_area(*footer_area);
+            let footer_line = if self.pending_turn && !self.composer.is_empty() {
+                build_queue_footer_line(
+                    &self.i18n,
+                    self.pending_queue.len(),
+                    footer_content_area.width,
+                )
+            } else if self.pending_turn && !self.pending_queue.is_empty() {
+                build_restore_footer_line(
+                    &self.i18n,
+                    self.pending_queue.len(),
+                    footer_content_area.width,
+                )
+            } else {
+                build_status_footer_line(&self.cwd, &self.model, footer_content_area.width)
+            };
+            f.render_widget(Paragraph::new(footer_line), footer_content_area);
+            f.render_widget(Paragraph::new(""), *footer_bottom_spacing_area);
+        }
+    }
+
+    fn startup_eye_animation(&self) -> StartupEyeAnimation {
+        if let Some(feedback) = self.startup_eye_feedback
+            && std::time::Instant::now() < feedback.until
+        {
+            return feedback.animation;
+        }
+
+        if self.startup_onboarding_active() {
+            return self.startup_onboarding.eye_animation();
+        }
+
+        if self.pending_turn {
+            return StartupEyeAnimation::Thinking(StartupEyeFocus::DownCenter);
+        }
+
+        if matches!(self.focus, Focus::CommandPalette) || self.inline_skill_popup_active {
+            let focus = self
+                .command_palette
+                .selection_progress()
+                .map(|(selected, total)| startup_palette_eye_focus(selected, total))
+                .unwrap_or_else(|| {
+                    if self.command_palette.is_skills_mode() {
+                        StartupEyeFocus::DownLeft
+                    } else {
+                        StartupEyeFocus::DownRight
+                    }
+                });
+            return if self.command_palette.is_commands_mode() {
+                StartupEyeAnimation::Thinking(focus)
+            } else {
+                StartupEyeAnimation::Focus(focus)
+            };
+        }
+
+        if !self.composer.is_empty() {
+            return StartupEyeAnimation::Focus(StartupEyeFocus::DownCenter);
+        }
+
+        StartupEyeAnimation::Ambient
+    }
+
+    fn startup_panel(&self) -> Option<StartupPanel> {
+        self.startup_onboarding
+            .panel_for_surface(self.startup_surface_snapshot())
+    }
+
+    fn set_startup_eye_feedback(&mut self, animation: StartupEyeAnimation, duration: Duration) {
+        self.startup_eye_feedback = Some(StartupEyeFeedback {
+            animation,
+            until: std::time::Instant::now() + duration,
+        });
+    }
+
+    fn apply_startup_language_selection(&mut self) {
+        self.startup_onboarding.apply_language_selection(
+            &mut self.i18n,
+            &mut self.command_palette,
+            &mut self.message_list,
+        );
+    }
+
+    fn startup_onboarding_active(&self) -> bool {
+        self.startup_onboarding
+            .active_in_surface(self.startup_surface_snapshot())
+    }
+
+    fn startup_surface_snapshot(&self) -> StartupSurfaceSnapshot {
+        let quickstart_focus =
+            if self.inline_skill_popup_active || self.command_palette.is_skills_mode() {
+                StartupQuickstartFocus::Skills
+            } else if matches!(self.focus, Focus::CommandPalette)
+                && self.command_palette.is_commands_mode()
+            {
+                StartupQuickstartFocus::Commands
+            } else if matches!(self.focus, Focus::MessageList) {
+                StartupQuickstartFocus::Transcript
+            } else {
+                StartupQuickstartFocus::Chat
+            };
+
+        StartupSurfaceSnapshot {
+            pending_turn: self.pending_turn,
+            following_tail: self.message_list.is_following_tail(),
+            has_conversation_messages: self
+                .message_list
+                .messages
+                .iter()
+                .any(|message| matches!(message.role.as_str(), "You" | "Assistant")),
+            composer_empty: self.composer.is_empty(),
+            command_palette_active: matches!(self.focus, Focus::CommandPalette),
+            inline_skill_popup_active: self.inline_skill_popup_active,
+            quickstart_focus,
+        }
+    }
+
+    fn handle_startup_onboarding_key(&mut self, key: crossterm::event::KeyEvent) -> bool {
+        if !self.startup_onboarding_active() {
+            return false;
+        }
+        let outcome = self.startup_onboarding.handle_key(key);
+        if outcome.language_applied {
+            self.apply_startup_language_selection();
+        }
+        if outcome.finished {
+            self.finish_startup_onboarding();
+        }
+        if let Some(animation) = outcome.animation {
+            let duration =
+                if outcome.finished || matches!(animation, StartupEyeAnimation::Celebrate) {
+                    320
+                } else if matches!(animation, StartupEyeAnimation::Confirm(_)) {
+                    180
+                } else {
+                    0
+                };
+            if duration > 0 {
+                self.set_startup_eye_feedback(animation, Duration::from_millis(duration));
+            }
+        }
+        outcome.handled
+    }
+
+    fn finish_startup_onboarding(&mut self) {
+        self.startup_onboarding.finish(&mut self.message_list);
+        let workspace_root = Path::new(self.cwd.as_str());
+        self.command_palette
+            .set_skills(detect_available_skills(Some(workspace_root)));
+        self.focus = Focus::Composer;
+        self.inline_skill_popup_active = false;
+        self.composer_follow_up_intent = false;
+    }
+
+    fn absorb_first_turn_calibration_if_needed(&mut self, message: &str) -> bool {
+        self.startup_onboarding
+            .absorb_first_turn_calibration_if_needed(message, &mut self.message_list)
+    }
+
+    fn take_first_turn_calibration_addendum(&mut self) -> Option<String> {
+        self.startup_onboarding
+            .take_first_turn_calibration_addendum()
     }
 
     fn apply_palette_action(&mut self, action: CommandAction) -> Option<String> {
         match action {
             CommandAction::RunCommand(command) => {
+                self.composer.clear();
                 self.inline_skill_popup_active = false;
                 self.focus = Focus::Composer;
-                Some(command.to_owned())
+                self.set_startup_eye_feedback(
+                    StartupEyeAnimation::Confirm(StartupEyeFocus::DownCenter),
+                    Duration::from_millis(420),
+                );
+                Some(command)
             }
             CommandAction::InsertText(text) => {
                 if let Some(range) = current_skill_token_range(&self.composer) {
@@ -302,6 +509,10 @@ impl App {
                 }
                 self.inline_skill_popup_active = false;
                 self.focus = Focus::Composer;
+                self.set_startup_eye_feedback(
+                    StartupEyeAnimation::Confirm(StartupEyeFocus::DownLeft),
+                    Duration::from_millis(420),
+                );
                 None
             }
             CommandAction::Close => {
@@ -340,6 +551,8 @@ impl App {
                 MouseEventKind::Down(MouseButton::Left)
                     | MouseEventKind::Down(MouseButton::Right)
                     | MouseEventKind::Down(MouseButton::Middle)
+                    | MouseEventKind::ScrollUp
+                    | MouseEventKind::ScrollDown
             ) {
                 self.focus = Focus::MessageList;
                 self.sync_inline_skill_popup();
@@ -450,6 +663,7 @@ impl App {
             self.turn_start,
             &live_lines,
             self.spinner_seed,
+            self.i18n.spinner_verbs(),
             &self.pending_steers,
             &self.pending_queue,
             width,
@@ -559,6 +773,10 @@ pub async fn run_app<B: Backend>(
                         continue;
                     }
 
+                    if app.handle_startup_onboarding_key(key) {
+                        continue;
+                    }
+
                     if app.pending_turn {
                         let mut pending_command = None;
                         let mut pending_submission = None;
@@ -573,12 +791,21 @@ pub async fn run_app<B: Backend>(
                                 if matches!(key.code, KeyCode::Char('/') | KeyCode::Char(':'))
                                     && app.composer.is_empty()
                                 {
-                                    app.command_palette.show_commands(":");
-                                    app.inline_skill_popup_active = false;
-                                    app.focus = Focus::CommandPalette;
+                                    refresh_command_palette_extension_commands(
+                                        &mut app.command_palette,
+                                        &runtime,
+                                    );
+                                    let query = if key.code == KeyCode::Char(':') {
+                                        ":"
+                                    } else {
+                                        "/"
+                                    };
+                                    open_command_palette_with_query(&mut app, query);
                                 } else if app.handle_inline_skill_popup_key(key) {
                                 } else if should_route_composer_key_to_transcript(&app, key) {
                                     app.message_list.handle_key(key);
+                                    app.focus = Focus::MessageList;
+                                    app.sync_inline_skill_popup();
                                 } else if key.code == KeyCode::Tab {
                                     if !app.composer.is_empty() {
                                         queue_pending_message(&mut app);
@@ -600,8 +827,16 @@ pub async fn run_app<B: Backend>(
                                 if matches!(key.code, KeyCode::Char('/') | KeyCode::Char(':'))
                                     && app.composer.is_empty()
                                 {
-                                    app.command_palette.show_commands(":");
-                                    app.focus = Focus::CommandPalette;
+                                    refresh_command_palette_extension_commands(
+                                        &mut app.command_palette,
+                                        &runtime,
+                                    );
+                                    let query = if key.code == KeyCode::Char(':') {
+                                        ":"
+                                    } else {
+                                        "/"
+                                    };
+                                    open_command_palette_with_query(&mut app, query);
                                 } else if should_focus_composer_for_transcript_key(key) {
                                     pending_submission =
                                         route_transcript_key_to_composer(&mut app, key);
@@ -613,10 +848,12 @@ pub async fn run_app<B: Backend>(
                                 }
                             }
                             Focus::CommandPalette => {
-                                if let Some(action) = app.command_palette.handle_key(key) {
+                                if let Some(action) = handle_command_palette_key(&mut app, key) {
                                     match action {
                                         CommandAction::RunCommand(command) => {
-                                            pending_command = Some(command.to_owned());
+                                            pending_command = Some(command);
+                                            app.composer.clear();
+                                            app.composer_follow_up_intent = false;
                                             app.inline_skill_popup_active = false;
                                             app.focus = Focus::Composer;
                                         }
@@ -673,12 +910,21 @@ pub async fn run_app<B: Backend>(
                             } else if matches!(key.code, KeyCode::Char('/') | KeyCode::Char(':'))
                                 && app.composer.is_empty()
                             {
-                                app.command_palette.show_commands(":");
-                                app.inline_skill_popup_active = false;
-                                app.focus = Focus::CommandPalette;
+                                refresh_command_palette_extension_commands(
+                                    &mut app.command_palette,
+                                    &runtime,
+                                );
+                                let query = if key.code == KeyCode::Char(':') {
+                                    ":"
+                                } else {
+                                    "/"
+                                };
+                                open_command_palette_with_query(&mut app, query);
                             } else if app.handle_inline_skill_popup_key(key) {
                             } else if should_route_composer_key_to_transcript(&app, key) {
                                 app.message_list.handle_key(key);
+                                app.focus = Focus::MessageList;
+                                app.sync_inline_skill_popup();
                             } else if key.code == KeyCode::Tab {
                                 app.focus = Focus::MessageList;
                             } else if let Some(msg) = app.composer.handle_key(key) {
@@ -689,10 +935,12 @@ pub async fn run_app<B: Backend>(
                             }
                         }
                         Focus::CommandPalette => {
-                            if let Some(action) = app.command_palette.handle_key(key) {
+                            if let Some(action) = handle_command_palette_key(&mut app, key) {
                                 match action {
                                     CommandAction::RunCommand(command) => {
-                                        command_to_run = Some(command.to_owned());
+                                        command_to_run = Some(command);
+                                        app.composer.clear();
+                                        app.composer_follow_up_intent = false;
                                         app.inline_skill_popup_active = false;
                                         app.focus = Focus::Composer;
                                     }
@@ -728,15 +976,41 @@ pub async fn run_app<B: Backend>(
                         }
 
                         if msg.starts_with('/') || msg.starts_with(':') {
-                            app.command_palette.show_commands(&msg);
-                            app.focus = Focus::CommandPalette;
+                            refresh_command_palette_extension_commands(
+                                &mut app.command_palette,
+                                &runtime,
+                            );
+                            open_command_palette_with_query(&mut app, &msg);
+                            continue;
+                        }
+
+                        let calibration_addendum = app.take_first_turn_calibration_addendum();
+                        if calibration_addendum.is_none()
+                            && app.absorb_first_turn_calibration_if_needed(&msg)
+                        {
+                            dirty = true;
                             continue;
                         }
 
                         if submitted_message_is_follow_up(&app, &msg) {
-                            start_turn(terminal, &mut app, &runtime, msg, false).await?;
+                            start_turn(
+                                terminal,
+                                &mut app,
+                                &runtime,
+                                msg,
+                                false,
+                                calibration_addendum,
+                            )
+                            .await?;
                         } else {
-                            submit_user_turn(terminal, &mut app, &runtime, msg).await?;
+                            submit_user_turn(
+                                terminal,
+                                &mut app,
+                                &runtime,
+                                msg,
+                                calibration_addendum,
+                            )
+                            .await?;
                         }
                     } else if let Some(command) = command_to_run {
                         if command == "/exit" {
@@ -913,8 +1187,20 @@ async fn run_surface_command<B: Backend>(
             Ok(())
         }
         _ => {
-            let lines = build_command_lines(runtime, options, input, width).await?;
-            app.message_list.add_rendered_lines(lines);
+            if let Some(outcome) =
+                crate::tools::extension_runtime_tools::maybe_execute_extension_runtime_command(
+                    input,
+                    runtime.session_id.as_str(),
+                    &runtime.config,
+                )?
+            {
+                app.message_list.add_rendered_lines(
+                    render_extension_command_outcome_lines_with_width(&outcome, width),
+                );
+            } else {
+                let lines = build_command_lines(runtime, options, input, width).await?;
+                app.message_list.add_rendered_lines(lines);
+            }
             app.focus = Focus::Composer;
             Ok(())
         }
@@ -1350,8 +1636,9 @@ async fn submit_user_turn<B: Backend>(
     app: &mut App,
     runtime: &CliTurnRuntime,
     input: String,
+    system_prompt_addendum: Option<String>,
 ) -> CliResult<()> {
-    start_turn(terminal, app, runtime, input, true).await
+    start_turn(terminal, app, runtime, input, true, system_prompt_addendum).await
 }
 
 async fn start_turn<B: Backend>(
@@ -1360,8 +1647,10 @@ async fn start_turn<B: Backend>(
     runtime: &CliTurnRuntime,
     input: String,
     echo_user_message: bool,
+    system_prompt_addendum: Option<String>,
 ) -> CliResult<()> {
     let width = current_render_width(terminal)?;
+    let runtime = reload_runtime_for_surface_turn(runtime, system_prompt_addendum);
     app.live_render_width.store(width.max(1), Ordering::Relaxed);
     if echo_user_message {
         app.message_list.add_user_message(input.clone());
@@ -1391,8 +1680,48 @@ async fn start_turn<B: Backend>(
         sink,
     );
     app.live_rerender = Some(rerender);
-    app.pending_task = Some(spawn_pending_turn(runtime.clone(), input, observer));
+    app.pending_task = Some(spawn_pending_turn(runtime, input, observer));
     Ok(())
+}
+
+fn reload_runtime_for_surface_turn(
+    runtime: &CliTurnRuntime,
+    system_prompt_addendum: Option<String>,
+) -> CliTurnRuntime {
+    let Some(path) = runtime.resolved_path.to_str() else {
+        let mut passthrough = runtime.clone();
+        apply_transient_system_prompt_addendum(&mut passthrough, system_prompt_addendum);
+        return passthrough;
+    };
+    let Ok((_, loaded)) = crate::config::load(Some(path)) else {
+        let mut passthrough = runtime.clone();
+        apply_transient_system_prompt_addendum(&mut passthrough, system_prompt_addendum);
+        return passthrough;
+    };
+    let mut refreshed = runtime.clone();
+    refreshed.config = loaded;
+    apply_transient_system_prompt_addendum(&mut refreshed, system_prompt_addendum);
+    refreshed
+}
+
+fn apply_transient_system_prompt_addendum(
+    runtime: &mut CliTurnRuntime,
+    system_prompt_addendum: Option<String>,
+) {
+    let Some(addendum) = system_prompt_addendum.filter(|value| !value.trim().is_empty()) else {
+        return;
+    };
+    runtime.config.cli.system_prompt_addendum = Some(
+        runtime
+            .config
+            .cli
+            .system_prompt_addendum
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .map(|existing| format!("{existing}\n\n{addendum}"))
+            .unwrap_or(addendum),
+    );
+    runtime.config.cli.refresh_native_system_prompt();
 }
 
 fn queue_pending_steer(app: &mut App, input: String) {
@@ -1462,6 +1791,7 @@ fn route_transcript_key_to_composer(
     app: &mut App,
     key: crossterm::event::KeyEvent,
 ) -> Option<String> {
+    app.message_list.restore_tail();
     app.focus = Focus::Composer;
     let submitted = app.composer.handle_key(key);
     app.sync_inline_skill_popup();
@@ -1473,6 +1803,81 @@ fn should_route_composer_key_to_transcript(app: &App, key: crossterm::event::Key
         key.code,
         KeyCode::Up | KeyCode::Down | KeyCode::PageUp | KeyCode::PageDown
     ) || (app.composer.is_empty() && is_transcript_navigation_key(key))
+}
+
+fn should_use_history_browse_layout(app: &App, palette_visible: bool) -> bool {
+    !app.pending_turn
+        && !palette_visible
+        && app.composer.is_empty()
+        && !app.message_list.is_following_tail()
+}
+
+fn open_command_palette_with_query(app: &mut App, query: &str) {
+    app.command_palette.show_commands(query);
+    app.composer.set_input(query.to_owned());
+    app.inline_skill_popup_active = false;
+    app.focus = Focus::CommandPalette;
+    app.set_startup_eye_feedback(
+        StartupEyeAnimation::Thinking(StartupEyeFocus::DownLeft),
+        Duration::from_millis(320),
+    );
+}
+
+fn sync_composer_to_command_palette(app: &mut App) {
+    if let Some(text) = app.command_palette.composer_preview_text() {
+        app.composer.set_input(text);
+    }
+}
+
+fn handle_command_palette_key(
+    app: &mut App,
+    key: crossterm::event::KeyEvent,
+) -> Option<CommandAction> {
+    if key.code == KeyCode::Backspace
+        && app.command_palette.is_commands_mode()
+        && app.command_palette.query_is_empty()
+    {
+        app.composer.clear();
+        app.inline_skill_popup_active = false;
+        app.focus = Focus::Composer;
+        return None;
+    }
+
+    let before_progress = app.command_palette.selection_progress();
+    let action = app.command_palette.handle_key(key);
+    if action.is_none() && app.command_palette.is_commands_mode() {
+        sync_composer_to_command_palette(app);
+    }
+    let after_progress = app.command_palette.selection_progress();
+    if matches!(
+        key.code,
+        KeyCode::Up
+            | KeyCode::Down
+            | KeyCode::PageUp
+            | KeyCode::PageDown
+            | KeyCode::Home
+            | KeyCode::End
+            | KeyCode::Backspace
+            | KeyCode::Char(_)
+    ) && after_progress != before_progress
+    {
+        let focus = after_progress
+            .map(|(selected, total)| startup_palette_eye_focus(selected, total))
+            .unwrap_or_else(|| {
+                if app.command_palette.is_skills_mode() {
+                    StartupEyeFocus::DownLeft
+                } else {
+                    StartupEyeFocus::DownRight
+                }
+            });
+        let animation = if app.command_palette.is_commands_mode() {
+            StartupEyeAnimation::Thinking(focus)
+        } else {
+            StartupEyeAnimation::Focus(focus)
+        };
+        app.set_startup_eye_feedback(animation, Duration::from_millis(360));
+    }
+    action
 }
 
 fn submitted_message_is_follow_up(app: &App, msg: &str) -> bool {
@@ -1776,46 +2181,6 @@ fn build_restore_footer_line(i18n: &I18nService, queued: usize, width: u16) -> L
     )])
 }
 
-fn build_follow_footer_line(i18n: &I18nService, model: &str, width: u16) -> Line<'static> {
-    let max_width = width as usize;
-    if max_width == 0 {
-        return Line::from(String::new());
-    }
-    if max_width <= 24 {
-        return single_footer_span(
-            i18n.text(SurfaceCopy::FooterFollowShort),
-            max_width,
-            Style::default().fg(SURFACE_ACCENT),
-        );
-    }
-
-    let full_hint = i18n.text(SurfaceCopy::FooterFollowHint).to_owned();
-    let short_hint = i18n.text(SurfaceCopy::FooterFollowShort).to_owned();
-    let hint = if display_columns(&full_hint) <= max_width {
-        full_hint
-    } else {
-        short_hint
-    };
-
-    if display_columns(&hint) >= max_width {
-        return Line::from(vec![Span::styled(
-            truncate_right_for_width(&hint, max_width),
-            Style::default().fg(SURFACE_ACCENT),
-        )]);
-    }
-
-    let available_for_model = max_width.saturating_sub(display_columns(&hint) + 1);
-    let model_text = truncate_right_for_width(model, available_for_model);
-    let spacer_width =
-        max_width.saturating_sub(display_columns(&hint) + display_columns(&model_text));
-
-    Line::from(vec![
-        Span::styled(hint, Style::default().fg(SURFACE_ACCENT)),
-        Span::raw(" ".repeat(spacer_width)),
-        Span::styled(model_text, Style::default().fg(SURFACE_GRAY)),
-    ])
-}
-
 fn queue_restore_shortcut_label() -> &'static str {
     if cfg!(target_os = "macos") {
         "Option + Up"
@@ -1833,7 +2198,19 @@ async fn build_command_lines(
     let trimmed = input.trim();
 
     match trimmed {
-        super::super::CLI_CHAT_HELP_COMMAND => Ok(render_chat_surface_help_lines_with_width(width)),
+        super::super::CLI_CHAT_HELP_COMMAND => {
+            let extension_commands =
+                crate::tools::extension_runtime_tools::list_extension_runtime_commands(
+                    &runtime.config,
+                )
+                .unwrap_or_default();
+            Ok(
+                render_chat_surface_help_lines_with_width_and_extension_commands(
+                    width,
+                    &extension_commands,
+                ),
+            )
+        }
         super::super::CLI_CHAT_STATUS_COMMAND => {
             let summary =
                 super::super::operator_surfaces::build_cli_chat_startup_summary(runtime, options)?;
@@ -1910,7 +2287,19 @@ async fn build_command_lines(
         "/language" => Ok(render_language_command_lines_with_width(width)),
         "/mcp" => Ok(render_mcp_command_lines_with_width(runtime, width)),
         "/skills" => Ok(render_skills_command_lines_with_width(runtime, width)),
-        "/usage" => Ok(render_slash_command_usage_lines_with_width(width)),
+        "/usage" => {
+            let extension_commands =
+                crate::tools::extension_runtime_tools::list_extension_runtime_commands(
+                    &runtime.config,
+                )
+                .unwrap_or_default();
+            Ok(
+                render_slash_command_usage_lines_with_width_and_extension_commands(
+                    width,
+                    &extension_commands,
+                ),
+            )
+        }
         "/fast_lane_summary" => {
             #[cfg(feature = "memory-sqlite")]
             {
@@ -2095,19 +2484,44 @@ async fn build_command_lines(
             }
         }
         _ => {
-            if let Some(spec) = slash_command_specs()
-                .iter()
-                .find(|spec| spec.command == trimmed)
-            {
+            if let Some(spec) = find_slash_command_spec(trimmed) {
                 Ok(render_slash_command_detail_lines_with_width(spec, width))
             } else {
-                Ok(render_slash_command_usage_lines_with_width(width))
+                let extension_commands =
+                    crate::tools::extension_runtime_tools::list_extension_runtime_commands(
+                        &runtime.config,
+                    )
+                    .unwrap_or_default();
+                Ok(
+                    render_slash_command_usage_lines_with_width_and_extension_commands(
+                        width,
+                        &extension_commands,
+                    ),
+                )
             }
         }
     }
 }
 
+fn refresh_command_palette_extension_commands(
+    command_palette: &mut CommandPalette,
+    runtime: &CliTurnRuntime,
+) {
+    let extension_commands =
+        crate::tools::extension_runtime_tools::list_extension_runtime_commands(&runtime.config)
+            .unwrap_or_default();
+    command_palette.set_extension_commands(&extension_commands);
+}
+
+#[allow(dead_code)]
 fn render_slash_command_usage_lines_with_width(width: usize) -> Vec<String> {
+    render_slash_command_usage_lines_with_width_and_extension_commands(width, &[])
+}
+
+fn render_slash_command_usage_lines_with_width_and_extension_commands(
+    width: usize,
+    extension_commands: &[(String, String)],
+) -> Vec<String> {
     let command_items = slash_command_specs()
         .iter()
         .map(|spec| TuiKeyValueSpec::Plain {
@@ -2115,59 +2529,163 @@ fn render_slash_command_usage_lines_with_width(width: usize) -> Vec<String> {
             value: slash_command_help_value(spec),
         })
         .collect::<Vec<_>>();
+    let extension_command_section =
+        (!extension_commands.is_empty()).then(|| TuiSectionSpec::KeyValues {
+            title: Some("extension commands".to_owned()),
+            items: extension_commands
+                .iter()
+                .map(|(command, description)| TuiKeyValueSpec::Plain {
+                    key: command.clone(),
+                    value: description.clone(),
+                })
+                .collect(),
+        });
 
     let message_spec = TuiMessageSpec {
         role: "usage".to_owned(),
         caption: Some("slash commands".to_owned()),
-        sections: vec![
-            TuiSectionSpec::KeyValues {
-                title: Some("commands".to_owned()),
-                items: command_items,
-            },
-            TuiSectionSpec::Narrative {
-                title: Some("navigation".to_owned()),
-                lines: vec![
-                    "Open this deck with / or : from an empty composer.".to_owned(),
-                    "Every command stays visible in the same product order so muscle memory keeps working across releases."
-                        .to_owned(),
-                ],
-            },
-        ],
+        sections: {
+            let mut sections = vec![
+                TuiSectionSpec::KeyValues {
+                    title: Some("commands".to_owned()),
+                    items: command_items,
+                },
+                TuiSectionSpec::Narrative {
+                    title: Some("navigation".to_owned()),
+                    lines: {
+                        let mut lines = vec![
+                        "Open this deck with / or : from an empty composer.".to_owned(),
+                        "Every command stays visible in the same product order so muscle memory keeps working across releases."
+                            .to_owned(),
+                        ];
+                        if !extension_commands.is_empty() {
+                            lines.push(
+                                "Runtime extension commands join this deck automatically when the palette reopens."
+                                    .to_owned(),
+                            );
+                        }
+                        lines
+                    },
+                },
+            ];
+            if let Some(extension_command_section) = extension_command_section {
+                sections.insert(1, extension_command_section);
+            }
+            sections
+        },
         footer_lines: vec![
-            "Enter runs the command or opens its detail card without permission ceremony.".to_owned(),
+            "Enter runs the command or opens its detail card without permission ceremony."
+                .to_owned(),
         ],
     };
     super::super::render_cli_chat_message_spec_with_width(&message_spec, width)
+}
+
+fn render_extension_command_outcome_lines_with_width(
+    outcome: &crate::tools::extension_runtime_tools::ExtensionRuntimeCommandOutcome,
+    width: usize,
+) -> Vec<String> {
+    if let Some(ui_action) = outcome.ui_action.as_ref() {
+        let message_spec = match ui_action {
+            crate::tools::extension_runtime_tools::ExtensionRuntimeUiAction::Notify {
+                tone,
+                title,
+                lines,
+                footer_lines,
+            } => TuiMessageSpec {
+                role: "extension".to_owned(),
+                caption: Some("ui".to_owned()),
+                sections: vec![TuiSectionSpec::Callout {
+                    tone: match tone {
+                        crate::tools::extension_runtime_tools::ExtensionRuntimeUiTone::Info => {
+                            TuiCalloutTone::Info
+                        }
+                        crate::tools::extension_runtime_tools::ExtensionRuntimeUiTone::Success => {
+                            TuiCalloutTone::Success
+                        }
+                        crate::tools::extension_runtime_tools::ExtensionRuntimeUiTone::Warning => {
+                            TuiCalloutTone::Warning
+                        }
+                        crate::tools::extension_runtime_tools::ExtensionRuntimeUiTone::Error => {
+                            TuiCalloutTone::Warning
+                        }
+                    },
+                    title: title.clone(),
+                    lines: lines.clone(),
+                }],
+                footer_lines: footer_lines.clone(),
+            },
+            crate::tools::extension_runtime_tools::ExtensionRuntimeUiAction::Overlay {
+                title,
+                lines,
+                footer_lines,
+            } => TuiMessageSpec {
+                role: "extension".to_owned(),
+                caption: Some("panel".to_owned()),
+                sections: vec![TuiSectionSpec::Narrative {
+                    title: Some(title.clone()),
+                    lines: lines.clone(),
+                }],
+                footer_lines: footer_lines.clone(),
+            },
+        };
+        return super::super::render_cli_chat_message_spec_with_width(&message_spec, width);
+    }
+
+    let text =
+        crate::tools::extension_runtime_tools::render_extension_command_outcome_text(outcome);
+    super::super::render_cli_chat_assistant_lines_with_width(&text, width)
 }
 
 fn render_slash_command_detail_lines_with_width(
     spec: &super::command_palette::SlashCommandSpec,
     width: usize,
 ) -> Vec<String> {
+    let alias_lines = (!spec.aliases.is_empty()).then(|| {
+        spec.aliases
+            .iter()
+            .map(|alias| format!("alias: {alias}"))
+            .collect::<Vec<_>>()
+    });
     let message_spec = TuiMessageSpec {
         role: "command".to_owned(),
         caption: Some(spec.command.trim_start_matches('/').to_owned()),
-        sections: vec![
-            TuiSectionSpec::Callout {
+        sections: {
+            let mut sections = vec![TuiSectionSpec::Callout {
                 tone: TuiCalloutTone::Info,
                 title: Some("enabled".to_owned()),
                 lines: vec![format!(
                     "{} is available in the command deck and keeps a stable slot in the local TUI.",
                     spec.command
                 )],
-            },
-            TuiSectionSpec::Narrative {
+            }];
+            if let Some(alias_lines) = alias_lines {
+                sections.push(TuiSectionSpec::Narrative {
+                    title: Some("aliases".to_owned()),
+                    lines: alias_lines,
+                });
+            }
+            sections.push(TuiSectionSpec::Narrative {
                 title: Some("intent".to_owned()),
                 lines: vec![spec.description.to_owned()],
-            },
-        ],
+            });
+            sections
+        },
         footer_lines: vec!["Use /usage to see the complete command deck.".to_owned()],
     };
     super::super::render_cli_chat_message_spec_with_width(&message_spec, width)
 }
 
 fn slash_command_help_value(spec: &super::command_palette::SlashCommandSpec) -> String {
-    spec.description.to_owned()
+    if spec.aliases.is_empty() {
+        spec.description.to_owned()
+    } else {
+        format!(
+            "{} (aliases: {})",
+            spec.description,
+            spec.aliases.join(", ")
+        )
+    }
 }
 
 fn render_model_command_lines_with_width(runtime: &CliTurnRuntime, width: usize) -> Vec<String> {
@@ -2851,9 +3369,9 @@ async fn maybe_finalize_pending_turn<B: Backend>(
         app.message_list.add_assistant_message(assistant_text);
     }
     if let Some(next_input) = app.pending_steers.pop_front() {
-        start_turn(terminal, app, runtime, next_input, true).await?;
+        start_turn(terminal, app, runtime, next_input, true, None).await?;
     } else if let Some(next_input) = app.pending_queue.pop_front() {
-        start_turn(terminal, app, runtime, next_input, true).await?;
+        start_turn(terminal, app, runtime, next_input, true, None).await?;
     }
     Ok(true)
 }
@@ -2972,7 +3490,8 @@ fn pending_render_signature(app: &App) -> Option<u64> {
         let start = app.turn_start?;
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         focus_ring_frame(start).hash(&mut hasher);
-        get_spinner_verb_with_seed(start, app.spinner_seed).hash(&mut hasher);
+        get_spinner_verb_with_seed(start, app.spinner_seed, app.i18n.spinner_verbs())
+            .hash(&mut hasher);
         app.pending_steers
             .iter()
             .for_each(|message| message.hash(&mut hasher));
@@ -3058,7 +3577,7 @@ fn pending_render_signature_for_geometry(
     let visible_lines = pending_live_lines(&app.live_lines, max_pending_preview_lines);
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     focus_ring_frame(start).hash(&mut hasher);
-    get_spinner_verb_with_seed(start, app.spinner_seed).hash(&mut hasher);
+    get_spinner_verb_with_seed(start, app.spinner_seed, app.i18n.spinner_verbs()).hash(&mut hasher);
     width.hash(&mut hasher);
     height.hash(&mut hasher);
     visible_lines.hash(&mut hasher);
@@ -3075,6 +3594,7 @@ fn build_pending_lines(
     turn_start: Option<std::time::Instant>,
     live_lines: &[String],
     spinner_seed: u64,
+    spinner_verbs: &'static [&'static str],
     pending_steers: &VecDeque<String>,
     pending_queue: &VecDeque<String>,
     width: u16,
@@ -3089,7 +3609,10 @@ fn build_pending_lines(
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            format!("{}...", get_spinner_verb_with_seed(start, spinner_seed)),
+            format!(
+                "{}...",
+                get_spinner_verb_with_seed(start, spinner_seed, spinner_verbs)
+            ),
             Style::default()
                 .fg(SURFACE_CYAN)
                 .add_modifier(Modifier::BOLD),
@@ -3162,9 +3685,17 @@ fn render_pending_live_line(
         return lines;
     }
 
+    if let Some(lines) = render_pending_key_value_line(line, content_width) {
+        return lines;
+    }
+
     crate::presentation::render_wrapped_display_line(line, content_width)
         .into_iter()
-        .map(|wrapped| Line::from(vec![Span::raw("  "), Span::styled(wrapped, default_style)]))
+        .map(|wrapped| {
+            let mut spans = vec![Span::raw("  ")];
+            spans.extend(render_inline_token_spans(wrapped.as_str(), default_style));
+            Line::from(spans)
+        })
         .collect()
 }
 
@@ -3190,18 +3721,17 @@ fn render_pending_tool_headline_line(
             .enumerate()
             .map(|(index, wrapped_line)| {
                 if index == 0 {
-                    Line::from(vec![
+                    let mut spans = vec![
                         Span::raw("  "),
                         Span::styled("• ", Style::default().fg(SURFACE_GRAY)),
                         Span::styled(label_text.clone(), label_style),
-                        Span::styled(wrapped_line, body_style),
-                    ])
+                    ];
+                    spans.extend(render_inline_token_spans(wrapped_line.as_str(), body_style));
+                    Line::from(spans)
                 } else {
-                    Line::from(vec![
-                        Span::raw("  "),
-                        Span::raw(" ".repeat(prefix_width)),
-                        Span::styled(wrapped_line, body_style),
-                    ])
+                    let mut spans = vec![Span::raw("  "), Span::raw(" ".repeat(prefix_width))];
+                    spans.extend(render_inline_token_spans(wrapped_line.as_str(), body_style));
+                    Line::from(spans)
                 }
             })
             .collect(),
@@ -3315,14 +3845,59 @@ fn render_pending_tool_child_line(line: &str, content_width: usize) -> Option<Ve
                     if !label_text.is_empty() {
                         spans.push(Span::styled(label_text.clone(), label_style));
                     }
-                    spans.push(Span::styled(wrapped_line, body_style));
+                    spans.extend(render_inline_token_spans(wrapped_line.as_str(), body_style));
                     Line::from(spans)
                 } else {
-                    Line::from(vec![
+                    let mut spans = vec![Span::raw("  "), Span::raw(" ".repeat(prefix_width))];
+                    spans.extend(render_inline_token_spans(wrapped_line.as_str(), body_style));
+                    Line::from(spans)
+                }
+            })
+            .collect(),
+    )
+}
+
+fn render_pending_key_value_line(line: &str, content_width: usize) -> Option<Vec<Line<'static>>> {
+    let trimmed = line.trim_start();
+    let body = trimmed.strip_prefix("- ")?;
+    let (key, value) = body.split_once(": ")?;
+    let key = key.trim();
+    let value = value.trim();
+    let prefix = format!("  - {key}: ");
+    let prefix_width = crate::presentation::display_width(prefix.as_str());
+    let value_width = content_width
+        .saturating_sub(prefix_width.saturating_sub(2))
+        .max(1);
+    let wrapped = crate::presentation::render_wrapped_display_line(value, value_width);
+
+    Some(
+        wrapped
+            .into_iter()
+            .enumerate()
+            .map(|(index, wrapped_line)| {
+                if index == 0 {
+                    let mut spans = vec![
                         Span::raw("  "),
-                        Span::raw(" ".repeat(prefix_width)),
-                        Span::styled(wrapped_line, body_style),
-                    ])
+                        Span::styled("- ", Style::default().fg(SURFACE_DIM_GRAY)),
+                        Span::styled(
+                            format!("{key}: "),
+                            Style::default()
+                                .fg(SURFACE_ACCENT)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                    ];
+                    spans.extend(render_inline_token_spans(
+                        wrapped_line.as_str(),
+                        Style::default().fg(Color::White),
+                    ));
+                    Line::from(spans)
+                } else {
+                    let mut spans = vec![Span::raw(" ".repeat(prefix_width))];
+                    spans.extend(render_inline_token_spans(
+                        wrapped_line.as_str(),
+                        Style::default().fg(Color::White),
+                    ));
+                    Line::from(spans)
                 }
             })
             .collect(),
@@ -3335,7 +3910,7 @@ fn pending_tool_child_styles(label: &str) -> (Style, Style) {
             Style::default()
                 .fg(SURFACE_GREEN)
                 .add_modifier(Modifier::BOLD),
-            Style::default().fg(SURFACE_DARK_GRAY),
+            Style::default().fg(SURFACE_GRAY),
         ),
         "stderr" => (
             Style::default()
@@ -3347,23 +3922,23 @@ fn pending_tool_child_styles(label: &str) -> (Style, Style) {
             Style::default()
                 .fg(SURFACE_CYAN)
                 .add_modifier(Modifier::BOLD),
-            Style::default().fg(SURFACE_DARK_GRAY),
+            Style::default().fg(SURFACE_GRAY),
         ),
         "metrics" => (
             Style::default()
                 .fg(SURFACE_GRAY)
                 .add_modifier(Modifier::BOLD),
-            Style::default().fg(SURFACE_DARK_GRAY),
+            Style::default().fg(SURFACE_GRAY),
         ),
         "request" | "args" => (
             Style::default()
                 .fg(SURFACE_ACCENT)
                 .add_modifier(Modifier::BOLD),
-            Style::default().fg(SURFACE_DARK_GRAY),
+            Style::default().fg(SURFACE_GRAY),
         ),
         _ => (
             Style::default().fg(SURFACE_ACCENT),
-            Style::default().fg(SURFACE_DARK_GRAY),
+            Style::default().fg(SURFACE_GRAY),
         ),
     }
 }
@@ -3383,7 +3958,7 @@ fn render_pending_tool_sample_line(line: &str, content_width: usize) -> Option<V
     } else if sample.starts_with('-') {
         Style::default().fg(SURFACE_RED)
     } else {
-        Style::default().fg(SURFACE_DARK_GRAY)
+        Style::default().fg(SURFACE_GRAY)
     };
     let sample_width = content_width.saturating_sub(4).max(1);
 
@@ -3393,11 +3968,15 @@ fn render_pending_tool_sample_line(line: &str, content_width: usize) -> Option<V
             .enumerate()
             .map(|(index, wrapped_line)| {
                 let guide = if index == 0 { "    " } else { "      " };
-                Line::from(vec![
+                let mut spans = vec![
                     Span::raw("  "),
-                    Span::styled(guide, Style::default().fg(SURFACE_DARK_GRAY)),
-                    Span::styled(wrapped_line, sample_style),
-                ])
+                    Span::styled(guide, Style::default().fg(SURFACE_GRAY)),
+                ];
+                spans.extend(render_inline_token_spans(
+                    wrapped_line.as_str(),
+                    sample_style,
+                ));
+                Line::from(spans)
             })
             .collect(),
     )
@@ -3631,40 +4210,7 @@ fn format_cwd(runtime: &CliTurnRuntime) -> String {
         .unwrap_or_else(|_| "~".to_owned())
 }
 
-fn build_chat_startup_content(
-    runtime: &CliTurnRuntime,
-    _options: &CliChatOptions,
-    _render_width: usize,
-    i18n: &I18nService,
-) -> (String, String, Vec<(String, Vec<String>)>, Vec<String>) {
-    let version = startup_version_line();
-    let mcp_count = runtime.effective_bootstrap_mcp_servers.len();
-    let skills = detect_available_skills(runtime.effective_working_directory.as_deref());
-    let skill_count = skills.len();
-
-    let tutorial = i18n.text(SurfaceCopy::Tutorial).to_owned();
-    let sections = vec![
-        (
-            i18n.text(SurfaceCopy::StartupSectionSkills).to_owned(),
-            vec![skill_count.to_string()],
-        ),
-        (
-            i18n.text(SurfaceCopy::StartupSectionMcp).to_owned(),
-            vec![mcp_count.to_string()],
-        ),
-    ];
-
-    let tips = vec![
-        tutorial.clone(),
-        i18n.text(SurfaceCopy::StartupTipCommands).to_owned(),
-        i18n.text(SurfaceCopy::StartupTipSkills).to_owned(),
-        i18n.text(SurfaceCopy::StartupTipQueue).to_owned(),
-        i18n.text(SurfaceCopy::StartupTipHistory).to_owned(),
-    ];
-
-    (version, tutorial, sections, tips)
-}
-
+#[cfg(test)]
 fn startup_version_line() -> String {
     format!("v{}", env!("CARGO_PKG_VERSION"))
 }
@@ -3674,7 +4220,7 @@ fn detect_available_skills(root: Option<&Path>) -> Vec<SkillEntry> {
     let mut seen_names = HashSet::new();
     let mut skills = Vec::new();
 
-    for source in skill_search_roots(root) {
+    for source in installed_skill_search_roots(root) {
         let normalized_dir = source
             .directory
             .canonicalize()
@@ -3709,22 +4255,76 @@ fn detect_available_skills(root: Option<&Path>) -> Vec<SkillEntry> {
     skills
 }
 
+fn detect_onboarding_optional_repo_skills(root: Option<&Path>) -> Vec<RepoOptionalSkill> {
+    let repo_skills_root = root
+        .map(|path| path.join("skills"))
+        .unwrap_or_else(|| Path::new("skills").to_path_buf());
+    let mut skills = skill_dirs_in(repo_skills_root.as_path())
+        .into_iter()
+        .filter_map(|skill_dir| {
+            let skill_doc_path = skill_dir.join("SKILL.md");
+            let contents = std::fs::read_to_string(&skill_doc_path).ok();
+            if contents
+                .as_deref()
+                .is_some_and(repo_skill_onboarding_mode_is_bundled)
+            {
+                return None;
+            }
+            let relative_path = skill_dir
+                .strip_prefix(&repo_skills_root)
+                .ok()?
+                .to_path_buf();
+            let folder_name = skill_dir
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+                .unwrap_or_else(|| "skill".to_owned());
+            let skill = read_skill_metadata(folder_name, skill_doc_path, "[Repo]", "repo");
+            Some(RepoOptionalSkill {
+                name: skill.name,
+                description: skill.description,
+                source_dir: skill_dir,
+                install_relative_path: relative_path,
+            })
+        })
+        .collect::<Vec<_>>();
+    skills.sort_by(|left, right| {
+        left.install_relative_path
+            .cmp(&right.install_relative_path)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    skills
+}
+
+fn repo_skill_onboarding_mode_is_bundled(contents: &str) -> bool {
+    let Some(raw_mode) = parse_skill_frontmatter_value(contents, "onboarding_mode") else {
+        return false;
+    };
+    let normalized = raw_mode
+        .trim()
+        .to_ascii_lowercase()
+        .replace(['-', ' '], "_");
+    matches!(
+        normalized.as_str(),
+        "bundled" | "mandatory" | "hidden" | "always_on"
+    )
+}
+
 struct SkillSearchRoot {
     directory: std::path::PathBuf,
     category_tag: &'static str,
     search_label: &'static str,
 }
 
-fn skill_search_roots(root: Option<&Path>) -> Vec<SkillSearchRoot> {
+fn installed_skill_search_roots(root: Option<&Path>) -> Vec<SkillSearchRoot> {
     let mut roots = Vec::new();
-    let repo_skills_dir = root
-        .map(|path| path.join("skills"))
-        .unwrap_or_else(|| Path::new("skills").to_path_buf());
-    roots.push(SkillSearchRoot {
-        directory: repo_skills_dir,
-        category_tag: "[Repo]",
-        search_label: "repo",
-    });
+
+    if let Some(root) = root {
+        roots.push(SkillSearchRoot {
+            directory: root.join(".loong").join("skills"),
+            category_tag: "[Skill]",
+            search_label: "workspace",
+        });
+    }
 
     if let Some(codex_home) = std::env::var_os("CODEX_HOME") {
         roots.push(SkillSearchRoot {
@@ -3879,7 +4479,15 @@ fn fallback_skill_description(contents: &str) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
+#[allow(dead_code)]
 fn render_chat_surface_help_lines_with_width(width: usize) -> Vec<String> {
+    render_chat_surface_help_lines_with_width_and_extension_commands(width, &[])
+}
+
+fn render_chat_surface_help_lines_with_width_and_extension_commands(
+    width: usize,
+    extension_commands: &[(String, String)],
+) -> Vec<String> {
     let queue_restore_shortcut = queue_restore_shortcut_label();
     let mut slash_command_items = slash_command_specs()
         .iter()
@@ -3892,58 +4500,84 @@ fn render_chat_surface_help_lines_with_width(width: usize) -> Vec<String> {
         key: "$skill-name <request>".to_owned(),
         value: "type an available skill invocation directly in the composer".to_owned(),
     });
+    let extension_command_section =
+        (!extension_commands.is_empty()).then(|| TuiSectionSpec::KeyValues {
+            title: Some("extension commands".to_owned()),
+            items: extension_commands
+                .iter()
+                .map(|(command, description)| TuiKeyValueSpec::Plain {
+                    key: command.clone(),
+                    value: description.clone(),
+                })
+                .collect(),
+        });
 
     let message_spec = TuiMessageSpec {
         role: "help".to_owned(),
         caption: Some("chat surface".to_owned()),
-        sections: vec![
-            TuiSectionSpec::KeyValues {
+        sections: {
+            let mut sections = vec![TuiSectionSpec::KeyValues {
                 title: Some("slash commands".to_owned()),
                 items: slash_command_items,
-            },
-            TuiSectionSpec::Narrative {
-                title: Some("surface controls".to_owned()),
-                lines: vec![
-                    "Use / or : from an empty composer to open the command palette.".to_owned(),
-                    "Type $skill-name directly in the composer, then continue writing the rest of the request."
-                        .to_owned(),
-                    "When the inline $ suggestion popup is visible, Enter or Tab confirms the current skill."
-                        .to_owned(),
-                    "Use Ctrl+O to expand or collapse the latest compaction summary.".to_owned(),
-                ],
-            },
-            TuiSectionSpec::Narrative {
-                title: Some("keyboard".to_owned()),
-                lines: vec![
-                    "Enter sends the current draft. Shift+Enter inserts a new line."
-                        .to_owned(),
-                    format!(
-                        "Tab moves between composer and transcript. While a turn is running, Tab queues the current draft and {queue_restore_shortcut} restores the latest queued message."
-                    ),
-                    "PgUp / PgDn and Home / End scroll the transcript; printable keys return to the composer immediately."
-                        .to_owned(),
-                ],
-            },
-            TuiSectionSpec::Callout {
-                tone: TuiCalloutTone::Info,
-                title: Some("mouse".to_owned()),
-                lines: vec![
-                    "Mouse wheel scrolls the transcript where terminal alternate-scroll is supported."
-                        .to_owned(),
-                    "Native terminal drag-selection remains available by default.".to_owned(),
-                ],
-            },
-            TuiSectionSpec::Callout {
-                tone: TuiCalloutTone::Info,
-                title: Some("usage notes".to_owned()),
-                lines: vec![
-                    "Type any non-command text to send a normal assistant turn.".to_owned(),
-                    "Available skill names can be invoked directly with $skill-name."
-                        .to_owned(),
-                    "Use Ctrl+C to leave chat.".to_owned(),
-                ],
-            },
-        ],
+            }];
+            if let Some(extension_command_section) = extension_command_section {
+                sections.push(extension_command_section);
+            }
+            sections.extend([
+                TuiSectionSpec::Narrative {
+                    title: Some("surface controls".to_owned()),
+                    lines: {
+                        let mut lines = vec![
+                        "Use / or : from an empty composer to open the command palette.".to_owned(),
+                        "Type $skill-name directly in the composer, then continue writing the rest of the request."
+                            .to_owned(),
+                        "When the inline $ suggestion popup is visible, Enter or Tab confirms the current skill."
+                            .to_owned(),
+                        "Use Ctrl+O to expand or collapse the latest compaction summary.".to_owned(),
+                        ];
+                        if !extension_commands.is_empty() {
+                            lines.push(
+                                "Runtime extension commands show up alongside built-ins whenever the command palette refreshes."
+                                    .to_owned(),
+                            );
+                        }
+                        lines
+                    },
+                },
+                TuiSectionSpec::Narrative {
+                    title: Some("keyboard".to_owned()),
+                    lines: vec![
+                        "Enter sends the current draft. Shift+Enter inserts a new line."
+                            .to_owned(),
+                        format!(
+                            "Tab moves between composer and transcript. While a turn is running, Tab queues the current draft and {queue_restore_shortcut} restores the latest queued message."
+                        ),
+                        "PgUp / PgDn and Home / End scroll the transcript; printable keys return to the composer immediately."
+                            .to_owned(),
+                    ],
+                },
+                TuiSectionSpec::Callout {
+                    tone: TuiCalloutTone::Info,
+                    title: Some("mouse".to_owned()),
+                    lines: vec![
+                        "Mouse wheel scrolls the transcript where terminal alternate-scroll is supported."
+                            .to_owned(),
+                        "Native terminal drag-selection remains available by default.".to_owned(),
+                    ],
+                },
+                TuiSectionSpec::Callout {
+                    tone: TuiCalloutTone::Info,
+                    title: Some("usage notes".to_owned()),
+                    lines: vec![
+                        "Type any non-command text to send a normal assistant turn.".to_owned(),
+                        "Available skill names can be invoked directly with $skill-name."
+                            .to_owned(),
+                        "Use Ctrl+C to leave chat.".to_owned(),
+                    ],
+                },
+            ]);
+            sections
+        },
         footer_lines: vec![
             "Send normal text to continue the transcript.".to_owned(),
             "Use /usage, /review, or /compact when you need to inspect or stabilize the current session."
@@ -4065,10 +4699,18 @@ mod tests {
     };
     use crate::chat::chat_surface::composer::Composer;
     use crate::chat::chat_surface::i18n::{I18nService, Language};
-    use crate::chat::chat_surface::message_list::MessageList;
+    use crate::chat::chat_surface::message_list::{
+        MessageList, StartupEyeAnimation, StartupEyeFocus,
+    };
+    use crate::chat::chat_surface::onboarding::{
+        StartupOnboardingController, startup_palette_eye_focus,
+    };
     use crate::chat::chat_surface::utils::SURFACE_USER_MSG_BG;
+    #[cfg(feature = "memory-sqlite")]
+    use crate::chat::tests::{cleanup_chat_test_memory, init_chat_test_memory};
+    use crate::test_support::ScopedEnv;
     use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
-    use ratatui::{Terminal, backend::TestBackend, layout::Rect};
+    use ratatui::{Terminal, backend::TestBackend, layout::Rect, style::Modifier};
     use std::sync::atomic::AtomicUsize;
     use std::sync::{Arc, Mutex as StdMutex};
     use std::time::Duration;
@@ -4101,6 +4743,8 @@ mod tests {
             model: "gpt-test".to_owned(),
             title: None,
             i18n: I18nService::new(Language::En),
+            startup_eye_feedback: None,
+            startup_onboarding: StartupOnboardingController::new(None, None, Vec::new(), 0),
         }
     }
 
@@ -4121,6 +4765,47 @@ mod tests {
             category_tag: "[Skill]".to_owned(),
             source_alias: None,
         }
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[test]
+    fn reload_runtime_for_surface_turn_applies_transient_calibration_addendum() {
+        let (config, _memory_config, sqlite_path) = init_chat_test_memory("surface-addendum");
+        let options = crate::chat::CliChatOptions::default();
+        let runtime = crate::chat::initialize_cli_turn_runtime_with_loaded_config(
+            std::path::PathBuf::from("/tmp/loong.toml"),
+            config,
+            Some("surface-addendum"),
+            &options,
+            "cli-chat-surface-addendum-test",
+            crate::chat::CliSessionRequirement::RequireExplicit,
+            false,
+        )
+        .expect("runtime");
+
+        let refreshed = super::reload_runtime_for_surface_turn(
+            &runtime,
+            Some("Ask one short calibration question first.".to_owned()),
+        );
+
+        assert!(
+            refreshed
+                .config
+                .cli
+                .system_prompt_addendum
+                .as_deref()
+                .is_some_and(|value| value.contains("Ask one short calibration question first."))
+        );
+        assert!(
+            refreshed
+                .config
+                .cli
+                .system_prompt
+                .contains("Ask one short calibration question first.")
+        );
+        assert!(runtime.config.cli.system_prompt_addendum.is_none());
+
+        cleanup_chat_test_memory(&sqlite_path);
     }
 
     #[test]
@@ -4593,6 +5278,37 @@ mod tests {
     }
 
     #[test]
+    fn help_lines_can_list_extension_commands() {
+        let rendered = super::render_chat_surface_help_lines_with_width_and_extension_commands(
+            80,
+            &[(
+                "/hello-ext".to_owned(),
+                "say hello from the extension".to_owned(),
+            )],
+        )
+        .join("\n");
+
+        assert!(rendered.contains("extension commands"));
+        assert!(rendered.contains("/hello-ext"));
+        assert!(rendered.contains("say hello from the extension"));
+        assert!(rendered.contains("Runtime extension commands show up alongside built-ins"));
+    }
+
+    #[test]
+    fn slash_usage_lines_note_runtime_extension_refresh() {
+        let rendered = super::render_slash_command_usage_lines_with_width_and_extension_commands(
+            80,
+            &[(
+                "/hello-ext".to_owned(),
+                "say hello from the extension".to_owned(),
+            )],
+        )
+        .join("\n");
+
+        assert!(rendered.contains("Runtime extension commands join this deck automatically"));
+    }
+
+    #[test]
     fn slash_usage_and_detail_cards_are_enabled_without_placeholder_copy() {
         let usage = super::render_slash_command_usage_lines_with_width(90).join("\n");
         assert!(usage.contains("Every command stays visible"));
@@ -4611,6 +5327,94 @@ mod tests {
         assert!(!detail.contains("coming soon"));
         assert!(!detail.contains("placeholder"));
         assert!(!detail.contains("not wired"));
+    }
+
+    #[test]
+    fn slash_usage_and_detail_cards_surface_registry_aliases() {
+        let usage = super::render_slash_command_usage_lines_with_width(90).join("\n");
+        assert!(usage.contains("aliases: /mission"));
+        assert!(usage.contains("aliases: /workers"));
+
+        let mission_spec = super::find_slash_command_spec("/mission").expect("/mission alias spec");
+        let detail =
+            super::render_slash_command_detail_lines_with_width(mission_spec, 90).join("\n");
+        assert!(detail.contains("aliases"));
+        assert!(detail.contains("alias: /mission"));
+    }
+
+    #[test]
+    fn command_palette_keeps_slash_query_visible_in_composer() {
+        let backend = TestBackend::new(60, 14);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = blank_app();
+        super::open_command_palette_with_query(&mut app, "/");
+
+        terminal.draw(|f| app.render(f)).expect("draw");
+        let lines = buffer_lines(&terminal).join("\n");
+
+        assert!(lines.contains(" › /"));
+    }
+
+    #[test]
+    fn command_palette_backspace_can_delete_leading_slash_and_close_deck() {
+        let mut app = blank_app();
+        super::open_command_palette_with_query(&mut app, "/");
+
+        let action = super::handle_command_palette_key(
+            &mut app,
+            crossterm::event::KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+        );
+
+        assert!(action.is_none());
+        assert_eq!(app.focus, Focus::Composer);
+        assert!(app.composer.is_empty());
+    }
+
+    #[test]
+    fn command_palette_backspace_updates_query_text_in_composer() {
+        let mut app = blank_app();
+        super::open_command_palette_with_query(&mut app, "/review");
+
+        let action = super::handle_command_palette_key(
+            &mut app,
+            crossterm::event::KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+        );
+
+        assert!(action.is_none());
+        assert_eq!(app.focus, Focus::CommandPalette);
+        assert_eq!(app.composer.text(), "/revie");
+    }
+
+    #[test]
+    fn command_palette_run_action_clears_slash_query_after_selection() {
+        let mut app = blank_app();
+        super::open_command_palette_with_query(&mut app, "/experimental");
+
+        let command =
+            app.apply_palette_action(CommandAction::RunCommand("/experimental".to_owned()));
+
+        assert_eq!(command.as_deref(), Some("/experimental"));
+        assert!(app.composer.is_empty());
+        assert!(!app.composer_follow_up_intent);
+        assert_eq!(app.focus, Focus::Composer);
+    }
+
+    #[test]
+    fn command_palette_keyboard_enter_returns_run_command_for_selected_entry() {
+        let mut app = blank_app();
+        super::open_command_palette_with_query(&mut app, "/experimental");
+
+        let action = super::handle_command_palette_key(
+            &mut app,
+            crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        );
+
+        match action {
+            Some(CommandAction::RunCommand(command)) => {
+                assert_eq!(command, "/experimental");
+            }
+            other => panic!("expected run command, got {other:?}"),
+        }
     }
 
     #[test]
@@ -4766,7 +5570,8 @@ description: "actual description"
     }
 
     #[test]
-    fn detect_available_skills_reads_skill_metadata_from_workspace() {
+    fn detect_available_skills_reads_installed_skill_metadata_from_codex_home() {
+        let mut env = ScopedEnv::new();
         let root = std::env::temp_dir().join(format!(
             "loong-chat-skills-root-{}",
             std::time::SystemTime::now()
@@ -4774,6 +5579,7 @@ description: "actual description"
                 .expect("clock")
                 .as_nanos()
         ));
+        env.set("CODEX_HOME", &root);
         let skills_dir = root.join("skills");
         std::fs::create_dir_all(&skills_dir).expect("mkdir skills");
 
@@ -4800,7 +5606,7 @@ description: "actual description"
             .find(|skill| skill.name == "alpha-skill")
             .expect("alpha skill");
         assert_eq!(alpha.description, "alpha description");
-        assert_eq!(alpha.category_tag, "[Repo]");
+        assert_eq!(alpha.category_tag, "[Skill]");
         assert!(alpha.search_terms.iter().any(|term| term == "alpha"));
 
         let beta = skills
@@ -4808,7 +5614,78 @@ description: "actual description"
             .find(|skill| skill.name == "beta")
             .expect("beta skill");
         assert_eq!(beta.description, "beta fallback description");
-        assert_eq!(beta.category_tag, "[Repo]");
+        assert_eq!(beta.category_tag, "[Skill]");
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn detect_onboarding_optional_repo_skills_reads_repo_skill_metadata_from_workspace() {
+        let root = std::env::temp_dir().join(format!(
+            "loong-chat-optional-skills-root-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let skills_dir = root.join("skills").join("anthropic-office");
+        std::fs::create_dir_all(&skills_dir).expect("mkdir skills");
+
+        let alpha_dir = skills_dir.join("alpha");
+        std::fs::create_dir_all(&alpha_dir).expect("mkdir alpha");
+        std::fs::write(
+            alpha_dir.join("SKILL.md"),
+            "---\nname: alpha-skill\ndescription: alpha description\n---\n",
+        )
+        .expect("write alpha");
+
+        let skills = super::detect_onboarding_optional_repo_skills(Some(root.as_path()));
+        let alpha = skills
+            .iter()
+            .find(|skill| skill.name == "alpha-skill")
+            .expect("alpha skill");
+        assert_eq!(alpha.description, "alpha description");
+        assert_eq!(
+            alpha.install_relative_path,
+            std::path::PathBuf::from("anthropic-office").join("alpha")
+        );
+        assert_eq!(alpha.source_dir, alpha_dir);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn detect_onboarding_optional_repo_skills_skips_bundled_repo_skills() {
+        let root = std::env::temp_dir().join(format!(
+            "loong-chat-optional-skills-filter-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let skills_dir = root.join("skills");
+        std::fs::create_dir_all(&skills_dir).expect("mkdir skills");
+
+        let optional_dir = skills_dir.join("optional");
+        std::fs::create_dir_all(&optional_dir).expect("mkdir optional");
+        std::fs::write(
+            optional_dir.join("SKILL.md"),
+            "---\nname: optional-skill\ndescription: optional description\nonboarding_mode: optional\n---\n",
+        )
+        .expect("write optional skill");
+
+        let bundled_dir = skills_dir.join("bundled");
+        std::fs::create_dir_all(&bundled_dir).expect("mkdir bundled");
+        std::fs::write(
+            bundled_dir.join("SKILL.md"),
+            "---\nname: bundled-skill\ndescription: bundled description\nonboarding_mode: bundled\n---\n",
+        )
+        .expect("write bundled skill");
+
+        let skills = super::detect_onboarding_optional_repo_skills(Some(root.as_path()));
+
+        assert!(skills.iter().any(|skill| skill.name == "optional-skill"));
+        assert!(!skills.iter().any(|skill| skill.name == "bundled-skill"));
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -4967,11 +5844,11 @@ description: "actual description"
 
         assert!(app.message_list.scroll_offset > 0);
         assert_ne!(before, after);
-        assert_eq!(app.focus, Focus::Composer);
+        assert_eq!(app.focus, Focus::MessageList);
     }
 
     #[test]
-    fn footer_shows_follow_hint_when_transcript_is_off_tail() {
+    fn history_browse_mode_hides_composer_and_follow_footer_when_scrolled_up() {
         let backend = TestBackend::new(50, 12);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = blank_app();
@@ -4988,8 +5865,9 @@ description: "actual description"
         terminal.draw(|f| app.render(f)).expect("draw off tail");
         let lines = buffer_lines(&terminal).join("\n");
 
-        assert!(lines.contains("PgDn / End"));
+        assert!(!lines.contains("PgDn / End"));
         assert!(!lines.contains("/tmp/example"));
+        assert!(!lines.contains(" › "));
     }
 
     #[test]
@@ -5022,6 +5900,30 @@ description: "actual description"
     }
 
     #[test]
+    fn transcript_typing_restores_tail_before_editing_composer() {
+        let mut app = blank_app();
+        for idx in 0..14 {
+            app.message_list
+                .add_assistant_message(format!("line-{idx}"));
+        }
+        app.message_list.handle_key(crossterm::event::KeyEvent::new(
+            KeyCode::Up,
+            KeyModifiers::NONE,
+        ));
+        app.focus = Focus::MessageList;
+
+        let submitted = super::route_transcript_key_to_composer(
+            &mut app,
+            crossterm::event::KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE),
+        );
+
+        assert!(submitted.is_none());
+        assert!(app.message_list.is_following_tail());
+        assert_eq!(app.focus, Focus::Composer);
+        assert_eq!(app.composer.text(), "a");
+    }
+
+    #[test]
     fn mouse_scroll_over_palette_changes_selection_without_scrolling_transcript() {
         let backend = TestBackend::new(50, 14);
         let mut terminal = Terminal::new(backend).expect("terminal");
@@ -5046,7 +5948,7 @@ description: "actual description"
                 KeyCode::Enter,
                 KeyModifiers::NONE,
             )) {
-            Some(CommandAction::RunCommand("/permissions")) => {}
+            Some(CommandAction::RunCommand(command)) if command == "/permissions" => {}
             other => {
                 panic!("expected palette mouse scroll to land on /permissions, got {other:?}")
             }
@@ -5143,6 +6045,60 @@ description: "actual description"
     }
 
     #[test]
+    fn startup_eye_animation_defaults_to_ambient_when_shell_is_idle() {
+        let app = blank_app();
+
+        assert_eq!(
+            app.startup_eye_animation(),
+            StartupEyeAnimation::Focus(StartupEyeFocus::DownLeft)
+        );
+    }
+
+    #[test]
+    fn startup_eye_animation_tracks_composer_and_palette_focus() {
+        let mut app = blank_app();
+        app.composer.set_input("hello".to_owned());
+        assert_eq!(
+            app.startup_eye_animation(),
+            StartupEyeAnimation::Focus(StartupEyeFocus::DownCenter)
+        );
+
+        app.focus = Focus::CommandPalette;
+        app.command_palette.show_commands("/");
+        assert_eq!(
+            app.startup_eye_animation(),
+            StartupEyeAnimation::Thinking(StartupEyeFocus::DownLeft)
+        );
+
+        app.command_palette.show_skills("$");
+        assert_eq!(
+            app.startup_eye_animation(),
+            StartupEyeAnimation::Focus(StartupEyeFocus::DownLeft)
+        );
+    }
+
+    #[test]
+    fn startup_eye_animation_tracks_palette_selection_depth() {
+        assert_eq!(startup_palette_eye_focus(0, 9), StartupEyeFocus::DownLeft);
+        assert_eq!(startup_palette_eye_focus(4, 9), StartupEyeFocus::DownCenter);
+        assert_eq!(startup_palette_eye_focus(8, 9), StartupEyeFocus::DownRight);
+    }
+
+    #[test]
+    fn startup_eye_animation_prefers_transient_feedback() {
+        let mut app = blank_app();
+        app.set_startup_eye_feedback(
+            StartupEyeAnimation::Confirm(StartupEyeFocus::DownCenter),
+            Duration::from_millis(250),
+        );
+
+        assert_eq!(
+            app.startup_eye_animation(),
+            StartupEyeAnimation::Confirm(StartupEyeFocus::DownCenter)
+        );
+    }
+
+    #[test]
     fn startup_tip_leaves_blank_row_before_composer_separator() {
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
@@ -5216,6 +6172,7 @@ description: "actual description"
             Some(std::time::Instant::now()),
             &["visible reply".to_owned()],
             1,
+            I18nService::new(Language::En).spinner_verbs(),
             &std::collections::VecDeque::new(),
             &std::collections::VecDeque::new(),
             40,
@@ -5269,6 +6226,7 @@ description: "actual description"
                 "    - denied".to_owned(),
             ],
             1,
+            I18nService::new(Language::En).spinner_verbs(),
             &std::collections::VecDeque::new(),
             &std::collections::VecDeque::new(),
             72,
@@ -5322,13 +6280,18 @@ description: "actual description"
             .find(|line| {
                 line.spans
                     .iter()
-                    .any(|span| span.content.as_ref().contains("- denied"))
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+                    .contains("- denied")
             })
             .expect("sample line");
         let sample_span = sample_line
             .spans
             .iter()
-            .find(|span| span.content.as_ref().contains("- denied"))
+            .find(|span| {
+                let content = span.content.as_ref();
+                content == "-" || content == "denied"
+            })
             .expect("sample span");
         assert_eq!(sample_span.style.fg, Some(super::SURFACE_RED));
     }
@@ -5550,6 +6513,138 @@ description: "actual description"
             crate::chat::chat_surface::utils::SURFACE_GRAY
         );
         assert_eq!(buf[(2, visible_row)].fg, ratatui::style::Color::White);
+    }
+
+    #[test]
+    fn pending_preview_key_value_lines_use_structured_styles() {
+        let backend = TestBackend::new(70, 18);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = blank_app();
+        app.message_list.add_user_message("hi".to_owned());
+        app.pending_turn = true;
+        app.turn_start = Some(std::time::Instant::now());
+        if let Ok(mut lines) = app.live_lines.lock() {
+            *lines = vec!["- streaming renderer: enabled".to_owned()];
+        }
+
+        terminal.draw(|f| app.render(f)).expect("draw");
+        let text_lines = buffer_lines(&terminal);
+        let row = text_lines
+            .iter()
+            .position(|line| line.contains("streaming renderer"))
+            .expect("key value row") as u16;
+        let key_col = text_lines[row as usize]
+            .find("streaming renderer:")
+            .expect("key col") as u16;
+        let value_col = text_lines[row as usize].find("enabled").expect("value col") as u16;
+        let buf = terminal.backend().buffer();
+
+        assert_eq!(buf[(key_col, row)].fg, super::SURFACE_ACCENT);
+        assert_eq!(buf[(value_col, row)].fg, ratatui::style::Color::White);
+    }
+
+    #[test]
+    fn pending_preview_highlights_inline_control_tokens() {
+        let backend = TestBackend::new(80, 18);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = blank_app();
+        app.message_list.add_user_message("hi".to_owned());
+        app.pending_turn = true;
+        app.turn_start = Some(std::time::Instant::now());
+        if let Ok(mut lines) = app.live_lines.lock() {
+            *lines = vec!["Use /language or type $skill now.".to_owned()];
+        }
+
+        terminal.draw(|f| app.render(f)).expect("draw");
+        let text_lines = buffer_lines(&terminal);
+        let row = text_lines
+            .iter()
+            .position(|line| line.contains("/language"))
+            .expect("instruction row") as u16;
+        let slash_col = text_lines[row as usize]
+            .find("/language")
+            .expect("slash col") as u16;
+        let skill_col = text_lines[row as usize].find("$skill").expect("skill col") as u16;
+        let buf = terminal.backend().buffer();
+
+        assert_eq!(buf[(slash_col, row)].fg, super::SURFACE_ACCENT);
+        assert_eq!(buf[(skill_col, row)].fg, super::SURFACE_ACCENT);
+    }
+
+    #[test]
+    fn pending_tool_sample_neutral_lines_use_readable_gray() {
+        let lines =
+            super::render_pending_tool_sample_line("    context line", 40).expect("sample lines");
+        let sample_spans = lines[0]
+            .spans
+            .iter()
+            .filter(|span| {
+                let content = span.content.as_ref();
+                content.contains("context") || content.contains("line")
+            })
+            .collect::<Vec<_>>();
+
+        assert!(!sample_spans.is_empty(), "sample spans");
+        assert!(
+            sample_spans
+                .iter()
+                .all(|span| span.style.fg == Some(super::SURFACE_GRAY))
+        );
+    }
+
+    #[test]
+    fn pending_tool_sample_lines_highlight_inline_control_tokens() {
+        let lines = super::render_pending_tool_sample_line("    use /review after Ctrl+C", 48)
+            .expect("sample lines");
+        let slash_span = lines[0]
+            .spans
+            .iter()
+            .find(|span| span.content.contains("/review"))
+            .expect("slash span");
+        let ctrl_c_span = lines[0]
+            .spans
+            .iter()
+            .find(|span| span.content.contains("Ctrl+C"))
+            .expect("ctrl c span");
+
+        assert_eq!(slash_span.style.fg, Some(super::SURFACE_ACCENT));
+        assert!(slash_span.style.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(ctrl_c_span.style.fg, Some(super::SURFACE_CYAN));
+        assert!(ctrl_c_span.style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn pending_tool_child_body_uses_readable_gray() {
+        let (_label, body_style) = super::pending_tool_child_styles("request");
+        assert_eq!(body_style.fg, Some(super::SURFACE_GRAY));
+    }
+
+    #[test]
+    fn pending_tool_child_lines_highlight_inline_control_tokens() {
+        let backend = TestBackend::new(90, 18);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = blank_app();
+        app.message_list.add_user_message("hi".to_owned());
+        app.pending_turn = true;
+        app.turn_start = Some(std::time::Instant::now());
+        if let Ok(mut lines) = app.live_lines.lock() {
+            *lines = vec!["↳ request use /permissions before $skill".to_owned()];
+        }
+
+        terminal.draw(|f| app.render(f)).expect("draw");
+        let text_lines = buffer_lines(&terminal);
+        let row = text_lines
+            .iter()
+            .position(|line| line.contains("/permissions"))
+            .expect("request row") as u16;
+        let slash_col = text_lines[row as usize]
+            .find("/permissions")
+            .expect("slash col") as u16;
+        let skill_col = text_lines[row as usize].find("$skill").expect("skill col") as u16;
+        let buf = terminal.backend().buffer();
+
+        assert_eq!(buf[(slash_col, row)].fg, super::SURFACE_ACCENT);
+        assert_eq!(buf[(skill_col, row)].fg, super::SURFACE_ACCENT);
     }
 
     #[test]
@@ -5914,7 +7009,7 @@ description: "actual description"
 
         terminal.draw(|f| app.render(f)).expect("draw off tail");
         let off_tail_lines = buffer_lines(&terminal).join("\n");
-        assert!(off_tail_lines.contains("PgDn / End"));
+        assert!(!off_tail_lines.contains("PgDn / End"));
         assert!(off_tail_lines.contains("streamed preview line"));
 
         app.message_list
@@ -5922,7 +7017,7 @@ description: "actual description"
         terminal.backend_mut().resize(34, 18);
         terminal.draw(|f| app.render(f)).expect("draw resized");
         let resized_lines = buffer_lines(&terminal).join("\n");
-        assert!(resized_lines.contains("PgDn / End"));
+        assert!(!resized_lines.contains("PgDn / End"));
         assert!(resized_lines.contains("streamed preview line"));
 
         app.message_list.handle_key(crossterm::event::KeyEvent::new(

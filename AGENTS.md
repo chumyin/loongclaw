@@ -9,6 +9,9 @@ context lives in `docs/`, while the public reader-facing docs surface lives in
 ## 1. Start Here
 
 - [Repository Docs Map](docs/README.md) — audience routing for `site/` vs `docs/`
+- [SOUL.md](SOUL.md) — onboarding personality seed and first-turn preference notes for this workspace
+- [IDENTITY.md](IDENTITY.md) — workspace-facing identity fields and onboarding-derived defaults
+- [USER.md](USER.md) — workspace-facing user address, timezone, and personalization context
 - [Core Beliefs](docs/design-docs/core-beliefs.md) — kernel and engineering principles
 - [Layered Kernel Design](docs/design-docs/layered-kernel-design.md) — layered model and boundary rules
 - [Roadmap](docs/ROADMAP.md) — stage-based milestones and acceptance criteria

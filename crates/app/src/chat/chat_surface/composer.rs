@@ -77,11 +77,22 @@ impl Composer {
         input
     }
 
-    pub fn render(&mut self, f: &mut Frame, area: Rect, focused: bool) {
+    pub fn render(
+        &mut self,
+        f: &mut Frame,
+        area: Rect,
+        focused: bool,
+        preview_override: Option<&str>,
+    ) {
+        let rendered_input = preview_override.unwrap_or(&self.input);
         let prefix_style = Style::default()
-            .fg(if focused { SURFACE_CYAN } else { SURFACE_GRAY })
+            .fg(if focused || preview_override.is_some() {
+                SURFACE_CYAN
+            } else {
+                SURFACE_GRAY
+            })
             .add_modifier(Modifier::BOLD);
-        let rows = wrapped_rows(&self.input, area.width);
+        let rows = wrapped_rows(rendered_input, area.width);
         let mut lines = Vec::with_capacity(rows.len().max(1));
         for (index, row) in rows.into_iter().enumerate() {
             let prefix = if index == 0 {

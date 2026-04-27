@@ -29,71 +29,31 @@ const STARTUP_WORDMARK: &[&str] = &[
     "░██████████   ░████████░    ░████████░   ░███    ███░   ░████████░",
 ];
 type StartupEyeFrame = [&'static str; STARTUP_EYE_INTERIOR_ROWS];
+type StartupEyePair = (StartupEyeFrame, StartupEyeFrame);
 const STARTUP_EYE_INTERIOR_ROWS: usize = 5;
 const STARTUP_EYE_INTERIOR_WIDTH: usize = 4;
 const STARTUP_EYE_CAVITY: &str = "░███    ███░";
-const STARTUP_EYE_FRAMES: &[StartupEyeFrame] = &[
-    ["    ", "    ", " █  ", "    ", "    "],
-    ["    ", "    ", " ▆  ", "    ", "    "],
-    ["    ", "    ", "▄   ", "    ", "    "],
-    ["    ", "    ", "█   ", "    ", "    "],
-    ["▒▒▒▒", "    ", "█   ", "    ", "    "],
-    ["▓▓▓▓", "▒▒▒▒", "█   ", "    ", "    "],
-    ["▓▓▓▓", "▓▓▓▓", "▓▓▓▓", "    ", "    "],
-    ["▒▒▒▒", "    ", "█   ", "    ", "    "],
-    ["    ", "    ", "█   ", "    ", "    "],
-    ["    ", "    ", "▄   ", "    ", "    "],
-    ["    ", "    ", " ▂  ", "    ", "    "],
-    ["    ", "    ", "  ▄ ", "    ", "    "],
-    ["    ", "    ", "   ▆", "    ", "    "],
-    ["    ", "    ", "   █", "    ", "    "],
-    ["    ", "   ▂", "   █", "    ", "    "],
-    ["    ", "   ▄", "  ██", "    ", "    "],
-    ["    ", "  ██", "  ██", "    ", "    "],
-    ["    ", "  ██", "  ██", "    ", "    "],
-    ["    ", "  ██", "  ██", "    ", "    "],
-    ["    ", "  ██", "  ██", "    ", "    "],
-    ["    ", "  ▄▄", "  ██", "    ", "    "],
-    ["    ", "    ", "   █", "    ", "    "],
-    ["    ", "    ", "   ▄", "    ", "    "],
-    ["    ", "    ", "  ▂ ", "    ", "    "],
-    ["    ", "    ", " █  ", "    ", "    "],
-    ["    ", "    ", " ▃  ", " ▆  ", "    "],
-    ["    ", "    ", "    ", " █  ", "    "],
-    ["    ", "    ", "    ", " █  ", "    "],
-    ["    ", "    ", "    ", " █  ", "    "],
-    ["▒▒▒▒", "    ", "    ", " █  ", "    "],
-    ["▓▓▓▓", "▒▒▒▒", "    ", " █  ", "    "],
-    ["▓▓▓▓", "▓▓▓▓", "▒▒▒▒", " █  ", "    "],
-    ["▓▓▓▓", "▓▓▓▓", "▓▓▓▓", "▒▒▒▒", "    "],
-    ["▓▓▓▓", "▓▓▓▓", "▓▓▓▓", "▓▓▓▓", "    "],
-    ["▓▓▓▓", "▓▓▓▓", "▓▓▓▓", "▓▓▓▓", "    "],
-    ["▓▓▓▓", "▓▓▓▓", "▓▓▓▓", "▓▓▓▓", "    "],
-    ["▓▓▓▓", "▓▓▓▓", "▒▒▒▒", " █  ", "    "],
-    ["▓▓▓▓", "▒▒▒▒", "    ", " █  ", "    "],
-    ["▒▒▒▒", "    ", "    ", " █  ", "    "],
-    ["    ", "    ", "    ", " █  ", "    "],
-    ["    ", "    ", " ▂  ", " ▇  ", "    "],
-    ["    ", "    ", " ▄  ", " ▅  ", "    "],
-    ["    ", "    ", " ▆  ", " ▃  ", "    "],
-    ["    ", "    ", " █  ", "    ", "    "],
-    ["    ", " ▂  ", " ▇  ", "    ", "    "],
-    ["    ", " ▄  ", " ▄  ", "    ", "    "],
-    ["    ", " ▆  ", " ▂  ", "    ", "    "],
-    ["    ", "█   ", "    ", "    ", "    "],
-    ["▒▒▒▒", "█   ", "    ", "    ", "    "],
-    ["▓▓▓▓", "▒▒▒▒", "    ", "    ", "    "],
-    ["▒▒▒▒", "█   ", "    ", "    ", "    "],
-    ["▓▓▓▓", "▒▒▒▒", "    ", "    ", "    "],
-    ["    ", "█   ", "    ", "    ", "    "],
-    ["    ", " ▄  ", "    ", "    ", "    "],
-    ["    ", "    ", " █  ", "    ", "    "],
-    ["    ", "    ", " ▂  ", "    ", "    "],
-    ["    ", "    ", " ▄  ", "    ", "    "],
-    ["    ", "    ", " ▆  ", "    ", "    "],
-    ["    ", "    ", " █  ", "    ", "    "],
-    ["    ", "    ", " █  ", "    ", "    "],
-];
+const STARTUP_EYE_CENTER: StartupEyeFrame = ["    ", " ▂▂ ", " ▇▇ ", " ▄▄ ", "    "];
+const STARTUP_EYE_LEFT: StartupEyeFrame = ["    ", "▂▂  ", "██  ", "▄▄  ", "    "];
+const STARTUP_EYE_RIGHT: StartupEyeFrame = ["    ", "  ▂▂", "  ██", "  ▄▄", "    "];
+const STARTUP_EYE_UP: StartupEyeFrame = [" ▂▂ ", " ▇▇ ", " ▄▄ ", "    ", "    "];
+const STARTUP_EYE_DOWN_CENTER: StartupEyeFrame = ["    ", "    ", " ▄▄ ", " ▇▇ ", " ▂▂ "];
+const STARTUP_EYE_DOWN_LEFT: StartupEyeFrame = ["    ", "    ", "▄▄  ", "██  ", "▂▂  "];
+const STARTUP_EYE_DOWN_RIGHT: StartupEyeFrame = ["    ", "    ", "  ▄▄", "  ██", "  ▂▂"];
+const STARTUP_EYE_HALF_LID_CENTER: StartupEyeFrame = ["    ", "▒▒▒▒", " ▆▆ ", "    ", "    "];
+const STARTUP_EYE_HALF_LID_LEFT: StartupEyeFrame = ["    ", "▒▒▒ ", "▆▆  ", "    ", "    "];
+const STARTUP_EYE_HALF_LID_RIGHT: StartupEyeFrame = ["    ", " ▒▒▒", "  ▆▆", "    ", "    "];
+const STARTUP_EYE_HALF_LID_DOWN_CENTER: StartupEyeFrame = ["    ", "    ", "▒▒▒▒", " ▆▆ ", "    "];
+const STARTUP_EYE_HALF_LID_DOWN_LEFT: StartupEyeFrame = ["    ", "    ", "▒▒▒ ", "▆▆  ", "    "];
+const STARTUP_EYE_HALF_LID_DOWN_RIGHT: StartupEyeFrame = ["    ", "    ", " ▒▒▒", "  ▆▆", "    "];
+const STARTUP_EYE_CONFIRM_CENTER: StartupEyeFrame = [" ▂▂ ", " ▇▇ ", "████", " ▆▆ ", "    "];
+const STARTUP_EYE_CONFIRM_LEFT: StartupEyeFrame = ["▂▂  ", "██  ", "████", "██  ", "    "];
+const STARTUP_EYE_CONFIRM_RIGHT: StartupEyeFrame = ["  ▂▂", "  ██", "████", "  ██", "    "];
+const STARTUP_EYE_CONFIRM_DOWN_CENTER: StartupEyeFrame = ["    ", " ▄▄ ", "████", " ▇▇ ", " ▂▂ "];
+const STARTUP_EYE_CONFIRM_DOWN_LEFT: StartupEyeFrame = ["    ", "▄▄  ", "████", "██  ", "▂▂  "];
+const STARTUP_EYE_CONFIRM_DOWN_RIGHT: StartupEyeFrame = ["    ", "  ▄▄", "████", "  ██", "  ▂▂"];
+const STARTUP_EYE_CELEBRATE_A: StartupEyeFrame = [" ░░ ", " ▅▅ ", " ▇▇ ", " ▄▄ ", "    "];
+const STARTUP_EYE_CELEBRATE_B: StartupEyeFrame = ["    ", " ▄▄ ", " ▇▇ ", " ▅▅ ", " ░░ "];
 const STARTUP_COMPACT_WORDMARK: &[&str] = &[
     "╷  ╭─╮╭─╮╭╮╷╭─╴",
     "│  │ ││ ││╰┤│╶╮",
@@ -104,6 +64,7 @@ const STARTUP_COMPACT_WORDMARK: &[&str] = &[
 ];
 const STARTUP_FULL_WORDMARK_MARGIN: usize = 8;
 const STARTUP_COMPACT_WORDMARK_MARGIN: usize = 4;
+#[cfg(test)]
 const STARTUP_LOGO_EYE_FRAME_MS: u64 = 80;
 const STARTUP_TIP_HOLD_MS: u64 = 2600;
 const STARTUP_TIP_FADE_MS: u64 = 420;
@@ -148,6 +109,8 @@ pub enum MessageContent {
         tutorial: String,
         sections: Vec<(String, Vec<String>)>,
         tips: Vec<String>,
+        eye_animation: StartupEyeAnimation,
+        panel: Option<StartupPanel>,
     },
 }
 
@@ -156,6 +119,41 @@ pub enum ToolStatus {
     Pending,
     Success,
     Error,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StartupEyeFocus {
+    Center,
+    Left,
+    Right,
+    Up,
+    DownCenter,
+    DownLeft,
+    DownRight,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StartupEyeAnimation {
+    Ambient,
+    Focus(StartupEyeFocus),
+    Thinking(StartupEyeFocus),
+    Confirm(StartupEyeFocus),
+    Celebrate,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StartupPanel {
+    pub title: String,
+    pub hint: String,
+    pub options: Vec<StartupPanelOption>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StartupPanelOption {
+    pub label: String,
+    pub detail: String,
+    pub selected: bool,
 }
 
 pub struct Message {
@@ -292,12 +290,30 @@ impl MessageList {
         self.add_startup_header_with_tips(version, tutorial, sections, Vec::new());
     }
 
+    #[allow(dead_code)]
     pub fn add_startup_header_with_tips(
         &mut self,
         version: String,
         tutorial: String,
         sections: Vec<(String, Vec<String>)>,
         tips: Vec<String>,
+    ) {
+        self.add_startup_header_with_tips_and_eye(
+            version,
+            tutorial,
+            sections,
+            tips,
+            StartupEyeAnimation::Ambient,
+        );
+    }
+
+    pub fn add_startup_header_with_tips_and_eye(
+        &mut self,
+        version: String,
+        tutorial: String,
+        sections: Vec<(String, Vec<String>)>,
+        tips: Vec<String>,
+        eye_animation: StartupEyeAnimation,
     ) {
         self.startup_animation_started_at = Instant::now();
         self.last_startup_animation_signature = None;
@@ -308,10 +324,108 @@ impl MessageList {
                 tutorial,
                 sections,
                 tips,
+                eye_animation,
+                panel: None,
             }],
         });
         self.scroll_offset = 0;
         self.invalidate_render_cache();
+    }
+
+    pub fn set_latest_startup_eye_animation(&mut self, eye_animation: StartupEyeAnimation) -> bool {
+        let mut updated = false;
+        for message in self.messages.iter_mut().rev() {
+            for content in message.contents.iter_mut().rev() {
+                if let MessageContent::StartupHeader {
+                    eye_animation: current,
+                    ..
+                } = content
+                {
+                    if *current == eye_animation {
+                        return false;
+                    }
+                    *current = eye_animation;
+                    updated = true;
+                    break;
+                }
+            }
+            if updated {
+                break;
+            }
+        }
+
+        if updated {
+            self.last_startup_animation_signature = None;
+            self.invalidate_render_cache();
+        }
+
+        updated
+    }
+
+    pub fn set_latest_startup_panel(&mut self, panel: Option<StartupPanel>) -> bool {
+        let mut updated = false;
+        for message in self.messages.iter_mut().rev() {
+            for content in message.contents.iter_mut().rev() {
+                if let MessageContent::StartupHeader { panel: current, .. } = content {
+                    if *current == panel {
+                        return false;
+                    }
+                    *current = panel.clone();
+                    updated = true;
+                    break;
+                }
+            }
+            if updated {
+                break;
+            }
+        }
+
+        if updated {
+            self.invalidate_render_cache();
+        }
+
+        updated
+    }
+
+    pub fn set_latest_startup_header_content(
+        &mut self,
+        tutorial: String,
+        sections: Vec<(String, Vec<String>)>,
+        tips: Vec<String>,
+    ) -> bool {
+        let mut updated = false;
+        for message in self.messages.iter_mut().rev() {
+            for content in message.contents.iter_mut().rev() {
+                if let MessageContent::StartupHeader {
+                    tutorial: current_tutorial,
+                    sections: current_sections,
+                    tips: current_tips,
+                    ..
+                } = content
+                {
+                    if *current_tutorial == tutorial
+                        && *current_sections == sections
+                        && *current_tips == tips
+                    {
+                        return false;
+                    }
+                    *current_tutorial = tutorial.clone();
+                    *current_sections = sections.clone();
+                    *current_tips = tips.clone();
+                    updated = true;
+                    break;
+                }
+            }
+            if updated {
+                break;
+            }
+        }
+
+        if updated {
+            self.invalidate_render_cache();
+        }
+
+        updated
     }
 
     pub fn toggle_latest_compaction(&mut self) -> bool {
@@ -387,16 +501,19 @@ impl MessageList {
                         tutorial,
                         sections,
                         tips,
+                        eye_animation,
+                        panel,
                     } => {
                         let elapsed = self.startup_animation_started_at.elapsed();
                         let tip_state = startup_tip_render_state(tips, elapsed);
-                        let logo_frame = startup_logo_eye_frame_index(elapsed);
                         text_lines.extend(render_startup_header_lines(
                             version,
                             tutorial,
                             sections,
                             tip_state.as_ref(),
-                            logo_frame,
+                            *eye_animation,
+                            panel.as_ref(),
+                            elapsed,
                             width,
                         ));
                     }
@@ -684,6 +801,12 @@ impl MessageList {
         self.follow_tail
     }
 
+    pub fn restore_tail(&mut self) {
+        self.scroll_offset = 0;
+        self.follow_tail = true;
+        self.snap_scroll_on_next_render = true;
+    }
+
     pub fn refresh_startup_animation(&mut self) -> bool {
         if reduced_motion_enabled() {
             self.last_startup_animation_signature = None;
@@ -714,7 +837,10 @@ impl MessageList {
         }
 
         let elapsed = self.startup_animation_started_at.elapsed();
-        let logo_frame = startup_logo_eye_frame_index(elapsed) as u64;
+        let eye_signature = self
+            .startup_eye_animation()
+            .map(|animation| startup_eye_signature(animation, elapsed))
+            .unwrap_or_else(|| startup_eye_signature(StartupEyeAnimation::Ambient, elapsed));
         let tip_signature = self
             .startup_tips()
             .and_then(|tips| {
@@ -725,7 +851,7 @@ impl MessageList {
             })
             .unwrap_or(0);
 
-        Some((logo_frame << 16) | tip_signature)
+        Some((eye_signature << 16) | tip_signature)
     }
 
     fn startup_tips(&self) -> Option<&[String]> {
@@ -752,6 +878,22 @@ impl MessageList {
                 | MessageContent::Error { .. }
                 | MessageContent::Compaction { .. }
                 | MessageContent::StartupHeader { .. } => None,
+            })
+    }
+
+    fn startup_eye_animation(&self) -> Option<StartupEyeAnimation> {
+        self.messages
+            .iter()
+            .flat_map(|message| message.contents.iter())
+            .find_map(|content| match content {
+                MessageContent::StartupHeader { eye_animation, .. } => Some(*eye_animation),
+                MessageContent::RenderedLines(_)
+                | MessageContent::Markdown(_)
+                | MessageContent::Diff { .. }
+                | MessageContent::Image { .. }
+                | MessageContent::ToolCall { .. }
+                | MessageContent::Error { .. }
+                | MessageContent::Compaction { .. } => None,
             })
     }
 
@@ -906,18 +1048,139 @@ fn render_rendered_system_line(line: &str, width: u16) -> Vec<Line<'static>> {
         return rendered;
     }
 
+    if let Some(rendered) = render_system_heading_line(line, content_width) {
+        return rendered;
+    }
+
+    if let Some(rendered) = render_system_key_value_line(line, content_width) {
+        return rendered;
+    }
+
     let style = if line.trim_start().starts_with("… +") {
         Style::default()
             .fg(SURFACE_GRAY)
             .add_modifier(Modifier::DIM)
     } else {
-        Style::default().fg(SURFACE_DARK_GRAY)
+        Style::default().fg(SURFACE_GRAY)
     };
 
     crate::presentation::render_wrapped_display_line(line, content_width)
         .into_iter()
-        .map(|wrapped| Line::from(vec![Span::styled(wrapped, style)]))
+        .map(|wrapped| Line::from(render_inline_token_spans(wrapped.as_str(), style)))
         .collect()
+}
+
+fn render_system_heading_line(line: &str, content_width: usize) -> Option<Vec<Line<'static>>> {
+    let trimmed = line.trim_start();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if let Some((title, subtitle)) = trimmed.split_once(" · ") {
+        let title = title.trim();
+        let subtitle = subtitle.trim();
+        let prefix_width = crate::presentation::display_width(title).saturating_add(3);
+        let body_width = content_width.saturating_sub(prefix_width).max(1);
+        let wrapped = crate::presentation::render_wrapped_display_line(subtitle, body_width);
+
+        return Some(
+            wrapped
+                .into_iter()
+                .enumerate()
+                .map(|(index, wrapped_line)| {
+                    if index == 0 {
+                        let mut spans = vec![
+                            Span::styled(
+                                title.to_owned(),
+                                Style::default()
+                                    .fg(SURFACE_HEADING)
+                                    .add_modifier(Modifier::BOLD),
+                            ),
+                            Span::styled(" · ", Style::default().fg(SURFACE_DIM_GRAY)),
+                        ];
+                        spans.extend(render_inline_token_spans(
+                            wrapped_line.as_str(),
+                            Style::default().fg(SURFACE_GRAY),
+                        ));
+                        Line::from(spans)
+                    } else {
+                        let mut spans = vec![Span::raw(" ".repeat(prefix_width))];
+                        spans.extend(render_inline_token_spans(
+                            wrapped_line.as_str(),
+                            Style::default().fg(SURFACE_GRAY),
+                        ));
+                        Line::from(spans)
+                    }
+                })
+                .collect(),
+        );
+    }
+
+    if trimmed.len() <= 32
+        && trimmed
+            .chars()
+            .all(|ch| ch.is_ascii_lowercase() || ch == ' ' || ch == '/' || ch == '-')
+    {
+        return Some(
+            crate::presentation::render_wrapped_display_line(trimmed, content_width)
+                .into_iter()
+                .map(|wrapped| {
+                    Line::from(vec![Span::styled(
+                        wrapped,
+                        Style::default()
+                            .fg(SURFACE_HEADING)
+                            .add_modifier(Modifier::BOLD),
+                    )])
+                })
+                .collect(),
+        );
+    }
+
+    None
+}
+
+fn render_system_key_value_line(line: &str, content_width: usize) -> Option<Vec<Line<'static>>> {
+    let trimmed = line.trim_start();
+    let body = trimmed.strip_prefix("- ")?;
+    let (key, value) = body.split_once(": ")?;
+    let key = key.trim();
+    let value = value.trim();
+    let prefix = format!("- {key}: ");
+    let prefix_width = crate::presentation::display_width(prefix.as_str());
+    let body_width = content_width.saturating_sub(prefix_width).max(1);
+    let wrapped = crate::presentation::render_wrapped_display_line(value, body_width);
+
+    Some(
+        wrapped
+            .into_iter()
+            .enumerate()
+            .map(|(index, wrapped_line)| {
+                if index == 0 {
+                    let mut spans = vec![
+                        Span::styled("- ", Style::default().fg(SURFACE_DIM_GRAY)),
+                        Span::styled(
+                            format!("{key}: "),
+                            Style::default()
+                                .fg(SURFACE_ACCENT)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                    ];
+                    spans.extend(render_inline_token_spans(
+                        wrapped_line.as_str(),
+                        Style::default().fg(Color::White),
+                    ));
+                    Line::from(spans)
+                } else {
+                    let mut spans = vec![Span::raw(" ".repeat(prefix_width))];
+                    spans.extend(render_inline_token_spans(
+                        wrapped_line.as_str(),
+                        Style::default().fg(Color::White),
+                    ));
+                    Line::from(spans)
+                }
+            })
+            .collect(),
+    )
 }
 
 fn render_system_activity_headline(line: &str, content_width: usize) -> Option<Vec<Line<'static>>> {
@@ -971,23 +1234,25 @@ fn render_system_activity_headline(line: &str, content_width: usize) -> Option<V
             .enumerate()
             .map(|(index, wrapped_line)| {
                 if index == 0 {
-                    Line::from(vec![
+                    let mut spans = vec![
                         Span::styled("• ", Style::default().fg(SURFACE_GREEN)),
                         Span::styled(format!("{label} "), label_style),
-                        Span::styled(
-                            wrapped_line,
-                            Style::default().fg(ratatui::style::Color::White),
-                        ),
-                    ])
+                    ];
+                    spans.extend(render_inline_token_spans(
+                        wrapped_line.as_str(),
+                        Style::default().fg(ratatui::style::Color::White),
+                    ));
+                    Line::from(spans)
                 } else {
-                    Line::from(vec![
+                    let mut spans = vec![
                         Span::raw("  "),
                         Span::raw(" ".repeat(crate::presentation::display_width(label) + 1)),
-                        Span::styled(
-                            wrapped_line,
-                            Style::default().fg(ratatui::style::Color::White),
-                        ),
-                    ])
+                    ];
+                    spans.extend(render_inline_token_spans(
+                        wrapped_line.as_str(),
+                        Style::default().fg(ratatui::style::Color::White),
+                    ));
+                    Line::from(spans)
                 }
             })
             .collect(),
@@ -1021,7 +1286,7 @@ fn render_system_activity_child(line: &str, content_width: usize) -> Option<Vec<
             .enumerate()
             .map(|(index, wrapped_line)| {
                 if index == 0 {
-                    Line::from(vec![
+                    let mut spans = vec![
                         Span::raw("  "),
                         Span::styled(
                             "└ ",
@@ -1030,20 +1295,22 @@ fn render_system_activity_child(line: &str, content_width: usize) -> Option<Vec<
                                 .add_modifier(Modifier::DIM),
                         ),
                         Span::styled(format!("{label} "), Style::default().fg(SURFACE_ACCENT)),
-                        Span::styled(
-                            wrapped_line,
-                            Style::default().fg(ratatui::style::Color::White),
-                        ),
-                    ])
+                    ];
+                    spans.extend(render_inline_token_spans(
+                        wrapped_line.as_str(),
+                        Style::default().fg(ratatui::style::Color::White),
+                    ));
+                    Line::from(spans)
                 } else {
-                    Line::from(vec![
+                    let mut spans = vec![
                         Span::raw("    "),
                         Span::raw(" ".repeat(crate::presentation::display_width(label) + 1)),
-                        Span::styled(
-                            wrapped_line,
-                            Style::default().fg(ratatui::style::Color::White),
-                        ),
-                    ])
+                    ];
+                    spans.extend(render_inline_token_spans(
+                        wrapped_line.as_str(),
+                        Style::default().fg(ratatui::style::Color::White),
+                    ));
+                    Line::from(spans)
                 }
             })
             .collect(),
@@ -1068,14 +1335,16 @@ fn render_startup_header_lines(
     tutorial: &str,
     sections: &[(String, Vec<String>)],
     tip_state: Option<&StartupTipRenderState>,
-    logo_frame: usize,
+    eye_animation: StartupEyeAnimation,
+    panel: Option<&StartupPanel>,
+    elapsed: Duration,
     width: u16,
 ) -> Vec<Line<'static>> {
     let mut rendered = Vec::new();
 
     rendered.push(Line::from(""));
     rendered.push(Line::from(""));
-    rendered.extend(render_centered_logo_lines(width, logo_frame));
+    rendered.extend(render_centered_logo_lines(width, eye_animation, elapsed));
     rendered.push(Line::from(""));
     rendered.extend(render_centered_startup_text_lines(
         version,
@@ -1098,6 +1367,11 @@ fn render_startup_header_lines(
     if !startup_status.is_empty() {
         rendered.push(Line::from(""));
         rendered.extend(render_startup_status_lines(&startup_status, width));
+    }
+
+    if let Some(panel) = panel {
+        rendered.push(Line::from(""));
+        rendered.extend(render_startup_panel_lines(panel, width));
     }
 
     rendered.push(Line::from(""));
@@ -1204,7 +1478,232 @@ fn render_startup_status_lines(items: &[StartupStatusItem], width: u16) -> Vec<L
         .collect()
 }
 
-fn render_centered_logo_lines(width: u16, logo_frame: usize) -> Vec<Line<'static>> {
+fn render_startup_panel_lines(panel: &StartupPanel, width: u16) -> Vec<Line<'static>> {
+    let content_width = width.saturating_sub(6).max(24) as usize;
+    let panel_width = content_width.min(68);
+    let indent = " ".repeat(width.saturating_sub(panel_width as u16) as usize / 2);
+    let horizontal_rule = format!("{indent}┌{}┐", "─".repeat(panel_width.saturating_sub(2)));
+    let footer_rule = format!("{indent}└{}┘", "─".repeat(panel_width.saturating_sub(2)));
+    let mut lines = vec![Line::from(horizontal_rule)];
+
+    lines.extend(render_startup_panel_wrapped_line(
+        indent.as_str(),
+        panel.title.as_str(),
+        panel_width,
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD),
+    ));
+    lines.extend(render_startup_panel_wrapped_line(
+        indent.as_str(),
+        panel.hint.as_str(),
+        panel_width,
+        Style::default()
+            .fg(SURFACE_GRAY)
+            .add_modifier(Modifier::DIM),
+    ));
+
+    let (visible_start, visible_end) = startup_panel_visible_option_range(&panel.options);
+    if panel.options.len() > visible_end.saturating_sub(visible_start) {
+        lines.extend(render_startup_panel_wrapped_line(
+            indent.as_str(),
+            format!(
+                "showing {}-{} of {} · ↑↓ scroll",
+                visible_start + 1,
+                visible_end,
+                panel.options.len()
+            )
+            .as_str(),
+            panel_width,
+            Style::default()
+                .fg(SURFACE_GRAY)
+                .add_modifier(Modifier::DIM),
+        ));
+    }
+
+    if visible_start > 0 {
+        lines.extend(render_startup_panel_wrapped_line(
+            indent.as_str(),
+            format!("… {} more above", visible_start).as_str(),
+            panel_width,
+            Style::default()
+                .fg(SURFACE_GRAY)
+                .add_modifier(Modifier::DIM),
+        ));
+    }
+
+    for option in panel
+        .options
+        .iter()
+        .skip(visible_start)
+        .take(visible_end - visible_start)
+    {
+        let prefix = if option.selected { "›" } else { "•" };
+        let label_style = if option.selected {
+            Style::default()
+                .fg(SURFACE_CYAN)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        let detail_style = if option.selected {
+            Style::default().fg(SURFACE_ACCENT)
+        } else {
+            Style::default().fg(SURFACE_GRAY)
+        };
+        let detail = if option.selected {
+            option.detail.as_str()
+        } else {
+            ""
+        };
+
+        lines.extend(render_startup_panel_option_lines(
+            indent.as_str(),
+            prefix,
+            option.label.as_str(),
+            detail,
+            panel_width,
+            label_style,
+            detail_style,
+        ));
+    }
+
+    if visible_end < panel.options.len() {
+        lines.extend(render_startup_panel_wrapped_line(
+            indent.as_str(),
+            format!("… {} more below", panel.options.len() - visible_end).as_str(),
+            panel_width,
+            Style::default()
+                .fg(SURFACE_GRAY)
+                .add_modifier(Modifier::DIM),
+        ));
+    }
+
+    lines.push(Line::from(footer_rule));
+    lines
+}
+
+fn render_startup_panel_wrapped_line(
+    indent: &str,
+    text: &str,
+    panel_width: usize,
+    style: Style,
+) -> Vec<Line<'static>> {
+    let inner_width = panel_width.saturating_sub(4).max(1);
+    crate::presentation::render_wrapped_display_line(text, inner_width)
+        .into_iter()
+        .map(|wrapped| {
+            let padded = pad_text_to_display_width(wrapped.as_str(), inner_width);
+            let mut text_spans = render_inline_token_spans(padded.as_str(), style);
+            if text_spans.is_empty() {
+                text_spans.push(Span::styled(String::new(), style));
+            }
+            let mut spans = vec![
+                Span::raw(indent.to_owned()),
+                Span::styled("│ ", Style::default().fg(SURFACE_GRAY)),
+            ];
+            spans.extend(text_spans);
+            spans.push(Span::styled(" │", Style::default().fg(SURFACE_GRAY)));
+            Line::from(spans)
+        })
+        .collect()
+}
+
+fn render_startup_panel_option_lines(
+    indent: &str,
+    prefix: &str,
+    label: &str,
+    detail: &str,
+    panel_width: usize,
+    label_style: Style,
+    detail_style: Style,
+) -> Vec<Line<'static>> {
+    let inner_width = panel_width.saturating_sub(4).max(1);
+    let body_width = inner_width.saturating_sub(2).max(1);
+    let headline = format!("{prefix} {label}");
+    let mut lines =
+        render_startup_panel_wrapped_line(indent, headline.as_str(), panel_width, label_style);
+    let detail_prefix = "  ";
+    if let Some(compact_detail) =
+        compact_startup_panel_option_detail(detail, body_width.saturating_sub(detail_prefix.len()))
+    {
+        let row = format!("{detail_prefix}{compact_detail}");
+        let padded = pad_text_to_display_width(row.as_str(), inner_width);
+        let mut detail_spans = render_inline_token_spans(padded.as_str(), detail_style);
+        if detail_spans.is_empty() {
+            detail_spans.push(Span::styled(String::new(), detail_style));
+        }
+        let mut spans = vec![
+            Span::raw(indent.to_owned()),
+            Span::styled("│ ", Style::default().fg(SURFACE_GRAY)),
+        ];
+        spans.extend(detail_spans);
+        spans.push(Span::styled(" │", Style::default().fg(SURFACE_GRAY)));
+        lines.push(Line::from(spans));
+    }
+    lines
+}
+
+fn startup_panel_visible_option_range(options: &[StartupPanelOption]) -> (usize, usize) {
+    const MAX_VISIBLE_OPTIONS: usize = 10;
+
+    if options.len() <= MAX_VISIBLE_OPTIONS {
+        return (0, options.len());
+    }
+
+    let selected_index = options
+        .iter()
+        .position(|option| option.selected)
+        .unwrap_or(0);
+    let mut start = selected_index.saturating_sub(MAX_VISIBLE_OPTIONS / 2);
+    let mut end = start + MAX_VISIBLE_OPTIONS;
+    if end > options.len() {
+        end = options.len();
+        start = end.saturating_sub(MAX_VISIBLE_OPTIONS);
+    }
+    (start, end)
+}
+
+fn compact_startup_panel_option_detail(detail: &str, width: usize) -> Option<String> {
+    let normalized = detail.split_whitespace().collect::<Vec<_>>().join(" ");
+    let trimmed = normalized.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(truncate_right_display(trimmed, width))
+}
+
+fn truncate_right_display(text: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    if crate::presentation::display_width(text) <= width {
+        return text.to_owned();
+    }
+    if width == 1 {
+        return "…".to_owned();
+    }
+
+    let mut result = String::new();
+    let mut current_width = 0usize;
+    let target = width.saturating_sub(1);
+    for ch in text.chars() {
+        let ch_width = crate::presentation::char_display_width(ch);
+        if current_width + ch_width > target {
+            break;
+        }
+        result.push(ch);
+        current_width += ch_width;
+    }
+    result.push('…');
+    result
+}
+
+fn render_centered_logo_lines(
+    width: u16,
+    eye_animation: StartupEyeAnimation,
+    elapsed: Duration,
+) -> Vec<Line<'static>> {
     let max_logo_width = STARTUP_WORDMARK
         .iter()
         .map(|line| crate::presentation::display_width(line))
@@ -1221,7 +1720,7 @@ fn render_centered_logo_lines(width: u16, logo_frame: usize) -> Vec<Line<'static
         if max_logo_width.saturating_add(STARTUP_FULL_WORDMARK_MARGIN) <= available_full_logo_width
         {
             (
-                startup_wordmark_eye_frame(logo_frame),
+                startup_wordmark_eye_frame_for_animation(eye_animation, elapsed),
                 STARTUP_WORDMARK
                     .iter()
                     .map(|line| (*line).to_owned())
@@ -1266,17 +1765,19 @@ fn render_centered_logo_lines(width: u16, logo_frame: usize) -> Vec<Line<'static
         .collect()
 }
 
+#[cfg(test)]
 fn startup_wordmark_eye_frame(frame_index: usize) -> Vec<String> {
-    let Some(frame) = STARTUP_EYE_FRAMES
-        .get(frame_index)
-        .or_else(|| STARTUP_EYE_FRAMES.first())
-    else {
-        return STARTUP_WORDMARK
-            .iter()
-            .map(|line| (*line).to_owned())
-            .collect();
-    };
+    let elapsed = Duration::from_millis(
+        (frame_index as u64).saturating_mul(STARTUP_LOGO_EYE_FRAME_MS.max(1)),
+    );
+    startup_wordmark_eye_frame_for_animation(StartupEyeAnimation::Ambient, elapsed)
+}
 
+fn startup_wordmark_eye_frame_for_animation(
+    eye_animation: StartupEyeAnimation,
+    elapsed: Duration,
+) -> Vec<String> {
+    let (left_eye, right_eye) = startup_eye_frame_for_animation(eye_animation, elapsed);
     STARTUP_WORDMARK
         .iter()
         .enumerate()
@@ -1284,39 +1785,449 @@ fn startup_wordmark_eye_frame(frame_index: usize) -> Vec<String> {
             let Some(interior_row_index) = line_index.checked_sub(1) else {
                 return (*line).to_owned();
             };
-            let Some(pattern) = frame.get(interior_row_index) else {
+            let Some(left_pattern) = left_eye.get(interior_row_index) else {
                 return (*line).to_owned();
             };
-            apply_startup_eye_pattern(line, pattern)
+            let Some(right_pattern) = right_eye.get(interior_row_index) else {
+                return (*line).to_owned();
+            };
+            apply_startup_eye_patterns(line, left_pattern, right_pattern)
         })
         .collect()
 }
 
+#[cfg(test)]
 fn startup_logo_eye_frame_index(elapsed: Duration) -> usize {
     if reduced_motion_enabled() {
         return 0;
     }
-    if STARTUP_EYE_FRAMES.is_empty() {
+    startup_eye_step(ambient_schedule(), elapsed)
+}
+
+fn startup_eye_signature(animation: StartupEyeAnimation, elapsed: Duration) -> u64 {
+    let step = startup_eye_step(startup_eye_schedule(animation), elapsed);
+    ((startup_eye_animation_code(animation) as u64) << 8) | step as u64
+}
+
+fn startup_eye_frame_for_animation(
+    animation: StartupEyeAnimation,
+    elapsed: Duration,
+) -> StartupEyePair {
+    match animation {
+        StartupEyeAnimation::Ambient => {
+            startup_timed_choice(ambient_schedule(), elapsed, STARTUP_EYE_CENTER_PAIR)
+        }
+        StartupEyeAnimation::Focus(focus) => {
+            let focus_pair = startup_eye_focus_pair(focus);
+            let half_lid_pair = startup_eye_half_lid_pair(focus);
+            let left_neighbor = startup_eye_neighbor_pair(focus, false);
+            let right_neighbor = startup_eye_neighbor_pair(focus, true);
+            let schedule = [
+                (90, left_neighbor),
+                (380, focus_pair),
+                (90, right_neighbor),
+                (320, focus_pair),
+                (110, half_lid_pair),
+                (420, focus_pair),
+            ];
+            startup_timed_choice(&schedule, elapsed, focus_pair)
+        }
+        StartupEyeAnimation::Thinking(focus) => {
+            let focus_pair = startup_eye_focus_pair(focus);
+            let half_lid_pair = startup_eye_half_lid_pair(focus);
+            let left_neighbor = startup_eye_neighbor_pair(focus, false);
+            let right_neighbor = startup_eye_neighbor_pair(focus, true);
+            let schedule = [
+                (80, left_neighbor),
+                (130, focus_pair),
+                (70, right_neighbor),
+                (110, focus_pair),
+                (60, half_lid_pair),
+                (90, left_neighbor),
+                (150, focus_pair),
+                (70, right_neighbor),
+                (180, focus_pair),
+            ];
+            startup_timed_choice(&schedule, elapsed, focus_pair)
+        }
+        StartupEyeAnimation::Confirm(focus) => {
+            let focus_pair = startup_eye_focus_pair(focus);
+            let confirm_pair = startup_eye_confirm_pair(focus);
+            let schedule = [
+                (60, focus_pair),
+                (90, confirm_pair),
+                (60, focus_pair),
+                (90, confirm_pair),
+                (180, focus_pair),
+            ];
+            startup_timed_choice(&schedule, elapsed, focus_pair)
+        }
+        StartupEyeAnimation::Celebrate => {
+            let schedule = [
+                (80, STARTUP_EYE_CELEBRATE_PAIR_A),
+                (80, STARTUP_EYE_CELEBRATE_PAIR_B),
+                (80, startup_eye_confirm_pair(StartupEyeFocus::DownCenter)),
+                (80, STARTUP_EYE_CELEBRATE_PAIR_B),
+                (120, STARTUP_EYE_CELEBRATE_PAIR_A),
+                (180, STARTUP_EYE_CENTER_PAIR),
+            ];
+            startup_timed_choice(&schedule, elapsed, STARTUP_EYE_CENTER_PAIR)
+        }
+    }
+}
+
+fn startup_eye_schedule(animation: StartupEyeAnimation) -> &'static [StartupTimedEyePair] {
+    match animation {
+        StartupEyeAnimation::Ambient => ambient_schedule(),
+        StartupEyeAnimation::Focus(StartupEyeFocus::Center) => &FOCUS_CENTER_SCHEDULE,
+        StartupEyeAnimation::Focus(StartupEyeFocus::Left) => &FOCUS_LEFT_SCHEDULE,
+        StartupEyeAnimation::Focus(StartupEyeFocus::Right) => &FOCUS_RIGHT_SCHEDULE,
+        StartupEyeAnimation::Focus(StartupEyeFocus::Up) => &FOCUS_UP_SCHEDULE,
+        StartupEyeAnimation::Focus(StartupEyeFocus::DownCenter) => &FOCUS_DOWN_CENTER_SCHEDULE,
+        StartupEyeAnimation::Focus(StartupEyeFocus::DownLeft) => &FOCUS_DOWN_LEFT_SCHEDULE,
+        StartupEyeAnimation::Focus(StartupEyeFocus::DownRight) => &FOCUS_DOWN_RIGHT_SCHEDULE,
+        StartupEyeAnimation::Thinking(StartupEyeFocus::Center) => &THINKING_CENTER_SCHEDULE,
+        StartupEyeAnimation::Thinking(StartupEyeFocus::Left) => &THINKING_LEFT_SCHEDULE,
+        StartupEyeAnimation::Thinking(StartupEyeFocus::Right) => &THINKING_RIGHT_SCHEDULE,
+        StartupEyeAnimation::Thinking(StartupEyeFocus::Up) => &THINKING_UP_SCHEDULE,
+        StartupEyeAnimation::Thinking(StartupEyeFocus::DownCenter) => {
+            &THINKING_DOWN_CENTER_SCHEDULE
+        }
+        StartupEyeAnimation::Thinking(StartupEyeFocus::DownLeft) => &THINKING_DOWN_LEFT_SCHEDULE,
+        StartupEyeAnimation::Thinking(StartupEyeFocus::DownRight) => &THINKING_DOWN_RIGHT_SCHEDULE,
+        StartupEyeAnimation::Confirm(StartupEyeFocus::Center) => &CONFIRM_CENTER_SCHEDULE,
+        StartupEyeAnimation::Confirm(StartupEyeFocus::Left) => &CONFIRM_LEFT_SCHEDULE,
+        StartupEyeAnimation::Confirm(StartupEyeFocus::Right) => &CONFIRM_RIGHT_SCHEDULE,
+        StartupEyeAnimation::Confirm(StartupEyeFocus::Up) => &CONFIRM_UP_SCHEDULE,
+        StartupEyeAnimation::Confirm(StartupEyeFocus::DownCenter) => &CONFIRM_DOWN_CENTER_SCHEDULE,
+        StartupEyeAnimation::Confirm(StartupEyeFocus::DownLeft) => &CONFIRM_DOWN_LEFT_SCHEDULE,
+        StartupEyeAnimation::Confirm(StartupEyeFocus::DownRight) => &CONFIRM_DOWN_RIGHT_SCHEDULE,
+        StartupEyeAnimation::Celebrate => &CELEBRATE_SCHEDULE,
+    }
+}
+
+type StartupTimedEyePair = (u64, StartupEyePair);
+
+const STARTUP_EYE_CENTER_PAIR: StartupEyePair = (STARTUP_EYE_CENTER, STARTUP_EYE_CENTER);
+const STARTUP_EYE_CELEBRATE_PAIR_A: StartupEyePair =
+    (STARTUP_EYE_CELEBRATE_A, STARTUP_EYE_CELEBRATE_B);
+const STARTUP_EYE_CELEBRATE_PAIR_B: StartupEyePair =
+    (STARTUP_EYE_CELEBRATE_B, STARTUP_EYE_CELEBRATE_A);
+
+const AMBIENT_SCHEDULE: [StartupTimedEyePair; 10] = [
+    (300, STARTUP_EYE_CENTER_PAIR),
+    (
+        90,
+        (STARTUP_EYE_HALF_LID_CENTER, STARTUP_EYE_HALF_LID_CENTER),
+    ),
+    (260, STARTUP_EYE_CENTER_PAIR),
+    (110, (STARTUP_EYE_LEFT, STARTUP_EYE_RIGHT)),
+    (180, STARTUP_EYE_CENTER_PAIR),
+    (90, (STARTUP_EYE_RIGHT, STARTUP_EYE_LEFT)),
+    (220, STARTUP_EYE_CENTER_PAIR),
+    (120, (STARTUP_EYE_DOWN_RIGHT, STARTUP_EYE_DOWN_LEFT)),
+    (
+        90,
+        (
+            STARTUP_EYE_HALF_LID_DOWN_CENTER,
+            STARTUP_EYE_HALF_LID_DOWN_CENTER,
+        ),
+    ),
+    (260, STARTUP_EYE_CENTER_PAIR),
+];
+
+const FOCUS_CENTER_SCHEDULE: [StartupTimedEyePair; 6] = focus_schedule(StartupEyeFocus::Center);
+const FOCUS_LEFT_SCHEDULE: [StartupTimedEyePair; 6] = focus_schedule(StartupEyeFocus::Left);
+const FOCUS_RIGHT_SCHEDULE: [StartupTimedEyePair; 6] = focus_schedule(StartupEyeFocus::Right);
+const FOCUS_UP_SCHEDULE: [StartupTimedEyePair; 6] = focus_schedule(StartupEyeFocus::Up);
+const FOCUS_DOWN_CENTER_SCHEDULE: [StartupTimedEyePair; 6] =
+    focus_schedule(StartupEyeFocus::DownCenter);
+const FOCUS_DOWN_LEFT_SCHEDULE: [StartupTimedEyePair; 6] =
+    focus_schedule(StartupEyeFocus::DownLeft);
+const FOCUS_DOWN_RIGHT_SCHEDULE: [StartupTimedEyePair; 6] =
+    focus_schedule(StartupEyeFocus::DownRight);
+
+const THINKING_CENTER_SCHEDULE: [StartupTimedEyePair; 9] =
+    thinking_schedule(StartupEyeFocus::Center);
+const THINKING_LEFT_SCHEDULE: [StartupTimedEyePair; 9] = thinking_schedule(StartupEyeFocus::Left);
+const THINKING_RIGHT_SCHEDULE: [StartupTimedEyePair; 9] = thinking_schedule(StartupEyeFocus::Right);
+const THINKING_UP_SCHEDULE: [StartupTimedEyePair; 9] = thinking_schedule(StartupEyeFocus::Up);
+const THINKING_DOWN_CENTER_SCHEDULE: [StartupTimedEyePair; 9] =
+    thinking_schedule(StartupEyeFocus::DownCenter);
+const THINKING_DOWN_LEFT_SCHEDULE: [StartupTimedEyePair; 9] =
+    thinking_schedule(StartupEyeFocus::DownLeft);
+const THINKING_DOWN_RIGHT_SCHEDULE: [StartupTimedEyePair; 9] =
+    thinking_schedule(StartupEyeFocus::DownRight);
+
+const CONFIRM_CENTER_SCHEDULE: [StartupTimedEyePair; 5] = confirm_schedule(StartupEyeFocus::Center);
+const CONFIRM_LEFT_SCHEDULE: [StartupTimedEyePair; 5] = confirm_schedule(StartupEyeFocus::Left);
+const CONFIRM_RIGHT_SCHEDULE: [StartupTimedEyePair; 5] = confirm_schedule(StartupEyeFocus::Right);
+const CONFIRM_UP_SCHEDULE: [StartupTimedEyePair; 5] = confirm_schedule(StartupEyeFocus::Up);
+const CONFIRM_DOWN_CENTER_SCHEDULE: [StartupTimedEyePair; 5] =
+    confirm_schedule(StartupEyeFocus::DownCenter);
+const CONFIRM_DOWN_LEFT_SCHEDULE: [StartupTimedEyePair; 5] =
+    confirm_schedule(StartupEyeFocus::DownLeft);
+const CONFIRM_DOWN_RIGHT_SCHEDULE: [StartupTimedEyePair; 5] =
+    confirm_schedule(StartupEyeFocus::DownRight);
+
+const CELEBRATE_SCHEDULE: [StartupTimedEyePair; 6] = [
+    (80, STARTUP_EYE_CELEBRATE_PAIR_A),
+    (80, STARTUP_EYE_CELEBRATE_PAIR_B),
+    (
+        80,
+        (
+            STARTUP_EYE_CONFIRM_DOWN_LEFT,
+            STARTUP_EYE_CONFIRM_DOWN_RIGHT,
+        ),
+    ),
+    (
+        80,
+        (
+            STARTUP_EYE_CONFIRM_DOWN_RIGHT,
+            STARTUP_EYE_CONFIRM_DOWN_LEFT,
+        ),
+    ),
+    (120, STARTUP_EYE_CELEBRATE_PAIR_A),
+    (180, STARTUP_EYE_CENTER_PAIR),
+];
+
+const fn ambient_schedule() -> &'static [StartupTimedEyePair] {
+    &AMBIENT_SCHEDULE
+}
+
+const fn focus_schedule(focus: StartupEyeFocus) -> [StartupTimedEyePair; 6] {
+    let focus_pair = startup_eye_focus_pair(focus);
+    let half_lid_pair = startup_eye_half_lid_pair(focus);
+    let left_neighbor = startup_eye_neighbor_pair(focus, false);
+    let right_neighbor = startup_eye_neighbor_pair(focus, true);
+    [
+        (90, left_neighbor),
+        (380, focus_pair),
+        (90, right_neighbor),
+        (320, focus_pair),
+        (110, half_lid_pair),
+        (420, focus_pair),
+    ]
+}
+
+const fn thinking_schedule(focus: StartupEyeFocus) -> [StartupTimedEyePair; 9] {
+    let focus_pair = startup_eye_focus_pair(focus);
+    let half_lid_pair = startup_eye_half_lid_pair(focus);
+    let left_neighbor = startup_eye_neighbor_pair(focus, false);
+    let right_neighbor = startup_eye_neighbor_pair(focus, true);
+    [
+        (80, left_neighbor),
+        (130, focus_pair),
+        (70, right_neighbor),
+        (110, focus_pair),
+        (60, half_lid_pair),
+        (90, left_neighbor),
+        (150, focus_pair),
+        (70, right_neighbor),
+        (180, focus_pair),
+    ]
+}
+
+const fn confirm_schedule(focus: StartupEyeFocus) -> [StartupTimedEyePair; 5] {
+    let focus_pair = startup_eye_focus_pair(focus);
+    let confirm_pair = startup_eye_confirm_pair(focus);
+    [
+        (60, focus_pair),
+        (90, confirm_pair),
+        (60, focus_pair),
+        (90, confirm_pair),
+        (180, focus_pair),
+    ]
+}
+
+fn startup_eye_step(schedule: &[StartupTimedEyePair], elapsed: Duration) -> usize {
+    if schedule.is_empty() {
         return 0;
     }
 
-    let sequence_step = elapsed.as_millis() as u64 / STARTUP_LOGO_EYE_FRAME_MS.max(1);
-    sequence_step as usize % STARTUP_EYE_FRAMES.len()
+    let cycle_duration = schedule
+        .iter()
+        .map(|(duration, _)| *duration)
+        .sum::<u64>()
+        .max(1);
+    let mut offset = elapsed.as_millis() as u64 % cycle_duration;
+    for (index, (duration, _)) in schedule.iter().enumerate() {
+        if offset < *duration {
+            return index;
+        }
+        offset = offset.saturating_sub(*duration);
+    }
+
+    schedule.len().saturating_sub(1)
 }
 
-fn apply_startup_eye_pattern(line: &str, pattern: &str) -> String {
+fn startup_timed_choice<T: Copy>(schedule: &[(u64, T)], elapsed: Duration, fallback: T) -> T {
+    if schedule.is_empty() {
+        return fallback;
+    }
+
+    let cycle_duration = schedule
+        .iter()
+        .map(|(duration, _)| *duration)
+        .sum::<u64>()
+        .max(1);
+    let mut offset = elapsed.as_millis() as u64 % cycle_duration;
+    for (duration, value) in schedule.iter().copied() {
+        if offset < duration {
+            return value;
+        }
+        offset = offset.saturating_sub(duration);
+    }
+
+    fallback
+}
+
+const fn startup_eye_focus_pair(focus: StartupEyeFocus) -> StartupEyePair {
+    match focus {
+        StartupEyeFocus::Center => (STARTUP_EYE_CENTER, STARTUP_EYE_CENTER),
+        StartupEyeFocus::Left => (STARTUP_EYE_LEFT, STARTUP_EYE_LEFT),
+        StartupEyeFocus::Right => (STARTUP_EYE_RIGHT, STARTUP_EYE_RIGHT),
+        StartupEyeFocus::Up => (STARTUP_EYE_UP, STARTUP_EYE_UP),
+        StartupEyeFocus::DownCenter => (STARTUP_EYE_DOWN_RIGHT, STARTUP_EYE_DOWN_LEFT),
+        StartupEyeFocus::DownLeft => (STARTUP_EYE_DOWN_LEFT, STARTUP_EYE_DOWN_CENTER),
+        StartupEyeFocus::DownRight => (STARTUP_EYE_DOWN_CENTER, STARTUP_EYE_DOWN_RIGHT),
+    }
+}
+
+const fn startup_eye_half_lid_pair(focus: StartupEyeFocus) -> StartupEyePair {
+    match focus {
+        StartupEyeFocus::Center => (STARTUP_EYE_HALF_LID_CENTER, STARTUP_EYE_HALF_LID_CENTER),
+        StartupEyeFocus::Left => (STARTUP_EYE_HALF_LID_LEFT, STARTUP_EYE_HALF_LID_LEFT),
+        StartupEyeFocus::Right => (STARTUP_EYE_HALF_LID_RIGHT, STARTUP_EYE_HALF_LID_RIGHT),
+        StartupEyeFocus::Up => (STARTUP_EYE_HALF_LID_CENTER, STARTUP_EYE_HALF_LID_CENTER),
+        StartupEyeFocus::DownCenter => (
+            STARTUP_EYE_HALF_LID_DOWN_RIGHT,
+            STARTUP_EYE_HALF_LID_DOWN_LEFT,
+        ),
+        StartupEyeFocus::DownLeft => (
+            STARTUP_EYE_HALF_LID_DOWN_LEFT,
+            STARTUP_EYE_HALF_LID_DOWN_CENTER,
+        ),
+        StartupEyeFocus::DownRight => (
+            STARTUP_EYE_HALF_LID_DOWN_CENTER,
+            STARTUP_EYE_HALF_LID_DOWN_RIGHT,
+        ),
+    }
+}
+
+const fn startup_eye_confirm_pair(focus: StartupEyeFocus) -> StartupEyePair {
+    match focus {
+        StartupEyeFocus::Center => (STARTUP_EYE_CONFIRM_CENTER, STARTUP_EYE_CONFIRM_CENTER),
+        StartupEyeFocus::Left => (STARTUP_EYE_CONFIRM_LEFT, STARTUP_EYE_CONFIRM_LEFT),
+        StartupEyeFocus::Right => (STARTUP_EYE_CONFIRM_RIGHT, STARTUP_EYE_CONFIRM_RIGHT),
+        StartupEyeFocus::Up => (STARTUP_EYE_CONFIRM_CENTER, STARTUP_EYE_CONFIRM_CENTER),
+        StartupEyeFocus::DownCenter => (
+            STARTUP_EYE_CONFIRM_DOWN_RIGHT,
+            STARTUP_EYE_CONFIRM_DOWN_LEFT,
+        ),
+        StartupEyeFocus::DownLeft => (
+            STARTUP_EYE_CONFIRM_DOWN_LEFT,
+            STARTUP_EYE_CONFIRM_DOWN_CENTER,
+        ),
+        StartupEyeFocus::DownRight => (
+            STARTUP_EYE_CONFIRM_DOWN_CENTER,
+            STARTUP_EYE_CONFIRM_DOWN_RIGHT,
+        ),
+    }
+}
+
+const fn startup_eye_neighbor_pair(
+    focus: StartupEyeFocus,
+    toward_positive: bool,
+) -> StartupEyePair {
+    match focus {
+        StartupEyeFocus::Center => {
+            if toward_positive {
+                startup_eye_focus_pair(StartupEyeFocus::Right)
+            } else {
+                startup_eye_focus_pair(StartupEyeFocus::Left)
+            }
+        }
+        StartupEyeFocus::Left => {
+            if toward_positive {
+                startup_eye_focus_pair(StartupEyeFocus::Center)
+            } else {
+                startup_eye_focus_pair(StartupEyeFocus::DownLeft)
+            }
+        }
+        StartupEyeFocus::Right => {
+            if toward_positive {
+                startup_eye_focus_pair(StartupEyeFocus::DownRight)
+            } else {
+                startup_eye_focus_pair(StartupEyeFocus::Center)
+            }
+        }
+        StartupEyeFocus::Up => startup_eye_focus_pair(StartupEyeFocus::Center),
+        StartupEyeFocus::DownCenter => {
+            if toward_positive {
+                startup_eye_focus_pair(StartupEyeFocus::DownRight)
+            } else {
+                startup_eye_focus_pair(StartupEyeFocus::DownLeft)
+            }
+        }
+        StartupEyeFocus::DownLeft => {
+            if toward_positive {
+                startup_eye_focus_pair(StartupEyeFocus::DownCenter)
+            } else {
+                startup_eye_focus_pair(StartupEyeFocus::Left)
+            }
+        }
+        StartupEyeFocus::DownRight => {
+            if toward_positive {
+                startup_eye_focus_pair(StartupEyeFocus::Right)
+            } else {
+                startup_eye_focus_pair(StartupEyeFocus::DownCenter)
+            }
+        }
+    }
+}
+
+const fn startup_eye_animation_code(animation: StartupEyeAnimation) -> u8 {
+    match animation {
+        StartupEyeAnimation::Ambient => 0,
+        StartupEyeAnimation::Focus(focus) => 10 + startup_eye_focus_code(focus),
+        StartupEyeAnimation::Thinking(focus) => 30 + startup_eye_focus_code(focus),
+        StartupEyeAnimation::Confirm(focus) => 50 + startup_eye_focus_code(focus),
+        StartupEyeAnimation::Celebrate => 70,
+    }
+}
+
+const fn startup_eye_focus_code(focus: StartupEyeFocus) -> u8 {
+    match focus {
+        StartupEyeFocus::Center => 0,
+        StartupEyeFocus::Left => 1,
+        StartupEyeFocus::Right => 2,
+        StartupEyeFocus::Up => 3,
+        StartupEyeFocus::DownCenter => 4,
+        StartupEyeFocus::DownLeft => 5,
+        StartupEyeFocus::DownRight => 6,
+    }
+}
+
+fn apply_startup_eye_patterns(line: &str, left_pattern: &str, right_pattern: &str) -> String {
     debug_assert_eq!(
-        pattern.chars().count(),
+        left_pattern.chars().count(),
+        STARTUP_EYE_INTERIOR_WIDTH,
+        "startup eye pattern width must remain fixed"
+    );
+    debug_assert_eq!(
+        right_pattern.chars().count(),
         STARTUP_EYE_INTERIOR_WIDTH,
         "startup eye pattern width must remain fixed"
     );
 
     let mut characters = line.chars().collect::<Vec<_>>();
     let cavity = STARTUP_EYE_CAVITY.chars().collect::<Vec<_>>();
-    let pattern = pattern.chars().collect::<Vec<_>>();
+    let left_pattern = left_pattern.chars().collect::<Vec<_>>();
+    let right_pattern = right_pattern.chars().collect::<Vec<_>>();
     let mut search_from = 0;
 
-    for _ in 0..2 {
+    for pattern in [left_pattern, right_pattern] {
         let Some(cavity_start) = find_startup_eye_cavity(&characters, &cavity, search_from) else {
             break;
         };
@@ -1446,10 +2357,27 @@ fn render_startup_tip_lines(tip_state: &StartupTipRenderState, width: u16) -> Ve
                 Line::from(vec![
                     Span::raw(indent.to_owned()),
                     Span::styled("• ", Style::default().fg(tip_state.bullet_color)),
-                    Span::styled(rest.to_owned(), text_style),
+                    {
+                        let spans = render_inline_token_spans(rest, text_style);
+                        if spans.is_empty() {
+                            Span::styled(String::new(), text_style)
+                        } else {
+                            return Line::from(
+                                std::iter::once(Span::raw(indent.to_owned()))
+                                    .chain(std::iter::once(Span::styled(
+                                        "• ",
+                                        Style::default().fg(tip_state.bullet_color),
+                                    )))
+                                    .chain(spans.into_iter())
+                                    .collect::<Vec<_>>(),
+                            );
+                        }
+                    },
                 ])
             } else {
-                Line::from(vec![Span::styled(centered, text_style)])
+                let mut spans = vec![Span::raw(indent.to_owned())];
+                spans.extend(render_inline_token_spans(body, text_style));
+                Line::from(spans)
             }
         })
         .collect()
@@ -1466,10 +2394,9 @@ fn startup_tip_render_state(tips: &[String], elapsed: Duration) -> Option<Startu
     let (_, intensity_step) = startup_tip_cycle_state(tip_count, elapsed)?;
     let max_step = STARTUP_TIP_INTENSITY_STEPS.max(1);
     let tip_text = format!("• {}", tips.get(tip_index)?);
-    let text_color =
-        interpolate_rgb_color(SURFACE_DIM_GRAY, Color::White, intensity_step, max_step);
+    let text_color = interpolate_rgb_color(SURFACE_GRAY, Color::White, intensity_step, max_step);
     let bullet_color =
-        interpolate_rgb_color(SURFACE_GRAY, SURFACE_ACCENT, intensity_step, max_step);
+        interpolate_rgb_color(SURFACE_ACCENT, Color::White, intensity_step, max_step);
 
     Some(StartupTipRenderState {
         text: tip_text,
@@ -1643,7 +2570,7 @@ fn wrap_assistant_markdown_lines(lines: Vec<Line<'static>>, width: u16) -> Vec<L
             continue;
         }
 
-        if let Some(split_bullets) = split_inline_bullet_runs(&plain) {
+        if let Some(split_bullets) = split_inline_list_runs(&plain) {
             flush_paragraph(&mut rendered, &mut paragraph_buffer, content_width);
             for bullet_line in split_bullets {
                 rendered.extend(render_assistant_plain_line(
@@ -1725,9 +2652,17 @@ fn render_assistant_plain_line(
     content_width: usize,
     style: Style,
 ) -> Vec<Line<'static>> {
+    if let Some(lines) = render_assistant_key_value_line(line, content_width) {
+        return lines;
+    }
+
     crate::presentation::render_wrapped_display_line(line, content_width)
         .into_iter()
-        .map(|wrapped| Line::from(vec![Span::raw("  "), Span::styled(wrapped, style)]))
+        .map(|wrapped| {
+            let mut spans = vec![Span::raw("  ")];
+            spans.extend(render_inline_token_spans(wrapped.as_str(), style));
+            Line::from(spans)
+        })
         .collect()
 }
 
@@ -1753,21 +2688,51 @@ fn render_assistant_code_line(line: &str, content_width: usize) -> Vec<Line<'sta
         .collect()
 }
 
-fn split_inline_bullet_runs(line: &str) -> Option<Vec<String>> {
-    let trimmed = line.trim();
-    if trimmed.matches("• ").count() < 2 {
-        return None;
-    }
+fn render_assistant_key_value_line(line: &str, content_width: usize) -> Option<Vec<Line<'static>>> {
+    let trimmed = line.trim_start();
+    let body = trimmed.strip_prefix("- ")?;
+    let (key, value) = body.split_once(": ")?;
+    let key = key.trim();
+    let value = value.trim();
+    let prefix = format!("  - {key}: ");
+    let prefix_width = crate::presentation::display_width(prefix.as_str());
+    let value_width = content_width
+        .saturating_sub(prefix_width.saturating_sub(2))
+        .max(1);
+    let wrapped = crate::presentation::render_wrapped_display_line(value, value_width);
 
-    let items = trimmed
-        .split("• ")
-        .filter_map(|segment| {
-            let segment = segment.trim();
-            (!segment.is_empty()).then(|| format!("• {segment}"))
-        })
-        .collect::<Vec<_>>();
-
-    (items.len() >= 2).then_some(items)
+    Some(
+        wrapped
+            .into_iter()
+            .enumerate()
+            .map(|(index, wrapped_line)| {
+                if index == 0 {
+                    let mut spans = vec![
+                        Span::raw("  "),
+                        Span::styled("- ", Style::default().fg(SURFACE_DIM_GRAY)),
+                        Span::styled(
+                            format!("{key}: "),
+                            Style::default()
+                                .fg(SURFACE_ACCENT)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                    ];
+                    spans.extend(render_inline_token_spans(
+                        wrapped_line.as_str(),
+                        Style::default().fg(Color::White),
+                    ));
+                    Line::from(spans)
+                } else {
+                    let mut spans = vec![Span::raw(" ".repeat(prefix_width))];
+                    spans.extend(render_inline_token_spans(
+                        wrapped_line.as_str(),
+                        Style::default().fg(Color::White),
+                    ));
+                    Line::from(spans)
+                }
+            })
+            .collect(),
+    )
 }
 
 fn normalize_blank_lines(mut lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
@@ -1848,7 +2813,21 @@ fn is_reflowable_assistant_line(line: &str) -> bool {
         && !trimmed.starts_with("- ")
         && !trimmed.starts_with("* ")
         && !trimmed.starts_with("• ")
+        && !starts_with_ordered_list_marker(trimmed)
         && !trimmed.starts_with("[image]")
+}
+
+fn starts_with_ordered_list_marker(text: &str) -> bool {
+    let mut chars = text.chars().peekable();
+    let mut saw_digit = false;
+    while chars.peek().is_some_and(|ch| ch.is_ascii_digit()) {
+        saw_digit = true;
+        let _ = chars.next();
+    }
+    if !saw_digit {
+        return false;
+    }
+    matches!(chars.next(), Some('.' | ')')) && matches!(chars.next(), Some(' '))
 }
 
 fn paragraph_joiner(current: &str, next: &str) -> &'static str {
@@ -2558,6 +3537,7 @@ struct InspectToolPreview {
     kind: &'static str,
     tool_name: String,
     primary: String,
+    secondary: Option<String>,
     status: ToolStatus,
     stdout: ToolStreamPreview,
     stderr: ToolStreamPreview,
@@ -2576,7 +3556,7 @@ fn read_tool_preview_from_lines(lines: &[String]) -> Option<ReadToolPreview> {
         .iter()
         .filter_map(|line| activity_tool_name(line))
         .find(|name| is_read_activity_tool_name(name))
-        .map(normalized_activity_tool_name);
+        .map(normalized_tool_name);
     let has_read_tool = read_tool_name.is_some();
     let summary = lines
         .iter()
@@ -2631,8 +3611,8 @@ fn run_tool_preview_from_lines(lines: &[String], status: ToolStatus) -> Option<R
         .iter()
         .filter_map(|line| activity_tool_name(line))
         .find_map(|name| {
-            let normalized = normalized_activity_tool_name(name);
-            is_run_activity_tool_name(normalized.as_str()).then_some(normalized)
+            let normalized = normalized_tool_name(name);
+            is_run_tool_name(normalized.as_str()).then_some(normalized)
         })?;
     let command = lines.iter().find_map(|line| extract_tool_command(line))?;
     let stdout = extract_tool_stream_tail_preview(lines, "stdout");
@@ -2655,25 +3635,39 @@ fn inspect_tool_preview_from_lines(
     lines: &[String],
     status: ToolStatus,
 ) -> Option<InspectToolPreview> {
-    let tool_name = lines
+    let mut activity_names = lines
         .iter()
         .filter_map(|line| activity_tool_name(line))
-        .find(|name| {
-            is_search_activity_tool_name(name)
-                || is_list_activity_tool_name(name)
-                || is_glob_activity_tool_name(name)
-        })
-        .map(|name| {
-            name.trim_matches(|ch: char| ch == '`' || ch == '"' || ch == '\'')
-                .to_owned()
-        })?;
+        .map(normalized_tool_name);
+    let tool_name = activity_names.next()?;
+    if activity_names.any(|name| name != tool_name) {
+        return None;
+    }
+    if !(is_search_tool_name(tool_name.as_str())
+        || is_list_tool_name(tool_name.as_str())
+        || is_glob_tool_name(tool_name.as_str()))
+    {
+        return None;
+    }
 
-    let (kind, primary) = if is_search_activity_tool_name(tool_name.as_str()) {
-        ("search", extract_search_tool_summary(lines)?)
-    } else if is_list_activity_tool_name(tool_name.as_str()) {
-        ("list", extract_list_tool_summary(lines)?)
-    } else if is_glob_activity_tool_name(tool_name.as_str()) {
-        ("glob", extract_glob_tool_summary(lines)?)
+    let (kind, primary, secondary) = if is_search_tool_name(tool_name.as_str()) {
+        (
+            "search",
+            extract_search_tool_summary(lines)?,
+            extract_search_tool_secondary(lines),
+        )
+    } else if is_list_tool_name(tool_name.as_str()) {
+        (
+            "list",
+            extract_list_tool_summary(lines)?,
+            extract_list_tool_secondary(lines),
+        )
+    } else if is_glob_tool_name(tool_name.as_str()) {
+        (
+            "glob",
+            extract_glob_tool_summary(lines)?,
+            extract_glob_tool_secondary(lines),
+        )
     } else {
         return None;
     };
@@ -2688,6 +3682,7 @@ fn inspect_tool_preview_from_lines(
         kind,
         tool_name,
         primary,
+        secondary,
         status,
         stdout,
         stderr,
@@ -2695,43 +3690,10 @@ fn inspect_tool_preview_from_lines(
     })
 }
 
-fn normalized_activity_tool_name(name: &str) -> String {
-    name.trim_matches(|ch: char| ch == '`' || ch == '"' || ch == '\'')
-        .rsplit(['.', '/', ':'])
-        .next()
-        .unwrap_or(name)
-        .to_owned()
-}
-
-fn is_run_activity_tool_name(name: &str) -> bool {
-    matches!(
-        name,
-        "bash" | "shell" | "sh" | "exec_command" | "run_command" | "terminal" | "cmd"
-    )
-}
-
-fn is_search_activity_tool_name(name: &str) -> bool {
-    matches!(
-        name,
-        "search" | "grep" | "ripgrep" | "rg" | "find" | "find_text"
-    )
-}
-
-fn is_list_activity_tool_name(name: &str) -> bool {
-    matches!(
-        name,
-        "list" | "ls" | "list_directory" | "list_dir" | "read_dir" | "dir"
-    )
-}
-
-fn is_glob_activity_tool_name(name: &str) -> bool {
-    matches!(name, "glob" | "find_files" | "find_file" | "walk")
-}
-
 fn extract_tool_command(line: &str) -> Option<String> {
     extract_tool_command_from_json(line)
-        .or_else(|| extract_tool_key_value(line, "cmd"))
-        .or_else(|| extract_tool_key_value(line, "command"))
+        .or_else(|| line_key_value(line, "cmd"))
+        .or_else(|| line_key_value(line, "command"))
         .map(|command| command.trim().to_owned())
         .filter(|command| !command.is_empty())
 }
@@ -2739,95 +3701,98 @@ fn extract_tool_command(line: &str) -> Option<String> {
 fn extract_tool_string_value(line: &str, keys: &[&str]) -> Option<String> {
     extract_tool_string_value_from_json(line, keys).or_else(|| {
         keys.iter()
-            .find_map(|key| extract_tool_key_value(line, key))
+            .find_map(|key| line_key_value(line, key))
             .map(|value| value.trim().to_owned())
             .filter(|value| !value.is_empty())
     })
 }
 
 fn extract_tool_string_value_from_json(line: &str, keys: &[&str]) -> Option<String> {
-    let start = line.find('{')?;
-    let end = line.rfind('}')?;
-    if end <= start {
-        return None;
-    }
-    let value = serde_json::from_str::<Value>(&line[start..=end]).ok()?;
-    first_string_field_recursive(&value, keys, 0)
+    embedded_json_string_field(line, keys)
 }
 
 fn extract_search_tool_summary(lines: &[String]) -> Option<String> {
-    let query = lines.iter().find_map(|line| {
-        extract_tool_string_value(line, &["query", "pattern", "needle", "text"])
-    })?;
+    let query = lines
+        .iter()
+        .find_map(|line| extract_tool_string_value(line, REQUEST_TEXT_KEYS))?;
     let query = truncate_middle_display(query.as_str(), 48);
     let path = lines
         .iter()
         .find_map(|line| extract_tool_path(line))
         .map(|path| shorten_display_path(path.as_str()));
 
-    Some(if let Some(path) = path {
-        format!("\"{query}\" in {path}")
-    } else {
-        format!("\"{query}\"")
-    })
+    Some(format_search_summary(
+        query.as_str(),
+        path.as_deref(),
+        extract_tool_numeric_value(lines, "limit"),
+    ))
 }
 
 fn extract_list_tool_summary(lines: &[String]) -> Option<String> {
-    lines
+    let path = lines
         .iter()
         .find_map(|line| extract_tool_path(line))
-        .map(|path| shorten_display_path(path.as_str()))
+        .map(|path| shorten_display_path(path.as_str()))?;
+    Some(format_list_summary(
+        path.as_str(),
+        extract_tool_numeric_value(lines, "limit"),
+    ))
 }
 
 fn extract_glob_tool_summary(lines: &[String]) -> Option<String> {
-    let pattern = lines.iter().find_map(|line| {
-        extract_tool_string_value(line, &["glob", "pattern", "query", "pathspec"])
-    })?;
+    let pattern = lines
+        .iter()
+        .find_map(|line| extract_tool_string_value(line, REQUEST_GLOB_KEYS))?;
     let pattern = truncate_middle_display(pattern.as_str(), 48);
     let path = lines
         .iter()
         .find_map(|line| extract_tool_path(line))
         .map(|path| shorten_display_path(path.as_str()));
 
-    Some(if let Some(path) = path {
-        format!("{pattern} in {path}")
-    } else {
-        pattern
-    })
+    Some(format_glob_summary(
+        pattern.as_str(),
+        path.as_deref(),
+        extract_tool_numeric_value(lines, "limit"),
+    ))
+}
+
+fn extract_search_tool_secondary(lines: &[String]) -> Option<String> {
+    extract_tool_string_value_from_lines(lines, REQUEST_SCOPE_KEYS)
+        .map(|scope| format!("scope {scope}"))
+}
+
+fn extract_list_tool_secondary(lines: &[String]) -> Option<String> {
+    extract_inspect_tool_secondary(lines)
+}
+
+fn extract_glob_tool_secondary(lines: &[String]) -> Option<String> {
+    extract_inspect_tool_secondary(lines)
+}
+
+fn extract_inspect_tool_secondary(lines: &[String]) -> Option<String> {
+    format_inspect_secondary_details(
+        extract_tool_numeric_value(lines, "depth"),
+        extract_tool_bool_value(lines, REQUEST_HIDDEN_KEYS),
+    )
 }
 
 fn extract_tool_command_from_json(line: &str) -> Option<String> {
-    let start = line.find('{')?;
-    let end = line.rfind('}')?;
-    if end <= start {
-        return None;
-    }
-    let value = serde_json::from_str::<Value>(&line[start..=end]).ok()?;
-    first_string_field_recursive(&value, &["cmd", "command", "script"], 0)
+    embedded_json_string_field(line, REQUEST_COMMAND_KEYS)
 }
 
-fn first_string_field_recursive(value: &Value, keys: &[&str], depth: usize) -> Option<String> {
-    if depth > 3 {
-        return None;
-    }
-    match value {
-        Value::Object(object) => {
-            for key in keys {
-                if let Some(text) = object.get(*key).and_then(Value::as_str)
-                    && !text.trim().is_empty()
-                {
-                    return Some(text.trim().to_owned());
-                }
-            }
-            object
-                .values()
-                .find_map(|value| first_string_field_recursive(value, keys, depth + 1))
-        }
-        Value::Array(items) => items
-            .iter()
-            .find_map(|value| first_string_field_recursive(value, keys, depth + 1)),
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => None,
-    }
+fn extract_tool_string_value_from_lines(lines: &[String], keys: &[&str]) -> Option<String> {
+    let texts = tool_request_candidate_texts(lines);
+    request_string_from_texts(texts.as_slice(), keys)
+}
+
+fn extract_tool_numeric_value(lines: &[String], key: &str) -> Option<u64> {
+    let texts = tool_request_candidate_texts(lines);
+    request_numeric_from_texts(texts.as_slice(), key)
+}
+
+fn extract_tool_bool_value(lines: &[String], keys: &[&str]) -> Option<bool> {
+    let texts = tool_request_candidate_texts(lines);
+    request_bool_from_texts(texts.as_slice(), keys)
 }
 
 fn extract_tool_stream_preview(lines: &[String], label: &str) -> ToolStreamPreview {
@@ -2922,11 +3887,7 @@ fn activity_tool_name(line: &str) -> Option<&str> {
 }
 
 fn is_read_activity_tool_name(name: &str) -> bool {
-    let normalized = normalized_activity_tool_name(name);
-    matches!(
-        normalized.as_str(),
-        "read" | "read_file" | "read-file" | "readfile" | "open_file" | "open-file" | "cat"
-    )
+    is_read_tool_name(normalized_tool_name(name).as_str())
 }
 
 fn extract_read_tool_request(line: &str) -> Option<ReadToolRequest> {
@@ -2934,13 +3895,8 @@ fn extract_read_tool_request(line: &str) -> Option<ReadToolRequest> {
 }
 
 fn extract_read_tool_request_from_json(line: &str) -> Option<ReadToolRequest> {
-    let start = line.find('{')?;
-    let end = line.rfind('}')?;
-    if end <= start {
-        return None;
-    }
-    let value = serde_json::from_str::<Value>(&line[start..=end]).ok()?;
-    let path = first_path_field(&value)?;
+    let path = embedded_json_path_field(line)?;
+    let value = embedded_json_value(line)?;
     Some(ReadToolRequest {
         path,
         offset: numeric_json_field(&value, "offset"),
@@ -2948,86 +3904,17 @@ fn extract_read_tool_request_from_json(line: &str) -> Option<ReadToolRequest> {
     })
 }
 
-fn numeric_json_field(value: &Value, key: &str) -> Option<u64> {
-    numeric_json_field_recursive(value, key, 0)
-}
-
-fn numeric_json_field_recursive(value: &Value, key: &str, depth: usize) -> Option<u64> {
-    if depth > 3 {
-        return None;
-    }
-    match value {
-        Value::Object(object) => object.get(key).and_then(json_value_as_u64).or_else(|| {
-            object
-                .values()
-                .find_map(|value| numeric_json_field_recursive(value, key, depth + 1))
-        }),
-        Value::Array(items) => items
-            .iter()
-            .find_map(|value| numeric_json_field_recursive(value, key, depth + 1)),
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => None,
-    }
-}
-
-fn json_value_as_u64(value: &Value) -> Option<u64> {
-    value
-        .as_u64()
-        .or_else(|| value.as_str()?.trim().parse::<u64>().ok())
-}
-
 fn extract_read_tool_request_from_text(line: &str) -> Option<ReadToolRequest> {
-    let path = extract_tool_path(line)?;
+    let path = request_path_from_texts(&[line])?;
     Some(ReadToolRequest {
         path,
-        offset: extract_tool_numeric_key_value(line, "offset"),
-        limit: extract_tool_numeric_key_value(line, "limit"),
+        offset: line_numeric_key_value(line, "offset"),
+        limit: line_numeric_key_value(line, "limit"),
     })
 }
 
-fn extract_tool_numeric_key_value(line: &str, key: &str) -> Option<u64> {
-    let marker = format!("{key}=");
-    let start = line.find(marker.as_str())? + marker.len();
-    let rest = &line[start..];
-    let end = rest
-        .find(" · ")
-        .or_else(|| rest.find(", "))
-        .or_else(|| rest.find('}'))
-        .unwrap_or(rest.len());
-    rest[..end]
-        .trim()
-        .trim_matches(',')
-        .trim_matches('"')
-        .trim_matches('\'')
-        .parse::<u64>()
-        .ok()
-}
-
 fn format_read_request_display(request: &ReadToolRequest) -> String {
-    let mut display = shorten_display_path(request.path.as_str());
-    if let Some(offset) = request.offset {
-        display.push_str(format_read_line_range(offset, request.limit).as_str());
-    }
-    display
-}
-
-fn format_read_line_range(offset: u64, limit: Option<u64>) -> String {
-    let start = offset.max(1);
-    match limit.and_then(|limit| limit.checked_sub(1)) {
-        Some(limit_tail) if limit_tail > 0 => format!(":{start}-{}", start + limit_tail),
-        _ => format!(":{start}"),
-    }
-}
-
-fn shorten_display_path(path: &str) -> String {
-    let path = path.trim();
-    if let Some(home) = std::env::var_os("HOME").and_then(|home| home.into_string().ok())
-        && !home.is_empty()
-        && let Some(rest) = path.strip_prefix(home.as_str())
-        && (rest.is_empty() || rest.starts_with('/'))
-    {
-        return format!("~{rest}");
-    }
-    path.to_owned()
+    format_read_summary(request.path.as_str(), request.offset, request.limit)
 }
 
 fn extract_read_image_summary(line: &str) -> Option<String> {
@@ -3097,81 +3984,11 @@ fn looks_like_tool_output_summary(candidate: &str) -> bool {
 }
 
 fn extract_tool_path(line: &str) -> Option<String> {
-    extract_tool_path_from_json(line)
-        .or_else(|| extract_tool_key_value(line, "path"))
-        .or_else(|| extract_tool_key_value(line, "file_path"))
-        .or_else(|| extract_tool_key_value(line, "absolute_path"))
-        .or_else(|| extract_raw_path_line(line))
+    request_path_from_texts(&[line])
 }
 
-fn extract_tool_path_from_json(line: &str) -> Option<String> {
-    let start = line.find('{')?;
-    let end = line.rfind('}')?;
-    if end <= start {
-        return None;
-    }
-    let value = serde_json::from_str::<Value>(&line[start..=end]).ok()?;
-    first_path_field(&value)
-}
-
-fn first_path_field(value: &Value) -> Option<String> {
-    first_path_field_recursive(value, 0)
-}
-
-fn first_path_field_recursive(value: &Value, depth: usize) -> Option<String> {
-    if depth > 3 {
-        return None;
-    }
-    match value {
-        Value::Object(object) => {
-            for key in ["path", "file_path", "absolute_path", "source", "url"] {
-                if let Some(value) = object.get(key).and_then(Value::as_str)
-                    && !value.trim().is_empty()
-                {
-                    return Some(value.trim().to_owned());
-                }
-            }
-            object
-                .values()
-                .find_map(|value| first_path_field_recursive(value, depth + 1))
-        }
-        Value::Array(items) => items
-            .iter()
-            .find_map(|value| first_path_field_recursive(value, depth + 1)),
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => None,
-    }
-}
-
-fn extract_tool_key_value(line: &str, key: &str) -> Option<String> {
-    let marker = format!("{key}=");
-    let start = line.find(marker.as_str())? + marker.len();
-    let rest = &line[start..];
-    let end = rest
-        .find(" · ")
-        .or_else(|| rest.find(", "))
-        .or_else(|| rest.find('}'))
-        .unwrap_or(rest.len());
-    let value = rest[..end]
-        .trim()
-        .trim_matches(',')
-        .trim_matches('"')
-        .trim_matches('\'')
-        .to_owned();
-    (!value.is_empty()).then_some(value)
-}
-
-fn extract_raw_path_line(line: &str) -> Option<String> {
-    let trimmed = line.trim().trim_matches('"').trim_matches('\'');
-    if trimmed.starts_with('/')
-        || trimmed.starts_with("~/")
-        || trimmed.starts_with("./")
-        || trimmed.starts_with("../")
-        || trimmed.starts_with("file://")
-    {
-        Some(trimmed.to_owned())
-    } else {
-        None
-    }
+fn tool_request_candidate_texts(lines: &[String]) -> Vec<&str> {
+    lines.iter().map(String::as_str).collect()
 }
 
 fn resolve_local_renderable_image_path(source: &str) -> Option<PathBuf> {
@@ -3254,37 +4071,55 @@ fn render_run_tool_preview_block(preview: &RunToolPreview, width: u16) -> Vec<Li
     let content_width = width.saturating_sub(8).max(1) as usize;
     let command = truncate_middle_display(preview.command.as_str(), content_width);
     rendered.push(pad_preserving_backgrounds(
-        Line::from(vec![
-            Span::styled(" ", Style::default().bg(bg)),
-            Span::styled(
-                "run ",
+        Line::from(
+            vec![
+                Span::styled(" ", Style::default().bg(bg)),
+                Span::styled(
+                    "run ",
+                    Style::default()
+                        .fg(SURFACE_ACCENT)
+                        .bg(bg)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]
+            .into_iter()
+            .chain(tool_preview_inline_spans(
+                command.as_str(),
                 Style::default()
-                    .fg(SURFACE_DARK_GRAY)
+                    .fg(Color::White)
                     .bg(bg)
                     .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(command, Style::default().fg(SURFACE_DARK_GRAY).bg(bg)),
-            Span::styled(" ", Style::default().bg(bg)),
-            Span::styled(
-                tool_status_label(preview.status),
-                Style::default()
-                    .fg(tool_status_color(preview.status))
-                    .bg(bg),
-            ),
-        ]),
+                bg,
+            ))
+            .chain([
+                Span::styled(" ", Style::default().bg(bg)),
+                Span::styled(
+                    tool_status_label(preview.status),
+                    Style::default()
+                        .fg(tool_status_color(preview.status))
+                        .bg(bg),
+                ),
+            ])
+            .collect::<Vec<_>>(),
+        ),
         width,
         bg,
     ));
 
     rendered.push(pad_preserving_backgrounds(
-        Line::from(vec![
-            Span::styled(" ", Style::default().bg(bg)),
-            Span::styled("tool: ", Style::default().fg(SURFACE_GRAY).bg(bg)),
-            Span::styled(
-                preview.tool_name.clone(),
-                Style::default().fg(SURFACE_DARK_GRAY).bg(bg),
-            ),
-        ]),
+        Line::from(
+            vec![
+                Span::styled(" ", Style::default().bg(bg)),
+                Span::styled("tool: ", Style::default().fg(SURFACE_GRAY).bg(bg)),
+            ]
+            .into_iter()
+            .chain(tool_preview_inline_spans(
+                preview.tool_name.as_str(),
+                Style::default().fg(SURFACE_GRAY).bg(bg),
+                bg,
+            ))
+            .collect::<Vec<_>>(),
+        ),
         width,
         bg,
     ));
@@ -3308,11 +4143,19 @@ fn render_run_tool_preview_block(preview: &RunToolPreview, width: u16) -> Vec<Li
             width.saturating_sub(12).max(1) as usize,
         ) {
             rendered.push(pad_preserving_backgrounds(
-                Line::from(vec![
-                    Span::styled("  ", Style::default().bg(bg)),
-                    Span::styled("metrics ", Style::default().fg(SURFACE_GRAY).bg(bg)),
-                    Span::styled(wrapped, Style::default().fg(SURFACE_DARK_GRAY).bg(bg)),
-                ]),
+                Line::from(
+                    vec![
+                        Span::styled("  ", Style::default().bg(bg)),
+                        Span::styled("metrics ", Style::default().fg(SURFACE_GRAY).bg(bg)),
+                    ]
+                    .into_iter()
+                    .chain(tool_preview_inline_spans(
+                        wrapped.as_str(),
+                        Style::default().fg(SURFACE_GRAY).bg(bg),
+                        bg,
+                    ))
+                    .collect::<Vec<_>>(),
+                ),
                 width,
                 bg,
             ));
@@ -3334,40 +4177,83 @@ fn render_inspect_tool_preview_block(
     let content_width = width.saturating_sub(12).max(1) as usize;
     let primary = truncate_middle_display(preview.primary.as_str(), content_width);
     rendered.push(pad_preserving_backgrounds(
-        Line::from(vec![
-            Span::styled(" ", Style::default().bg(bg)),
-            Span::styled(
-                format!("{} ", preview.kind),
+        Line::from(
+            vec![
+                Span::styled(" ", Style::default().bg(bg)),
+                Span::styled(
+                    format!("{} ", preview.kind),
+                    Style::default()
+                        .fg(SURFACE_ACCENT)
+                        .bg(bg)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]
+            .into_iter()
+            .chain(tool_preview_inline_spans(
+                primary.as_str(),
                 Style::default()
-                    .fg(SURFACE_DARK_GRAY)
+                    .fg(Color::White)
                     .bg(bg)
                     .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(primary, Style::default().fg(SURFACE_DARK_GRAY).bg(bg)),
-            Span::styled(" ", Style::default().bg(bg)),
-            Span::styled(
-                tool_status_label(preview.status),
-                Style::default()
-                    .fg(tool_status_color(preview.status))
-                    .bg(bg),
-            ),
-        ]),
+                bg,
+            ))
+            .chain([
+                Span::styled(" ", Style::default().bg(bg)),
+                Span::styled(
+                    tool_status_label(preview.status),
+                    Style::default()
+                        .fg(tool_status_color(preview.status))
+                        .bg(bg),
+                ),
+            ])
+            .collect::<Vec<_>>(),
+        ),
         width,
         bg,
     ));
 
     rendered.push(pad_preserving_backgrounds(
-        Line::from(vec![
-            Span::styled(" ", Style::default().bg(bg)),
-            Span::styled("tool: ", Style::default().fg(SURFACE_GRAY).bg(bg)),
-            Span::styled(
-                preview.tool_name.clone(),
-                Style::default().fg(SURFACE_DARK_GRAY).bg(bg),
-            ),
-        ]),
+        Line::from(
+            vec![
+                Span::styled(" ", Style::default().bg(bg)),
+                Span::styled("tool: ", Style::default().fg(SURFACE_GRAY).bg(bg)),
+            ]
+            .into_iter()
+            .chain(tool_preview_inline_spans(
+                preview.tool_name.as_str(),
+                Style::default().fg(SURFACE_GRAY).bg(bg),
+                bg,
+            ))
+            .collect::<Vec<_>>(),
+        ),
         width,
         bg,
     ));
+
+    if let Some(secondary) = preview.secondary.as_deref() {
+        for wrapped in crate::presentation::render_wrapped_display_line(
+            secondary,
+            width.saturating_sub(10).max(1) as usize,
+        ) {
+            rendered.push(pad_preserving_backgrounds(
+                Line::from(
+                    vec![
+                        Span::styled("  ", Style::default().bg(bg)),
+                        Span::styled("meta ", Style::default().fg(SURFACE_GRAY).bg(bg)),
+                    ]
+                    .into_iter()
+                    .chain(tool_preview_inline_spans(
+                        wrapped.as_str(),
+                        Style::default().fg(SURFACE_GRAY).bg(bg),
+                        bg,
+                    ))
+                    .collect::<Vec<_>>(),
+                ),
+                width,
+                bg,
+            ));
+        }
+    }
 
     rendered.extend(render_tool_stream_preview_section(
         "stdout",
@@ -3388,11 +4274,19 @@ fn render_inspect_tool_preview_block(
             width.saturating_sub(12).max(1) as usize,
         ) {
             rendered.push(pad_preserving_backgrounds(
-                Line::from(vec![
-                    Span::styled("  ", Style::default().bg(bg)),
-                    Span::styled("metrics ", Style::default().fg(SURFACE_GRAY).bg(bg)),
-                    Span::styled(wrapped, Style::default().fg(SURFACE_DARK_GRAY).bg(bg)),
-                ]),
+                Line::from(
+                    vec![
+                        Span::styled("  ", Style::default().bg(bg)),
+                        Span::styled("metrics ", Style::default().fg(SURFACE_GRAY).bg(bg)),
+                    ]
+                    .into_iter()
+                    .chain(tool_preview_inline_spans(
+                        wrapped.as_str(),
+                        Style::default().fg(SURFACE_GRAY).bg(bg),
+                        bg,
+                    ))
+                    .collect::<Vec<_>>(),
+                ),
                 width,
                 bg,
             ));
@@ -3442,7 +4336,7 @@ fn render_tool_stream_preview_section(
     };
     let body_style = match label {
         "stderr" => Style::default().fg(SURFACE_RED).bg(bg),
-        _ => Style::default().fg(SURFACE_DARK_GRAY).bg(bg),
+        _ => Style::default().fg(SURFACE_GRAY).bg(bg),
     };
     let label_text = format!("{label} ");
     let body_width = width
@@ -3465,11 +4359,16 @@ fn render_tool_stream_preview_section(
                 )
             };
             rendered.push(pad_preserving_backgrounds(
-                Line::from(vec![
-                    Span::styled("  ", Style::default().bg(bg)),
-                    label_span,
-                    Span::styled(wrapped_line, body_style),
-                ]),
+                Line::from(
+                    vec![Span::styled("  ", Style::default().bg(bg)), label_span]
+                        .into_iter()
+                        .chain(tool_preview_inline_spans(
+                            wrapped_line.as_str(),
+                            body_style,
+                            bg,
+                        ))
+                        .collect::<Vec<_>>(),
+                ),
                 width,
                 bg,
             ));
@@ -3518,17 +4417,28 @@ fn render_read_tool_preview_block(preview: &ReadToolPreview, width: u16) -> Vec<
     let content_width = width.saturating_sub(7).max(1) as usize;
     let compact_path = truncate_middle_display(path, content_width);
     rendered.push(pad_preserving_backgrounds(
-        Line::from(vec![
-            Span::raw(" "),
-            Span::styled(
-                "read ",
+        Line::from(
+            vec![
+                Span::raw(" "),
+                Span::styled(
+                    "read ",
+                    Style::default()
+                        .fg(SURFACE_ACCENT)
+                        .bg(bg)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]
+            .into_iter()
+            .chain(tool_preview_inline_spans(
+                compact_path.as_str(),
                 Style::default()
-                    .fg(SURFACE_DARK_GRAY)
+                    .fg(Color::White)
                     .bg(bg)
                     .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(compact_path, Style::default().fg(SURFACE_DARK_GRAY).bg(bg)),
-        ]),
+                bg,
+            ))
+            .collect::<Vec<_>>(),
+        ),
         width,
         bg,
     ));
@@ -3588,11 +4498,19 @@ fn render_read_text_excerpt_lines(excerpt: &[String], width: u16, bg: Color) -> 
         {
             let marker = if index == 0 { "│ " } else { "  " };
             rendered.push(pad_preserving_backgrounds(
-                Line::from(vec![
-                    Span::styled("  ", Style::default().bg(bg)),
-                    Span::styled(marker, Style::default().fg(SURFACE_ACCENT).bg(bg)),
-                    Span::styled(wrapped, Style::default().fg(SURFACE_DARK_GRAY).bg(bg)),
-                ]),
+                Line::from(
+                    vec![
+                        Span::styled("  ", Style::default().bg(bg)),
+                        Span::styled(marker, Style::default().fg(SURFACE_ACCENT).bg(bg)),
+                    ]
+                    .into_iter()
+                    .chain(tool_preview_inline_spans(
+                        wrapped.as_str(),
+                        Style::default().fg(SURFACE_GRAY).bg(bg),
+                        bg,
+                    ))
+                    .collect::<Vec<_>>(),
+                ),
                 width,
                 bg,
             ));
@@ -3608,17 +4526,27 @@ fn render_read_preview_text_line(text: &str, width: u16) -> Vec<Line<'static>> {
         .into_iter()
         .map(|wrapped| {
             pad_preserving_backgrounds(
-                Line::from(vec![
-                    Span::styled(" ", Style::default().bg(SURFACE_TOOL_BG)),
-                    Span::styled(
-                        wrapped,
-                        Style::default().fg(SURFACE_GRAY).bg(SURFACE_TOOL_BG),
-                    ),
-                ]),
+                Line::from(
+                    vec![Span::styled(" ", Style::default().bg(SURFACE_TOOL_BG))]
+                        .into_iter()
+                        .chain(tool_preview_inline_spans(
+                            wrapped.as_str(),
+                            Style::default().fg(SURFACE_GRAY).bg(SURFACE_TOOL_BG),
+                            SURFACE_TOOL_BG,
+                        ))
+                        .collect::<Vec<_>>(),
+                ),
                 width,
                 SURFACE_TOOL_BG,
             )
         })
+        .collect()
+}
+
+fn tool_preview_inline_spans(text: &str, base_style: Style, bg: Color) -> Vec<Span<'static>> {
+    render_inline_token_spans(text, base_style)
+        .into_iter()
+        .map(|span| Span::styled(span.content, span.style.bg(bg)))
         .collect()
 }
 
@@ -4035,10 +4963,10 @@ fn render_tool_detail_lines(line: &str, width: u16) -> Vec<Line<'static>> {
                     if !label_text.is_empty() {
                         spans.push(Span::styled(label_text.clone(), label_style));
                     }
-                    spans.push(Span::styled(wrapped_line, body_style));
+                    spans.extend(render_inline_token_spans(wrapped_line.as_str(), body_style));
                     Line::from(spans)
                 } else {
-                    Line::from(vec![
+                    let mut spans = vec![
                         Span::raw("  "),
                         Span::styled(
                             " ".repeat(
@@ -4047,8 +4975,9 @@ fn render_tool_detail_lines(line: &str, width: u16) -> Vec<Line<'static>> {
                             ),
                             Style::default().fg(SURFACE_ACCENT),
                         ),
-                        Span::styled(wrapped_line, body_style),
-                    ])
+                    ];
+                    spans.extend(render_inline_token_spans(wrapped_line.as_str(), body_style));
+                    Line::from(spans)
                 }
             })
             .collect();
@@ -4097,17 +5026,17 @@ fn render_tool_detail_lines(line: &str, width: u16) -> Vec<Line<'static>> {
                 Style::default()
                     .fg(SURFACE_GREEN)
                     .add_modifier(Modifier::BOLD),
-                Style::default().fg(SURFACE_DARK_GRAY),
+                Style::default().fg(SURFACE_GRAY),
             ),
             "stderr:" => (
                 Style::default()
                     .fg(SURFACE_RED)
                     .add_modifier(Modifier::BOLD),
-                Style::default().fg(SURFACE_DARK_GRAY),
+                Style::default().fg(SURFACE_GRAY),
             ),
             _ => (
                 Style::default().fg(SURFACE_GRAY),
-                Style::default().fg(SURFACE_DARK_GRAY),
+                Style::default().fg(SURFACE_GRAY),
             ),
         };
         let body_width = content_width
@@ -4125,11 +5054,9 @@ fn render_tool_detail_lines(line: &str, width: u16) -> Vec<Line<'static>> {
                 } else {
                     continuation_prefix.clone()
                 };
-                Line::from(vec![
-                    Span::raw("  "),
-                    Span::styled(display_prefix, prefix_style),
-                    Span::styled(wrapped_line, body_style),
-                ])
+                let mut spans = vec![Span::raw("  "), Span::styled(display_prefix, prefix_style)];
+                spans.extend(render_inline_token_spans(wrapped_line.as_str(), body_style));
+                Line::from(spans)
             })
             .collect();
     }
@@ -4137,10 +5064,12 @@ fn render_tool_detail_lines(line: &str, width: u16) -> Vec<Line<'static>> {
     crate::presentation::render_wrapped_display_line(line, content_width)
         .into_iter()
         .map(|wrapped_line| {
-            Line::from(vec![
-                Span::raw("  "),
-                Span::styled(wrapped_line, Style::default().fg(SURFACE_DARK_GRAY)),
-            ])
+            let mut spans = vec![Span::raw("  ")];
+            spans.extend(render_inline_token_spans(
+                wrapped_line.as_str(),
+                Style::default().fg(SURFACE_GRAY),
+            ));
+            Line::from(spans)
         })
         .collect()
 }
@@ -4151,7 +5080,7 @@ fn tool_child_styles(label: &str) -> (Style, Style) {
             Style::default()
                 .fg(SURFACE_GREEN)
                 .add_modifier(Modifier::BOLD),
-            Style::default().fg(SURFACE_DARK_GRAY),
+            Style::default().fg(SURFACE_GRAY),
         ),
         "stderr" => (
             Style::default()
@@ -4163,23 +5092,23 @@ fn tool_child_styles(label: &str) -> (Style, Style) {
             Style::default()
                 .fg(SURFACE_CYAN)
                 .add_modifier(Modifier::BOLD),
-            Style::default().fg(SURFACE_DARK_GRAY),
+            Style::default().fg(SURFACE_GRAY),
         ),
         "metrics" => (
             Style::default()
                 .fg(SURFACE_GRAY)
                 .add_modifier(Modifier::BOLD),
-            Style::default().fg(SURFACE_DARK_GRAY),
+            Style::default().fg(SURFACE_GRAY),
         ),
         "request" | "args" => (
             Style::default()
                 .fg(SURFACE_ACCENT)
                 .add_modifier(Modifier::BOLD),
-            Style::default().fg(SURFACE_DARK_GRAY),
+            Style::default().fg(SURFACE_GRAY),
         ),
         _ => (
             Style::default().fg(SURFACE_ACCENT),
-            Style::default().fg(SURFACE_DARK_GRAY),
+            Style::default().fg(SURFACE_GRAY),
         ),
     }
 }
@@ -4199,7 +5128,7 @@ fn render_tool_sample_detail_lines(line: &str, content_width: usize) -> Option<V
     } else if sample.starts_with('-') {
         Style::default().fg(SURFACE_RED)
     } else {
-        Style::default().fg(SURFACE_DARK_GRAY)
+        Style::default().fg(SURFACE_GRAY)
     };
     let sample_width = content_width.saturating_sub(4).max(1);
 
@@ -4209,11 +5138,15 @@ fn render_tool_sample_detail_lines(line: &str, content_width: usize) -> Option<V
             .enumerate()
             .map(|(index, wrapped_line)| {
                 let guide = if index == 0 { "    " } else { "      " };
-                Line::from(vec![
+                let mut spans = vec![
                     Span::raw("  "),
-                    Span::styled(guide, Style::default().fg(SURFACE_DARK_GRAY)),
-                    Span::styled(wrapped_line, sample_style),
-                ])
+                    Span::styled(guide, Style::default().fg(SURFACE_GRAY)),
+                ];
+                spans.extend(render_inline_token_spans(
+                    wrapped_line.as_str(),
+                    sample_style,
+                ));
+                Line::from(spans)
             })
             .collect(),
     )
@@ -4281,20 +5214,28 @@ fn render_named_activity_line(line: &str, content_width: usize) -> Option<Vec<Li
             .enumerate()
             .map(|(index, wrapped_line)| {
                 if index == 0 {
-                    Line::from(vec![
+                    let mut spans = vec![
                         Span::styled("• ", Style::default().fg(SURFACE_GRAY)),
                         Span::styled(format!("{headline_label} "), headline_style),
-                        Span::styled(wrapped_line, Style::default().fg(SURFACE_DARK_GRAY)),
-                    ])
+                    ];
+                    spans.extend(render_inline_token_spans(
+                        wrapped_line.as_str(),
+                        Style::default().fg(SURFACE_GRAY),
+                    ));
+                    Line::from(spans)
                 } else {
-                    Line::from(vec![
+                    let mut spans = vec![
                         Span::raw("  "),
                         Span::styled(
                             " ".repeat(crate::presentation::display_width(headline_label) + 1),
                             headline_style,
                         ),
-                        Span::styled(wrapped_line, Style::default().fg(SURFACE_DARK_GRAY)),
-                    ])
+                    ];
+                    spans.extend(render_inline_token_spans(
+                        wrapped_line.as_str(),
+                        Style::default().fg(SURFACE_GRAY),
+                    ));
+                    Line::from(spans)
                 }
             })
             .collect(),
@@ -4352,20 +5293,28 @@ fn render_status_activity_line(line: &str, content_width: usize) -> Option<Vec<L
             .enumerate()
             .map(|(index, wrapped_line)| {
                 if index == 0 {
-                    Line::from(vec![
+                    let mut spans = vec![
                         Span::styled("• ", Style::default().fg(SURFACE_GRAY)),
                         Span::styled(format!("{headline_label} "), headline_style),
-                        Span::styled(wrapped_line, Style::default().fg(SURFACE_DARK_GRAY)),
-                    ])
+                    ];
+                    spans.extend(render_inline_token_spans(
+                        wrapped_line.as_str(),
+                        Style::default().fg(SURFACE_GRAY),
+                    ));
+                    Line::from(spans)
                 } else {
-                    Line::from(vec![
+                    let mut spans = vec![
                         Span::raw("  "),
                         Span::styled(
                             " ".repeat(crate::presentation::display_width(headline_label) + 1),
                             headline_style,
                         ),
-                        Span::styled(wrapped_line, Style::default().fg(SURFACE_DARK_GRAY)),
-                    ])
+                    ];
+                    spans.extend(render_inline_token_spans(
+                        wrapped_line.as_str(),
+                        Style::default().fg(SURFACE_GRAY),
+                    ));
+                    Line::from(spans)
                 }
             })
             .collect(),
@@ -4682,18 +5631,23 @@ fn styled_background_line(spans: Vec<Span<'static>>, width: u16, bg: Color) -> L
 #[cfg(test)]
 mod tests {
     use super::{
-        MessageContent, MessageList, ReadToolRequest, STARTUP_COMPACT_WORDMARK, STARTUP_EYE_FRAMES,
-        STARTUP_TIP_FADE_MS, STARTUP_TIP_HOLD_MS, STARTUP_WORDMARK, ToolStatus,
-        adjust_scroll_start_for_message_boundary, build_assistant_contents, dominant_block_bg,
-        format_read_request_display, startup_logo_eye_frame_index, startup_logo_eye_style,
-        startup_tip_render_state, startup_wordmark_eye_frame,
+        MessageContent, MessageList, ReadToolRequest, STARTUP_COMPACT_WORDMARK,
+        STARTUP_TIP_FADE_MS, STARTUP_TIP_HOLD_MS, STARTUP_WORDMARK, StartupEyeAnimation,
+        StartupEyeFocus, ToolStatus, adjust_scroll_start_for_message_boundary,
+        build_assistant_contents, dominant_block_bg, format_read_request_display,
+        startup_logo_eye_frame_index, startup_logo_eye_style, startup_tip_render_state,
+        startup_wordmark_eye_frame, startup_wordmark_eye_frame_for_animation,
     };
     use crate::chat::chat_surface::utils::{
-        SURFACE_ACCENT, SURFACE_DIM_GRAY, SURFACE_GRAY, SURFACE_GREEN, SURFACE_RED,
-        SURFACE_TOOL_BG, SURFACE_USER_MSG_BG,
+        SURFACE_ACCENT, SURFACE_CYAN, SURFACE_DIM_GRAY, SURFACE_GRAY, SURFACE_GREEN,
+        SURFACE_HEADING, SURFACE_RED, SURFACE_TOOL_BG, SURFACE_USER_MSG_BG,
     };
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
-    use ratatui::{Terminal, backend::TestBackend, style::Color};
+    use ratatui::{
+        Terminal,
+        backend::TestBackend,
+        style::{Color, Modifier, Style},
+    };
     use std::time::Duration;
 
     #[test]
@@ -4830,7 +5784,7 @@ mod tests {
     }
 
     #[test]
-    fn tool_activity_compacts_request_json_into_arrow_child_line() {
+    fn tool_activity_promotes_namespaced_search_request_into_semantic_card() {
         let mut list = MessageList::new();
         list.add_assistant_message(
             "### Tool activity\n> Called demo_mcp.search\n> request: {\"query\":\"rust\",\"limit\":5,\"scope\":\"repo\"}".to_owned(),
@@ -4847,13 +5801,17 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        assert!(rendered.iter().any(|line| line.contains("↳ request")));
-        assert!(rendered.iter().any(|line| line.contains("query=rust")));
-        assert!(rendered.iter().any(|line| line.contains("limit=5")));
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line.contains("search \"rust\" · limit 5"))
+        );
+        assert!(rendered.iter().any(|line| line.contains("tool: search")));
+        assert!(rendered.iter().any(|line| line.contains("meta scope repo")));
     }
 
     #[test]
-    fn tool_activity_compacts_plain_args_without_arrow_prefix() {
+    fn tool_activity_promotes_namespaced_search_args_without_arrow_prefix() {
         let mut list = MessageList::new();
         list.add_assistant_message(
             "### Tool activity\n> Called demo_mcp.search\n> args {\"query\":\"rust\",\"limit\":5,\"scope\":\"repo\"}".to_owned(),
@@ -4870,13 +5828,17 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        assert!(rendered.iter().any(|line| line.contains("↳ args")));
-        assert!(rendered.iter().any(|line| line.contains("query=rust")));
-        assert!(rendered.iter().any(|line| line.contains("limit=5")));
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line.contains("search \"rust\" · limit 5"))
+        );
+        assert!(rendered.iter().any(|line| line.contains("tool: search")));
+        assert!(rendered.iter().any(|line| line.contains("meta scope repo")));
     }
 
     #[test]
-    fn tool_activity_compacts_plain_args_with_colon_prefix() {
+    fn tool_activity_promotes_namespaced_search_args_with_colon_prefix() {
         let mut list = MessageList::new();
         list.add_assistant_message(
             "### Tool activity\n> Called demo_mcp.search\n> args: {\"query\":\"rust\",\"limit\":5,\"scope\":\"repo\"}".to_owned(),
@@ -4893,9 +5855,13 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        assert!(rendered.iter().any(|line| line.contains("↳ args")));
-        assert!(rendered.iter().any(|line| line.contains("query=rust")));
-        assert!(rendered.iter().any(|line| line.contains("limit=5")));
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line.contains("search \"rust\" · limit 5"))
+        );
+        assert!(rendered.iter().any(|line| line.contains("tool: search")));
+        assert!(rendered.iter().any(|line| line.contains("meta scope repo")));
     }
 
     #[test]
@@ -5088,12 +6054,14 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        assert!(rendered.iter().any(|line| line.contains("↳ request")));
         assert!(
-            !rendered
+            rendered
                 .iter()
-                .any(|line| line.contains("↳ args query=rust"))
+                .any(|line| line.contains("search \"rust\" · limit 5"))
         );
+        assert!(rendered.iter().any(|line| line.contains("meta scope repo")));
+        assert!(!rendered.iter().any(|line| line.contains("↳ request")));
+        assert!(!rendered.iter().any(|line| line.contains("↳ args")));
     }
 
     #[test]
@@ -5145,12 +6113,14 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        assert!(rendered.iter().any(|line| line.contains("↳ args")));
         assert!(
-            !rendered
+            rendered
                 .iter()
-                .any(|line| line.contains("↳ request query=rust"))
+                .any(|line| line.contains("search \"rust\" · limit 5"))
         );
+        assert!(rendered.iter().any(|line| line.contains("meta scope repo")));
+        assert!(!rendered.iter().any(|line| line.contains("↳ request")));
+        assert!(!rendered.iter().any(|line| line.contains("↳ args")));
     }
 
     #[test]
@@ -5171,12 +6141,14 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        assert!(rendered.iter().any(|line| line.contains("↳ request")));
         assert!(
-            !rendered
+            rendered
                 .iter()
-                .any(|line| line.contains("↳ args query=rust"))
+                .any(|line| line.contains("search \"rust\" · limit 5"))
         );
+        assert!(rendered.iter().any(|line| line.contains("meta scope repo")));
+        assert!(!rendered.iter().any(|line| line.contains("↳ request")));
+        assert!(!rendered.iter().any(|line| line.contains("↳ args")));
     }
 
     #[test]
@@ -5476,10 +6448,156 @@ mod tests {
     }
 
     #[test]
+    fn run_tool_activity_uses_stronger_primary_visual_hierarchy() {
+        let mut list = MessageList::new();
+        list.add_assistant_message(
+            "### Tool activity\n> [completed] bash (id=call-1) - ok\n> args: {\"cmd\":\"cargo test --workspace --all-features\"}\n> stdout: first line"
+                .to_owned(),
+        );
+
+        let rendered = list.get_rendered_lines(72);
+        let line = rendered
+            .iter()
+            .find(|line| line.spans.iter().any(|span| span.content.contains("cargo")))
+            .expect("run preview line");
+
+        assert_eq!(line.spans[1].style.fg, Some(SURFACE_ACCENT));
+        let command_span = line
+            .spans
+            .iter()
+            .find(|span| span.content.contains("cargo"))
+            .expect("command span");
+        assert_eq!(command_span.style.fg, Some(Color::White));
+        assert!(command_span.style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn run_tool_activity_metrics_highlight_inline_control_tokens() {
+        let mut list = MessageList::new();
+        list.add_assistant_message(
+            "### Tool activity\n> [completed] bash (id=call-1) - ok\n> args: {\"cmd\":\"cargo test\"}\n> metrics: rerun with /review after Ctrl+C"
+                .to_owned(),
+        );
+
+        let rendered = list.get_rendered_lines(80);
+        let line = rendered
+            .iter()
+            .find(|line| {
+                line.spans
+                    .iter()
+                    .any(|span| span.content.contains("/review"))
+            })
+            .expect("metrics line");
+        let slash_span = line
+            .spans
+            .iter()
+            .find(|span| span.content.contains("/review"))
+            .expect("slash span");
+        let ctrl_c_span = line
+            .spans
+            .iter()
+            .find(|span| span.content.contains("Ctrl+C"))
+            .expect("ctrl+c span");
+
+        assert_eq!(slash_span.style.fg, Some(SURFACE_ACCENT));
+        assert!(slash_span.style.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(ctrl_c_span.style.fg, Some(SURFACE_CYAN));
+        assert!(ctrl_c_span.style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn transcript_tool_detail_lines_highlight_inline_control_tokens() {
+        let mut list = MessageList::new();
+        list.add_assistant_message(
+            "### Tool activity\n> Called bash\n> request: use /permissions before $skill"
+                .to_owned(),
+        );
+
+        let rendered = list.get_rendered_lines(80);
+        let line = rendered
+            .iter()
+            .find(|line| {
+                line.spans
+                    .iter()
+                    .any(|span| span.content.contains("/permissions"))
+            })
+            .expect("request line");
+        let slash_span = line
+            .spans
+            .iter()
+            .find(|span| span.content.contains("/permissions"))
+            .expect("slash span");
+        let skill_span = line
+            .spans
+            .iter()
+            .find(|span| span.content.contains("$skill"))
+            .expect("skill span");
+
+        assert_eq!(slash_span.style.fg, Some(SURFACE_ACCENT));
+        assert!(slash_span.style.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(skill_span.style.fg, Some(SURFACE_ACCENT));
+        assert!(skill_span.style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn transcript_tool_child_body_uses_readable_gray() {
+        let (_label, body_style) = super::tool_child_styles("request");
+        assert_eq!(body_style.fg, Some(SURFACE_GRAY));
+    }
+
+    #[test]
+    fn transcript_tool_sample_neutral_lines_use_readable_gray() {
+        let rendered =
+            super::render_tool_sample_detail_lines("    context line", 40).expect("sample lines");
+        let sample_spans = rendered[0]
+            .spans
+            .iter()
+            .filter(|span| {
+                let content = span.content.as_ref();
+                content.contains("context") || content.contains("line")
+            })
+            .collect::<Vec<_>>();
+
+        assert!(!sample_spans.is_empty(), "sample spans");
+        assert!(
+            sample_spans
+                .iter()
+                .all(|span| span.style.fg == Some(SURFACE_GRAY))
+        );
+    }
+
+    #[test]
+    fn read_tool_preview_highlights_primary_path_token() {
+        let mut list = MessageList::new();
+        list.add_assistant_message(
+            "### Tool activity\n> Called filesystem.open_file\n> request: {\"arguments\":{\"path\":\"/tmp/demo.txt\"}}\n> stdout: hello"
+                .to_owned(),
+        );
+
+        let rendered = list.get_rendered_lines(72);
+        let line = rendered
+            .iter()
+            .find(|line| {
+                line.spans
+                    .iter()
+                    .any(|span| span.content.contains("/tmp/demo.txt"))
+            })
+            .expect("read preview line");
+        let path_span = line
+            .spans
+            .iter()
+            .find(|span| span.content.contains("/tmp/demo.txt"))
+            .expect("path span");
+
+        assert_eq!(path_span.style.fg, Some(SURFACE_ACCENT));
+        assert!(path_span.style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
     fn search_tool_activity_renders_semantic_preview_card() {
         let mut list = MessageList::new();
         list.add_assistant_message(
-            "### Tool activity\n> Called grep\n> args: {\"query\":\"稳定|wenjian|robust|stable\",\"path\":\"~/chat\"}\n> stdout: match one\n> stdout: match two"
+            "### Tool activity\n> Called grep\n> args: {\"query\":\"稳定|wenjian|robust|stable\",\"path\":\"~/chat\",\"limit\":5,\"scope\":\"repo\"}\n> stdout: match one\n> stdout: match two"
                 .to_owned(),
         );
 
@@ -5495,7 +6613,8 @@ mod tests {
             .collect::<Vec<_>>();
         let joined = rendered.join("\n");
 
-        assert!(joined.contains("search \"稳定|wenjian|robust|stable\" in ~/chat"));
+        assert!(joined.contains("search \"稳定|wenjian|robust|stable\" in ~/chat · limit 5"));
+        assert!(joined.contains("meta scope repo"));
         assert!(joined.contains("tool: grep"));
         assert!(joined.contains("stdout match one"));
     }
@@ -5529,7 +6648,7 @@ mod tests {
     fn list_tool_activity_renders_semantic_preview_card() {
         let mut list = MessageList::new();
         list.add_assistant_message(
-            "### Tool activity\n> Called list_directory\n> args: {\"path\":\"~/chat/.omx\"}\n> stdout: agents\n> stdout: logs"
+            "### Tool activity\n> Called list_directory\n> args: {\"path\":\"~/chat/.omx\",\"limit\":20,\"depth\":2,\"includeHidden\":true}\n> stdout: agents\n> stdout: logs"
                 .to_owned(),
         );
 
@@ -5545,7 +6664,8 @@ mod tests {
             .collect::<Vec<_>>();
         let joined = rendered.join("\n");
 
-        assert!(joined.contains("list ~/chat/.omx"));
+        assert!(joined.contains("list ~/chat/.omx · limit 20"));
+        assert!(joined.contains("meta depth 2 · hidden on"));
         assert!(joined.contains("tool: list_directory"));
         assert!(joined.contains("stdout agents"));
     }
@@ -5554,7 +6674,7 @@ mod tests {
     fn glob_tool_activity_renders_semantic_preview_card() {
         let mut list = MessageList::new();
         list.add_assistant_message(
-            "### Tool activity\n> Called find_files\n> args: {\"glob\":\"src/**/*.rs\",\"path\":\"~/chat\"}\n> stdout: src/main.rs\n> stdout: src/lib.rs"
+            "### Tool activity\n> Called find_files\n> args: {\"glob\":\"src/**/*.rs\",\"path\":\"~/chat\",\"limit\":5,\"depth\":3,\"includeHidden\":true}\n> stdout: src/main.rs\n> stdout: src/lib.rs"
                 .to_owned(),
         );
 
@@ -5570,7 +6690,34 @@ mod tests {
             .collect::<Vec<_>>();
         let joined = rendered.join("\n");
 
-        assert!(joined.contains("glob src/**/*.rs in ~/chat"));
+        assert!(joined.contains("glob src/**/*.rs in ~/chat · limit 5"));
+        assert!(joined.contains("meta depth 3 · hidden on"));
+        assert!(joined.contains("tool: find_files"));
+        assert!(joined.contains("stdout src/main.rs"));
+    }
+
+    #[test]
+    fn namespaced_glob_tool_activity_renders_semantic_preview_card() {
+        let mut list = MessageList::new();
+        list.add_assistant_message(
+            "### Tool activity\n> Called demo_mcp.find_files\n> args: {\"glob\":\"src/**/*.rs\",\"path\":\"~/chat\",\"limit\":5,\"depth\":3,\"includeHidden\":true}\n> stdout: src/main.rs"
+                .to_owned(),
+        );
+
+        let rendered = list
+            .get_rendered_lines(80)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        let joined = rendered.join("\n");
+
+        assert!(joined.contains("glob src/**/*.rs in ~/chat · limit 5"));
+        assert!(joined.contains("meta depth 3 · hidden on"));
         assert!(joined.contains("tool: find_files"));
         assert!(joined.contains("stdout src/main.rs"));
     }
@@ -6627,6 +7774,129 @@ cargo test -p loong-app --lib
     }
 
     #[test]
+    fn startup_status_labels_use_readable_gray_text() {
+        let mut list = MessageList::new();
+        list.add_startup_header(
+            "0.1.0".to_owned(),
+            "help".to_owned(),
+            vec![("Skills".to_owned(), vec!["12".to_owned()])],
+        );
+
+        let rendered = list.get_rendered_lines(80);
+        let label_span = rendered
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .find(|span| span.content.contains("Skills (12)"))
+            .expect("startup status label");
+
+        assert_eq!(label_span.style.fg, Some(SURFACE_GRAY));
+        assert!(label_span.style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn startup_panel_lines_highlight_inline_control_tokens() {
+        let panel = super::StartupPanel {
+            title: "quickstart".to_owned(),
+            hint: "Use /permissions or press Ctrl+C to exit.".to_owned(),
+            options: Vec::new(),
+        };
+
+        let rendered = super::render_startup_panel_lines(&panel, 64);
+        let hint_line = rendered
+            .iter()
+            .find(|line| {
+                line.spans
+                    .iter()
+                    .any(|span| span.content.contains("/permissions"))
+            })
+            .expect("panel hint line");
+
+        let slash_span = hint_line
+            .spans
+            .iter()
+            .find(|span| span.content.contains("/permissions"))
+            .expect("slash span");
+        let ctrl_c_span = hint_line
+            .spans
+            .iter()
+            .find(|span| span.content.contains("Ctrl+C"))
+            .expect("ctrl c span");
+
+        assert_eq!(slash_span.style.fg, Some(SURFACE_ACCENT));
+        assert!(slash_span.style.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(ctrl_c_span.style.fg, Some(SURFACE_CYAN));
+        assert!(ctrl_c_span.style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn startup_panel_lines_only_expand_the_selected_option_detail() {
+        let panel = super::StartupPanel {
+            title: "provider".to_owned(),
+            hint: "space toggles providers.".to_owned(),
+            options: vec![
+                super::StartupPanelOption {
+                    label: "[ ] Anthropic".to_owned(),
+                    detail: "env ANTHROPIC_API_KEY".to_owned(),
+                    selected: false,
+                },
+                super::StartupPanelOption {
+                    label: "[x] OpenAI".to_owned(),
+                    detail: "env OPENAI_API_KEY".to_owned(),
+                    selected: true,
+                },
+            ],
+        };
+
+        let rendered = super::render_startup_panel_lines(&panel, 64)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(rendered.contains("• [ ] Anthropic"));
+        assert!(rendered.contains("› [x] OpenAI"));
+        assert!(rendered.contains("env OPENAI_API_KEY"));
+        assert!(!rendered.contains("env ANTHROPIC_API_KEY"));
+    }
+
+    #[test]
+    fn startup_panel_lines_window_long_option_lists() {
+        let options = (0..14)
+            .map(|index| super::StartupPanelOption {
+                label: format!("[ ] Provider {index:02}"),
+                detail: format!("detail {index:02}"),
+                selected: index == 12,
+            })
+            .collect::<Vec<_>>();
+        let panel = super::StartupPanel {
+            title: "provider".to_owned(),
+            hint: "space toggles providers.".to_owned(),
+            options,
+        };
+
+        let rendered = super::render_startup_panel_lines(&panel, 64)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(rendered.contains("showing 5-14 of 14"));
+        assert!(rendered.contains("… 4 more above"));
+        assert!(rendered.contains("› [ ] Provider 12"));
+        assert!(!rendered.contains("Provider 00"));
+    }
+
+    #[test]
     fn startup_tip_keeps_blank_row_below_tip() {
         let mut list = MessageList::new();
         list.add_startup_header_with_tips(
@@ -6688,53 +7958,61 @@ cargo test -p loong-app --lib
     #[test]
     fn startup_wordmark_eye_frames_animate_the_two_o_letters() {
         assert_eq!(startup_logo_eye_frame_index(Duration::ZERO), 0);
-        assert_eq!(STARTUP_EYE_FRAMES.len(), 60);
 
-        let first_glance = startup_wordmark_eye_frame(0).join(
-            "
-",
-        );
-        let upper_wash = startup_wordmark_eye_frame(6).join(
-            "
-",
-        );
-        let far_right = startup_wordmark_eye_frame(16).join(
-            "
-",
-        );
-        let lower_glance = startup_wordmark_eye_frame(26).join(
-            "
-",
-        );
-        let shimmer = startup_wordmark_eye_frame(32).join(
-            "
-",
-        );
-        let vertical_sweep = startup_wordmark_eye_frame(40).join(
-            "
-",
-        );
+        let ambient = startup_wordmark_eye_frame(0).join("\n");
+        let ambient_saccade = startup_wordmark_eye_frame(6).join("\n");
+        let focus_right = startup_wordmark_eye_frame_for_animation(
+            StartupEyeAnimation::Focus(StartupEyeFocus::DownRight),
+            Duration::from_millis(120),
+        )
+        .join("\n");
+        let confirm = startup_wordmark_eye_frame_for_animation(
+            StartupEyeAnimation::Confirm(StartupEyeFocus::DownCenter),
+            Duration::from_millis(90),
+        )
+        .join("\n");
+        let celebrate = startup_wordmark_eye_frame_for_animation(
+            StartupEyeAnimation::Celebrate,
+            Duration::from_millis(80),
+        )
+        .join("\n");
 
-        assert!(first_glance.contains("░███ █  ███░  ░███ █  ███░"));
-        assert!(upper_wash.contains("░███▓▓▓▓███░  ░███▓▓▓▓███░"));
-        assert!(far_right.contains("░███  █████░  ░███  █████░"));
-        assert!(lower_glance.contains("░███ █  ███░  ░███ █  ███░"));
-        assert!(shimmer.contains("░███▒▒▒▒███░  ░███▒▒▒▒███░"));
-        assert!(vertical_sweep.contains("░███ ▂  ███░  ░███ ▂  ███░"));
-        assert_ne!(
-            first_glance,
-            STARTUP_WORDMARK.join(
-                "
-"
-            )
+        assert!(ambient.contains("░███ ▇▇ ███░"));
+        assert!(
+            ambient_saccade.contains("░███  █████░") || ambient_saccade.contains("░█████  ███░")
         );
-        assert_ne!(first_glance, far_right);
+        assert!(focus_right.contains("░███ ▄▄ ███░") || focus_right.contains("░███  ▄▄███░"));
+        assert!(confirm.contains("░██████████░"));
+        assert!(celebrate.contains("░███ ▇▇ ███░"));
+        assert_ne!(ambient, STARTUP_WORDMARK.join("\n"));
+        assert_ne!(ambient, focus_right);
+        assert_ne!(confirm, celebrate);
     }
 
     #[test]
     fn startup_wordmark_eye_frames_keep_fixed_geometry() {
-        for frame_index in 0..STARTUP_EYE_FRAMES.len() {
-            let frame = startup_wordmark_eye_frame(frame_index);
+        let samples = [
+            startup_wordmark_eye_frame(0),
+            startup_wordmark_eye_frame(5),
+            startup_wordmark_eye_frame_for_animation(
+                StartupEyeAnimation::Focus(StartupEyeFocus::DownCenter),
+                Duration::from_millis(240),
+            ),
+            startup_wordmark_eye_frame_for_animation(
+                StartupEyeAnimation::Thinking(StartupEyeFocus::DownLeft),
+                Duration::from_millis(420),
+            ),
+            startup_wordmark_eye_frame_for_animation(
+                StartupEyeAnimation::Confirm(StartupEyeFocus::DownRight),
+                Duration::from_millis(150),
+            ),
+            startup_wordmark_eye_frame_for_animation(
+                StartupEyeAnimation::Celebrate,
+                Duration::from_millis(320),
+            ),
+        ];
+
+        for frame in samples {
             assert_eq!(frame.len(), STARTUP_WORDMARK.len());
             for (line, base_line) in frame.iter().zip(STARTUP_WORDMARK.iter()) {
                 assert_eq!(
@@ -6752,6 +8030,7 @@ cargo test -p loong-app --lib
         assert_eq!(startup_logo_eye_style('▒').fg, Some(SURFACE_GRAY));
         assert_eq!(startup_logo_eye_style('▓').fg, Some(SURFACE_ACCENT));
         assert_eq!(startup_logo_eye_style('█').fg, Some(Color::White));
+        assert_eq!(startup_logo_eye_style('▇').fg, Some(Color::White));
     }
 
     #[test]
@@ -6815,6 +8094,23 @@ cargo test -p loong-app --lib
         assert!(render_state.text.contains("second tip"));
         assert_ne!(render_state.text_color, Color::White);
         assert_ne!(render_state.bullet_color, SURFACE_ACCENT);
+    }
+
+    #[test]
+    fn startup_tip_animation_never_drops_below_readable_gray_floor() {
+        let tips = vec!["first tip".to_owned(), "second tip".to_owned()];
+        let render_state = startup_tip_render_state(
+            tips.as_slice(),
+            Duration::from_millis(STARTUP_TIP_HOLD_MS + STARTUP_TIP_FADE_MS),
+        )
+        .expect("startup tip render state");
+
+        if super::reduced_motion_enabled() {
+            assert_eq!(render_state.text_color, Color::White);
+            return;
+        }
+
+        assert_ne!(render_state.text_color, SURFACE_DIM_GRAY);
     }
 
     #[test]
@@ -6939,6 +8235,29 @@ cargo test -p loong-app --lib
     }
 
     #[test]
+    fn assistant_inline_numbered_runs_split_into_separate_lines() {
+        let items = super::split_inline_list_runs("1. first item 2. second item 3. third item")
+            .expect("split items");
+
+        assert_eq!(
+            items,
+            vec![
+                "1. first item".to_owned(),
+                "2. second item".to_owned(),
+                "3. third item".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn assistant_ordered_list_lines_are_not_marked_reflowable() {
+        assert!(!super::is_reflowable_assistant_line("1. first item"));
+        assert!(!super::is_reflowable_assistant_line("2) second item"));
+        assert!(super::starts_with_ordered_list_marker("1. first item"));
+        assert!(super::starts_with_ordered_list_marker("2) second item"));
+    }
+
+    #[test]
     fn rendered_system_activity_headline_uses_colored_spans() {
         let mut list = MessageList::new();
         list.add_rendered_lines(vec!["• Ran cargo test -p loong-app".to_owned()]);
@@ -6949,7 +8268,9 @@ cargo test -p loong-app --lib
             .find(|line| {
                 line.spans
                     .iter()
-                    .any(|span| span.content.contains("cargo test"))
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+                    .contains("cargo test")
             })
             .expect("system activity line");
 
@@ -6957,6 +8278,37 @@ cargo test -p loong-app --lib
         assert_eq!(line.spans[0].style.fg, Some(SURFACE_GREEN));
         assert_eq!(line.spans[1].content.as_ref(), "Ran ");
         assert_eq!(line.spans[1].style.fg, Some(SURFACE_ACCENT));
+    }
+
+    #[test]
+    fn rendered_system_activity_headline_highlights_inline_control_tokens() {
+        let mut list = MessageList::new();
+        list.add_rendered_lines(vec!["• Ran /review Ctrl+C".to_owned()]);
+
+        let rendered = list.get_rendered_lines(64);
+        let line = rendered
+            .iter()
+            .find(|line| {
+                line.spans
+                    .iter()
+                    .any(|span| span.content.contains("/review"))
+            })
+            .expect("headline line");
+        let slash_span = line
+            .spans
+            .iter()
+            .find(|span| span.content.contains("/review"))
+            .expect("slash span");
+        let ctrl_c_span = line
+            .spans
+            .iter()
+            .find(|span| span.content.contains("Ctrl+C"))
+            .expect("ctrl c span");
+
+        assert_eq!(slash_span.style.fg, Some(SURFACE_ACCENT));
+        assert!(slash_span.style.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(ctrl_c_span.style.fg, Some(SURFACE_CYAN));
+        assert!(ctrl_c_span.style.add_modifier.contains(Modifier::BOLD));
     }
 
     #[test]
@@ -6979,6 +8331,166 @@ cargo test -p loong-app --lib
         assert_eq!(line.spans[1].style.fg, Some(SURFACE_GRAY));
         assert_eq!(line.spans[2].content.as_ref(), "Read ");
         assert_eq!(line.spans[2].style.fg, Some(SURFACE_ACCENT));
+    }
+
+    #[test]
+    fn rendered_system_heading_lines_use_readable_heading_styles() {
+        let mut list = MessageList::new();
+        list.add_rendered_lines(vec!["experimental · experimental features".to_owned()]);
+
+        let rendered = list.get_rendered_lines(64);
+        let line = rendered
+            .iter()
+            .find(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+                    .contains("experimental features")
+            })
+            .expect("heading line");
+
+        assert_eq!(line.spans[0].style.fg, Some(SURFACE_HEADING));
+        assert!(line.spans[0].style.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(line.spans[2].style.fg, Some(SURFACE_GRAY));
+    }
+
+    #[test]
+    fn rendered_system_key_value_lines_use_structured_styles() {
+        let mut list = MessageList::new();
+        list.add_rendered_lines(vec!["- streaming renderer: enabled".to_owned()]);
+
+        let rendered = list.get_rendered_lines(64);
+        let line = rendered
+            .iter()
+            .find(|line| {
+                line.spans
+                    .iter()
+                    .any(|span| span.content.contains("streaming renderer"))
+            })
+            .expect("key value line");
+
+        assert_eq!(line.spans[0].style.fg, Some(SURFACE_DIM_GRAY));
+        assert_eq!(line.spans[1].style.fg, Some(SURFACE_ACCENT));
+        assert_eq!(line.spans[2].style.fg, Some(Color::White));
+    }
+
+    #[test]
+    fn rendered_system_key_value_lines_highlight_inline_control_tokens() {
+        let mut list = MessageList::new();
+        list.add_rendered_lines(vec!["- next step: run /review after Ctrl+C".to_owned()]);
+
+        let rendered = list.get_rendered_lines(80);
+        let line = rendered
+            .iter()
+            .find(|line| {
+                line.spans
+                    .iter()
+                    .any(|span| span.content.contains("/review"))
+            })
+            .expect("key value line");
+        let slash_span = line
+            .spans
+            .iter()
+            .find(|span| span.content.contains("/review"))
+            .expect("slash span");
+        let ctrl_c_span = line
+            .spans
+            .iter()
+            .find(|span| span.content.contains("Ctrl+C"))
+            .expect("ctrl c span");
+
+        assert_eq!(slash_span.style.fg, Some(SURFACE_ACCENT));
+        assert!(slash_span.style.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(ctrl_c_span.style.fg, Some(SURFACE_CYAN));
+        assert!(ctrl_c_span.style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn rendered_plain_system_lines_use_readable_gray() {
+        let mut list = MessageList::new();
+        list.add_rendered_lines(vec!["This note stays readable.".to_owned()]);
+
+        let rendered = list.get_rendered_lines(64);
+        let line = rendered
+            .iter()
+            .find(|line| line.spans.iter().any(|span| span.content.contains("This")))
+            .expect("plain system line");
+
+        assert_eq!(line.spans[0].style.fg, Some(SURFACE_GRAY));
+    }
+
+    #[test]
+    fn rendered_plain_system_lines_highlight_inline_control_tokens() {
+        let mut list = MessageList::new();
+        list.add_rendered_lines(vec![
+            "Use /language <locale> or type $skill directly.".to_owned(),
+        ]);
+
+        let rendered = list.get_rendered_lines(80);
+        let line = rendered
+            .iter()
+            .find(|line| {
+                line.spans
+                    .iter()
+                    .any(|span| span.content.contains("/language"))
+            })
+            .expect("instruction line");
+
+        let slash_span = line
+            .spans
+            .iter()
+            .find(|span| span.content.contains("/language"))
+            .expect("slash span");
+        let skill_span = line
+            .spans
+            .iter()
+            .find(|span| span.content.contains("$skill"))
+            .expect("skill span");
+
+        assert_eq!(slash_span.style.fg, Some(SURFACE_ACCENT));
+        assert!(slash_span.style.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(skill_span.style.fg, Some(SURFACE_ACCENT));
+        assert!(skill_span.style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn assistant_key_value_lines_use_structured_styles() {
+        let rendered = super::render_assistant_plain_line(
+            "- streaming renderer: enabled",
+            64,
+            Style::default().fg(Color::White),
+        );
+        let line = rendered.first().expect("assistant key value line");
+
+        assert_eq!(line.spans[1].style.fg, Some(SURFACE_DIM_GRAY));
+        assert_eq!(line.spans[2].style.fg, Some(SURFACE_ACCENT));
+    }
+
+    #[test]
+    fn assistant_plain_lines_highlight_inline_control_tokens() {
+        let rendered = super::render_assistant_plain_line(
+            "Use /language <locale> or type $skill directly.",
+            80,
+            Style::default().fg(Color::White),
+        );
+        let line = rendered.first().expect("assistant instruction line");
+
+        let slash_span = line
+            .spans
+            .iter()
+            .find(|span| span.content.contains("/language"))
+            .expect("slash span");
+        let skill_span = line
+            .spans
+            .iter()
+            .find(|span| span.content.contains("$skill"))
+            .expect("skill span");
+
+        assert_eq!(slash_span.style.fg, Some(SURFACE_ACCENT));
+        assert!(slash_span.style.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(skill_span.style.fg, Some(SURFACE_ACCENT));
+        assert!(skill_span.style.add_modifier.contains(Modifier::BOLD));
     }
 
     #[test]

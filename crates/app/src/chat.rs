@@ -4754,7 +4754,10 @@ allowed_decisions: yes / auto / full / esc";
             message_count: Some(4),
             estimated_tokens: Some(128),
             first_token_latency_ms: Some(123),
-            draft_preview: Some("Inspecting the repo layout...".to_owned()),
+            preview: Some(CliChatLiveSnapshotPreview::new(
+                "Inspecting the repo layout...".to_owned(),
+                Vec::new(),
+            )),
             tools: Vec::new(),
         };
         let lines = render_cli_chat_live_surface_lines_with_width(&snapshot, 72);

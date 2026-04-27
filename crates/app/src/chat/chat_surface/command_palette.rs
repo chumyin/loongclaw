@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use crate::chat::chat_surface::i18n::{I18nService, Language, SurfaceCopy};
 use crate::chat::chat_surface::utils::*;
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
@@ -9,9 +11,12 @@ use ratatui::{
     widgets::{Clear, List, ListItem, ListState, Paragraph},
 };
 
+const PALETTE_MUTED_TEXT: ratatui::style::Color = ratatui::style::Color::Rgb(172, 172, 172);
+const PALETTE_SECONDARY_TEXT: ratatui::style::Color = ratatui::style::Color::Rgb(205, 205, 205);
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandAction {
-    RunCommand(&'static str),
+    RunCommand(String),
     InsertText(String),
     Close,
 }
@@ -20,6 +25,7 @@ pub enum CommandAction {
 pub struct SlashCommandSpec {
     pub command: &'static str,
     pub description: &'static str,
+    pub aliases: &'static [&'static str],
     pub ready: bool,
 }
 
@@ -27,142 +33,175 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
     SlashCommandSpec {
         command: "/model",
         description: "inspect or switch the active model",
+        aliases: &[],
         ready: true,
     },
     SlashCommandSpec {
         command: "/permissions",
         description: "review tool and command permissions",
+        aliases: &[],
         ready: true,
     },
     SlashCommandSpec {
         command: "/experimental",
         description: "inspect active surface features",
+        aliases: &[],
         ready: true,
     },
     SlashCommandSpec {
         command: "/skills",
         description: "browse available skills",
+        aliases: &[],
         ready: true,
     },
     SlashCommandSpec {
         command: "/mcp",
         description: "inspect configured MCP servers",
+        aliases: &[],
         ready: true,
     },
     SlashCommandSpec {
         command: "/rename",
         description: "rename the current conversation",
+        aliases: &[],
         ready: true,
     },
     SlashCommandSpec {
         command: "/review",
         description: "inspect approval and review queue",
+        aliases: &[],
         ready: true,
     },
     SlashCommandSpec {
         command: "/new",
         description: "start a fresh conversation",
+        aliases: &[],
         ready: true,
     },
     SlashCommandSpec {
         command: "/resume",
         description: "resume a previous conversation",
+        aliases: &[],
         ready: true,
     },
     SlashCommandSpec {
         command: "/fork",
         description: "branch the current conversation",
+        aliases: &[],
         ready: true,
     },
     SlashCommandSpec {
         command: "/compact",
         description: "checkpoint conversation context",
+        aliases: &[],
         ready: true,
     },
     SlashCommandSpec {
         command: "/plan",
         description: "draft or inspect a plan",
+        aliases: &[],
         ready: true,
     },
     SlashCommandSpec {
         command: "/copy",
         description: "copy the latest answer or explicit text",
+        aliases: &[],
         ready: true,
     },
     SlashCommandSpec {
         command: "/diff",
         description: "show recent code changes",
+        aliases: &[],
         ready: true,
     },
     SlashCommandSpec {
         command: "/title",
         description: "set the visible chat title",
+        aliases: &[],
         ready: true,
     },
     SlashCommandSpec {
         command: "/feedback",
         description: "send product feedback",
+        aliases: &[],
         ready: true,
     },
     SlashCommandSpec {
         command: "/clear",
         description: "clear the visible transcript",
+        aliases: &[],
         ready: true,
     },
     SlashCommandSpec {
         command: "/cwd",
         description: "show or change working directory",
+        aliases: &[],
         ready: true,
     },
     SlashCommandSpec {
         command: "/language",
         description: "choose UI language",
+        aliases: &[],
         ready: true,
     },
     SlashCommandSpec {
         command: "/share",
         description: "write a local transcript artifact",
+        aliases: &[],
         ready: true,
     },
     SlashCommandSpec {
         command: "/export",
         description: "export the current transcript",
+        aliases: &[],
         ready: true,
     },
     SlashCommandSpec {
         command: "/import",
         description: "import a transcript or context bundle",
+        aliases: &[],
         ready: true,
     },
     SlashCommandSpec {
         command: "/themes",
         description: "inspect terminal theme surface",
+        aliases: &[],
         ready: true,
     },
     SlashCommandSpec {
         command: "/simplify",
         description: "simplify the latest answer or diff",
+        aliases: &[],
         ready: true,
     },
     SlashCommandSpec {
         command: "/usage",
         description: "show available slash commands",
+        aliases: &[],
         ready: true,
     },
     SlashCommandSpec {
         command: "/missions",
         description: "open mission-control lane status",
+        aliases: &["/mission"],
         ready: true,
     },
     SlashCommandSpec {
         command: "/subagents",
         description: "inspect delegated subagent lanes",
+        aliases: &["/workers"],
         ready: true,
     },
 ];
 
 pub fn slash_command_specs() -> &'static [SlashCommandSpec] {
     SLASH_COMMAND_SPECS
+}
+
+pub fn find_slash_command_spec(command: &str) -> Option<&'static SlashCommandSpec> {
+    slash_command_specs()
+        .iter()
+        .find(|spec| spec.command == command || spec.aliases.contains(&command))
 }
 
 #[derive(Debug, Clone)]
@@ -176,13 +215,22 @@ pub struct SkillEntry {
 
 #[derive(Debug, Clone)]
 struct CommandEntry {
-    command: &'static str,
+    command: String,
     description: String,
+    aliases: Vec<String>,
+    source: CommandEntrySource,
     action: CommandAction,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CommandEntrySource {
+    BuiltIn,
+    Extension,
 }
 
 pub struct CommandPalette {
     query: String,
+    command_prefix: char,
     commands: Vec<CommandEntry>,
     skills: Vec<SkillEntry>,
     mode: PaletteMode,
@@ -206,14 +254,8 @@ impl CommandPalette {
     pub fn new(lang: Language, skills: Vec<SkillEntry>) -> Self {
         Self {
             query: String::new(),
-            commands: SLASH_COMMAND_SPECS
-                .iter()
-                .map(|spec| CommandEntry {
-                    command: spec.command,
-                    description: spec.description.to_owned(),
-                    action: CommandAction::RunCommand(spec.command),
-                })
-                .collect(),
+            command_prefix: '/',
+            commands: build_command_entries(&[]),
             skills,
             mode: PaletteMode::Commands,
             state: ListState::default(),
@@ -222,8 +264,54 @@ impl CommandPalette {
         }
     }
 
+    pub fn set_language(&mut self, lang: Language) {
+        self.i18n.set_language(lang);
+    }
+
+    pub fn set_extension_commands(&mut self, extension_commands: &[(String, String)]) {
+        let selected = self.state.selected().unwrap_or(0);
+        self.commands = build_command_entries(extension_commands);
+
+        let total = self.filtered_item_count();
+        if total == 0 {
+            self.state.select(Some(0));
+            self.scroll_offset = 0;
+            return;
+        }
+
+        let selected = selected.min(total.saturating_sub(1));
+        self.state.select(Some(selected));
+        self.sync_scroll(selected, total);
+    }
+
+    pub fn set_skills(&mut self, skills: Vec<SkillEntry>) {
+        let selected = self.state.selected().unwrap_or(0);
+        self.skills = skills;
+
+        if !matches!(self.mode, PaletteMode::Skills) {
+            return;
+        }
+
+        let filtered = self.filtered_skills();
+        let total = filtered.len();
+        if total == 0 {
+            self.state.select(Some(0));
+            self.scroll_offset = 0;
+            return;
+        }
+
+        let selected = selected.min(total.saturating_sub(1));
+        self.state.select(Some(selected));
+        self.sync_scroll(selected, total);
+    }
+
     pub fn show_commands(&mut self, query: &str) {
         self.mode = PaletteMode::Commands;
+        self.command_prefix = if query.trim_start().starts_with(':') {
+            ':'
+        } else {
+            '/'
+        };
         self.query = query.trim().trim_start_matches(['/', ':']).to_string();
         self.state.select(Some(0));
         self.scroll_offset = 0;
@@ -235,6 +323,47 @@ impl CommandPalette {
         self.query = query.trim().trim_start_matches('$').to_string();
         self.state.select(Some(0));
         self.scroll_offset = 0;
+    }
+
+    pub fn composer_preview_text(&self) -> Option<String> {
+        let prefix = match self.mode {
+            PaletteMode::Commands => {
+                if self.command_prefix == ':' {
+                    ":"
+                } else {
+                    "/"
+                }
+            }
+            PaletteMode::Skills => "$",
+        };
+
+        Some(format!("{prefix}{}", self.query))
+    }
+
+    #[allow(dead_code)]
+    pub fn is_commands_mode(&self) -> bool {
+        self.mode == PaletteMode::Commands
+    }
+
+    #[allow(dead_code)]
+    pub fn is_skills_mode(&self) -> bool {
+        self.mode == PaletteMode::Skills
+    }
+
+    #[allow(dead_code)]
+    pub fn query_is_empty(&self) -> bool {
+        self.query.is_empty()
+    }
+
+    #[allow(dead_code)]
+    pub fn selection_progress(&self) -> Option<(usize, usize)> {
+        let total = self.filtered_item_count();
+        if total == 0 {
+            return None;
+        }
+
+        let selected = self.state.selected().unwrap_or(0).min(total - 1);
+        Some((selected, total))
     }
 
     pub fn has_skills(&self) -> bool {
@@ -261,14 +390,14 @@ impl CommandPalette {
         if filtered.is_empty() {
             let mut items = vec![ListItem::new(Line::from(vec![Span::styled(
                 format!("  {}", self.i18n.text(SurfaceCopy::CommandDeckEmpty)),
-                Style::default().fg(SURFACE_DIM_GRAY),
+                Style::default().fg(PALETTE_MUTED_TEXT),
             )]))];
             while items.len() < visible_rows {
                 items.push(ListItem::new(Line::from("")));
             }
             items.push(ListItem::new(Line::from(vec![Span::styled(
                 "(0/0)",
-                Style::default().fg(SURFACE_DIM_GRAY),
+                Style::default().fg(PALETTE_MUTED_TEXT),
             )])));
             let list = List::new(items).highlight_style(Style::default());
             f.render_stateful_widget(list, area, &mut self.state);
@@ -304,18 +433,25 @@ impl CommandPalette {
                 let gap = " ".repeat(
                     label_width.saturating_sub(crate::presentation::display_width(&label)) + 2,
                 );
+                let source_badge = entry.source_badge.clone();
+                let source_badge_width = source_badge
+                    .as_ref()
+                    .map(|badge| crate::presentation::display_width(badge) + 1)
+                    .unwrap_or(0);
                 let max_desc = area.width.saturating_sub(
-                    (crate::presentation::display_width(prefix) + label_width + 2) as u16,
+                    (crate::presentation::display_width(prefix)
+                        + label_width
+                        + 2
+                        + source_badge_width) as u16,
                 ) as usize;
                 let desc = truncate(entry.description.as_str(), max_desc);
-
-                ListItem::new(Line::from(vec![
+                let mut spans = vec![
                     Span::styled(
                         prefix,
                         Style::default().fg(if is_selected {
                             SURFACE_CYAN
                         } else {
-                            SURFACE_DIM_GRAY
+                            PALETTE_MUTED_TEXT
                         }),
                     ),
                     Span::styled(
@@ -333,15 +469,30 @@ impl CommandPalette {
                             }),
                     ),
                     Span::raw(gap),
-                    Span::styled(
-                        desc,
-                        Style::default().fg(if is_selected {
-                            SURFACE_ACCENT
-                        } else {
-                            SURFACE_GRAY
-                        }),
-                    ),
-                ]))
+                ];
+                if let Some(source_badge) = source_badge {
+                    spans.push(Span::styled(
+                        source_badge,
+                        Style::default()
+                            .fg(if is_selected {
+                                SURFACE_GRAY
+                            } else {
+                                PALETTE_MUTED_TEXT
+                            })
+                            .add_modifier(Modifier::BOLD),
+                    ));
+                    spans.push(Span::raw(" "));
+                }
+                spans.push(Span::styled(
+                    desc,
+                    Style::default().fg(if is_selected {
+                        SURFACE_ACCENT
+                    } else {
+                        PALETTE_SECONDARY_TEXT
+                    }),
+                ));
+
+                ListItem::new(Line::from(spans))
             })
             .collect();
 
@@ -351,7 +502,7 @@ impl CommandPalette {
 
         let count_line = ListItem::new(Line::from(vec![Span::styled(
             format!("({}/{})", selected + 1, filtered.len().max(1)),
-            Style::default().fg(SURFACE_DIM_GRAY),
+            Style::default().fg(PALETTE_MUTED_TEXT),
         )]));
 
         items.push(count_line);
@@ -385,7 +536,7 @@ impl CommandPalette {
         if filtered.is_empty() {
             let mut items = vec![ListItem::new(Line::from(vec![Span::styled(
                 "no matches",
-                Style::default().fg(SURFACE_DIM_GRAY),
+                Style::default().fg(PALETTE_MUTED_TEXT),
             )]))];
             while items.len() < visible_rows {
                 items.push(ListItem::new(Line::from("")));
@@ -509,7 +660,7 @@ impl CommandPalette {
                     Style::default().fg(if is_selected {
                         SURFACE_CYAN
                     } else {
-                        SURFACE_DIM_GRAY
+                        PALETTE_MUTED_TEXT
                     }),
                 )];
                 spans.extend(label_spans);
@@ -701,7 +852,11 @@ impl CommandPalette {
                 }
                 let command = entry.command.to_ascii_lowercase();
                 let desc = entry.description.to_ascii_lowercase();
-                command.contains(query.as_str()) || desc.contains(query.as_str())
+                let alias_match = entry
+                    .aliases
+                    .iter()
+                    .any(|alias| alias.to_ascii_lowercase().contains(query.as_str()));
+                command.contains(query.as_str()) || desc.contains(query.as_str()) || alias_match
             })
             .cloned()
             .map(|entry| PaletteItem {
@@ -709,6 +864,10 @@ impl CommandPalette {
                 description: entry.description,
                 action: entry.action,
                 match_target: None,
+                source_badge: match entry.source {
+                    CommandEntrySource::BuiltIn => None,
+                    CommandEntrySource::Extension => Some("[Ext]".to_owned()),
+                },
                 source_skill: None,
             })
             .collect()
@@ -770,13 +929,14 @@ impl CommandPalette {
                 action: CommandAction::InsertText(format!("${} ", skill.name)),
                 match_target: (!query.is_empty())
                     .then_some(adjust_skill_match_target_for_label(match_target, 1)),
+                source_badge: None,
                 source_skill: Some(skill.clone()),
             })
             .collect()
     }
 
     fn display_label(&self, entry: &CommandEntry) -> String {
-        entry.command.to_owned()
+        entry.command.clone()
     }
 
     fn sync_scroll(&mut self, selected: usize, total: usize) {
@@ -814,6 +974,55 @@ impl CommandPalette {
         self.state.select(Some(index));
         self.sync_scroll(index, total);
     }
+}
+
+fn build_command_entries(extension_commands: &[(String, String)]) -> Vec<CommandEntry> {
+    let mut commands = slash_command_specs()
+        .iter()
+        .map(|spec| {
+            let command = spec.command.to_owned();
+            CommandEntry {
+                command: command.clone(),
+                description: spec.description.to_owned(),
+                aliases: spec
+                    .aliases
+                    .iter()
+                    .map(|alias| (*alias).to_owned())
+                    .collect(),
+                source: CommandEntrySource::BuiltIn,
+                action: CommandAction::RunCommand(command),
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let mut seen_commands = commands
+        .iter()
+        .map(|entry| entry.command.clone())
+        .collect::<HashSet<_>>();
+    for (command, description) in extension_commands {
+        let trimmed_command = command.trim();
+        if trimmed_command.is_empty() {
+            continue;
+        }
+        let normalized_command = if trimmed_command.starts_with('/') {
+            trimmed_command.to_owned()
+        } else {
+            format!("/{trimmed_command}")
+        };
+        if !seen_commands.insert(normalized_command.clone()) {
+            continue;
+        }
+
+        commands.push(CommandEntry {
+            command: normalized_command.clone(),
+            description: description.trim().to_owned(),
+            aliases: Vec::new(),
+            source: CommandEntrySource::Extension,
+            action: CommandAction::RunCommand(normalized_command),
+        });
+    }
+
+    commands
 }
 
 fn skill_popup_hint_line() -> Line<'static> {
@@ -963,9 +1172,9 @@ fn render_match_highlight_spans(
 
 fn skill_category_style(selected: bool) -> Style {
     Style::default().fg(if selected {
-        SURFACE_GRAY
+        PALETTE_SECONDARY_TEXT
     } else {
-        SURFACE_DIM_GRAY
+        PALETTE_MUTED_TEXT
     })
 }
 
@@ -995,21 +1204,21 @@ fn skill_label_highlight_style(selected: bool) -> Style {
 
 fn skill_context_style(selected: bool) -> Style {
     Style::default().fg(if selected {
-        SURFACE_GRAY
+        PALETTE_SECONDARY_TEXT
     } else {
-        SURFACE_DIM_GRAY
+        PALETTE_MUTED_TEXT
     })
 }
 
 fn skill_separator_style() -> Style {
-    Style::default().fg(SURFACE_DIM_GRAY)
+    Style::default().fg(PALETTE_MUTED_TEXT)
 }
 
 fn skill_description_style(selected: bool) -> Style {
     Style::default().fg(if selected {
         SURFACE_ACCENT
     } else {
-        SURFACE_GRAY
+        PALETTE_SECONDARY_TEXT
     })
 }
 
@@ -1149,6 +1358,7 @@ struct PaletteItem {
     description: String,
     action: CommandAction,
     match_target: Option<SkillMatchTarget>,
+    source_badge: Option<String>,
     source_skill: Option<SkillEntry>,
 }
 
@@ -1320,17 +1530,20 @@ mod tests {
         }
     }
 
+    fn assert_run_command(action: Option<CommandAction>, expected: &str) {
+        match action {
+            Some(CommandAction::RunCommand(command)) => assert_eq!(command, expected),
+            other => panic!("expected {expected} action, got {other:?}"),
+        }
+    }
+
     #[test]
     fn enter_uses_filtered_selection_instead_of_raw_index() {
         let mut palette = CommandPalette::new(Language::En, Vec::new());
         palette.show_commands("approval");
 
         let action = palette.handle_key(key(KeyCode::Enter));
-
-        match action {
-            Some(CommandAction::RunCommand("/review")) => {}
-            other => panic!("expected /review action, got {other:?}"),
-        }
+        assert_run_command(action, "/review");
     }
 
     #[test]
@@ -1340,11 +1553,7 @@ mod tests {
         palette.handle_key(key(KeyCode::Backspace));
 
         let action = palette.handle_key(key(KeyCode::Enter));
-
-        match action {
-            Some(CommandAction::RunCommand("/compact")) => {}
-            other => panic!("expected /compact action after backspace, got {other:?}"),
-        }
+        assert_run_command(action, "/compact");
     }
 
     #[test]
@@ -1407,11 +1616,16 @@ mod tests {
         palette.show_commands("mission-control");
 
         let action = palette.handle_key(key(KeyCode::Enter));
+        assert_run_command(action, "/missions");
+    }
 
-        match action {
-            Some(CommandAction::RunCommand("/missions")) => {}
-            other => panic!("expected /missions action, got {other:?}"),
-        }
+    #[test]
+    fn query_matches_hidden_aliases_from_the_shared_command_registry() {
+        let mut palette = CommandPalette::new(Language::En, Vec::new());
+        palette.show_commands("workers");
+
+        let action = palette.handle_key(key(KeyCode::Enter));
+        assert_run_command(action, "/subagents");
     }
 
     #[test]
@@ -1445,16 +1659,10 @@ mod tests {
         palette.show_commands("");
 
         let _ = palette.handle_key(key(KeyCode::PageDown));
-        match palette.handle_key(key(KeyCode::Enter)) {
-            Some(CommandAction::RunCommand("/new")) => {}
-            other => panic!("expected page-down to land on /new, got {other:?}"),
-        }
+        assert_run_command(palette.handle_key(key(KeyCode::Enter)), "/new");
 
         let _ = palette.handle_key(key(KeyCode::PageUp));
-        match palette.handle_key(key(KeyCode::Enter)) {
-            Some(CommandAction::RunCommand("/model")) => {}
-            other => panic!("expected page-up to return to /model, got {other:?}"),
-        }
+        assert_run_command(palette.handle_key(key(KeyCode::Enter)), "/model");
     }
 
     #[test]
@@ -1463,16 +1671,10 @@ mod tests {
         palette.show_commands("");
 
         let _ = palette.handle_key(key(KeyCode::End));
-        match palette.handle_key(key(KeyCode::Enter)) {
-            Some(CommandAction::RunCommand("/subagents")) => {}
-            other => panic!("expected end to land on /subagents, got {other:?}"),
-        }
+        assert_run_command(palette.handle_key(key(KeyCode::Enter)), "/subagents");
 
         let _ = palette.handle_key(key(KeyCode::Home));
-        match palette.handle_key(key(KeyCode::Enter)) {
-            Some(CommandAction::RunCommand("/model")) => {}
-            other => panic!("expected home to land on /model, got {other:?}"),
-        }
+        assert_run_command(palette.handle_key(key(KeyCode::Enter)), "/model");
     }
 
     #[test]
@@ -1485,25 +1687,59 @@ mod tests {
             None => {}
             other => panic!("unexpected action while wrapping up: {other:?}"),
         }
-        match palette.handle_key(key(KeyCode::Enter)) {
-            Some(CommandAction::RunCommand("/subagents")) => {}
-            other => panic!("expected wrap-up to land on /subagents, got {other:?}"),
-        }
+        assert_run_command(palette.handle_key(key(KeyCode::Enter)), "/subagents");
 
         let mut palette = CommandPalette::new(Language::En, Vec::new());
         palette.show_commands("");
         for _ in 0..26 {
             let _ = palette.handle_key(key(KeyCode::Down));
         }
-        match palette.handle_key(key(KeyCode::Enter)) {
-            Some(CommandAction::RunCommand("/subagents")) => {}
-            other => panic!("expected repeated down to reach /subagents, got {other:?}"),
-        }
+        assert_run_command(palette.handle_key(key(KeyCode::Enter)), "/subagents");
         let _ = palette.handle_key(key(KeyCode::Down));
-        match palette.handle_key(key(KeyCode::Enter)) {
-            Some(CommandAction::RunCommand("/model")) => {}
-            other => panic!("expected wrap-down to return to /model, got {other:?}"),
-        }
+        assert_run_command(palette.handle_key(key(KeyCode::Enter)), "/model");
+    }
+
+    #[test]
+    fn extension_commands_join_the_command_palette() {
+        let mut palette = CommandPalette::new(Language::En, Vec::new());
+        palette.set_extension_commands(&[(
+            "/hello-ext".to_owned(),
+            "say hello from the extension".to_owned(),
+        )]);
+        palette.show_commands("hello");
+
+        assert_run_command(palette.handle_key(key(KeyCode::Enter)), "/hello-ext");
+    }
+
+    #[test]
+    fn extension_commands_do_not_override_builtin_slots() {
+        let mut palette = CommandPalette::new(Language::En, Vec::new());
+        palette.set_extension_commands(&[(
+            "/usage".to_owned(),
+            "shadow the builtin usage entry".to_owned(),
+        )]);
+        palette.show_commands("usage");
+
+        let entries = palette.filtered_commands();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].label, "/usage");
+        assert_eq!(entries[0].description, "show available slash commands");
+        assert!(entries[0].source_badge.is_none());
+        assert_run_command(palette.handle_key(key(KeyCode::Enter)), "/usage");
+    }
+
+    #[test]
+    fn extension_commands_render_with_extension_badge() {
+        let mut palette = CommandPalette::new(Language::En, Vec::new());
+        palette.set_extension_commands(&[(
+            "/hello-ext".to_owned(),
+            "say hello from the extension".to_owned(),
+        )]);
+        palette.show_commands("hello");
+
+        let rendered = render_to_string(&mut palette, Rect::new(0, 0, 72, 3));
+        assert!(rendered.contains("[Ext]"));
+        assert!(rendered.contains("/hello-ext"));
     }
 
     #[test]
@@ -1656,11 +1892,11 @@ mod tests {
     fn skill_category_style_dims_unselected_rows() {
         assert_eq!(
             super::skill_category_style(false).fg,
-            Some(super::SURFACE_DIM_GRAY)
+            Some(super::PALETTE_MUTED_TEXT)
         );
         assert_eq!(
             super::skill_category_style(true).fg,
-            Some(super::SURFACE_GRAY)
+            Some(super::PALETTE_SECONDARY_TEXT)
         );
     }
 
@@ -1677,8 +1913,8 @@ mod tests {
         assert_eq!(spans[0].content.as_ref(), "babysit-pr");
         assert_eq!(spans[1].content.as_ref(), " · ");
         assert_eq!(spans[2].content.as_ref(), "triage pull requests");
-        assert_eq!(spans[0].style.fg, Some(super::SURFACE_DIM_GRAY));
-        assert_eq!(spans[2].style.fg, Some(super::SURFACE_GRAY));
+        assert_eq!(spans[0].style.fg, Some(super::PALETTE_MUTED_TEXT));
+        assert_eq!(spans[2].style.fg, Some(super::PALETTE_SECONDARY_TEXT));
     }
 
     #[test]
@@ -1697,7 +1933,7 @@ mod tests {
         assert_eq!(spans[1].content.as_ref(), " · ");
         assert_eq!(spans[2].content.as_ref(), "triage pull requests");
         assert!(spans[0].style.add_modifier.contains(Modifier::UNDERLINED));
-        assert_eq!(spans[2].style.fg, Some(super::SURFACE_GRAY));
+        assert_eq!(spans[2].style.fg, Some(super::PALETTE_SECONDARY_TEXT));
     }
 
     #[test]
@@ -1866,7 +2102,7 @@ mod tests {
         let second_row = row_text(&buffer, 1, area.width);
         let tag_index = second_row.find("[Skill]").expect("skill tag");
 
-        assert_eq!(buffer[(tag_index as u16, 1)].fg, super::SURFACE_DIM_GRAY);
+        assert_eq!(buffer[(tag_index as u16, 1)].fg, super::PALETTE_MUTED_TEXT);
     }
 
     #[test]
@@ -1930,7 +2166,10 @@ mod tests {
         let context_index = row.find("babysit-pr").expect("alias context");
         let detail_index = row.find("triage").expect("detail text");
 
-        assert_eq!(buffer[(context_index as u16, 0)].fg, super::SURFACE_GRAY);
+        assert_eq!(
+            buffer[(context_index as u16, 0)].fg,
+            super::PALETTE_SECONDARY_TEXT
+        );
         assert_eq!(buffer[(detail_index as u16, 0)].fg, super::SURFACE_ACCENT);
     }
 
@@ -1992,10 +2231,7 @@ mod tests {
             Rect::new(0, 0, 40, 8),
         );
 
-        match palette.handle_key(key(KeyCode::Enter)) {
-            Some(CommandAction::RunCommand("/permissions")) => {}
-            other => panic!("expected mouse scroll to land on /permissions, got {other:?}"),
-        }
+        assert_run_command(palette.handle_key(key(KeyCode::Enter)), "/permissions");
     }
 
     #[test]
@@ -2008,9 +2244,6 @@ mod tests {
             Rect::new(0, 0, 40, 8),
         );
 
-        match action {
-            Some(CommandAction::RunCommand("/permissions")) => {}
-            other => panic!("expected mouse click to select /permissions, got {other:?}"),
-        }
+        assert_run_command(action, "/permissions");
     }
 }

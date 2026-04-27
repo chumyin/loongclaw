@@ -230,6 +230,32 @@ impl AgentRuntime {
             return Err("agent runtime message must not be empty".to_owned());
         }
         let message = request.message.as_str();
+        if let Some(outcome) =
+            crate::tools::extension_runtime_tools::maybe_execute_extension_runtime_command(
+                message,
+                runtime.session_id.as_str(),
+                &runtime.config,
+            )?
+        {
+            let output_text =
+                crate::tools::extension_runtime_tools::render_extension_command_outcome_text(
+                    &outcome,
+                );
+            let prompt_frame_summary = load_runtime_prompt_frame_summary(runtime).await;
+            let (prompt_assembly, prompt_cache) = build_prompt_plans(&prompt_frame_summary);
+            return Ok(AgentTurnResult {
+                session_id: runtime.session_id.clone(),
+                output_text,
+                turn_mode: request.turn_mode,
+                governed_session_mode: runtime.conversation_binding().session_mode(),
+                state: None,
+                stop_reason: None,
+                usage: None,
+                event_count: 0,
+                prompt_assembly,
+                prompt_cache,
+            });
+        }
 
         let turn_address = resolved_session_address(runtime, request);
         let explicit_acp_request = runtime.explicit_acp_request
